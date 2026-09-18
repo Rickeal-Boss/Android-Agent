@@ -42,10 +42,10 @@
 
 | 项 | 值 | 备注 |
 |---|---|---|
-| Gradle | 9.7.1 | **无 wrapper jar**（本地无 Gradle），CI 用 `gradle/actions/setup-gradle` 安装 |
-| AGP | 9.3.2 | |
-| Kotlin | 2.3.0 | 回退档：2.2.21 |
-| JDK | 21 (temurin) | |
+| Gradle | 9.7.1 | CI 用 `gradle/actions/setup-gradle@v6` 显式安装（`gradle` 在 PATH 上），不走 wrapper |
+| AGP | 9.3.2 | **AGP 9 自带 Kotlin 支持**，见下方 ⚠️ |
+| Kotlin | 由 AGP 9.3.2 内置 KGP 决定 | ⚠️ **不再由本仓库决定**，见下方 ⚠️。原"回退档 2.2.21"路径已失效 |
+| JDK | 21 (temurin) | 构建工具链；字节码目标见 `jvmTarget` |
 | compileSdk | 36 | AGP 9 块式 DSL：`compileSdk { version = release(36) }` |
 | targetSdk | 36 | |
 | minSdk | 31 | = gallery，`RenderEffect` 可用 |
@@ -61,6 +61,70 @@
 | okhttp | 4.12.0 | |
 | litertlm-android | 0.11.0 | **仅 `:core-engine` 依赖** |
 | applicationId | `com.rickeal.agent` | 应用名 LiquidAgent |
+| jvmTarget | **17** | 实测采用值（JDK 21 工具链 + 17 字节码目标）。本文 §9.5 模板写的 21 以本行为准 |
+
+#### ⚠️ 1.2.1 AGP 9 内置 Kotlin —— 由 CI 实测修正（2026-09-18，提交 6fb4108）
+
+**硬事实**：AGP 9.0+ 内置 Kotlin 支持，**禁止再显式应用 `org.jetbrains.kotlin.android`**。GitHub Actions 真实报错：
+
+```
+* Where: Build file 'app/build.gradle.kts' line: 12
+An exception occurred applying plugin request [id: 'org.jetbrains.kotlin.android', version: '2.3.0']
+> Failed to apply plugin 'org.jetbrains.kotlin.android'.
+   > ⛔ Failed to apply plugin 'org.jetbrains.kotlin.android'
+     The 'org.jetbrains.kotlin.android' plugin is no longer required for Kotlin support since AGP 9.0.
+     Solution: Remove the 'org.jetbrains.kotlin.android' plugin from this project's build file: app/build.gradle.kts.
+     See https://kotl.in/gradle/agp-built-in-kotlin for more details.
+```
+
+**规则**：
+- ❌ 任何模块、包括根工程，**都不得**声明 `alias(libs.plugins.kotlin.android)`。
+- ✅ `org.jetbrains.kotlin.plugin.compose` 与 `org.jetbrains.kotlin.plugin.serialization` **仍需显式声明**（AGP 不代管这两个）。
+- ✅ `kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }` 保留可用（AGP 内置 KGP 后该扩展仍存在）。
+- **Kotlin 版本由 AGP 内置的 KGP 决定**，不再是 `libs.versions.toml` 里的 `kotlin` 版本。
+
+**回退路径（若未来降到 AGP 8.x）**：必须把 `org.jetbrains.kotlin.android` 加回 9 个模块 + 根工程，此时 `kotlin` 版本才重新由本仓库控制。
+
+**⚠️ 由此产生的次生风险（最高优先级，见 §10 R16）**：`kotlin-compose` / `kotlin-serialization` 两个插件的版本目前仍 `version.ref = "kotlin"`（2.3.0）。若 AGP 9.3.2 内置的 Kotlin 不是 2.3.0，Compose 编译器插件会报版本不匹配。**必须核实 AGP 9.3.2 的 KGP 依赖版本，并把 catalog 里的 `kotlin` 对齐到该值。**
+
+#### 1.2.1b 上游官方文档核实结论（Android Developers「迁移到内置 Kotlin」+ AGP 9.0 Release Notes）
+
+| 事实 | 出处 | 对我们的影响 |
+|---|---|---|
+| AGP 9.0 对 **KGP 有运行时依赖**（AGP 9.0 = **KGP 2.2.10**）。声明更低版本会被 Gradle 自动升到该版本 | AGP 9.0 RN「对 Kotlin Gradle 插件的运行时依赖项」 | **AGP 9.3.2 的 KGP 版本需单独查**（见下方 →）。本文 `kotlin = "2.3.0"` 若**低于** AGP 9.3.2 的 KGP，会被自动升级 → compose 插件 2.3.0 与 KGP 不匹配 → **编译失败** |
+| 升级到更高 KGP：在**顶层** build 文件 `buildscript { dependencies { classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:KGP_VERSION") } }` | 同上 | 这是"我们要用比 AGP 内置更高 Kotlin"的**官方指定做法**（不是改 version catalog） |
+| 降级 KGP **必须**先 opt-out 内置 Kotlin；最低只能降到 2.0.0 | 同上 | 反向印证：内置 Kotlin 下 KGP 版本只能升不能降 |
+| Opt-out 开关：`gradle.properties` 设 `android.builtInKotlin=false`，且**必须同时**设 `android.newDsl=false`；AGP 10.0 将移除 opt-out | 同上 | 一条兜底路径：实在过不去可以 opt-out 并把 `kotlin.android` 加回来。**但 AGP 10 会失效，只作临时手段** |
+| 使用内置 Kotlin 时**无需**设置 `kotlin.compilerOptions.jvmTarget`，默认取 `android.compileOptions.targetCompatibility` | 同上 | 我们显式设了 `JVM_17` 而 `targetCompatibility=21` → **显式值优先**。两者不一致但都能编过；若要统一，建议删掉 jvmTarget 让它跟随 21，或把 compileOptions 也降到 17 |
+| 逐模块 opt-out：`android { enableKotlin = false }`（纯 Java/无 Kotlin 模块可用，省编译开销） | 同上 | 本项目 9 个模块全有 Kotlin，不适用 |
+| AGP 9.0 最低/默认 **Gradle 9.1.0** | AGP 9.0 RN「兼容性」 | 我们用 9.7.1 ✅ |
+| AGP 9.0 最低/默认 **JDK 17** | 同上 | CI 用 JDK 21 ✅（更高允许） |
+| AGP 9.0 支持最高 API **36.1** | 同上 | compileSdk 36 ✅ |
+| ⚠️ `android.r8.proguardAndroidTxt.disallowed=true`：`getDefaultProguardFile()` **仅支持 `proguard-android-optimize.txt`**，`proguard-android.txt` 在 AGP 9.0 被禁 | AGP 9.0 RN「行为变更」 | **若 `app/build.gradle.kts` 里写的是 `getDefaultProguardFile("proguard-android.txt")`，会直接构建失败。** 必须改成 `-optimize.txt` |
+| ⚠️ `android.uniquePackageNames` 默认 `true`：每个库必须有不同包名 | 同上 | 9 个模块 namespace 各不相同 ✅ |
+| `android.newDsl` 默认 `true`（`false` 可 opt-out） | 同上 | 块式 DSL `compileSdk { version = release(36) }` 属于新 DSL，**与之相符**，是好信号 |
+| `android.useAndroidx` 默认已翻转为 `true` | 同上 | 我们 gradle.properties 里显式写了，无害 |
+| ⚠️ `android.enableAppCompileTimeRClass=true`：app 按**非 final** R 类编译 | 同上 | 若代码把 R 字段用在需要编译期常量的位置（`when`/`switch` 分支），会报错。本项目纯 Compose，风险低但需留意 |
+| `android.sdk.defaultTargetSdkToCompileSdkIfUnset=true` | 同上 | 我们显式 `targetSdk=36`，不受影响 ✅ |
+| `android.proguard.failOnMissingFiles=true`：keep 文件不存在即失败 | 同上 | `app/proguard-rules.pro` 存在 ✅ |
+
+> **→ 必须去查的一个数**：打开 <https://developer.android.google.cn/build/releases/agp-9-3-0-release-notes>，看「**兼容性**」表格里 **Kotlin Gradle 插件 (KGP)** 那一行的「默认版本」。
+> 然后把 `gradle/libs.versions.toml` 的 `kotlin` 改成**该值**（`kotlin-compose` / `kotlin-serialization` 会同步）。
+> 若想用比它更高的 Kotlin，则按官方做法在**顶层** `build.gradle.kts` 加 `buildscript { dependencies { classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>") } }`，**不要**只改 catalog。
+
+#### ⚠️ 1.2.2 AGP 9 时代需复核/已失效的建议清单（列给 team-lead，不自行改构建脚本）
+
+| # | 本文原建议 | 状态 | 说明 |
+|---|---|---|---|
+| 1 | 「Kotlin 2.3.0，回退档 2.2.21，只改一行」 | **已失效** | Kotlin 版本改由 AGP 决定，改 catalog 一行不再能改 Kotlin 版本。回退路径需重新定义（改 AGP 版本，或查 AGP 是否提供覆盖内置 Kotlin 版本的开关） |
+| 2 | 显式应用 `kotlin.android` | **已失效（禁止）** | 见 §1.2.1 |
+| 3 | `kotlin-compose` / `kotlin-serialization` 用 `version.ref = "kotlin"` | **高风险待核** | 两插件版本必须与 AGP 内置 Kotlin 版本**严格一致**，否则 Compose 编译器报不匹配。需先查出 AGP 9.3.2 内置哪个 Kotlin 版本再对齐 |
+| 4 | `jvmTarget = JVM_21` | 实测改为 **17** | §9.5 模板仍在写 21，以 §1.2 表格的 17 为准。17 更稳（AGP 9 内置 Kotlin 的下限），JDK 21 仅作工具链 |
+| 5 | `compileSdk { version = release(36) }` 块式 DSL | **尚未被 CI 验证** | 报错停在插件应用阶段（line 12），`android {}` 块还没执行到。需下一次 CI 才能确认 |
+| 6 | `buildFeatures { compose = true }` | **尚未被 CI 验证** | 同上。AGP 9 + 内置 Kotlin 下是否仍必需，需实测；若报 compose 相关错，这是第一个要查的点 |
+| 7 | `packaging { jniLibs { useLegacyPackaging = true } }` | **尚未被 CI 验证** | 仅 `:app` 使用。若 AGP 9 改了 DSL，删掉不影响功能（只影响运行时 native 库解压方式） |
+| 8 | `kotlin { compilerOptions { jvmTarget.set(...) } }` 写法 | 实测保留 | 若后续报该扩展不存在，回退 `kotlinOptions { jvmTarget = "17" }` |
+| 9 | `kotlinx-coroutines-android 1.9.0` | **待核** | 若 AGP 内置 Kotlin 版本较高，coroutines 1.9.0 可能有元数据兼容告警；Gradle 会取高版本，暂不处理 |
 
 ### 1.3 模块清单（9 个）
 
@@ -4759,7 +4823,11 @@ dependencies {
 > `libs.androidx.compose.runtime` 需要在 catalog 里补一行：
 > `androidx-compose-runtime = { module = "androidx.compose.runtime:runtime" }`。
 > `projects.coreModel` 是 Gradle 的类型安全项目访问器（AGP 8+/Gradle 8+ 默认开启）；若不生效，退回 `implementation(project(":core-model"))`。
-> 若 `kotlin { compilerOptions { jvmTarget.set(...) } }` 编译不过，退回 `kotlinOptions { jvmTarget = "21" }`。
+> ⚠️ **2026-09-18 实测修正（AGP 9 时代）**：
+> - 模板中的 `alias(libs.plugins.kotlin.android)` 一行**必须删除**（AGP 9 内置 Kotlin，禁止显式应用，见 §1.2.1）。
+> - `jvmTarget` 实测采用 **`JvmTarget.JVM_17`**（模板写的 JVM_21 以 §1.2 表格为准）。
+> - 若 `kotlin { compilerOptions { jvmTarget.set(...) } }` 编译不过，退回 `kotlinOptions { jvmTarget = "17" }`。
+> - `libs.versions.toml` 里的 `kotlin` 版本现在只影响 `kotlin-compose` / `kotlin-serialization` 两个插件，**必须与 AGP 内置 Kotlin 版本一致**（见 §10 R16）。
 
 ### 9.6 `app/src/main/AndroidManifest.xml`
 
@@ -4808,7 +4876,7 @@ dependencies {
 | A2 | `build.gradle.kts` | 根：仅声明插件且不 apply |
 | A3 | `gradle.properties` | JVM 参数、AndroidX 开关 |
 | A4 | `gradle/libs.versions.toml` | 版本目录（唯一版本真源） |
-| A5 | `gradle/wrapper/gradle-wrapper.properties` | 声明 9.7.1（**无 jar，CI 需安装 Gradle**） |
+| A5 | `gradle/wrapper/gradle-wrapper.properties` | 声明 9.7.1；jar 取自 gradle/gradle 官方 v9.7.1 tag。**CI 不走 wrapper**，由 setup-gradle 安装 Gradle 9.7.1 |
 | A6 | `.gitignore` | `.gradle/ build/ local.properties *.litertlm *.task` |
 | A7 | `app/build.gradle.kts` | 应用模块，依赖全部 feature/core |
 | A8 | `app/src/main/AndroidManifest.xml` | 权限 + Application + Activity |
@@ -4947,7 +5015,7 @@ dependencies {
 | # | 风险 | 影响 | 概率 | 规避 / 预案 |
 |---|---|---|---|---|
 | R1 | **CI 编译风险（最大）**：本地无 JDK/SDK/Gradle，唯一验证通道是 Actions；一次红只能靠日志定位 | 交付阻塞 | 高 | ① 每完成 1~2 个模块就推一次 CI，小步验证；② 严格只用本文锁定的 API；③ 所有"没把握"的 API 都隔离在单文件并标注可删（B23 / SquircleShape）；④ CI 同时产出 `assembleDebug` + lint 报告便于定位 |
-| R2 | **Compose BOM 2026.02.00 × Kotlin 2.3.0 未同仓验证**（gallery 用 Kotlin 2.2.21） | 编译失败 | 中 | 简报 §4 已定回退路径：**先把 Kotlin 降到 2.2.21**，不要动 BOM；若再失败才考虑降 BOM |
+| R2 | **Compose BOM 2026.02.00 × Kotlin 版本未同仓验证**（gallery 用 Kotlin 2.2.21） | 编译失败 | 中 | ⚠️ **原回退路径已失效**：AGP 9 内置 Kotlin 后，"把 Kotlin 降到 2.2.21"不再是改一行能做到的（§1.2.1）。新回退顺序：① 先确认 AGP 内置 Kotlin 版本并把两个 Kotlin 插件对齐；② 再考虑降 AGP；③ 最后才考虑降 BOM。**不要**再执行"改 catalog 一行降 Kotlin" |
 | R3 | **LiteRT-LM 0.11.0 API 漂移**：`EngineConfig` 的 `visionBackend/audioBackend`、`Backend.NPU(nativeLibraryDir=)`、`SamplerConfig(topK/topP/temperature)` 均为 gallery 摘录，未本地核对 | 编译失败 | 中 | ① 编译报错时**只改 `LiteRtLmEngine.kt` 一个文件**，其余不动；② 若 `EngineConfig` 参数不匹配，退化为只传 `modelPath + backend + maxNumTokens + cacheDir`（视觉/音频能力暂关）；③ 升级到 0.17.x 留 TODO，**本次不做** |
 | R4 | **`ConversationConfig` 三参数传空导致能力降级**：系统提示词走 `messages[0]`，工具走文本协议 | 功能降级 | 已接受 | 明确写进 README；`nativeToolChannel=false` 已让 Agent 自动走文本协议，功能不缺失 |
 | R5 | **模型来源与体积**：4B 模型常 >2GB，CI 与构建期**绝不能下载**；用户导入路径不可控 | CI 超时 / 用户困惑 | 高 | ① CI 只跑 `assembleDebug`，不下载任何模型；② README 给出 HuggingFace 下载指引 + 支持 `.litertlm/.task`；③ App 内提供"扫描本地目录"发现模型；④ `.gitignore` 排除 `*.litertlm/*.task` |
@@ -4957,9 +5025,13 @@ dependencies {
 | R9 | **机型兼容**：minSdk 31（Android 12），4B 模型对内存要求高（建议 ≥8GB RAM） | 低端机崩溃 | 中 | ① README 明确硬件建议；② 加载前用 `ActivityManager.MemoryInfo` 做一次粗判并提示；③ 提供 1B 级模型（Gemma 3 1B）作为低端默认 |
 | R10 | **开源合规**：Apache-2.0；LiteRT-LM / Gemma 权重有各自条款；`material-icons-extended` 为 Apache-2.0 | 合规风险 | 低但必须做 | ① `LICENSE` = Apache-2.0；② README 列第三方依赖许可证清单（LiteRT-LM、Gemma  Terms of Use、OkHttp Apache-2.0、Kotlin/Compose Apache-2.0、material-icons Apache-2.0）；③ **App 内置不含任何模型权重**，模型由用户自行下载并遵守其许可 |
 | R11 | **远程端点明文 / API Key 存储**：Key 存 DataStore 明文 | 安全 | 中 | ① 第一版接受（DataStore 属应用私有目录）；② README 明确标注"请勿在不可信设备上填写生产 Key"；③ 不引入 `EncryptedSharedPreferences`（会新增 `androidx.security` 依赖，违反"少依赖"）；留 TODO |
-| R12 | **无 Gradle wrapper jar**：本地无 Gradle，无法生成 `gradle-wrapper.jar` | CI 无法用 `./gradlew` | 高 | CI 用 `gradle/actions/setup-gradle@v4` 显式安装 Gradle 9.7.1 后执行 `gradle assembleDebug`。**已同步给 cicd 成员** |
+| R12 | **Gradle wrapper**：本地无 Gradle，无法自行生成 `gradle-wrapper.jar` | CI 无法用 `./gradlew` | 已缓解 | CI 用 `gradle/actions/setup-gradle@v6` + `gradle-version: '9.7.1'` 显式安装（不走 wrapper）；仓库内的 jar 取自 gradle/gradle 官方仓库 v9.7.1 tag（sha256 `7a9ce74c…64262c5d`，34 entries 含 GradleWrapperMain），仅供贡献者本地 `./gradlew` 使用。CI 侧保持 `validate-wrappers: false`（CI 不用 wrapper，校验只有风险没有收益）；**若将来 CI 改用 `./gradlew`，需把它翻回 true** |
 | R13 | **`material-icons-extended:1.7.8` 与 Compose BOM 2026.02 混用** | 版本冲突警告 | 低 | icons 库只依赖 `compose.ui`，Gradle 取高版本自动对齐；若报 duplicate class，把 icons 版本改为不指定（由 BOM 管理）——**这属于"若报错再改"** |
 | R14 | **SSE 解析健壮性**：各家后端分片/`[DONE]`/空行行为不一 | 解析失败 | 中 | ① 单行 `data:` 解析，非法 JSON 静默跳过；② 同时支持 `reasoning_content` 与 `reasoning`；③ `usage` 与 `finish_reason` 可能分帧到达，上层"空即忽略" |
+| **R15** | **AGP 9 内置 Kotlin 导致插件冲突**：任何模块显式应用 `org.jetbrains.kotlin.android` 即构建失败 | 编译失败 | **已发生（已修）** | 证据见 §1.2.1 真实报错。规则：9 个模块 + 根工程一律不得声明该插件；`plugin.compose` / `plugin.serialization` 仍需显式声明。已由提交 6fb4108 移除 |
+| **R16** | **Kotlin 插件版本与 AGP 的 KGP 运行时依赖不匹配**：AGP 9 对 KGP 有运行时依赖（AGP 9.0 = KGP 2.2.10，声明更低会被自动升级）；我们的 `kotlin-compose` / `kotlin-serialization` 仍 `version.ref = "kotlin"`(2.3.0)。若 AGP 9.3.2 的 KGP 高于 2.3.0，Gradle 会把 KGP 升上去而 compose 插件留在 2.3.0 → 版本不匹配 | 编译失败 | **高（下一个最可能踩的坑）** | ① 查 AGP 9.3.2 RN「兼容性」表的 **KGP 默认版本**；② 把 catalog 的 `kotlin` 改成该值（两插件同步）；③ 若要用**更高** Kotlin，按官方做法在**顶层** build 文件加 `buildscript { dependencies { classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>") } }`，**只改 catalog 无效**；④ 兜底：`gradle.properties` 设 `android.builtInKotlin=false` + `android.newDsl=false` 并加回 `kotlin.android`（AGP 10 会失效，仅临时） |
+| **R18** | **`getDefaultProguardFile("proguard-android.txt")` 在 AGP 9 被禁**（`android.r8.proguardAndroidTxt.disallowed=true`，仅支持 `proguard-android-optimize.txt`） | 构建失败 | 中（仅当 app 模块用了它） | 检查 `app/build.gradle.kts` 的 `proguardFiles(...)`，把 `proguard-android.txt` 改成 `proguard-android-optimize.txt`；需要保留不优化行为则显式写 `-dontoptimize` |
+| **R17** | **`android {}` 块内 DSL 尚未被 CI 验证**：报错停在插件应用阶段（line 12），`compileSdk` 块式 DSL、`buildFeatures { compose = true }`、`packaging { jniLibs }` 均未执行到 | 编译失败 | 中 | 下一次 CI 会一次性暴露。处置顺序：先 `compileSdk` → 再 `buildFeatures.compose` → 再 `packaging`。三者都可删可改，不影响 Kotlin 逻辑 |
 
 ### 10.1 已明确接受的取舍（写进 README 的"Known Limitations"）
 

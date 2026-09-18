@@ -52,7 +52,7 @@ fun GlassDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp, AlignmentEnd),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
                     ) {
                         if (dismissLabel != null) {
                             GlassButton(
