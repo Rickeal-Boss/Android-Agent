@@ -1,4 +1,6 @@
 package com.rickeal.agent.core.design
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
