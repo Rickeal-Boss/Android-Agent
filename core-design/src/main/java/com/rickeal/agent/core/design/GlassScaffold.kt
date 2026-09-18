@@ -82,8 +82,6 @@ fun GlassWallpaper(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(colors.wallpaperTop, colors.wallpaperMid, colors.wallpaperBottom),
-                    startY = 0f,
-                    endY = Float.POSITIVE_INFINITY,
                 ),
             )
             .drawWithCache {
