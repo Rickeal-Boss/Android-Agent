@@ -1,10 +1,10 @@
 package com.rickeal.agent.core.design
 
-import android.graphics.RenderEffect
-import android.graphics.Shader
 import android.os.Build
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RenderEffect
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -27,10 +27,12 @@ fun Modifier.glassBackdropBlur(
     if (!enabled || radius <= 0.dp) return this
     if (Build.VERSION.SDK_INT < 31) return this
     return this.graphicsLayer {
+        // 注意：这里必须用 Compose 自己的 RenderEffect（androidx.compose.ui.graphics），
+        // 不是 android.graphics.RenderEffect —— graphicsLayer 的 renderEffect 属性是前者。
         renderEffect = RenderEffect.createBlurEffect(
             radius.toPx(),
             radius.toPx(),
-            Shader.TileMode.CLAMP,
+            TileMode.Clamp,
         )
         shape = RoundedCornerShape(cornerRadius)
         clip = true

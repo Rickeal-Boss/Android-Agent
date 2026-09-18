@@ -1,5 +1,5 @@
 package com.rickeal.agent.core.design
-import androidx.compose.ui.layout.matchParentSize
+import androidx.compose.foundation.layout.fillMaxSize
 
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
@@ -184,7 +184,7 @@ fun GlassBubble(
             if (isUser) {
                 Box(
                     modifier = Modifier
-                        .matchParentSize()
+                        .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
                                 listOf(

@@ -116,8 +116,11 @@ ExperimentalFlags.enableSpeculativeDecoding / enableConversationConstrainedDecod
 | okhttp | 4.12.0 | nowinandroid |
 
 已知风险（若 CI 报错再降档，禁止提前自行改动）：
-- Compose BOM 2026.02.00 × Kotlin 2.3.0 未在同一仓库验证过（gallery 用 Kotlin 2.2.21）。若报 Compose 编译器/运行时不匹配，
-  优先把 Kotlin 降到 **2.2.21**（与 gallery 完全一致），再考虑降 BOM。
+- Compose 编译器 × Kotlin 不匹配：**不要改 `gradle/libs.versions.toml` 里的 `kotlin` 一行**——AGP 9 内置 Kotlin，
+  KGP 版本由 AGP 决定（AGP 9.0 = KGP 2.2.10），低版本声明会被 Gradle 自动升级，改 catalog 无效。
+  正确做法：看 CI 报错里给出的期望 Kotlin 版本，必要时在顶层 build 文件用 buildscript classpath 指定更高 KGP，
+  或在 `gradle.properties` 加 `android.builtInKotlin=false` + `android.newDsl=false` 退回旧世界（AGP 10 将移除该开关）。
+- **AGP 9 禁止显式应用 `org.jetbrains.kotlin.android`**（已实测，见 docs/01-architecture.md §1.2.1）。
 - AGP 9.x 的 `compileSdk` 用新块式 DSL：`compileSdk { version = release(36) }`。本项目 compileSdk=36、targetSdk=36、minSdk=31。
 
 ## 5. UI 决策

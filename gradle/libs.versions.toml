@@ -2,8 +2,9 @@
 # LiquidAgent — Gradle Version Catalog
 #
 # 铁律（docs/00-recon-brief.md §4 / docs/01-architecture.md §1.2）：
-#   版本矩阵锁死，任何人不得升降级。CI 报错只允许走已声明的回退路径
-#   （Kotlin 2.3.0 -> 2.2.21）。
+#   版本矩阵锁死，任何人不得升降级。
+#   注意：AGP 9 内置 Kotlin，Kotlin 版本由 AGP 决定，改本文件的 kotlin = "..." 无效
+#   （低版本会被 Gradle 自动升级）。回退路径见 docs/02-ci.md §5.2-C。
 #
 # 禁止出现的依赖：KSP / Room / Hilt / Dagger / Koin / Navigation3 /
 #                  Retrofit / Coil / 任何注解处理器 / 任何 JitPack 库。
