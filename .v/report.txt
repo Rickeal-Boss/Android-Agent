@@ -1,0 +1,5 @@
+YAML OK   .github/workflows\build.yml
+YAML OK   .github/workflows\release.yml
+YAML OK   .github/ISSUE_TEMPLATE\bug_report.yml
+YAML OK   .github/ISSUE_TEMPLATE\feature_request.yml
+YAML RESULT: ALL OK

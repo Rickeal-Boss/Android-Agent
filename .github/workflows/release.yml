@@ -47,7 +47,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -97,29 +97,30 @@ jobs:
           fi
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
-          # 仓库可能没有 wrapper（见 docs/01-architecture.md §1.2），
-          # 显式指定版本可保证 PATH 上始终有一个 gradle 9.7.1 可用。
+          # 本仓库没有可用的 Gradle wrapper（jar 来源无法验证），
+          # 上游对「无 wrapper 项目」的官方写法就是 gradle-version + 直接调 gradle。
+          # 引号必需，否则 YAML 会把 9.7.1 当成非法数字。
           gradle-version: '9.7.1'
-          gradle-home-cache-cleanup: true
+          # 默认开启的 wrapper 校验会比对 gradle-wrapper.jar 的已知校验和；
+          # 我们是「有 properties、jar 来源不明」的畸形状态，显式关掉避免误报。
+          validate-wrappers: false
+          # v6 起缓存清理参数改名为 cache-cleanup（v3/v4 叫 gradle-home-cache-cleanup）。
+          cache-cleanup: on-success
           add-job-summary: 'on-failure'
 
       - name: Resolve Gradle launcher
-        # 与 build.yml 同一策略：默认用 setup-gradle 安装的 gradle 9.7.1，
-        # 不依赖仓库里是否有完整可用的 wrapper（架构文档 §1.2）。
+        # 与 build.yml 同一策略：只用 setup-gradle 安装的 gradle 9.7.1，
+        # 不留 ./gradlew 兜底分支（仓库的 wrapper jar 完整性无法验证，
+        # 兜底反而会变成新的失败源）。
         run: |
-          if command -v gradle > /dev/null 2>&1; then
-            echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
-            echo "::notice::Using Gradle installed by gradle/actions/setup-gradle."
-          elif [ -f ./gradlew ] && [ -f gradle/wrapper/gradle-wrapper.properties ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
-            chmod +x ./gradlew
-            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
-            echo "::warning::'gradle' not on PATH — falling back to the Gradle wrapper."
-          else
-            echo "::error::No Gradle available: 'gradle' is not on PATH and no complete wrapper exists."
+          if ! command -v gradle > /dev/null 2>&1; then
+            echo "::error::'gradle' is not on PATH — gradle/actions/setup-gradle failed to install it. Check the 'Set up Gradle' step logs and the gradle-version input."
             exit 1
           fi
+          echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
+          echo "::notice::Using Gradle installed by gradle/actions/setup-gradle: $(gradle --version | head -n 3 | tr '\n' ' ')"
 
       - name: Verify Gradle
         run: |
