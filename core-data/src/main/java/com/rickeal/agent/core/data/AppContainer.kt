@@ -68,20 +68,6 @@ class AppContainer(private val context: Context) {
         conversationRepository.refresh()
     }
 
-    fun close() {
-        engineFactory.closeAll()
-    }
-}
-
-/**
- * UI 层唯一的取依赖入口。放在 :core-data 是为了让 feature 模块能引用类型。
- *
- * 注意：AppContainer 必须的是 **Application Context**（构造函数里已用 applicationContext 兜底），
- * 否则 Activity 重建会导致泄漏。
- */
-val LocalAppContainer: ProvidableCompositionLocal<AppContainer> =
-    staticCompositionLocalOf { error("LocalAppContainer 未提供：请在 LiquidAgentTheme 外层 CompositionLocalProvider") }
-
     /**
      * 把用户通过 SAF 选中的附件（content://）复制进内部目录，返回**真实文件路径**。
      *
@@ -106,3 +92,17 @@ val LocalAppContainer: ProvidableCompositionLocal<AppContainer> =
             target.absolutePath
         }.getOrNull()
     }
+
+    fun close() {
+        engineFactory.closeAll()
+    }
+}
+
+/**
+ * UI 层唯一的取依赖入口。放在 :core-data 是为了让 feature 模块能引用类型。
+ *
+ * 注意：AppContainer 必须的是 **Application Context**（构造函数里已用 applicationContext 兜底），
+ * 否则 Activity 重建会导致泄漏。
+ */
+val LocalAppContainer: ProvidableCompositionLocal<AppContainer> =
+    staticCompositionLocalOf { error("LocalAppContainer 未提供：请在 LiquidAgentTheme 外层 CompositionLocalProvider") }
