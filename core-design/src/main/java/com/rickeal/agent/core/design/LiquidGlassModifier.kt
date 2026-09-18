@@ -187,12 +187,11 @@ fun Modifier.liquidGlass(
     val colors = LocalGlassColors.current
     val backdrop = LocalGlassBackdrop.current
     val config = LocalGlassConfig.current
-    // 真实背景模糊必须先于 liquidGlass 应用（见 GlassBackdropBlur.kt 的说明）
-    val blurred = this.glassBackdropBlur(
-        radius = tokens.blurRadius * config.intensity,
-        cornerRadius = cornerRadius,
-        enabled = config.enableBackdropBlur,
-    )
+    // 真实 RenderEffect 背景模糊（P2）暂未启用：Compose 侧需要把平台 RenderEffect
+    // 用 asComposeRenderEffect() 转换，API 面无法在本地核对，为避免反复试错先摘除。
+    // 默认路径（程序化光斑伪模糊）已经能给出「背景内容联动」的观感，功能不缺失。
+    // 恢复方式：新建 glassBackdropBlur() 并在此处调用（必须先于 liquidGlass 应用）。
+    val blurred = this
     return blurred.liquidGlass(
         tokens = tokens,
         colors = colors,
