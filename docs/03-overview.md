@@ -67,9 +67,14 @@ UI 采用 iOS 27 / iPadOS 27 的 Liquid Glass 视觉语言。
 
 **结论**：AGP 9 + Compose BOM 2026.02 的**工具链与依赖解析本身没有问题**，全部失败都是代码层面对新版本 API 变化的适配。
 
+## CI 状态（已全绿）
+
+HEAD 提交 `d6e6d02` 的 `:app:assembleDebug` 构建**成功**，产物为 `liquidagent-debug-*` APK（约 39.7 MB），
+由 Actions 保留 30 天。已实测通过的组合：ubuntu-24.04 / JDK 21 / Gradle 9.7.1 / AGP 9.3.2 / Kotlin（AGP 9 内置）/ compileSdk 36 / Compose BOM 2026.02.00 / litertlm 0.11.0。
+
 ## 已知待办
 
 1. LiteRT-LM 0.11.0 → 0.17.1 升级评估（需先核对新版 API 面）
-2. 真实背景模糊（`GlassConfig.enableBackdropBlur`）目前摘除，恢复方式见 `LiquidGlassModifier.kt` 注释
+2. 真实背景模糊（`GlassConfig.enableBackdropBlur`）暂被摘除，恢复方式见 `LiquidGlassModifier.kt` 注释
 3. 模型下载器（当前仅支持 SAF 手动导入，未内置 HuggingFace 直下）
 4. 端到端真机验证：本地 4B 模型加载、多模态输入、工具调用循环尚未在真机跑过（云端只保证可编译可打包）
