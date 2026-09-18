@@ -73,6 +73,7 @@ class AgentRunner(
         var round = 0
         var finalText = ""
         var lastUsage = request.history.firstOrNull()?.usage
+        var lastModelText = ""
 
         while (round < policy.maxRounds) {
             emit(AgentEvent.RoundStarted(round, policy.maxRounds))

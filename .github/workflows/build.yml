@@ -187,6 +187,13 @@ jobs:
           echo "Launcher: $GRADLE_CMD"
           "$GRADLE_CMD" --version
 
+      - name: Architecture guard
+        # 编译能过 ≠ 架构没被破坏。用 grep 强制依赖方向（思路借鉴 Edge0 的后端隔离守卫）：
+        # 失败比编译失败更早暴露，且能防止「引擎细节泄漏到 UI」这类慢性返工。
+        run: |
+          chmod +x scripts/arch-guard.sh
+          bash scripts/arch-guard.sh
+
       - name: Run Gradle task
         id: assemble
         # 【绝不下载模型】这里只做编译/打包；模型文件由用户自行导入，
