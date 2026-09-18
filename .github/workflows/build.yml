@@ -6,15 +6,17 @@ name: Build
 # 设计约束（来自 docs/00-recon-brief.md 与 docs/01-architecture.md）：
 #   1. 仓库里没有任何 Actions variables / secrets —— 本工作流的所有步骤必须
 #      「零密钥」可跑通。debug 构建不得依赖任何 secret。
-#   2. 本地没有 JDK / Android SDK / Gradle wrapper jar，唯一的验证通道就是 CI，
+#   2. 本地没有 JDK / Android SDK，唯一的验证通道就是 CI，
 #      因此工作流需要自愈：用 setup-gradle 安装 Gradle、自动接受 SDK 许可、
 #      缓存依赖、失败时输出可读日志。
 #   3. 只跑 assembleDebug，不跑 lint / 测试任务，避免无关任务拖垮首次开荒。
 #   4. 【绝不下载模型】4B 模型 > 2GB，CI 只产出 APK/AAR，模型由用户自行导入。
 #
-# 已知回退路径（简报 §4 / 架构文档 §1.2，禁止提前自行改动）：
-#   若报 Compose 编译器与 Kotlin 版本不匹配 —— 只把 Kotlin 从 2.3.0 降到 2.2.21，
-#   不要动 Compose BOM 2026.02.00。改的是 gradle/libs.versions.toml，不是本文件。
+# 已知回退路径（禁止提前自行改动，完整版见 docs/02-ci.md §3.2.3 / §5.2-C）：
+#   · Compose 编译器 × Kotlin 不匹配 —— 报错信息本身会给出期望的 Kotlin 版本。
+#     ⚠️ 不要去改 gradle/libs.versions.toml 的 kotlin 一行：AGP 9 内置 Kotlin，
+#        KGP 版本由 AGP 决定，改 catalog 改不动它。正确做法见 docs/02-ci.md §5.2-C。
+#   · litertlm 0.11.0 API 漂移 —— 只动 LiteRtLmEngine.kt 一个文件。
 # ---------------------------------------------------------------------------
 
 on:
@@ -283,6 +285,9 @@ jobs:
             else
               echo "**Result:** FAILED — inspect the \`build-reports-\` artifact and the Annotations panel."
               echo ""
-              echo "> 若报错含 Compose 编译器 / Kotlin 版本不匹配，按简报 §4 只把 Kotlin 降到 **2.2.21**，不要动 Compose BOM。"
+              echo "> 若报错含 Compose 编译器 / Kotlin 版本不匹配：**不要改 \`libs.versions.toml\` 的 \`kotlin\` 一行**"
+              echo "> —— AGP 9 内置 Kotlin，KGP 版本由 AGP 决定，改 catalog 无效。"
+              echo "> 按报错信息给出的版本，在顶层 build 文件用 \`buildscript { classpath(\"org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>\") }\`"
+              echo "> 声明，或对齐 AGP 9.3.2 的默认 KGP 版本。详见 \`docs/02-ci.md\` §5.2-C。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
