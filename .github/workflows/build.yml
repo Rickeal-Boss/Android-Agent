@@ -287,7 +287,10 @@ jobs:
               echo ""
               echo "> 若报错含 Compose 编译器 / Kotlin 版本不匹配：**不要改 \`libs.versions.toml\` 的 \`kotlin\` 一行**"
               echo "> —— AGP 9 内置 Kotlin，KGP 版本由 AGP 决定，改 catalog 无效。"
-              echo "> 按报错信息给出的版本，在顶层 build 文件用 \`buildscript { classpath(\"org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>\") }\`"
-              echo "> 声明，或对齐 AGP 9.3.2 的默认 KGP 版本。详见 \`docs/02-ci.md\` §5.2-C。"
+              echo "> ① 先实测 AGP 实际解析到的 KGP：\`gh workflow run build.yml -f gradle_task=buildEnvironment\`，"
+              echo ">    在输出里找 \`org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>\`。"
+              echo "> ② 再在顶层 build 文件用 \`buildscript { classpath(\"org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>\") }\` 声明。"
+              echo "> ③ 降级逃生舱：\`android.builtInKotlin=false\` + \`android.newDsl=false\`（两个必须同时设，AGP 10 会移除）。"
+              echo "> 详见 \`docs/02-ci.md\` §5.2-C。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

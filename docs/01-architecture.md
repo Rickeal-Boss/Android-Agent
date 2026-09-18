@@ -108,6 +108,20 @@ An exception occurred applying plugin request [id: 'org.jetbrains.kotlin.android
 | `android.sdk.defaultTargetSdkToCompileSdkIfUnset=true` | 同上 | 我们显式 `targetSdk=36`，不受影响 ✅ |
 | `android.proguard.failOnMissingFiles=true`：keep 文件不存在即失败 | 同上 | `app/proguard-rules.pro` 存在 ✅ |
 
+**AGP 9.3 兼容性表（实测核对，来源：AGP 9.3.0 Release Notes）**
+
+| 项 | AGP 9.3 最低 / 默认 | 我们 | 结论 |
+|---|---|---|---|
+| Gradle | 9.5.0 / 9.5.0 | 9.7.1 | ✅ 高于最低，允许 |
+| JDK | 17 / 17 | 21 | ✅ 高于最低，允许 |
+| SDK Build Tools | 36.0.0 / 36.0.0 | 未显式指定（随 compileSdk 36） | ✅ |
+| 支持的最高 API 级别 | **37** | compileSdk 36 | ✅ 在范围内 |
+| NDK | 28.2.13676358 | 未使用（litertlm 为预编译 AAR） | ✅ |
+
+> ⚠️ 注意：AGP 9.3 的兼容性表**没有列出 KGP 行**（不像 9.0 那样公布 2.2.10）。因此 AGP 9.3.2 内置/要求的 KGP 版本**仍无官方数字**，只能靠实测确定，见 §10 R16 的检测方法。
+>
+> 另一条与 release 相关：AGP 9.3 引入新的 `optimization { enable = true }` DSL，但**明确说明 legacy DSL（`isMinifyEnabled` + `proguardFiles`）继续受支持**，我们当前的 release 配置无需改动。
+
 > **→ 必须去查的一个数**：打开 <https://developer.android.google.cn/build/releases/agp-9-3-0-release-notes>，看「**兼容性**」表格里 **Kotlin Gradle 插件 (KGP)** 那一行的「默认版本」。
 > 然后把 `gradle/libs.versions.toml` 的 `kotlin` 改成**该值**（`kotlin-compose` / `kotlin-serialization` 会同步）。
 > 若想用比它更高的 Kotlin，则按官方做法在**顶层** `build.gradle.kts` 加 `buildscript { dependencies { classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>") } }`，**不要**只改 catalog。
@@ -5029,7 +5043,7 @@ dependencies {
 | R13 | **`material-icons-extended:1.7.8` 与 Compose BOM 2026.02 混用** | 版本冲突警告 | 低 | icons 库只依赖 `compose.ui`，Gradle 取高版本自动对齐；若报 duplicate class，把 icons 版本改为不指定（由 BOM 管理）——**这属于"若报错再改"** |
 | R14 | **SSE 解析健壮性**：各家后端分片/`[DONE]`/空行行为不一 | 解析失败 | 中 | ① 单行 `data:` 解析，非法 JSON 静默跳过；② 同时支持 `reasoning_content` 与 `reasoning`；③ `usage` 与 `finish_reason` 可能分帧到达，上层"空即忽略" |
 | **R15** | **AGP 9 内置 Kotlin 导致插件冲突**：任何模块显式应用 `org.jetbrains.kotlin.android` 即构建失败 | 编译失败 | **已发生（已修）** | 证据见 §1.2.1 真实报错。规则：9 个模块 + 根工程一律不得声明该插件；`plugin.compose` / `plugin.serialization` 仍需显式声明。已由提交 6fb4108 移除 |
-| **R16** | **Kotlin 插件版本与 AGP 的 KGP 运行时依赖不匹配**：AGP 9 对 KGP 有运行时依赖（AGP 9.0 = KGP 2.2.10，声明更低会被自动升级）；我们的 `kotlin-compose` / `kotlin-serialization` 仍 `version.ref = "kotlin"`(2.3.0)。若 AGP 9.3.2 的 KGP 高于 2.3.0，Gradle 会把 KGP 升上去而 compose 插件留在 2.3.0 → 版本不匹配 | 编译失败 | **高（下一个最可能踩的坑）** | ① 查 AGP 9.3.2 RN「兼容性」表的 **KGP 默认版本**；② 把 catalog 的 `kotlin` 改成该值（两插件同步）；③ 若要用**更高** Kotlin，按官方做法在**顶层** build 文件加 `buildscript { dependencies { classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>") } }`，**只改 catalog 无效**；④ 兜底：`gradle.properties` 设 `android.builtInKotlin=false` + `android.newDsl=false` 并加回 `kotlin.android`（AGP 10 会失效，仅临时） |
+| **R16** | **Kotlin 插件版本与 AGP 的 KGP 运行时依赖不匹配**：AGP 9 对 KGP 有运行时依赖（AGP 9.0 = KGP 2.2.10，声明更低会被自动升级）；我们的 `kotlin-compose` / `kotlin-serialization` 仍 `version.ref = "kotlin"`(2.3.0)。若 AGP 9.3.2 的 KGP 高于 2.3.0，Gradle 会把 KGP 升上去而 compose 插件留在 2.3.0 → 版本不匹配 | 编译失败 | **高（下一个最可能踩的坑）** | ① **实测检出**（推荐）：跑一次 `gradle buildEnvironment`（或 `gradle :core-design:dependencies --configuration classpath`）看解析出的 `org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>`，把 catalog 的 `kotlin` 对齐到它；② 备选：查 AGP 9.3.2 RN「兼容性」表——**但 AGP 9.3 该表没有 KGP 行**，唯一公开锚点只有 AGP 9.0 = KGP 2.2.10，而我们的 2.3.0 > 2.2.10，**倾向于安全**；③③ 若要用**更高** Kotlin，按官方做法在**顶层** build 文件加 `buildscript { dependencies { classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:<版本>") } }`，**只改 catalog 无效**；④ 兜底：`gradle.properties` 设 `android.builtInKotlin=false` + `android.newDsl=false` 并加回 `kotlin.android`（AGP 10 会失效，仅临时） |
 | **R18** | **`getDefaultProguardFile("proguard-android.txt")` 在 AGP 9 被禁**（`android.r8.proguardAndroidTxt.disallowed=true`，仅支持 `proguard-android-optimize.txt`） | 构建失败 | 中（仅当 app 模块用了它） | 检查 `app/build.gradle.kts` 的 `proguardFiles(...)`，把 `proguard-android.txt` 改成 `proguard-android-optimize.txt`；需要保留不优化行为则显式写 `-dontoptimize` |
 | **R17** | **`android {}` 块内 DSL 尚未被 CI 验证**：报错停在插件应用阶段（line 12），`compileSdk` 块式 DSL、`buildFeatures { compose = true }`、`packaging { jniLibs }` 均未执行到 | 编译失败 | 中 | 下一次 CI 会一次性暴露。处置顺序：先 `compileSdk` → 再 `buildFeatures.compose` → 再 `packaging`。三者都可删可改，不影响 Kotlin 逻辑 |
 

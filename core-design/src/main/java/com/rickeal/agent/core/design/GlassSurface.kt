@@ -1,4 +1,5 @@
 package com.rickeal.agent.core.design
+import androidx.compose.ui.layout.matchParentSize
 
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility

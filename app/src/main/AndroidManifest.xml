@@ -2,9 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- ------------------------------------------------------------------ -->
+    <!-- = -->
     <!-- 权限                                                              -->
-    <!-- ------------------------------------------------------------------ -->
+    <!-- = -->
 
     <!-- 远程引擎（OpenAI 兼容端点） -->
     <uses-permission android:name="android.permission.INTERNET" />
