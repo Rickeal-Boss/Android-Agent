@@ -19,6 +19,7 @@ data class WindowSizeClass(
     /** 大屏：可同时容纳「列表 + 内容 + 常驻参数面板」。 */
     val useThreePane: Boolean
         get() = width == WindowWidthClass.EXPANDED
+}
 
 private fun widthClassOf(widthDp: Int): WindowWidthClass = when {
     widthDp < 600 -> WindowWidthClass.COMPACT
