@@ -1,4 +1,6 @@
 package com.rickeal.agent
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
