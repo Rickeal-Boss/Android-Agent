@@ -12,6 +12,14 @@ data class WindowSizeClass(
     val width: WindowWidthClass,
     val height: WindowHeightClass,
 ) {
+    /** 是否可以使用两栏布局（平板 / 折叠屏展开）。 */
+    val useTwoPane: Boolean
+        get() = width >= WindowWidthClass.MEDIUM
+
+    /** 是否可以使用三栏布局（大屏：对话 + 常驻参数面板）。 */
+    val useThreePane: Boolean
+        get() = width == WindowWidthClass.EXPANDED
+} {
     /** 平板 / 折叠屏展开态：可同时容纳「列表 + 内容」。 */
     val useTwoPane: Boolean
         get() = width >= WindowWidthClass.MEDIUM
