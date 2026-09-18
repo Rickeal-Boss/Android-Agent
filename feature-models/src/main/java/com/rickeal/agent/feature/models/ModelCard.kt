@@ -1,5 +1,4 @@
 package com.rickeal.agent.feature.models
-import androidx.compose.foundation.layout.weight
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column

@@ -1,5 +1,4 @@
 package com.rickeal.agent.core.design
-import androidx.compose.foundation.layout.weight
 
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box

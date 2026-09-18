@@ -1,5 +1,4 @@
 package com.rickeal.agent.core.design
-import androidx.compose.foundation.layout.weight
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable

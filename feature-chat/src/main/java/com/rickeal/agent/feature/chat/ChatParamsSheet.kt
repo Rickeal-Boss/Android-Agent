@@ -1,5 +1,4 @@
 package com.rickeal.agent.feature.chat
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.align
 
 import androidx.compose.animation.AnimatedVisibility

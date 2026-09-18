@@ -1,5 +1,4 @@
 package com.rickeal.agent.feature.settings
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.align
 
 import androidx.compose.foundation.layout.Arrangement
