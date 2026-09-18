@@ -1,47 +1,40 @@
 package com.rickeal.agent.core.design
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
 
-/**
- * 零依赖的窗口尺寸分类（刻意不引 `material3-window-size-class`）。
- */
-@Immutable
 enum class WindowWidthClass { COMPACT, MEDIUM, EXPANDED }
 
-@Immutable
 enum class WindowHeightClass { COMPACT, MEDIUM, EXPANDED }
 
-@Immutable
 data class WindowSizeClass(
-    val width: WindowWidthClass = WindowWidthClass.COMPACT,
-    val height: WindowHeightClass = WindowHeightClass.MEDIUM,
-) {
-    val isExpanded: Boolean get() = width == WindowWidthClass.EXPANDED
+    val width: WindowWidthClass,
+    val height: WindowHeightClass,
+)
 
-    /** 折叠屏展开 / 平板横屏 */
-    val useTwoPane: Boolean get() = width >= WindowWidthClass.MEDIUM
-
-    /** 三栏（列表 + 对话 + 常驻参数面板） */
-    val useThreePane: Boolean get() = width == WindowWidthClass.EXPANDED &&
-        height != WindowHeightClass.COMPACT
+private fun widthClassOf(widthDp: Int): WindowWidthClass = when {
+    widthDp < 600 -> WindowWidthClass.COMPACT
+    widthDp < 840 -> WindowWidthClass.MEDIUM
+    else -> WindowWidthClass.EXPANDED
 }
 
+private fun heightClassOf(heightDp: Int): WindowHeightClass = when {
+    heightDp < 480 -> WindowHeightClass.COMPACT
+    heightDp < 900 -> WindowHeightClass.MEDIUM
+    else -> WindowHeightClass.EXPANDED
+}
+
+/** 依据当前配置推断窗口尺寸等级，用于平板 / 折叠屏布局切换。 */
 @Composable
 fun rememberWindowSizeClass(): WindowSizeClass {
     val configuration = LocalConfiguration.current
-    val w = configuration.screenWidthDp
-    val h = configuration.screenHeightDp
-    val width = when {
-        w < 600 -> WindowWidthClass.COMPACT
-        w < 840 -> WindowWidthClass.MEDIUM
-        else -> WindowWidthClass.EXPANDED
+    val widthDp = configuration.screenWidthDp
+    val heightDp = configuration.screenHeightDp
+    return remember(widthDp, heightDp) {
+        WindowSizeClass(
+            width = widthClassOf(widthDp),
+            height = heightClassOf(heightDp),
+        )
     }
-    val height = when {
-        h < 480 -> WindowHeightClass.COMPACT
-        h < 900 -> WindowHeightClass.MEDIUM
-        else -> WindowHeightClass.EXPANDED
-    }
-    return WindowSizeClass(width, height)
 }

@@ -3,23 +3,26 @@ package com.rickeal.agent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.Text
+import androidx.core.view.WindowCompat
+import com.rickeal.agent.ui.LiquidAgentApp
 
 /**
- * 阶段 A 的**临时占位** Activity。
+ * 唯一 Activity。
  *
- * 存在的唯一目的：让 `:app:assembleDebug` 能在最小代码量下跑通，
- * 从而提前验证 Gradle 9.7.1 / AGP 9.3.2 / Kotlin 2.3.0 / Compose BOM 2026.02.00
- * 这套版本矩阵是否可编译。
+ * `setDecorFitsSystemWindows(false)` 让壁纸贯穿到状态栏/导航栏之下 —— 这是 Liquid Glass
+ * 观感的前提（玻璃必须能"透出"背后的内容）。各页面自行用 `statusBarsPadding()` /
+ * `navigationBarsPadding()` 处理避让。
  *
- * dev-B 之后会整体替换本文件，并新增 NavHost / LiquidAgentTheme 等 UI 结构。
+ * 刻意**不**给 Manifest 声明 `android:configChanges`：折叠屏展开/旋转时让 Activity 正常重建，
+ * 由 `LocalConfiguration` 驱动的 `rememberWindowSizeClass()` 自然拿到新断点。
  */
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
-            Text("bootstrap")
+            LiquidAgentApp()
         }
     }
 }

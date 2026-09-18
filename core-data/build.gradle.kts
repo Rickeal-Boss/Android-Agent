@@ -43,4 +43,13 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.datastore.preferences)
+
+    // 只需要 runtime：AppContainer.kt 里的 LocalAppContainer 用 staticCompositionLocalOf。
+    // 不引 ui / material3，也不需要开 buildFeatures.compose（本模块没有 @Composable）。
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.runtime)
+
+    // ViewModelFactory.kt（架构文档 §7.4）需要 ViewModel / ViewModelProvider
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
 }

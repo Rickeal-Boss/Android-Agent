@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -38,7 +39,7 @@ fun GlassSegmented(
         modifier = modifier.fillMaxWidth(),
         material = GlassMaterial.THIN,
         cornerRadius = tokens.radiusFull,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(3.dp),
+        contentPadding = PaddingValues(3.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             items.forEachIndexed { index, item ->

@@ -1,5 +1,6 @@
 package com.rickeal.agent.core.design
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
@@ -40,7 +41,7 @@ fun GlassFab(
             modifier = Modifier.heightIn(min = tokens.fabSize),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            androidx.compose.foundation.layout.Box(
+            Box(
                 modifier = Modifier.size(tokens.fabSize),
                 contentAlignment = Alignment.Center,
             ) {

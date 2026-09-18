@@ -130,14 +130,14 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
-          # 本仓库没有可用的 Gradle wrapper：gradle-wrapper.jar 是在无本地 Gradle 的
-          # 环境下手工拼出来的，完整性无法验证。上游对「无 wrapper 项目」的官方写法就是
-          # gradle-version + 直接调 gradle（见 docs/02-ci.md §3.2.1）。
+          # 上游对「不使用 wrapper 的项目」的官方写法就是 gradle-version + 直接调 gradle
+          # （见 docs/02-ci.md §3.2.1）。CI 统一走这条路径，不依赖仓库里的 wrapper。
           # 引号必需，否则 YAML 会把 9.7.1 当成非法数字。
           gradle-version: '9.7.1'
-          # 默认开启的 wrapper 校验会比对 gradle-wrapper.jar 的已知校验和。
-          # 我们是「有 properties、jar 来源不明」的畸形状态，属于校验逻辑未覆盖的场景，
-          # 显式关掉，避免它变成新的失败源。
+          # 该 action 默认会校验 gradle-wrapper.jar 的已知校验和。CI 根本不执行 wrapper，
+          # 这个校验对我们是纯粹的额外失败面，显式关掉。
+          # （注：仓库里的 jar 是从 gradle/gradle 官方仓库 v9.7.1 tag 取的原版，本身没问题；
+          #   关掉只是因为「不用就别校验」，不是因为它不可信。）
           validate-wrappers: false
           # v6 起缓存清理参数改名为 cache-cleanup（v3/v4 叫 gradle-home-cache-cleanup）。
           # on-success = 仅在构建成功时清理 Gradle User Home，避免失败后把仍需排查的依赖清掉。
@@ -149,10 +149,11 @@ jobs:
       # -------------------------------------------------------------------
       - name: Resolve Gradle launcher and task
         # 【只用 gradle，不用 ./gradlew】
-        # 仓库的 gradle-wrapper.jar 是在无本地 Gradle 的环境下手工拼出来的，
-        # 完整性无法验证；把它当兜底反而会引入新的失败源。
-        # setup-gradle 已保证 PATH 上有 9.7.1，因此这里只做「确认 + 失败即报错」，
-        # 不留 wrapper 兜底分支。
+        # 仓库的 wrapper 是完整可用的（jar 取自 gradle/gradle 官方 v9.7.1 tag），
+        # 但 CI 统一走 setup-gradle 安装的 Gradle：一来少一个「jar/网络」失败面，
+        # 二来 gradle-version 把版本显式钉死，行为可预期。
+        # 因此这里只做「确认 + 失败即报错」，不留 wrapper 兜底分支——
+        # 兜底会让「gradle 装不上」这个清晰的错误退化成难定位的 wrapper 报错。
         run: |
           if ! command -v gradle > /dev/null 2>&1; then
             echo "::error::'gradle' is not on PATH — gradle/actions/setup-gradle failed to install it. Check the 'Set up Gradle' step logs and the gradle-version input."

@@ -1,7 +1,6 @@
 package com.rickeal.agent.core.engine.local
 
 import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.Capabilities
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation as LiteRtConversation
@@ -285,15 +284,6 @@ class LiteRtLmEngine(
     override suspend fun capabilities(): EngineCapabilities {
         return withContext(engineDispatcher) {
             val model = loadConfig?.model
-            val path = model?.path
-            var speculative = false
-            if (!path.isNullOrBlank()) {
-                speculative = try {
-                    Capabilities(path).use { it.hasSpeculativeDecodingSupport() }
-                } catch (t: Throwable) {
-                    false
-                }
-            }
             val caps = model?.capabilities
             EngineCapabilities(
                 supportsText = caps?.text ?: true,

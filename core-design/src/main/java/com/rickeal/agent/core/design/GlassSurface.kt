@@ -27,7 +27,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Image as FilledImage
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -395,7 +395,7 @@ private fun AttachmentThumb(uri: String) {
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector = Icons.Filled.FilledImage,
+                imageVector = Icons.Filled.PhotoLibrary,
                 contentDescription = null,
                 tint = colors.onGlassSubtle,
                 modifier = Modifier.size(22.dp),

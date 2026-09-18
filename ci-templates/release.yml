@@ -99,12 +99,13 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
-          # 本仓库没有可用的 Gradle wrapper（jar 来源无法验证），
-          # 上游对「无 wrapper 项目」的官方写法就是 gradle-version + 直接调 gradle。
+          # 上游对「不使用 wrapper 的项目」的官方写法就是 gradle-version + 直接调 gradle。
+          # CI 统一走这条路径，不依赖仓库里的 wrapper。
           # 引号必需，否则 YAML 会把 9.7.1 当成非法数字。
           gradle-version: '9.7.1'
-          # 默认开启的 wrapper 校验会比对 gradle-wrapper.jar 的已知校验和；
-          # 我们是「有 properties、jar 来源不明」的畸形状态，显式关掉避免误报。
+          # 该 action 默认会校验 gradle-wrapper.jar 的已知校验和。CI 根本不执行 wrapper，
+          # 关掉这个校验以避免它成为额外失败面。
+          # （仓库里的 jar 取自 gradle/gradle 官方 v9.7.1 tag，本身可信。）
           validate-wrappers: false
           # v6 起缓存清理参数改名为 cache-cleanup（v3/v4 叫 gradle-home-cache-cleanup）。
           cache-cleanup: on-success
@@ -112,8 +113,9 @@ jobs:
 
       - name: Resolve Gradle launcher
         # 与 build.yml 同一策略：只用 setup-gradle 安装的 gradle 9.7.1，
-        # 不留 ./gradlew 兜底分支（仓库的 wrapper jar 完整性无法验证，
-        # 兜底反而会变成新的失败源）。
+        # 不留 ./gradlew 兜底分支——兜底会让「gradle 装不上」这个清晰的错误
+        # 退化成难定位的 wrapper 报错。仓库的 wrapper 本身是完整可用的
+        # （jar 取自 gradle/gradle 官方 v9.7.1 tag），只是 CI 不走它。
         run: |
           if ! command -v gradle > /dev/null 2>&1; then
             echo "::error::'gradle' is not on PATH — gradle/actions/setup-gradle failed to install it. Check the 'Set up Gradle' step logs and the gradle-version input."
