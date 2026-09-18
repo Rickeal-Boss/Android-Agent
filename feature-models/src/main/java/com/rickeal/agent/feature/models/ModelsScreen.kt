@@ -1,4 +1,7 @@
 package com.rickeal.agent.feature.models
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import com.rickeal.agent.core.design.GlassChip
 import androidx.compose.foundation.lazy.items
 
 import android.net.Uri
@@ -232,6 +235,29 @@ private fun ModelDownloadCard(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+            Spacer(modifier = Modifier.height(tokens.gapSm))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(tokens.gapSm),
+            ) {
+                ModelPresets.all.forEach { preset ->
+                    GlassChip(
+                        text = "${preset.label} · ${preset.sizeText}",
+                        selected = url == preset.url,
+                        onClick = { url = preset.url },
+                    )
+                }
+            }
+            if (url.isNotBlank()) {
+                Text(
+                    text = ModelPresets.all.firstOrNull { it.url == url }?.note ?: "自定义链接",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onGlassSubtle,
+                    modifier = Modifier.padding(top = tokens.gapSm),
+                )
+            }
             Spacer(modifier = Modifier.height(tokens.gapMd))
             if (downloadName != null) {
                 Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
