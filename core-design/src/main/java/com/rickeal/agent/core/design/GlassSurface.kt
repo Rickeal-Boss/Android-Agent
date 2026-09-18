@@ -1,115 +1,108 @@
 package com.rickeal.agent.core.design
 
-import android.graphics.RenderEffect
-import android.graphics.Shader
-import android.os.Build
-import androidx.compose.animation.core.animateFloatAsState
+import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Image as FilledImage
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import kotlin.math.min
+import androidx.compose.ui.unit.sp
+
+/* ------------------------------------------------------------------ 表面 */
 
 /**
- * 玻璃容器：所有玻璃组件的基座。
- *
- * - 按下时有弹簧缩放反馈（[LiquidMotionSpec.pressScale]）
- * - 开启 [GlassConfig.enableBackdropBlur] 且 API 31+ 时，叠一层真实 RenderEffect 背景模糊
- * - 未开启时退化为「径向渐变伪模糊」，观感接近、开销极低
+ * 一切玻璃容器的基座。onClick 非空时自动带按压弹簧反馈。
  */
 @Composable
 fun LiquidGlassSurface(
     modifier: Modifier = Modifier,
     material: GlassMaterial = GlassMaterial.REGULAR,
-    cornerRadius: Dp = LocalGlassTokens.current.radiusLg,
+    cornerRadius: Dp = GlassDefaults.RadiusLg,
     enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
-    interactionSource: MutableInteractionSource? = null,
-    contentPadding: PaddingValues = PaddingValues(0.dp),
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    contentPadding: PaddingValues = PaddingValues(GlassDefaults.ContentPadding),
     contentAlignment: Alignment = Alignment.TopStart,
     propagateMinConstraints: Boolean = false,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val tokens = LocalGlassTokens.current
-    val colors = LocalGlassColors.current
-    val config = LocalGlassConfig.current
-    val backdrop = LocalGlassBackdrop.current
-    val motion = LocalLiquidMotion.current
-    val source = interactionSource ?: remember { MutableInteractionSource() }
-    val pressed by source.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed && onClick != null) motion.pressScale else 1f,
-        animationSpec = LiquidMotion.floatSpring(motion),
-        label = "glassPress",
-    )
-    val clickable = if (onClick != null) {
-        Modifier.clickable(
-            enabled = enabled,
-            interactionSource = source,
-            indication = null,
-            onClick = onClick,
+    val glassModifier = modifier
+        .then(
+            if (onClick != null) {
+                Modifier
+                    .liquidPress(interactionSource = interactionSource, enabled = enabled)
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                        enabled = enabled,
+                        onClick = onClick,
+                    )
+            } else {
+                Modifier
+            },
         )
-    } else {
-        Modifier
-    }
-
+        .liquidGlass(material = material, cornerRadius = cornerRadius)
     Box(
-        modifier = modifier
-            .scale(scale)
-            .then(clickable)
-            .liquidGlass(
-                tokens = tokens,
-                colors = colors,
-                backdrop = backdrop,
-                material = material,
-                cornerRadius = cornerRadius,
-                intensity = config.intensity,
-                noise = config.enableNoise,
-                specular = config.enableSpecular,
-            ),
+        modifier = glassModifier,
         contentAlignment = contentAlignment,
         propagateMinConstraints = propagateMinConstraints,
     ) {
-        if (config.enableBackdropBlur) {
-            GlassBackdropBlurLayer(
-                backdrop = backdrop,
-                blurRadius = GlassMaterials.of(material).blurRadius,
-                shape = glassShape(cornerRadius),
-            )
-        }
         Box(modifier = Modifier.padding(contentPadding)) {
             content()
         }
     }
 }
 
-/** 标准玻璃卡片。 */
+/** 语义化别名：卡片。默认 REGULAR 材质 + radiusLg + 16dp 内边距。 */
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
-    material: GlassMaterial = GlassMaterial.THIN,
-    cornerRadius: Dp = LocalGlassTokens.current.radiusMd,
+    material: GlassMaterial = GlassMaterial.REGULAR,
+    cornerRadius: Dp = 24.dp,
     onClick: (() -> Unit)? = null,
-    contentPadding: PaddingValues = PaddingValues(LocalGlassTokens.current.paddingMd),
+    contentPadding: PaddingValues = PaddingValues(GlassDefaults.ContentPadding),
     content: @Composable BoxScope.() -> Unit,
 ) {
     LiquidGlassSurface(
@@ -122,45 +115,337 @@ fun GlassCard(
     )
 }
 
-/** 真实背景模糊层：只在 API 31+ 启用，且仅作用于背景，不会模糊内容文字。 */
+/* ------------------------------------------------- 气泡的「纯视觉」DTO */
+
+/**
+ * `:core-design` 刻意不依赖 `:core-model`（见架构 §1.4），
+ * 因此气泡的附件/用量用这里的纯字符串 DTO 承接，由 feature 层做一次映射。
+ */
+enum class GlassAttachmentKind { IMAGE, AUDIO, FILE, TEXT }
+
+@androidx.compose.runtime.Immutable
+data class GlassBubbleAttachment(
+    val id: String,
+    val label: String,
+    val kind: GlassAttachmentKind = GlassAttachmentKind.FILE,
+    /** 图片/音频用 content:// 或 file 绝对路径；文本类为空 */
+    val uri: String = "",
+)
+
+@androidx.compose.runtime.Immutable
+data class GlassBubbleUsage(
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0,
+    val tokensPerSecond: Float = 0f,
+    val firstTokenLatencyMillis: Long = 0L,
+)
+
+/* ------------------------------------------------------------------ 气泡 */
+
+/**
+ * 对话气泡。isUser 决定对齐、材质与强调色。
+ */
 @Composable
-private fun BoxScope.GlassBackdropBlurLayer(
-    backdrop: GlassBackdrop,
-    blurRadius: Dp,
-    shape: Shape,
+fun GlassBubble(
+    text: String,
+    isUser: Boolean,
+    modifier: Modifier = Modifier,
+    thinking: String? = null,
+    thinkingExpanded: Boolean = false,
+    onToggleThinking: (() -> Unit)? = null,
+    attachments: List<GlassBubbleAttachment> = emptyList(),
+    isStreaming: Boolean = false,
+    errorMessage: String? = null,
+    usage: GlassBubbleUsage? = null,
+    onLongClick: (() -> Unit)? = null,
 ) {
-    val radiusPx = with(LocalDensity.current) { blurRadius.toPx() }
-    val blurModifier = if (Build.VERSION.SDK_INT >= 31 && radiusPx > 0f) {
-        Modifier.graphicsLayer {
-            renderEffect = RenderEffect.createBlurEffect(radiusPx, radiusPx, Shader.TileMode.CLAMP)
+    val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
+    val maxBubbleWidth = 340.dp
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
+    ) {
+        Box(
+            modifier = Modifier
+                .widthIn(max = maxBubbleWidth)
+                .then(
+                    if (onLongClick != null) {
+                        Modifier.pointerInput(onLongClick) {
+                            detectTapGestures(onLongPress = { onLongClick.invoke() })
+                        }
+                    } else {
+                        Modifier
+                    },
+                )
+                .liquidGlass(
+                    material = if (isUser) GlassMaterial.REGULAR else GlassMaterial.THIN,
+                    cornerRadius = tokens.radiusLg,
+                ),
+        ) {
+            if (isUser) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    colors.accent.copy(alpha = 0.22f),
+                                    colors.accent.copy(alpha = 0.08f),
+                                ),
+                            ),
+                        ),
+                )
+            }
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                if (attachments.isNotEmpty()) {
+                    AttachmentStrip(attachments = attachments)
+                }
+                if (!thinking.isNullOrBlank()) {
+                    ThinkingBlock(
+                        thinking = thinking,
+                        expanded = thinkingExpanded,
+                        onToggle = onToggleThinking,
+                    )
+                }
+                if (text.isNotBlank()) {
+                    Text(
+                        text = if (isStreaming) text + "▍" else text,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = colors.onGlass,
+                        modifier = Modifier.padding(top = if (attachments.isEmpty()) 0.dp else 8.dp),
+                    )
+                } else if (isStreaming && thinking.isNullOrBlank()) {
+                    GlassThinkingIndicator(label = "思考中")
+                }
+                if (errorMessage != null) {
+                    Row(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.ErrorOutline,
+                            contentDescription = null,
+                            tint = colors.danger,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Text(
+                            text = errorMessage,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colors.danger,
+                        )
+                    }
+                }
+                if (usage != null) {
+                    Text(
+                        text = usageText(usage),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
         }
-    } else {
-        Modifier
     }
-    Box(
-        modifier = Modifier
-            .matchParentSize()
-            .clip(shape)
-            .then(blurModifier)
-            .drawWithCache {
-                onDrawBehind { drawSoftBlobs(backdrop) }
-            },
-    )
 }
 
-internal fun DrawScope.drawSoftBlobs(backdrop: GlassBackdrop) {
-    val minSide = min(size.width, size.height)
-    for (blob in backdrop.blobs) {
-        val center = Offset(blob.x * size.width, blob.y * size.height)
-        val radius = (blob.radiusFraction * minSide).coerceAtLeast(1f)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(blob.color, Color.Transparent),
-                center = center,
-                radius = radius,
-            ),
-            radius = radius,
-            center = center,
-        )
+private fun usageText(usage: GlassBubbleUsage): String {
+    val tps = if (usage.tokensPerSecond > 0f) " · %.1f tok/s".format(usage.tokensPerSecond) else ""
+    val ttft = if (usage.firstTokenLatencyMillis > 0L) " · 首字 ${usage.firstTokenLatencyMillis}ms" else ""
+    return "in ${usage.promptTokens} / out ${usage.completionTokens}$tps$ttft"
+}
+
+@Composable
+private fun ThinkingBlock(
+    thinking: String,
+    expanded: Boolean,
+    onToggle: (() -> Unit)?,
+) {
+    val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
+    LiquidGlassSurface(
+        modifier = Modifier.fillMaxWidth(),
+        material = GlassMaterial.ULTRA_THIN,
+        cornerRadius = tokens.radiusSm,
+        onClick = onToggle,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Psychology,
+                    contentDescription = null,
+                    tint = colors.onGlassMuted,
+                    modifier = Modifier.size(15.dp),
+                )
+                Text(
+                    text = "思考过程",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.onGlassMuted,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .weight(1f),
+                )
+                if (onToggle != null) {
+                    Icon(
+                        imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        tint = colors.onGlassSubtle,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(expandFrom = Alignment.Top),
+                exit = shrinkVertically(shrinkTowards = Alignment.Top),
+            ) {
+                Text(
+                    text = thinking,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onGlassMuted,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+            if (!expanded) {
+                Text(
+                    text = thinking.replace('\n', ' '),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onGlassSubtle,
+                    maxLines = 2,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        }
     }
 }
+
+@Composable
+private fun AttachmentStrip(attachments: List<GlassBubbleAttachment>) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        for (attachment in attachments) {
+            AttachmentItem(attachment = attachment)
+        }
+    }
+}
+
+@Composable
+private fun AttachmentItem(attachment: GlassBubbleAttachment) {
+    val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
+    when (attachment.kind) {
+        GlassAttachmentKind.IMAGE -> {
+            LiquidGlassSurface(
+                material = GlassMaterial.ULTRA_THIN,
+                cornerRadius = tokens.radiusSm,
+                contentPadding = PaddingValues(0.dp),
+            ) {
+                AttachmentThumb(uri = attachment.uri)
+            }
+        }
+        else -> {
+            LiquidGlassSurface(
+                material = GlassMaterial.ULTRA_THIN,
+                cornerRadius = tokens.radiusFull,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = when (attachment.kind) {
+                            GlassAttachmentKind.AUDIO -> Icons.Filled.Audiotrack
+                            GlassAttachmentKind.TEXT -> Icons.Filled.Description
+                            else -> Icons.Filled.AttachFile
+                        },
+                        contentDescription = null,
+                        tint = colors.onGlassMuted,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        text = attachment.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.onGlassMuted,
+                        maxLines = 1,
+                        modifier = Modifier.padding(start = 5.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentThumb(uri: String) {
+    val context = LocalContext.current
+    val bitmap: ImageBitmap? = remember(uri) { decodeThumbnail(context, uri) }
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(width = 96.dp, height = 72.dp)
+                .clip(RoundedCornerShape(12.dp)),
+        )
+    } else {
+        val colors = LocalGlassColors.current
+        Box(
+            modifier = Modifier.size(width = 96.dp, height = 72.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.FilledImage,
+                contentDescription = null,
+                tint = colors.onGlassSubtle,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 缩略图解码：先读 bounds 算 inSampleSize，再按需缩放解码。
+ * 刻意不使用 Coil（简报 §6：不引入图片库）。RGB_565 省一半内存。
+ */
+private fun decodeThumbnail(context: android.content.Context, uri: String): ImageBitmap? = runCatching {
+    if (uri.isBlank()) return null
+    val parsed = Uri.parse(uri)
+    val resolver = context.contentResolver
+    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    resolver.openInputStream(parsed)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+    val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+    var sample = 1
+    while (maxDim / sample > 320) sample *= 2
+    val options = android.graphics.BitmapFactory.Options().apply {
+        inSampleSize = sample
+        inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+    }
+    val decoded = resolver.openInputStream(parsed)?.use {
+        android.graphics.BitmapFactory.decodeStream(it, null, options)
+    }
+    decoded?.asImageBitmap()
+}.getOrNull()
+
+/* ------------------------------------------------------------------ 杂项 */
+
+@Composable
+fun GlassSpacer(height: Dp) {
+    Box(modifier = Modifier.heightIn(min = height))
+}
+
+/** 供 feature 层把 `Attachment` 映射成气泡 DTO 时复用的颜色常量出口。 */
+@Composable
+fun glassAccent(): Color = LocalGlassColors.current.accent
+
+@Composable
+private fun previewColors(): Color = LocalGlassColors.current.onGlass
+
+private val BubbleFootnoteSize = 11.sp
