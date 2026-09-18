@@ -1,9 +1,9 @@
 package com.rickeal.agent.core.design
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,9 +32,7 @@ fun GlassChip(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (icon != null) {
-                Row(modifier = Modifier.padding(end = 6.dp)) {
-                    icon()
-                }
+                Box(modifier = Modifier.padding(end = 6.dp)) { icon() }
             }
             Text(
                 text = text,
