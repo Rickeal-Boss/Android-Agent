@@ -129,24 +129,32 @@ class ChatViewModel(
     }
 
     fun onAttachImage(uriString: String, name: String) {
-        _uiState.update { state ->
-            state.copy(
-                attachments = state.attachments + Attachment.Image(
-                    uri = uriString,
-                    name = name.ifBlank { "图片" },
-                ),
-            )
+        viewModelScope.launch {
+            // content:// 只在选择器授权的短时间内可读，必须先落盘到内部文件，
+            // 否则引擎侧按“文件路径”读取时会 100% 失败。
+            val stored = container.importAttachment(uriString, name)
+            _uiState.update { state ->
+                state.copy(
+                    attachments = state.attachments + Attachment.Image(
+                        uri = stored ?: uriString,
+                        name = name.ifBlank { "图片" },
+                    ),
+                )
+            }
         }
     }
 
     fun onAttachAudio(uriString: String, name: String) {
-        _uiState.update { state ->
-            state.copy(
-                attachments = state.attachments + Attachment.Audio(
-                    uri = uriString,
-                    name = name.ifBlank { "音频" },
-                ),
-            )
+        viewModelScope.launch {
+            val stored = container.importAttachment(uriString, name)
+            _uiState.update { state ->
+                state.copy(
+                    attachments = state.attachments + Attachment.Audio(
+                        uri = stored ?: uriString,
+                        name = name.ifBlank { "音频" },
+                    ),
+                )
+            }
         }
     }
 
@@ -406,7 +414,13 @@ class ChatViewModel(
             }
 
             is AgentEvent.MessageCommitted -> {
-                commit(event.message, conversationId)
+                // 注意：AgentRunner 在终态还会再发一次 Finished，两条路径都会落库，
+                // 会导致「同一条回答被提交两次」（UI 双气泡 + 会话文件两份）。
+                // 这里只负责把它渲染进消息列表（commit 会去重），落库统一交给 Finished。
+                val already = _uiState.value.messages.any { it.id == event.message.id }
+                if (!already) {
+                    _uiState.update { it.copy(messages = it.messages + event.message) }
+                }
             }
 
             is AgentEvent.Finished -> {

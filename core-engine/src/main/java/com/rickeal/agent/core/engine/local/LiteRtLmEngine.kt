@@ -60,6 +60,9 @@ class LiteRtLmEngine(
 
     override val kind: EngineKind = EngineKind.LOCAL
 
+    /** 已发送消息的 id 水印（见 buildContents 注释）。会话重建时必须清空。 */
+    private val sentMessageIds: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+
     private val mutex = Mutex()
     private var engine: Engine? = null
     private var conversation: LiteRtConversation? = null
@@ -256,26 +259,59 @@ class LiteRtLmEngine(
         .flowOn(engineDispatcher)
         .cancellable()
 
+    /**
+     * 构造本次要发送给 LiteRT-LM 的内容。
+     *
+     * 关键点：**只发「还没发过」的消息**（用 message.id 做水印）。Conversation 内部自带 KV cache 历史，
+     * 若每轮都把全量历史重发，会出现重复；而若只发最后一条用户消息（最初的实现），
+     * 系统提示词与工具执行结果就永远进不了上下文，Agent 循环会退化成「单轮瞎猜」。
+     */
     private fun buildContents(request: GenerationRequest): List<Content> {
-        val out = ArrayList<Content>(4)
-        val last = request.messages.lastOrNull { it.role == Role.USER }
-            ?: request.messages.lastOrNull()
-        if (last != null) {
-            for (attachment in last.attachments) {
-                when (attachment) {
-                    is Attachment.Image -> AttachmentBytesReader.imagePngBytes(attachment.uri)
-                        ?.let { out.add(Content.ImageBytes(it)) }
-                    is Attachment.Audio -> AttachmentBytesReader.audioBytes(attachment.uri)
-                        ?.let { out.add(Content.AudioBytes(it)) }
-                    is Attachment.Text -> if (attachment.text.isNotBlank()) {
-                        out.add(Content.Text(attachment.text))
+        val fresh = request.messages.filter { message -> sentMessageIds.add(message.id) }
+        if (fresh.isEmpty()) return listOf(Content.Text(""))
+
+        val out = ArrayList<Content>(8)
+        for (message in fresh) {
+            when (message.role) {
+                Role.SYSTEM -> if (message.text.isNotBlank()) {
+                    out.add(Content.Text(message.text))
+                }
+
+                Role.USER -> {
+                    // 简报 §3.1：图片/音频必须在文本之前，保证自回归 token 顺序正确
+                    for (attachment in message.attachments) {
+                        when (attachment) {
+                            is Attachment.Image -> AttachmentBytesReader.imagePngBytes(attachment.uri)
+                                ?.let { out.add(Content.ImageBytes(it)) }
+
+                            is Attachment.Audio -> AttachmentBytesReader.audioBytes(attachment.uri)
+                                ?.let { out.add(Content.AudioBytes(it)) }
+
+                            is Attachment.Text -> if (attachment.text.isNotBlank()) {
+                                out.add(Content.Text(attachment.text))
+                            }
+
+                            is Attachment.File -> Unit
+                        }
                     }
-                    is Attachment.File -> Unit
+                    if (message.text.isNotBlank()) out.add(Content.Text(message.text))
+                }
+
+                Role.MODEL -> if (message.text.isNotBlank()) {
+                    // 只回灌可见文本：工具调用的原始 JSON 由 Agent 层解析，不该污染上下文
+                    out.add(Content.Text(message.text))
+                }
+
+                Role.TOOL -> {
+                    val result = message.toolResults.firstOrNull()
+                    val payload = result?.output?.takeIf { it.isNotBlank() }
+                        ?: result?.errorMessage
+                        ?: ""
+                    if (payload.isNotBlank()) out.add(Content.Text(payload))
                 }
             }
         }
-        // 简报 §3.1：文本必须放在最后
-        out.add(Content.Text(last?.text.orEmpty()))
+        if (out.isEmpty()) out.add(Content.Text(""))
         return out
     }
 

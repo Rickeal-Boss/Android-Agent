@@ -306,6 +306,15 @@ class OpenAiCompatibleEngine(
     }
 
     private fun buildContent(message: ChatMessage): JsonElement {
+        // TOOL 消息：内容就是工具执行结果（AgentRunner 只填 toolResults，不填 text），
+        // 不处理的话发出去的是 {"role":"tool","content":""}，模型永远看不到工具输出。
+        if (message.role == Role.TOOL) {
+            val result = message.toolResults.firstOrNull()
+            val payload = result?.output?.takeIf { it.isNotBlank() }
+                ?: result?.errorMessage
+                ?: ""
+            return JsonPrimitive(payload)
+        }
         val parts = ArrayList<JsonElement>()
         if (message.text.isNotEmpty()) parts.add(JsonPrimitive(message.text))
         for (attachment in message.attachments) {

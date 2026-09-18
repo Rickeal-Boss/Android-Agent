@@ -1,5 +1,7 @@
 package com.rickeal.agent.core.data
 
+import android.net.Uri
+
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.runtime.ProvidableCompositionLocal
@@ -79,3 +81,28 @@ class AppContainer(private val context: Context) {
  */
 val LocalAppContainer: ProvidableCompositionLocal<AppContainer> =
     staticCompositionLocalOf { error("LocalAppContainer 未提供：请在 LiquidAgentTheme 外层 CompositionLocalProvider") }
+
+    /**
+     * 把用户通过 SAF 选中的附件（content://）复制进内部目录，返回**真实文件路径**。
+     *
+     * 必须做这一步：本地引擎与远程引擎都按「文件路径」读取附件字节，
+     * 直接存 content:// Uri 会导致图片/音频 100% 读取失败（多模态形同虚设）。
+     */
+    fun importAttachment(uriString: String, fileName: String): String? {
+        val raw = uriString.trim()
+        if (raw.isBlank()) return null
+        // 已经是真实路径的情况（部分设备 / 自定义来源）直接用
+        val direct = if (raw.startsWith("file://")) raw.removePrefix("file://") else raw
+        if (direct.startsWith("/") && File(direct).exists()) return direct
+        return runCatching {
+            val uri = Uri.parse(raw)
+            val dir = File(context.filesDir, "attachments").apply { mkdirs() }
+            val safeName = fileName.substringAfterLast('/').ifBlank { "attachment_${System.currentTimeMillis()}" }
+            val target = File(dir, "${System.currentTimeMillis()}_$safeName")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            } ?: return null
+            if (target.length() <= 0L) return null
+            target.absolutePath
+        }.getOrNull()
+    }

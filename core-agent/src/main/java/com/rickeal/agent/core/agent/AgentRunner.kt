@@ -114,6 +114,7 @@ class AgentRunner(
                 return@flow
             }
             if (accumulator.usage != null) lastUsage = accumulator.usage
+            lastModelText = accumulator.text
 
             val nativeCalls = accumulator.toolCalls()
             val calls: List<ToolCall> = if (nativeCalls.isNotEmpty()) {
@@ -190,7 +191,12 @@ class AgentRunner(
             round++
         }
 
-        emit(AgentEvent.Finished(finalText, round, lastUsage))
+        // 轮次耗尽时 finalText 仍为空：此时不能把「上一轮带工具 JSON 的原始输出」当答案，
+        // 而应回退到最后一轮的可见文本并剥掉工具协议片段。
+        val outgoing = finalText.ifBlank {
+            if (policy.enableTextProtocol) TextToolProtocol.strip(lastModelText) else lastModelText
+        }
+        emit(AgentEvent.Finished(outgoing, round, lastUsage))
     }
         .flowOn(dispatcher)
         .cancellable()
