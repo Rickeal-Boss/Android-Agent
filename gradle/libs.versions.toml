@@ -1,0 +1,89 @@
+# =============================================================================
+# LiquidAgent — Gradle Version Catalog
+#
+# 铁律（docs/00-recon-brief.md §4 / docs/01-architecture.md §1.2）：
+#   版本矩阵锁死，任何人不得升降级。CI 报错只允许走已声明的回退路径
+#   （Kotlin 2.3.0 -> 2.2.21）。
+#
+# 禁止出现的依赖：KSP / Room / Hilt / Dagger / Koin / Navigation3 /
+#                  Retrofit / Coil / 任何注解处理器 / 任何 JitPack 库。
+# =============================================================================
+
+[versions]
+
+agp = "9.3.2"
+kotlin = "2.3.0"
+
+# Android SDK（AGP 9 块式 DSL：compileSdk { version = release(36) }）
+compileSdk = "36"
+targetSdk = "36"
+minSdk = "31"
+javaJvmTarget = "17"
+
+# Compose
+composeBom = "2026.02.00"
+materialIcons = "1.7.8"
+activityCompose = "1.10.1"
+navigationCompose = "2.8.9"
+lifecycle = "2.8.7"
+
+# KotlinX
+kotlinxCoroutines = "1.9.0"
+kotlinxSerialization = "1.7.3"
+
+# AndroidX
+coreKtx = "1.15.0"
+datastore = "1.1.7"
+
+# 网络
+okhttp = "4.12.0"
+
+# 端侧推理（仅 :core-engine 依赖）
+litertlm = "0.11.0"
+
+[libraries]
+
+# ---- AndroidX 基础 ----
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+
+# ---- Lifecycle ----
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+
+# ---- Navigation（2.x，不是 Navigation 3） ----
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+
+# ---- DataStore（禁 Room，持久化走 Preferences + JSON 文件） ----
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+
+# ---- Compose（BOM 统一管版本） ----
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+# 矩阵锁定 1.7.8，显式覆盖 BOM（不引 material-icons-core 之外的东西）
+androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "materialIcons" }
+
+# ---- KotlinX ----
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+
+# ---- 网络（手写 SSE，禁 Retrofit） ----
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+
+# ---- 端侧推理 ----
+litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertlm" }
+
+[plugins]
+
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+# Kotlin 2.x：Compose 编译器由 KGP 内置，版本号跟随 kotlin
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

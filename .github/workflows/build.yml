@@ -1,0 +1,283 @@
+name: Build
+
+# ---------------------------------------------------------------------------
+# LiquidAgent 主构建流水线
+#
+# 设计约束（来自 docs/00-recon-brief.md 与 docs/01-architecture.md）：
+#   1. 仓库里没有任何 Actions variables / secrets —— 本工作流的所有步骤必须
+#      「零密钥」可跑通。debug 构建不得依赖任何 secret。
+#   2. 本地没有 JDK / Android SDK / Gradle wrapper jar，唯一的验证通道就是 CI，
+#      因此工作流需要自愈：用 setup-gradle 安装 Gradle、自动接受 SDK 许可、
+#      缓存依赖、失败时输出可读日志。
+#   3. 只跑 assembleDebug，不跑 lint / 测试任务，避免无关任务拖垮首次开荒。
+#   4. 【绝不下载模型】4B 模型 > 2GB，CI 只产出 APK/AAR，模型由用户自行导入。
+#
+# 已知回退路径（简报 §4 / 架构文档 §1.2，禁止提前自行改动）：
+#   若报 Compose 编译器与 Kotlin 版本不匹配 —— 只把 Kotlin 从 2.3.0 降到 2.2.21，
+#   不要动 Compose BOM 2026.02.00。改的是 gradle/libs.versions.toml，不是本文件。
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      gradle_task:
+        description: '要执行的 Gradle 任务（用于模块级验证）'
+        required: false
+        default: ':app:assembleDebug'
+        type: string
+      # 开荒期模块逐个落地时（core-model → core-engine → core-agent/core-data →
+      # core-design → feature-* → app），:app 可能还不存在。此时可手动触发并指定
+      # 例如 ":core-model:assembleDebug" 先行验证单个模块。
+
+# 最小权限原则：主构建只读代码
+permissions:
+  contents: read
+
+# 同一 ref 上的重复触发只保留最新一次（PR 上取消在途任务，main 上不取消以保证提交可追溯）
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: 'temurin'
+  GRADLE_ARTIFACT_RETENTION_DAYS: '30'
+  # 与 .github/ci-gradle.properties 保持一致；命令行 -D 优先级最高，双保险
+  GRADLE_JVM_ARGS: '-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8'
+
+jobs:
+  assemble-debug:
+    name: Assemble Debug (JDK ${{ matrix.java-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    strategy:
+      # 开荒阶段不要在第一个 JDK 失败时立刻放弃其余组合，但也不要无限重试
+      fail-fast: false
+      matrix:
+        java-version: ['21']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -------------------------------------------------------------------
+      # 工具链
+      # -------------------------------------------------------------------
+      - name: Set up JDK ${{ matrix.java-version }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ matrix.java-version }}
+          # 注意：Gradle 缓存交给下面的 gradle/actions/setup-gradle 处理，
+          # 这里故意不开 cache: gradle，避免两套缓存互相污染。
+
+      - name: Bootstrap Android SDK and accept licenses
+        # AGP 9 会在需要时自动下载 platform / build-tools（android.builder.sdkDownload=true），
+        # 但「许可证未接受」会让下载直接失败，所以这里预先把许可哈希写好。
+        run: |
+          sdk_root="${ANDROID_HOME:-}"
+          if [ -z "$sdk_root" ] || [ ! -d "$sdk_root" ]; then
+            for candidate in "$HOME/android-sdk" "/usr/local/lib/android/sdk" "$HOME/Android/Sdk" "/opt/android-sdk"; do
+              if [ -d "$candidate" ]; then sdk_root="$candidate"; break; fi
+            done
+          fi
+          if [ -z "$sdk_root" ]; then sdk_root="$HOME/android-sdk"; fi
+
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          echo "::notice::Android SDK root = $sdk_root"
+
+          mkdir -p "$sdk_root/licenses"
+          printf '%s\n%s\n' \
+            '24333f8a63b6825ea9c5514f83c2829b004d1fee' \
+            '8933bad161af4178b1185d1a37fbf41ea5269c55' \
+            > "$sdk_root/licenses/android-sdk-license"
+          printf '%s\n' '84831b9409646a7e0bab842799117058b6a3a0a6' \
+            > "$sdk_root/licenses/android-sdk-preview-license"
+          printf '%s\n' 'd975f751698a77b662f1254ddbeed3901e976f5a' \
+            > "$sdk_root/licenses/intel-android-extra-license"
+          printf '%s\n' '601085b94cd77f0b54ff86406957099beebea79f5' \
+            > "$sdk_root/licenses/android-googletv-license"
+
+          # 若镜像里带 cmdline-tools，再跑一次官方 license 流程做兜底
+          if [ -x "$sdk_root/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$sdk_root/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
+
+          ls -la "$sdk_root/licenses" || true
+
+      - name: Install CI Gradle properties
+        # 用户级 ~/.gradle/gradle.properties 优先级高于项目内 gradle.properties，
+        # 只放「CI 环境行为」相关开关，不覆盖项目依赖/版本决策。
+        run: |
+          mkdir -p "$HOME/.gradle"
+          if [ -f .github/ci-gradle.properties ]; then
+            cat .github/ci-gradle.properties > "$HOME/.gradle/gradle.properties"
+            echo "::group::Effective CI gradle.properties"
+            cat "$HOME/.gradle/gradle.properties"
+            echo "::endgroup::"
+          else
+            echo "::warning::.github/ci-gradle.properties not found, using project defaults"
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # 仓库可能没有 wrapper（见 docs/01-architecture.md §1.2），
+          # 显式指定版本可保证 PATH 上始终有一个 gradle 9.7.1 可用。
+          gradle-version: '9.7.1'
+          gradle-home-cache-cleanup: true
+          add-job-summary: 'on-failure'
+
+      # -------------------------------------------------------------------
+      # 解析 Gradle 启动器（自愈关键点）
+      # -------------------------------------------------------------------
+      - name: Resolve Gradle launcher and task
+        # 【默认用 gradle，不用 ./gradlew】
+        # 仓库不保证有可用的 wrapper（架构文档 §1.2：本地无 Gradle，wrapper jar 生成不出来）。
+        # 由 setup-gradle 显式安装 9.7.1 是最确定的路径，不依赖 jar/properties 是否齐全。
+        # 只有当 PATH 上没有 gradle 时，才回退到完整可用的 wrapper。
+        run: |
+          if command -v gradle > /dev/null 2>&1; then
+            echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
+            echo "::notice::Using Gradle installed by gradle/actions/setup-gradle."
+          elif [ -f ./gradlew ] && [ -f gradle/wrapper/gradle-wrapper.properties ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
+            chmod +x ./gradlew
+            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
+            echo "::warning::'gradle' not on PATH — falling back to the Gradle wrapper."
+          else
+            echo "::error::No Gradle available: 'gradle' is not on PATH and no complete wrapper (gradlew + properties + jar) exists."
+            exit 1
+          fi
+
+          # 解析要执行的任务：手动触发时可用 inputs.gradle_task 做模块级验证。
+          # 白名单校验：dispatch input 会被插值进 shell，只允许 Gradle 任务名字符集，
+          # 避免注入（如 "; curl ..."）。
+          task="${{ inputs.gradle_task }}"
+          if [ -z "$task" ]; then task=":app:assembleDebug"; fi
+          case "$task" in
+            *[!A-Za-z0-9_:.\-]* )
+              echo "::error::Invalid gradle_task: '$task'. Only [A-Za-z0-9_:.-] is allowed."
+              exit 1 ;;
+          esac
+          echo "GRADLE_TASK=$task" >> "$GITHUB_ENV"
+          echo "::notice::Gradle task: $task"
+
+      # -------------------------------------------------------------------
+      # 构建
+      # -------------------------------------------------------------------
+      - name: Verify Gradle
+        # 先单独验证工具链可用，这样「Gradle 装不起来」和「源码编译失败」
+        # 两类问题不会混在同一段日志里。
+        run: |
+          echo "Launcher: $GRADLE_CMD"
+          "$GRADLE_CMD" --version
+
+      - name: Run Gradle task
+        id: assemble
+        # 【绝不下载模型】这里只做编译/打包；模型文件由用户自行导入，
+        # CI 不会拉取任何 .litertlm / .task 权重（>2GB，见架构文档 §0.3）。
+        run: |
+          "$GRADLE_CMD" \
+            --no-daemon \
+            --stacktrace \
+            "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
+            "$GRADLE_TASK"
+
+      # -------------------------------------------------------------------
+      # 产物 / 日志
+      # -------------------------------------------------------------------
+      - name: Locate build output
+        id: apk
+        if: success()
+        run: |
+          # library 模块产出的是 .aar 不是 .apk，因此这里允许「没找到 APK」，
+          # 只有默认任务（:app:assembleDebug）没产出 APK 才算真失败。
+          apk_path="$(find . -path ./.git -prune -o -type f -name '*.apk' -print 2>/dev/null | head -n 1 || true)"
+          if [ -n "$apk_path" ]; then
+            echo "path=$apk_path" >> "$GITHUB_OUTPUT"
+            echo "::notice::Built APK: $apk_path"
+          elif [ "$GRADLE_TASK" = ":app:assembleDebug" ]; then
+            echo "::error::Task :app:assembleDebug succeeded but no .apk was produced"
+            find . -path ./.git -prune -o -type d -name outputs -print 2>/dev/null | head -n 20 || true
+            exit 1
+          else
+            echo "::notice::Task $GRADLE_TASK produced no APK (library modules output .aar) — nothing to upload."
+          fi
+
+      - name: Upload APK
+        # 只在确实产出 APK 时上传（library 模块任务没有 APK，跳过即可）
+        if: success() && steps.apk.outputs.path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: liquidagent-debug-${{ github.sha }}
+          path: "**/build/outputs/apk/**/*.apk"
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload module AARs
+        # 模块级验证（如 :core-model:assembleDebug）时把 .aar 也留档，便于人工检查
+        if: success() && steps.apk.outputs.path == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: liquidagent-aars-${{ github.sha }}
+          path: "**/build/outputs/aar/*.aar"
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload failure reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports-${{ github.sha }}
+          path: |
+            **/build/reports/**
+            **/build/outputs/logs/**
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          echo "::group::JDK"
+          java -version 2>&1 || true
+          echo "::endgroup::"
+          echo "::group::SDK"
+          ls "$ANDROID_HOME" 2>/dev/null | head -n 30 || true
+          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+          ls "$ANDROID_HOME/build-tools" 2>/dev/null || true
+          echo "::endgroup::"
+          echo "::group::Workspace tree (build outputs)"
+          find . -path ./.git -prune -o -type d -name build -print 2>/dev/null | head -n 20 || true
+          echo "::endgroup::"
+          echo "See the 'Upload failure reports' artifact for full Gradle reports."
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## LiquidAgent build"
+            echo ""
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Ref | \`${GITHUB_REF}\` |"
+            echo "| JDK | ${{ matrix.java-version }} (${{ env.JAVA_DISTRIBUTION }}) |"
+            echo "| Gradle | 9.7.1 (setup-gradle) |"
+            echo "| Task | \`${GRADLE_TASK}\` |"
+            echo ""
+            if [ "${{ steps.assemble.outcome }}" = "success" ]; then
+              echo "**Result:** build succeeded (artifact retention ${{ env.GRADLE_ARTIFACT_RETENTION_DAYS }} days)."
+            else
+              echo "**Result:** FAILED — inspect the \`build-reports-\` artifact and the Annotations panel."
+              echo ""
+              echo "> 若报错含 Compose 编译器 / Kotlin 版本不匹配，按简报 §4 只把 Kotlin 降到 **2.2.21**，不要动 Compose BOM。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,55 @@
+name: 功能建议
+description: 提出一个新的能力、模型支持或体验改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提想法。请说明「要解决什么问题」，而不只是「想要什么功能」——
+        前者更容易被讨论和实现。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 建议所属区域
+      options:
+        - 模型 / 推理引擎
+        - Agent 能力（工具、思考模式、多轮）
+        - UI / 交互（Liquid Glass）
+        - 远程后端 / 协议
+        - 工程 / CI / 构建
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决什么问题
+      placeholder: 目前切换模型必须重启会话，长对话中很不方便。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议的方案
+      placeholder: 在会话中支持热切换模型，保留历史消息。
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的替代方案
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: 参与意愿
+      options:
+        - label: 我愿意提交 PR 实现这个建议
+          required: false

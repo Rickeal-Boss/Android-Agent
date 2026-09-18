@@ -1,0 +1,261 @@
+name: Release
+
+# ---------------------------------------------------------------------------
+# LiquidAgent 发布流水线（完全可选 / 可降级）
+#
+# 核心约定：仓库默认没有任何 signing secrets。
+#   1. debug 产物无条件产出 —— 即使一个密钥都没有，这条流水线也必须跑绿。
+#   2. release 签名只在四个 SIGNING_* secrets 全部就位时才启用；
+#      缺失时打印 notice 并跳过，绝不失败。
+#   3. GitHub Release 仅在「push tag v*」且签名可用时创建。
+#
+# 需要的 secrets（全部可选，缺任何一个都走降级路径）：
+#   SIGNING_KEYSTORE_BASE64   keystore 文件的 base64（openssl base64 -A -in xxx.jks）
+#   SIGNING_KEYSTORE_PASSWORD
+#   SIGNING_KEY_ALIAS
+#   SIGNING_KEY_PASSWORD
+#
+# 这些值通过 -P 传给 Gradle，app/build.gradle.kts 侧约定见 docs/02-ci.md。
+# ---------------------------------------------------------------------------
+
+on:
+  # 手动触发：产出 APK 并上传 artifact，但【不会】创建 GitHub Release
+  # （Release 需要一个真实 tag 作为锚点，分支上没有）。
+  workflow_dispatch:
+  # 推送 v* 标签：产出 APK +（若密钥可用）签名 release + 创建 GitHub Release
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: 'temurin'
+  GRADLE_JVM_ARGS: '-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8'
+
+jobs:
+  release:
+    name: Build & (optionally) sign release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Bootstrap Android SDK and accept licenses
+        run: |
+          sdk_root="${ANDROID_HOME:-}"
+          if [ -z "$sdk_root" ] || [ ! -d "$sdk_root" ]; then
+            for candidate in "$HOME/android-sdk" "/usr/local/lib/android/sdk" "$HOME/Android/Sdk" "/opt/android-sdk"; do
+              if [ -d "$candidate" ]; then sdk_root="$candidate"; break; fi
+            done
+          fi
+          if [ -z "$sdk_root" ]; then sdk_root="$HOME/android-sdk"; fi
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+
+          mkdir -p "$sdk_root/licenses"
+          printf '%s\n%s\n' \
+            '24333f8a63b6825ea9c5514f83c2829b004d1fee' \
+            '8933bad161af4178b1185d1a37fbf41ea5269c55' \
+            > "$sdk_root/licenses/android-sdk-license"
+          printf '%s\n' '84831b9409646a7e0bab842799117058b6a3a0a6' \
+            > "$sdk_root/licenses/android-sdk-preview-license"
+          printf '%s\n' 'd975f751698a77b662f1254ddbeed3901e976f5a' \
+            > "$sdk_root/licenses/intel-android-extra-license"
+          printf '%s\n' '601085b94cd77f0b54ff86406957099beebea79f5' \
+            > "$sdk_root/licenses/android-googletv-license"
+          if [ -x "$sdk_root/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$sdk_root/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
+
+      - name: Install CI Gradle properties
+        run: |
+          mkdir -p "$HOME/.gradle"
+          if [ -f .github/ci-gradle.properties ]; then
+            cat .github/ci-gradle.properties > "$HOME/.gradle/gradle.properties"
+            echo "::group::Effective CI gradle.properties"
+            cat "$HOME/.gradle/gradle.properties"
+            echo "::endgroup::"
+          else
+            echo "::warning::.github/ci-gradle.properties not found, using project defaults"
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # 仓库可能没有 wrapper（见 docs/01-architecture.md §1.2），
+          # 显式指定版本可保证 PATH 上始终有一个 gradle 9.7.1 可用。
+          gradle-version: '9.7.1'
+          gradle-home-cache-cleanup: true
+          add-job-summary: 'on-failure'
+
+      - name: Resolve Gradle launcher
+        # 与 build.yml 同一策略：默认用 setup-gradle 安装的 gradle 9.7.1，
+        # 不依赖仓库里是否有完整可用的 wrapper（架构文档 §1.2）。
+        run: |
+          if command -v gradle > /dev/null 2>&1; then
+            echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
+            echo "::notice::Using Gradle installed by gradle/actions/setup-gradle."
+          elif [ -f ./gradlew ] && [ -f gradle/wrapper/gradle-wrapper.properties ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
+            chmod +x ./gradlew
+            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
+            echo "::warning::'gradle' not on PATH — falling back to the Gradle wrapper."
+          else
+            echo "::error::No Gradle available: 'gradle' is not on PATH and no complete wrapper exists."
+            exit 1
+          fi
+
+      - name: Verify Gradle
+        run: |
+          echo "Launcher: $GRADLE_CMD"
+          "$GRADLE_CMD" --version
+
+      # -------------------------------------------------------------------
+      # 密钥探测：secrets 上下文在步骤 if 表达式里并不可靠，
+      # 因此这里用 shell 把探测结果写进 step outputs，后续步骤用 outputs 做门禁。
+      # -------------------------------------------------------------------
+      - name: Detect signing secrets
+        id: signing
+        env:
+          KS_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          KS_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          KS_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          if [ -n "${KS_B64:-}" ] && [ -n "${KS_PASSWORD:-}" ] && [ -n "${KS_ALIAS:-}" ] && [ -n "${KS_KEY_PASSWORD:-}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Signing secrets detected, release APK will be signed."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Signing secrets NOT configured (SIGNING_KEYSTORE_BASE64 / SIGNING_KEYSTORE_PASSWORD / SIGNING_KEY_ALIAS / SIGNING_KEY_PASSWORD). Skipping signed release build; shipping debug APK instead."
+          fi
+
+      # -------------------------------------------------------------------
+      # 保底产物：无论有没有密钥都要有一个能装的 APK
+      # -------------------------------------------------------------------
+      - name: Assemble debug APK (fallback artifact)
+        id: assemble_debug
+        run: |
+          "$GRADLE_CMD" \
+            --no-daemon \
+            --stacktrace \
+            "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
+            :app:assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: liquidagent-debug-${{ github.ref_name }}
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      # -------------------------------------------------------------------
+      # 可选：签名 release
+      # -------------------------------------------------------------------
+      - name: Decode keystore
+        id: keystore
+        if: steps.signing.outputs.available == 'true'
+        env:
+          KS_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          ks_path="${RUNNER_TEMP}/liquidagent-release.jks"
+          printf '%s' "$KS_B64" | base64 -d > "$ks_path"
+          if [ ! -s "$ks_path" ]; then
+            echo "::error::Decoded keystore is empty; check SIGNING_KEYSTORE_BASE64"
+            exit 1
+          fi
+          echo "path=$ks_path" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble release APK
+        id: assemble_release
+        if: steps.signing.outputs.available == 'true'
+        env:
+          KS_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          KS_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          "$GRADLE_CMD" \
+            --no-daemon \
+            --stacktrace \
+            "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
+            -Psigning.storeFile="${{ steps.keystore.outputs.path }}" \
+            -Psigning.storePassword="${KS_PASSWORD}" \
+            -Psigning.keyAlias="${KS_ALIAS}" \
+            -Psigning.keyPassword="${KS_KEY_PASSWORD}" \
+            :app:assembleRelease
+
+      - name: Upload release APK / AAB
+        if: steps.assemble_release.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: liquidagent-release-${{ github.ref_name }}
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
+          retention-days: 90
+          if-no-files-found: warn
+
+      # -------------------------------------------------------------------
+      # 发布：仅在 tag 推送 + 签名可用 时创建 GitHub Release
+      # -------------------------------------------------------------------
+      - name: Publish GitHub Release
+        if: |
+          startsWith(github.ref, 'refs/tags/v') &&
+          steps.assemble_release.outcome == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: LiquidAgent ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
+
+      - name: Upload failure reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-reports-${{ github.ref_name }}
+          path: |
+            **/build/reports/**
+            **/build/outputs/logs/**
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## LiquidAgent release"
+            echo ""
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Ref | \`${GITHUB_REF}\` |"
+            echo "| Debug APK | ${{ steps.assemble_debug.outcome || 'n/a' }} |"
+            echo "| Signing secrets | ${{ steps.signing.outputs.available }} |"
+            echo "| Signed release APK | ${{ steps.assemble_release.outcome || 'skipped' }} |"
+            echo ""
+            if [ "${{ steps.signing.outputs.available }}" != "true" ]; then
+              echo "> Signing secrets not configured — only the debug APK was produced. "
+              echo "Add \`SIGNING_KEYSTORE_BASE64\`, \`SIGNING_KEYSTORE_PASSWORD\`, \`SIGNING_KEY_ALIAS\`, \`SIGNING_KEY_PASSWORD\` to enable signed releases."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

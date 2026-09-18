@@ -1,0 +1,81 @@
+name: Bug 反馈
+description: 报告一个可复现的问题（崩溃 / 模型加载失败 / UI 异常 / CI 失败等）
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！为了让问题能被快速复现，请尽量填全下面的字段。
+        提交前请先搜索一下是否已有相同 issue。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题所属区域
+      options:
+        - 模型推理 / LiteRT-LM
+        - Agent 运行时 / 工具调用
+        - UI（Liquid Glass）
+        - 会话 / 数据持久化
+        - 远程后端
+        - CI / 构建
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象描述
+      description: 发生了什么？期望行为是什么？
+      placeholder: 点击「发送」后应用闪退，期望是流式输出回复。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请按序号列出，越具体越好。
+      placeholder: |
+        1. 导入 Gemma 3n E2B (.litertlm)
+        2. 打开会话页，输入 "你好"
+        3. 点击发送
+        4. 崩溃
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: 使用的模型
+      description: 模型名称与格式，例如 `Gemma 3n E2B (.litertlm)`。与模型无关请填 N/A。
+      placeholder: Gemma 3n E2B (.litertlm)
+    validations:
+      required: false
+
+  - type: input
+    id: device
+    attributes:
+      label: 设备与系统
+      placeholder: Pixel 8 / Android 16 (API 36)
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本 / commit
+      placeholder: v0.1.0 或 commit sha
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 崩溃栈
+      description: adb logcat 或 CI 日志片段。请用代码块包裹。
+      render: shell
+    validations:
+      required: false

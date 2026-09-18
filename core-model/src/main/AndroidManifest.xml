@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- :core-model 是纯领域模型模块，不声明任何组件与权限 -->
+</manifest>

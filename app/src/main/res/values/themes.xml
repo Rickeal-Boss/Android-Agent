@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      LiquidAgent 主主题。
+
+      纯 Compose 应用，不引 AppCompat / Material Components，
+      因此直接继承平台主题 android:Theme.Material.NoActionBar。
+      Compose 侧的颜色/排版由 :core-design 的 LiquidAgentTheme 接管，
+      这里只负责：无 ActionBar + 深色窗口底色 + 透明状态栏（交给 Compose 画背景）。
+    -->
+    <style name="Theme.LiquidAgent" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+</resources>

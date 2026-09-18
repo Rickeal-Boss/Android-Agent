@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 启动图标底板（Liquid Glass 深空蓝紫） -->
+    <color name="ic_launcher_background">#FF0B1020</color>
+
+    <!-- Activity 窗口底色：Compose 内容绘制之前的那一帧，避免白闪 -->
+    <color name="window_background">#FF0B1020</color>
+</resources>
