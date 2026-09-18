@@ -1,4 +1,5 @@
 package com.rickeal.agent.ui
+import androidx.compose.foundation.layout.weight
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme

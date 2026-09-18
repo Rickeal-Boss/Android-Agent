@@ -1,4 +1,6 @@
 package com.rickeal.agent.core.design
+import androidx.compose.foundation.layout.weight
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.fillMaxSize
 
 import android.net.Uri

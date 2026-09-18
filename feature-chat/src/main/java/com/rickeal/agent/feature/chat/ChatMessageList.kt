@@ -1,4 +1,5 @@
 package com.rickeal.agent.feature.chat
+import androidx.compose.foundation.layout.weight
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
