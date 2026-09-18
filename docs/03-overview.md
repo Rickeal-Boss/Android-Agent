@@ -51,9 +51,25 @@ UI 采用 iOS 27 / iPadOS 27 的 Liquid Glass 视觉语言。
 - `.github/workflows/release.yml`：可选签名发布——四个签名属性（`signing.storeFile` / `storePassword` / `keyAlias` / `keyPassword`）缺任一即整体降级为 debug 包，**永不失败**
 - **约束**：仓库当前**没有任何 Actions variables / secrets**；工作流文件本身需要带 `workflow` 权限的凭据才能推送
 
+## CI 实战踩坑记录（本次开荒真实遇到，按出现顺序）
+
+| # | 报错 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | `Failed to apply plugin 'org.jetbrains.kotlin.android'` | **AGP 9.0 起内置 Kotlin**，禁止再显式应用该插件 | 9 个模块 + 根工程全部移除；`kotlin-compose` / `kotlin-serialization` 保留 |
+| 2 | `Unresolved reference 'AlignmentEnd'` | 笔误 | `Arrangement.spacedBy(10.dp, Alignment.End)` |
+| 3 | `Error parsing AndroidManifest.xml` | XML 注释里出现连续 `--`（XML 规范禁止） | 清理分隔线注释 |
+| 4 | `Unresolved reference 'matchParentSize'` | 该 API 的导入包在本项目 Compose 版本下无法确认 | 改用语义等价的 `fillMaxSize()` |
+| 5 | `Assignment type mismatch: android.graphics.RenderEffect vs androidx.compose.ui.graphics.RenderEffect` | `graphicsLayer` 要的是 Compose 包装类型 | 平台 `RenderEffect.createBlurEffect(...).asComposeRenderEffect()` |
+| 6 | `Unresolved reference 'createBlurEffect'` | Compose 的 `RenderEffect` 没有该工厂方法 | 该 P2 能力（默认关闭）先摘除，程序化光斑模糊效果不缺失 |
+| 7 | `Unresolved reference 'background' / 'pointerInput' / 'KeyboardOptions' / 'CornerRadius'` | 扩展函数与类缺导入 / 包名搬家 | 写脚本按「用到但没导入」自动补齐；`KeyboardOptions` 现属 `androidx.compose.foundation.text`，`CornerRadius` 属 `androidx.compose.ui.geometry` |
+| 8 | `Cannot access 'RowColumnParentData?.weight'` | `weight` / `align` 是 Row/Column/BoxScope 的**成员**，不能 import | 删掉误加的导入 |
+| 9 | `Unresolved reference 'useThreePane'` | UI 用了设计系统未定义的属性 | 在 `WindowSizeClass` 上补 `useTwoPane` / `useThreePane` |
+
+**结论**：AGP 9 + Compose BOM 2026.02 的**工具链与依赖解析本身没有问题**，全部失败都是代码层面对新版本 API 变化的适配。
+
 ## 已知待办
 
-1. CI 首次构建结果待确认，按日志修到绿灯（本地无 JDK/SDK，只能云端验证）
-2. LiteRT-LM 0.11.0 → 0.17.1 升级评估（需先核对新版 API）
-3. 真实背景模糊（`GlassConfig.enableBackdropBlur`）默认关闭，可在设置中开放开关
-4. 模型下载器（当前仅支持 SAF 手动导入，未内置 HuggingFace 直下）
+1. LiteRT-LM 0.11.0 → 0.17.1 升级评估（需先核对新版 API 面）
+2. 真实背景模糊（`GlassConfig.enableBackdropBlur`）目前摘除，恢复方式见 `LiquidGlassModifier.kt` 注释
+3. 模型下载器（当前仅支持 SAF 手动导入，未内置 HuggingFace 直下）
+4. 端到端真机验证：本地 4B 模型加载、多模态输入、工具调用循环尚未在真机跑过（云端只保证可编译可打包）
