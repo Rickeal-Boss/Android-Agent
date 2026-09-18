@@ -32,6 +32,9 @@ class AppContainer(private val context: Context) {
 
     val sandboxDir: File = File(context.filesDir, "agent_sandbox").apply { mkdirs() }
 
+    /** 模型下载（系统 DownloadManager，落盘到 externalFilesDir/Download）。 */
+    val modelDownloader: ModelDownloader = ModelDownloader(context)
+
     val engineEnvironment: EngineEnvironment = EngineEnvironment(
         cacheDir = context.cacheDir?.absolutePath,
         nativeLibraryDir = context.applicationInfo.nativeLibraryDir,

@@ -1,5 +1,6 @@
 package com.rickeal.agent.feature.models
 
+import android.app.DownloadManager
 import android.net.Uri
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
@@ -12,6 +13,7 @@ import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.ModelCapabilities
 import com.rickeal.agent.core.model.ModelDescriptor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,6 +32,10 @@ data class ModelsUiState(
     /** 已成功加载的模型 id */
     val loadedModelId: String? = null,
     val importDirPath: String = "",
+    /** 正在下载的模型名；非空表示有下载任务在跑 */
+    val downloadName: String? = null,
+    /** 下载进度 0~100 */
+    val downloadPercent: Int? = null,
     val message: String? = null,
     val error: String? = null,
     val capabilitiesText: String? = null,
@@ -38,6 +44,8 @@ data class ModelsUiState(
 class ModelsViewModel(
     private val container: AppContainer,
 ) : ViewModel() {
+
+    private var activeDownloadId: Long? = null
 
     private val _uiState = MutableStateFlow(ModelsUiState())
     val uiState: StateFlow<ModelsUiState> = _uiState.asStateFlow()
@@ -83,6 +91,84 @@ class ModelsViewModel(
                     container.settingsRepository.setActiveModel(descriptor.id)
                 }
             }
+        }
+    }
+
+    /**
+     * 从 URL 下载模型：交给系统 DownloadManager（支持断点续传与后台下载），
+     * 完成后自动复制进内部 models 目录并登记。
+     */
+    fun onDownloadFromUrl(url: String) {
+        val trimmed = url.trim()
+        if (!trimmed.startsWith("http://", ignoreCase = true) &&
+            !trimmed.startsWith("https://", ignoreCase = true)
+        ) {
+            _uiState.update { it.copy(error = "请填写 http(s) 开头的模型直链", message = null) }
+            return
+        }
+        viewModelScope.launch {
+            val fileName = trimmed.substringBefore('?').substringAfterLast('/').ifBlank { "model.litertlm" }
+            val downloadId = container.modelDownloader.enqueue(trimmed, fileName)
+            if (downloadId == null) {
+                _uiState.update { it.copy(error = "无法启动下载：系统下载服务不可用", message = null) }
+                return@launch
+            }
+            activeDownloadId = downloadId
+            _uiState.update {
+                it.copy(downloadName = fileName, downloadPercent = 0, error = null, message = "已开始下载：$fileName")
+            }
+            while (true) {
+                delay(1000L)
+                val progress = container.modelDownloader.progress(downloadId)
+                _uiState.update { it.copy(downloadPercent = progress.percent) }
+                when (progress.status) {
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        val descriptor = importDownloaded(progress.localUri)
+                        activeDownloadId = null
+                        _uiState.update {
+                            it.copy(
+                                downloadName = null,
+                                downloadPercent = null,
+                                error = if (descriptor == null) "下载完成，但导入失败" else null,
+                                message = descriptor?.let { m -> "已导入 ${m.fileName}" }
+                                    ?: "下载完成，导入失败",
+                            )
+                        }
+                        return@launch
+                    }
+
+                    DownloadManager.STATUS_FAILED -> {
+                        activeDownloadId = null
+                        _uiState.update {
+                            it.copy(
+                                downloadName = null,
+                                downloadPercent = null,
+                                error = progress.reason ?: "下载失败",
+                            )
+                        }
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
+
+    fun onCancelDownload() {
+        val id = activeDownloadId ?: return
+        container.modelDownloader.cancel(id)
+        activeDownloadId = null
+        _uiState.update { it.copy(downloadName = null, downloadPercent = null, message = "已取消下载") }
+    }
+
+    /** DownloadManager 完成后拿到的可能是 file:// 或 content://，两种都要能落到 models 目录。 */
+    private suspend fun importDownloaded(localUri: String?): ModelDescriptor? {
+        val raw = localUri ?: return null
+        val uri = Uri.parse(raw)
+        val path = if (raw.startsWith("file://", ignoreCase = true)) uri.path else null
+        return if (path != null) {
+            container.modelRepository.importFromPath(path)
+        } else {
+            container.modelRepository.importFromUri(uri)
         }
     }
 

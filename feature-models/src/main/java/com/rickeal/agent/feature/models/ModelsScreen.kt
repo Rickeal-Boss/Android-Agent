@@ -6,6 +6,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -31,11 +37,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.GlassButton
+import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassEmptyState
+import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassFab
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.model.ModelCapabilities
 
@@ -110,6 +120,14 @@ fun ModelsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            item {
+                ModelDownloadCard(
+                    downloadName = state.downloadName,
+                    downloadPercent = state.downloadPercent,
+                    onDownload = viewModel::onDownloadFromUrl,
+                    onCancel = viewModel::onCancelDownload,
+                )
+            }
             if (state.models.isEmpty()) {
                 item {
                     GlassEmptyState(
@@ -179,4 +197,61 @@ private fun guessCapabilities(fileName: String): ModelCapabilities {
         toolCalling = lower.contains("3n") || lower.contains("qwen"),
         thinking = lower.contains("qwen3") || lower.contains("thinking") || lower.contains("-r1"),
     )
+}
+
+/** 从直链下载模型的卡片：交给系统 DownloadManager，支持后台与断点续传。 */
+@Composable
+private fun ModelDownloadCard(
+    downloadName: String?,
+    downloadPercent: Int?,
+    onDownload: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
+    var url by remember { mutableStateOf("") }
+
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "从链接下载模型",
+                style = MaterialTheme.typography.titleSmall,
+                color = colors.onGlass,
+            )
+            Text(
+                text = "填写 .litertlm / .task 直链，由系统下载管理器后台下载，完成后自动登记到模型库。4B 模型约 2~4GB，建议 Wi-Fi。",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onGlassMuted,
+                modifier = Modifier.padding(top = tokens.gapSm),
+            )
+            Spacer(modifier = Modifier.height(tokens.gapMd))
+            GlassTextField(
+                value = url,
+                onValueChange = { url = it },
+                placeholder = "https://example.com/gemma-3n.litertlm",
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(modifier = Modifier.height(tokens.gapMd))
+            if (downloadName != null) {
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Text(
+                        text = "$downloadName ${downloadPercent ?: 0}%",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onGlass,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(modifier = Modifier.width(tokens.gapSm))
+                    GlassButton(text = "取消", onClick = onCancel, material = GlassMaterial.THIN)
+                }
+            } else {
+                GlassButton(
+                    text = "开始下载",
+                    onClick = { onDownload(url) },
+                    enabled = url.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
 }
