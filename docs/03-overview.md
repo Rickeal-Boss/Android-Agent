@@ -37,6 +37,7 @@ UI 采用 iOS 27 / iPadOS 27 的 Liquid Glass 视觉语言。
 ## 能力清单
 
 - **本地推理**：`.litertlm` / `.task` 加载，CPU / GPU / NPU 后端，能力探测（含投机解码探测）
+- **模型获取**：SAF 手动导入、目录扫描、**URL 直链下载**（系统 DownloadManager，后台 + 断点续传 + 通知栏进度，完成后自动登记入库）
 - **多模态输入**：文本 / 图片（PNG 字节）/ 音频；文本 token 必须排在最后（autoregressive 顺序要求）
 - **思考模式**：`enable_thinking` 透传 + `message.channels["thought"]` 思维链通道，UI 可折叠
 - **工具调用**：模型原生工具通道 + 文本协议（```json / `<tool_call>`）双兼容，最多 N 轮循环，超时与输出长度护栏
@@ -76,5 +77,5 @@ HEAD 提交 `d6e6d02` 的 `:app:assembleDebug` 构建**成功**，产物为 `liq
 
 1. LiteRT-LM 0.11.0 → 0.17.1 升级评估（需先核对新版 API 面）
 2. 真实背景模糊（`GlassConfig.enableBackdropBlur`）暂被摘除，恢复方式见 `LiquidGlassModifier.kt` 注释
-3. 模型下载器（当前仅支持 SAF 手动导入，未内置 HuggingFace 直下）
+3. 内置 Hugging Face 模型目录（当前需用户自己粘贴直链，未做仓库内模型索引）
 4. 端到端真机验证：本地 4B 模型加载、多模态输入、工具调用循环尚未在真机跑过（云端只保证可编译可打包）
