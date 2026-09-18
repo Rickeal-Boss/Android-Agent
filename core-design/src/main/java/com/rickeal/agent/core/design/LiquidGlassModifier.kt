@@ -116,11 +116,10 @@ fun Modifier.liquidGlass(
 
         // 6) 噪点微纹理（固定种子，尺寸变化时重建；数量与尺寸无关，开销恒定）
         val noisePoints = if (noise) buildNoisePoints(width, height, 150) else emptyList()
-        val noisePaint = Paint().apply {
-            this.color = colors.glassSpecular.copy(alpha = spec.noiseAlpha * safeIntensity)
-            this.strokeWidth = 1.5f
-            this.strokeCap = StrokeCap.Round
-        }
+        // 噪点用 DrawScope 的 color 版 drawPoints（DrawScope 没有 Paint 版重载），
+        // 透明度单独算好，避免每帧构造 Paint。
+        val noiseColor = colors.glassSpecular
+        val noiseAlpha = (spec.noiseAlpha * safeIntensity).coerceIn(0f, 1f)
 
         val strokeWidthPx = tokens.highlightStrokeWidth.toPx().coerceAtLeast(0.5f)
         val halfStroke = strokeWidthPx * 0.5f
@@ -163,7 +162,10 @@ fun Modifier.liquidGlass(
                 drawPoints(
                     points = noisePoints,
                     pointMode = PointMode.Points,
-                    paint = noisePaint,
+                    color = noiseColor,
+                    strokeWidth = 1.5f,
+                    cap = StrokeCap.Round,
+                    alpha = noiseAlpha,
                 )
             }
         }
