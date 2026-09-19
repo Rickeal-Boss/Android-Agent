@@ -26,6 +26,14 @@ package com.rickeal.agent.feature.models
  *  2. 本口径仅适用于 **4k 上下文**；上下文调大需按上面 KV(n) 线性上调。
  *
  * 这些是**估算值**，真机实测后应回填 `ModelDescriptor` 的实测字段。
+ *
+ * 校准锚点（Google 官方 `google-ai-edge/gallery` 的 `model_allowlist.json`，含
+ * `estimatedPeakMemoryInBytes` 字段）：
+ *   - Gemma 3n E2B int4：2.92GB 权重 → 峰值 5.5GB（≈1.9×）
+ *   - Gemma 3n E4B int4：4.10GB 权重 → 峰值 6.5GB（≈1.6×）
+ *   - Gemma3-1B q4   ：0.52GB 权重 → 峰值 2.0GB（≈3.9×，小模型由固定基线主导）
+ * 结论：中大型模型用 1.6~1.9× 是准的，但**小模型不能按体积线性缩放**，
+ * 必须设下限（约 2GB），否则会低估到以为「512MB 模型谁都能跑」。
  */
 data class ModelPreset(
     val label: String,
@@ -138,8 +146,8 @@ object ModelPresets {
             label = "LFM2.5-VL 450M · 视觉",
             url = "$BASE/LFM2.5-VL-450M/resolve/main/LFM2.5-VL-450M_int8.litertlm",
             sizeText = "0.52 GB",
-            ramText = "≥ 1.0 GB",
-            requiredRamBytes = (1.0 * GB).toLong(),
+            ramText = "≥ 2.0 GB",
+            requiredRamBytes = (2.0 * GB).toLong(),
             memBasis = BASIS_CPU,
             note = "能看懂图片：用来体验拍照问答，体积最小",
             sizeBytes = 558345748,
