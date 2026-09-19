@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 /** 下载刚开始的这段时间用 200ms 快速采样，尽快拿到有意义的速度估计；之后降到 1s。 */
 private const val DOWNLOAD_FAST_POLL_WINDOW_MILLIS = 3_000L
@@ -1018,10 +1019,12 @@ class ModelsViewModel(
         }
     }
 
+    // Locale 必须钉死：默认 Locale 在部分欧洲语区把小数点输出成逗号（1,5 GB），
+    // 在阿拉伯语区输出阿拉伯数字 —— 与同仓 ChatContextMeter 的口径保持一致。
     private fun formatBytes(bytes: Long): String = when {
-        bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
-        bytes >= 1_048_576L -> "%.0f MB".format(bytes / 1_048_576.0)
-        else -> "%.0f KB".format(bytes / 1024.0)
+        bytes >= 1_073_741_824L -> "%.1f GB".format(Locale.US, bytes / 1_073_741_824.0)
+        bytes >= 1_048_576L -> "%.0f MB".format(Locale.US, bytes / 1_048_576.0)
+        else -> "%.0f KB".format(Locale.US, bytes / 1024.0)
     }
 
     /**

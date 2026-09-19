@@ -58,6 +58,7 @@ import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.model.ModelCapabilities
+import java.util.Locale
 
 @Composable
 fun ModelsScreen(
@@ -571,8 +572,8 @@ private fun downloadStatusText(
 
 /** 速率文案：≥1MB/s 用 MB/s，≥1KB/s 用 KB/s，否则用 B/s（1024 进制，与系统下载通知口径一致）。 */
 private fun formatSpeed(bytesPerSecond: Long): String = when {
-    bytesPerSecond >= 1_048_576L -> "%.1f MB/s".format(bytesPerSecond / 1_048_576.0)
-    bytesPerSecond >= 1024L -> "%.0f KB/s".format(bytesPerSecond / 1024.0)
+    bytesPerSecond >= 1_048_576L -> "%.1f MB/s".format(Locale.US, bytesPerSecond / 1_048_576.0)
+    bytesPerSecond >= 1024L -> "%.0f KB/s".format(Locale.US, bytesPerSecond / 1024.0)
     else -> "$bytesPerSecond B/s"
 }
 

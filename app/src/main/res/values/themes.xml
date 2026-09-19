@@ -13,6 +13,14 @@
         <item name="android:windowBackground">@color/window_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!--
+          这里只定冷启动那一帧的初值。运行时的实际取值由 LiquidAgentApp 在
+          darkTheme 变化时用 WindowCompat.getInsetsController(...) 覆盖
+          （isAppearanceLightStatusBars / isAppearanceLightNavigationBars = !darkTheme）。
+          必须这么做的原因：项目走了 edge-to-edge（MainActivity 里
+          setDecorFitsSystemWindows(false)），系统不再自动反色，写死 false 会让
+          浅色主题下的状态栏图标是白的、画在浅色壁纸上几乎看不见。
+        -->
         <item name="android:windowLightStatusBar">false</item>
     </style>
 

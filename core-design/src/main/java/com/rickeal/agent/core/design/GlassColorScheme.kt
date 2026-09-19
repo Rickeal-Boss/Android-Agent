@@ -44,8 +44,13 @@ fun lightGlassColorScheme(): GlassColorScheme = GlassColorScheme(
     glassSpecular = Color(0xFFFFFFFF),
     glassShadow = Color(0x1F0B1B3A),
     onGlass = Color(0xFF10121A),
-    onGlassMuted = Color(0x9910121A),
-    onGlassSubtle = Color(0x6610121A),
+    // 次级/弱文本的 alpha 不能再压：浅色玻璃叠在浅色壁纸上后，
+    // 0x99（60%）≈ #8A8A8E、0x66（40%）≈ #96969A —— 后者对浅色底只有约 2.6:1，
+    // 而它承担着大量 11sp labelSmall（小字号没有 3:1 的放宽，必须 4.5:1）。
+    // 提到 0xCC / 0xB3 后实测约 8:1 / 6.6:1，达标。
+    // 深色那套（0xB3 / 0x80 的白）本来就 ≈4.7:1，不动。
+    onGlassMuted = Color(0xCC10121A),
+    onGlassSubtle = Color(0xB310121A),
     accent = Color(0xFF2B6BFF),
     accentMuted = Color(0x332B6BFF),
     onAccent = Color(0xFFFFFFFF),

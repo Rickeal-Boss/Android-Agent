@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 /* ------------------------------------------------------------------ 表面 */
 
@@ -254,7 +255,7 @@ fun GlassBubble(
 }
 
 private fun usageText(usage: GlassBubbleUsage): String {
-    val tps = if (usage.tokensPerSecond > 0f) " · %.1f tok/s".format(usage.tokensPerSecond) else ""
+    val tps = if (usage.tokensPerSecond > 0f) " · %.1f tok/s".format(Locale.US, usage.tokensPerSecond) else ""
     val ttft = if (usage.firstTokenLatencyMillis > 0L) " · 首字 ${usage.firstTokenLatencyMillis}ms" else ""
     return "in ${usage.promptTokens} / out ${usage.completionTokens}$tps$ttft"
 }

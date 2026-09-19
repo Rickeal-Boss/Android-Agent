@@ -41,6 +41,7 @@ import com.rickeal.agent.core.data.DarkMode
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.model.ThinkingMode
+import java.util.Locale
 
 @Composable
 fun SettingsScreen(
@@ -104,7 +105,7 @@ fun SettingsScreen(
                         onValueChange = { viewModel.onThemePreview(state.theme.copy(glassIntensity = it)) },
                         onValueChangeFinished = { viewModel.onThemeCommit() },
                         label = "玻璃质感强度",
-                        valueText = "%.2f".format(state.theme.glassIntensity),
+                        valueText = "%.2f".format(Locale.US, state.theme.glassIntensity),
                         valueRange = 0.5f..1.5f,
                         modifier = Modifier.padding(top = 8.dp),
                     )
@@ -176,7 +177,7 @@ fun SettingsScreen(
                         },
                         onValueChangeFinished = { viewModel.onConfigCommit() },
                         label = "Temperature",
-                        valueText = "%.2f".format(state.config.sampling.temperature),
+                        valueText = "%.2f".format(Locale.US, state.config.sampling.temperature),
                         valueRange = 0f..2f,
                     )
                     GlassSlider(
@@ -188,7 +189,7 @@ fun SettingsScreen(
                         },
                         onValueChangeFinished = { viewModel.onConfigCommit() },
                         label = "Top-P",
-                        valueText = "%.2f".format(state.config.sampling.topP),
+                        valueText = "%.2f".format(Locale.US, state.config.sampling.topP),
                         valueRange = 0f..1f,
                         modifier = Modifier.padding(top = 8.dp),
                     )

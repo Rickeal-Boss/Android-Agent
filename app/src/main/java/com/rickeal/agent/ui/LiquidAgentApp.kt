@@ -27,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -34,7 +35,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -91,6 +94,20 @@ fun LiquidAgentApp() {
         DarkMode.LIGHT -> false
         DarkMode.SYSTEM -> systemDark
     }
+
+    // 浅色主题下把状态栏 / 导航栏图标切成深色。
+    // themes.xml 的 windowLightStatusBar=false 让图标恒为白色，画在浅色壁纸上几乎看不见；
+    // 项目又走了 edge-to-edge（MainActivity 里 setDecorFitsSystemWindows(false)），
+    // 系统不会再自动帮我们反色，只能自己在 darkTheme 变化时同步一次。
+    val view = LocalView.current
+    LaunchedEffect(darkTheme) {
+        val window = (view.context as? Activity)?.window ?: return@LaunchedEffect
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = !darkTheme
+            isAppearanceLightNavigationBars = !darkTheme
+        }
+    }
+
     val glassConfig = GlassConfig(
         // 真实背景模糊：minSdk 31 = Android 12，RenderEffect 官方保证可用，默认打开。
         // 之前这里写死 false 是为了绕过「无法本地验证」时期的编译风险，现已用正确的

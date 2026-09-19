@@ -25,6 +25,7 @@ import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ThinkingMode
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /** EXPANDED（平板/折叠屏）下的常驻参数面板。 */
@@ -142,7 +143,7 @@ fun ChatParamsContent(
                     },
                     onValueChangeFinished = onParamCommit,
                     label = "Temperature",
-                    valueText = "%.2f".format(config.sampling.temperature),
+                    valueText = "%.2f".format(Locale.US, config.sampling.temperature),
                     valueRange = 0f..2f,
                     enabled = samplingEnabled,
                 )
@@ -153,7 +154,7 @@ fun ChatParamsContent(
                     },
                     onValueChangeFinished = onParamCommit,
                     label = "Top-P",
-                    valueText = "%.2f".format(config.sampling.topP),
+                    valueText = "%.2f".format(Locale.US, config.sampling.topP),
                     valueRange = 0f..1f,
                     enabled = samplingEnabled,
                 )
@@ -175,7 +176,7 @@ fun ChatParamsContent(
                     },
                     onValueChangeFinished = onParamCommit,
                     label = "重复惩罚",
-                    valueText = "%.2f".format(config.sampling.repetitionPenalty),
+                    valueText = "%.2f".format(Locale.US, config.sampling.repetitionPenalty),
                     valueRange = 1f..2f,
                     enabled = samplingEnabled,
                 )
