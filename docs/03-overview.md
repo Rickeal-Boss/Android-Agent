@@ -76,7 +76,10 @@ HEAD 提交 `d6e6d02` 的 `:app:assembleDebug` 构建**成功**，产物为 `liq
 ## 已知待办
 
 1. LiteRT-LM 0.11.0 → 0.17.1 升级评估（需先核对新版 API 面）
-2. 真实背景模糊（`GlassConfig.enableBackdropBlur`）暂被摘除，恢复方式见 `LiquidGlassModifier.kt` 注释
+2. ~~真实背景模糊（`GlassConfig.enableBackdropBlur`）暂被摘除~~ —— **已恢复并默认开启**：
+   正确用法是 Compose 原生的 `BlurEffect(radiusX, radiusY, TileMode)`（不是此前误用的
+   `RenderEffect.createBlurEffect`），minSdk 31 = Android 12 官方保证可用。详见
+   `core-design/.../GlassBackdrop.kt` 与 `LiquidGlassModifier.kt` 注释。
 3. 内置 Hugging Face 模型目录（当前需用户自己粘贴直链，未做仓库内模型索引）
 4. 端到端真机验证：本地 4B 模型加载、多模态输入、工具调用循环尚未在真机跑过（云端只保证可编译可打包）
 

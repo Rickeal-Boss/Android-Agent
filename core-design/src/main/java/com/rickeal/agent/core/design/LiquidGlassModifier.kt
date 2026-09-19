@@ -14,41 +14,45 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import kotlin.math.max
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.random.Random
 
 /**
  * 纯函数版 `liquidGlass`：所有视觉输入显式传入。
  *
  * 绘制顺序（自下而上）：
+ *   0. 模糊背景层（[backdropBlur]，画在内容之前，所以内容永远清晰）
  *   1. content（已由 clip 裁剪到圆角内）
- *   2. 背景折射光斑（把壁纸光斑场按自身尺寸缩放后画进来 —— 视觉上"透出背后壁纸"）
- *   3. 玻璃底色（上亮下暗垂直渐变）
+ *   2. 玻璃底色（上亮下暗垂直渐变）
+ *   3. 底部接触阴影
  *   4. 内描边（顶亮底暗，1.5dp）
- *   5. 顶部折射高光带（上 1/3 区域柔和白色渐变）
- *   6. 底部接触阴影
- *   7. 噪点微纹理（固定种子，避免大面积纯色的"塑料感"）
+ *   5. 方向性边缘光（沿形状内缘的柔和环形高光，按 specularAngle 定向）
+ *   6. 噪点微纹理（固定种子，避免大面积纯色的"塑料感"）
  *
  * 本 Modifier **自带 clip**，调用方无需再 `.clip()`（重复 clip 也无害）。
+ * [backdropBlur] 会被插到 clip 之内、drawWithCache 之前，因此模糊背景同样被圆角裁剪。
  */
 fun Modifier.liquidGlass(
     tokens: GlassTokens,
     colors: GlassColorScheme,
-    backdrop: GlassBackdrop,
     material: GlassMaterial = GlassMaterial.REGULAR,
     cornerRadius: Dp = GlassDefaults.RadiusLg,
     intensity: Float = 1f,
     noise: Boolean = true,
     specular: Boolean = true,
+    backdropBlur: Modifier = Modifier,
 ): Modifier = this
     .clip(RoundedCornerShape(cornerRadius))
+    .then(backdropBlur)
     .drawWithCache {
         val spec = GlassMaterials.of(material)
         val height = size.height.coerceAtLeast(1f)
@@ -70,19 +74,7 @@ fun Modifier.liquidGlass(
             endY = height,
         )
 
-        // 2) 背景折射：把壁纸光斑场按自身尺寸缩放后画进来
-        val refractionAlpha = (spec.refractionAlpha * safeIntensity).coerceIn(0f, 1f)
-        val refracted = backdrop.blobs.map { blob ->
-            RefractionBlob(
-                center = Offset(blob.x * width, blob.y * height),
-                radius = blob.radiusFraction * max(width, height) * 0.5f,
-                brush = Brush.radialGradient(
-                    colors = listOf(blob.color.copy(alpha = refractionAlpha), Color.Transparent),
-                ),
-            )
-        }
-
-        // 3) 内描边：顶亮底暗
+        // 2) 内描边：顶亮底暗
         val borderAlpha = (spec.borderAlpha * safeIntensity).coerceIn(0f, 1f)
         val borderBrush = Brush.verticalGradient(
             colors = listOf(
@@ -94,17 +86,30 @@ fun Modifier.liquidGlass(
             endY = height,
         )
 
-        // 4) 顶部折射高光带
-        val specularBrush = Brush.verticalGradient(
+        // 3) 方向性边缘光：沿形状内缘的柔和环形高光
+        //    方向由 tokens.specularAngle 决定（线性渐变：迎光侧亮、背光侧透明），
+        //    柔度由「多遍同心描边 + 逐遍衰减」得到 —— 不新建离屏图层，也不用 AGSL / RuntimeShader。
+        val angleRad = tokens.specularAngle * (PI / 180.0)
+        val dirX = cos(angleRad).toFloat()
+        val dirY = sin(angleRad).toFloat()
+        val centerX = width * 0.5f
+        val centerY = height * 0.5f
+        val reach = (abs(dirX) * width + abs(dirY) * height) * 0.5f
+        val edgePeakAlpha = (spec.specularAlpha * safeIntensity * 0.5f).coerceIn(0f, 1f)
+        val edgeBrush = Brush.linearGradient(
             colors = listOf(
-                colors.glassSpecular.copy(alpha = (spec.specularAlpha * safeIntensity).coerceIn(0f, 1f)),
+                colors.glassSpecular.copy(alpha = edgePeakAlpha),
                 Color.Transparent,
             ),
-            startY = 0f,
-            endY = (height * tokens.specularBandRatio.coerceIn(0.05f, 0.9f)).coerceAtLeast(1f),
+            start = Offset(centerX - dirX * reach, centerY - dirY * reach),
+            end = Offset(centerX + dirX * reach, centerY + dirY * reach),
         )
+        val edgeFalloff = tokens.specularFalloff.coerceAtLeast(0.25f)
+        val glowDepth = (minOf(width, height) * tokens.specularBandRatio * 0.25f)
+            .coerceIn(1.5.dp.toPx(), 10.dp.toPx())
+        val edgePasses = 5
 
-        // 5) 底部接触阴影（让玻璃"坐"在壁纸上，而不是浮在贴纸上）
+        // 4) 底部接触阴影（让玻璃"坐"在壁纸上，而不是浮在贴纸上）
         val contactBrush = Brush.verticalGradient(
             colors = listOf(
                 Color.Transparent,
@@ -114,7 +119,7 @@ fun Modifier.liquidGlass(
             endY = height,
         )
 
-        // 6) 噪点微纹理（固定种子，尺寸变化时重建；数量与尺寸无关，开销恒定）
+        // 5) 噪点微纹理（固定种子，尺寸变化时重建；数量与尺寸无关，开销恒定）
         val noisePoints = if (noise) buildNoisePoints(width, height, 150) else emptyList()
         // 噪点用 DrawScope 的 color 版 drawPoints（DrawScope 没有 Paint 版重载），
         // 透明度单独算好，避免每帧构造 Paint。
@@ -126,9 +131,6 @@ fun Modifier.liquidGlass(
 
         onDrawWithContent {
             drawContent()
-            for (blob in refracted) {
-                drawCircle(brush = blob.brush, center = blob.center, radius = blob.radius)
-            }
             drawRoundRect(brush = fillBrush, cornerRadius = corner)
             drawRoundRect(brush = contactBrush, cornerRadius = corner)
             drawRoundRect(
@@ -145,18 +147,19 @@ fun Modifier.liquidGlass(
                 style = Stroke(width = strokeWidthPx),
             )
             if (specular) {
-                drawRoundRect(
-                    brush = specularBrush,
-                    topLeft = Offset(strokeWidthPx, strokeWidthPx),
-                    size = Size(
-                        width = (width - strokeWidthPx * 2).coerceAtLeast(0f),
-                        height = (height * tokens.specularBandRatio - strokeWidthPx).coerceAtLeast(0f),
-                    ),
-                    cornerRadius = CornerRadius(
-                        x = (radiusPx * 0.85f).coerceAtLeast(0f),
-                        y = (radiusPx * 0.85f).coerceAtLeast(0f),
-                    ),
-                )
+                // 描边以形状边界为中心，外侧一半被外层 clip 裁掉 —— 于是得到「内边光」。
+                for (pass in 1..edgePasses) {
+                    val band = glowDepth * pass / edgePasses
+                    val passAlpha = edgePeakAlpha / (1f + (pass - 1) * edgeFalloff)
+                    drawRoundRect(
+                        brush = edgeBrush,
+                        topLeft = Offset.Zero,
+                        size = Size(width, height),
+                        cornerRadius = corner,
+                        alpha = passAlpha.coerceIn(0f, 1f),
+                        style = Stroke(width = band * 2f),
+                    )
+                }
             }
             if (noisePoints.isNotEmpty()) {
                 drawPoints(
@@ -172,8 +175,11 @@ fun Modifier.liquidGlass(
     }
 
 /**
- * Composable 版：从 CompositionLocal 取 tokens/colors/backdrop/config。UI 代码一律用这个。
+ * Composable 版：从 CompositionLocal 取 tokens/colors/config/背景源。UI 代码一律用这个。
  * （刻意不用 Modifier.composed —— 该 API 在新版 Compose 里已不推荐，用 @Composable 扩展更安全。）
+ *
+ * 真实背景模糊（P2 已恢复）：`GraphicsLayer.record` + `BlurEffect`，
+ * 纯 Compose 层实现，不需要平台互操作。详见 [glassBackdropBlur]。
  */
 @Composable
 fun Modifier.liquidGlass(
@@ -185,22 +191,26 @@ fun Modifier.liquidGlass(
 ): Modifier {
     val tokens = LocalGlassTokens.current
     val colors = LocalGlassColors.current
-    val backdrop = LocalGlassBackdrop.current
     val config = LocalGlassConfig.current
-    // 真实 RenderEffect 背景模糊（P2）暂未启用：Compose 侧需要把平台 RenderEffect
-    // 用 asComposeRenderEffect() 转换，API 面无法在本地核对，为避免反复试错先摘除。
-    // 默认路径（程序化光斑伪模糊）已经能给出「背景内容联动」的观感，功能不缺失。
-    // 恢复方式：新建 glassBackdropBlur() 并在此处调用（必须先于 liquidGlass 应用）。
-    val blurred = this
-    return blurred.liquidGlass(
+    val backdrop = LocalGlassBackdropState.current
+    // 模糊半径取材质的 blurRadius（静态值，不参与动画）；没有背景源时退化为纯玻璃。
+    val backdropBlur = if (config.enableBackdropBlur && backdrop != null) {
+        Modifier.glassBackdropBlur(
+            state = backdrop,
+            blurRadius = GlassMaterials.of(material).blurRadius,
+        )
+    } else {
+        Modifier
+    }
+    return this.liquidGlass(
         tokens = tokens,
         colors = colors,
-        backdrop = backdrop,
         material = material,
         cornerRadius = cornerRadius,
         intensity = intensity * config.intensity,
         noise = noise && config.enableNoise,
         specular = specular && config.enableSpecular,
+        backdropBlur = backdropBlur,
     )
 }
 
@@ -225,12 +235,6 @@ fun Modifier.liquidPress(
         scaleY = scale
     }
 }
-
-private class RefractionBlob(
-    val center: Offset,
-    val radius: Float,
-    val brush: Brush,
-)
 
 private fun buildNoisePoints(width: Float, height: Float, count: Int): List<Offset> {
     val random = Random(2026)

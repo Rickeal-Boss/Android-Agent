@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
@@ -22,6 +23,9 @@ import kotlin.math.max
 /**
  * 玻璃骨架。壁纸铺底 → 顶栏 → 内容 → 底栏 → FAB / Snackbar 浮层。
  * 刻意不用 material3 的 Scaffold：我们需要壁纸贯穿整个层级，且 inset 由调用方决定。
+ *
+ * 壁纸那一层同时被 [glassBackdropSource] 录制进一个 GraphicsLayer，
+ * 通过 `LocalGlassBackdropState` 下发 —— 这是所有玻璃节点「真实背景模糊」的来源。
  */
 @Composable
 fun GlassScaffold(
@@ -34,33 +38,43 @@ fun GlassScaffold(
     contentWindowInsets: WindowInsets = WindowInsets(0, 0, 0, 0),
     content: @Composable (PaddingValues) -> Unit,
 ) {
-    Box(modifier = modifier.fillMaxSize()) {
-        wallpaper()
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(contentWindowInsets),
-        ) {
-            topBar()
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                content(PaddingValues(0.dp))
+    val backdropState = rememberGlassBackdropState()
+    CompositionLocalProvider(LocalGlassBackdropState provides backdropState) {
+        Box(modifier = modifier.fillMaxSize()) {
+            // 壁纸层：内容录制进背景图层，供玻璃节点取用（本身观感不变）。
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .glassBackdropSource(backdropState),
+            ) {
+                wallpaper()
             }
-            bottomBar()
-        }
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 20.dp, bottom = 20.dp)
-                .windowInsetsPadding(contentWindowInsets),
-        ) {
-            floatingActionButton()
-        }
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 104.dp),
-        ) {
-            snackbarHost()
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(contentWindowInsets),
+            ) {
+                topBar()
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    content(PaddingValues(0.dp))
+                }
+                bottomBar()
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 20.dp, bottom = 20.dp)
+                    .windowInsetsPadding(contentWindowInsets),
+            ) {
+                floatingActionButton()
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 104.dp),
+            ) {
+                snackbarHost()
+            }
         }
     }
 }

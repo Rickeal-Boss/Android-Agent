@@ -237,8 +237,7 @@ class ModelsViewModel(
                             // 小白友好：下完直接用，不用再手动选一次模型
                             container.settingsRepository.setActiveModel(descriptor.id)
                             // 注意：这里**绝不能**再删下载目录里的文件 —— 就地登记后它本身就是模型文件。
-                            // （旧实现因为先复制了一份，才需要 deleteDownloadedSource 删掉「复制源」；
-                            //  现在不需要复制，那段逻辑已整体移除。）
+                            // （旧实现是「先复制进内部目录、再删掉下载源」；现在不复制了，也就不需要删。）
                         }
                         _uiState.update {
                             it.copy(
@@ -511,3 +510,4 @@ class ModelsViewModel(
         bytes >= 1_048_576L -> "%.0f MB".format(bytes / 1_048_576.0)
         else -> "%.0f KB".format(bytes / 1024.0)
     }
+}

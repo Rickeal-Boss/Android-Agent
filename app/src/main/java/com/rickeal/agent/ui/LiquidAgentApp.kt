@@ -88,7 +88,10 @@ fun LiquidAgentApp() {
         DarkMode.SYSTEM -> systemDark
     }
     val glassConfig = GlassConfig(
-        enableBackdropBlur = false,
+        // 真实背景模糊：minSdk 31 = Android 12，RenderEffect 官方保证可用，默认打开。
+        // 之前这里写死 false 是为了绕过「无法本地验证」时期的编译风险，现已用正确的
+        // BlurEffect 落地，保持开启才能看到液态玻璃的真实观感。
+        enableBackdropBlur = true,
         enableNoise = themeState.enableNoise,
         enableSpecular = true,
         reduceMotion = themeState.reduceMotion,

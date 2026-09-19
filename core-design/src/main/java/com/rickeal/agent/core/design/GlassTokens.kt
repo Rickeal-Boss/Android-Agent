@@ -19,8 +19,17 @@ data class GlassTokens(
     // ---- 描边 / 高光 ----
     val borderWidth: Dp = 1.dp,
     val highlightStrokeWidth: Dp = 1.5.dp,
+    /** 方向性边缘光的衰减带比例（相对形状短边） */
     val specularBandRatio: Float = 0.34f,
+    /**
+     * 方向性边缘光的光源方位角（度，屏幕坐标系：0° = 正右，90° = 正下，顺时针）。
+     * 45° 表示光从左上方射入 —— 玻璃的左上边缘最亮，右下边缘最暗。
+     */
+    val specularAngle: Float = 45f,
+    /** 边缘光向内的衰减强度：越大，光晕越贴边（1 = 线性衰减）。 */
+    val specularFalloff: Float = 1f,
     // ---- 模糊 / 折射 ----
+    /** 真实背景模糊的兜底半径（玻璃节点用材质自带的 blurRadius） */
     val blurRadius: Dp = 28.dp,
     val refractionSpread: Dp = 6.dp,
     // ---- 阴影 ----

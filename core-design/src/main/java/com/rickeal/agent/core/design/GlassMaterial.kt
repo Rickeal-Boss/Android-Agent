@@ -5,7 +5,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
- * 玻璃材质分层。差异体现在「底色 alpha + 模糊半径 + 高光强度」，不是简单的深浅。
+ * 玻璃材质分层。差异体现在「底色 alpha + 真实背景模糊半径 + 高光强度」，不是简单的深浅。
  * 使用规范见 docs/01-architecture.md §8.10。
  */
 @Immutable
@@ -21,13 +21,15 @@ enum class GlassMaterial {
 data class GlassMaterialSpec(
     /** 材质底色的不透明度（决定"玻璃有多厚"） */
     val backgroundAlpha: Float,
-    /** 背景模糊半径（程序化路径下用于光斑的扩散程度） */
+    /**
+     * 真实背景模糊半径（dp）。直接喂给 `BlurEffect`，
+     * 与材质厚度正相关：越厚的玻璃，背景被磨得越平。
+     * 静态值 —— 不做逐帧动画（动画半径会逐帧重建 RenderEffect，开销随半径×面积增长）。
+     */
     val blurRadius: Dp,
-    /** 折射：背景色被"吸"进玻璃的强度 */
-    val refractionAlpha: Float,
     /** 内描边（顶亮底暗）的峰值 alpha */
     val borderAlpha: Float,
-    /** 顶部高光强度 */
+    /** 方向性边缘光的峰值 alpha */
     val specularAlpha: Float,
     /** 噪点 alpha */
     val noiseAlpha: Float,
@@ -39,7 +41,6 @@ object GlassMaterials {
     val UltraThin = GlassMaterialSpec(
         backgroundAlpha = 0.14f,
         blurRadius = 14.dp,
-        refractionAlpha = 0.30f,
         borderAlpha = 0.30f,
         specularAlpha = 0.16f,
         noiseAlpha = 0.020f,
@@ -48,7 +49,6 @@ object GlassMaterials {
     val Thin = GlassMaterialSpec(
         backgroundAlpha = 0.22f,
         blurRadius = 20.dp,
-        refractionAlpha = 0.24f,
         borderAlpha = 0.38f,
         specularAlpha = 0.20f,
         noiseAlpha = 0.026f,
@@ -57,7 +57,6 @@ object GlassMaterials {
     val Regular = GlassMaterialSpec(
         backgroundAlpha = 0.34f,
         blurRadius = 28.dp,
-        refractionAlpha = 0.18f,
         borderAlpha = 0.50f,
         specularAlpha = 0.28f,
         noiseAlpha = 0.032f,
@@ -66,7 +65,6 @@ object GlassMaterials {
     val Thick = GlassMaterialSpec(
         backgroundAlpha = 0.52f,
         blurRadius = 36.dp,
-        refractionAlpha = 0.12f,
         borderAlpha = 0.62f,
         specularAlpha = 0.34f,
         noiseAlpha = 0.038f,
@@ -75,7 +73,6 @@ object GlassMaterials {
     val Opaque = GlassMaterialSpec(
         backgroundAlpha = 0.92f,
         blurRadius = 40.dp,
-        refractionAlpha = 0.04f,
         borderAlpha = 0.18f,
         specularAlpha = 0.10f,
         noiseAlpha = 0.016f,
