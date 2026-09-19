@@ -26,7 +26,16 @@ import android.os.Build
  * `core-model/build.gradle.kts` 与 docs/01-architecture.md §1.3 都写明该模块
  * **无 Android 依赖**（只用 java.util / java.io），而 `android.os.Build` 是 Android API。
  * 本模块已经承载同类设备能力查询（`AppContainer.availableMemoryBytes` /
- * `availableStorageBytes`），所以门禁放这里。
+ * `availableStorageBytes` / `isMeteredNetwork`），所以门禁放这里。
+ *
+ * 这条约束**有机器校验，只是不在编译期**：`core-model` 用的是 `com.android.library` 插件，
+ * `android.os.Build` 放进去**编译照样通过** —— 编译能过 ≠ 架构没被破坏。
+ * 真正拦它的是 CI 里的架构守卫 `scripts/arch-guard.sh` 第 3 条规则
+ * **「core-model 无 android/androidx 依赖」**（检查 `core-model/` 下是否出现
+ * android / androidx 的 import，命中即让 CI 失败）。
+ * 所以搬错位置的后果不是"没人管"，而是**拖到 CI 才红**：比编译期报错更晚暴露、多花一轮。
+ * （该规则只认 import 行，若写成全限定名 `android.os.Build.SOC_MODEL` 而不 import 能绕过它。）
+ * 移动本文件前请先读完这一段。
  */
 object DeviceCapability {
 

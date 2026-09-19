@@ -148,7 +148,7 @@ An exception occurred applying plugin request [id: 'org.jetbrains.kotlin.android
 | 2 | `:core-model` | `com.rickeal.agent.core.model` | com.android.library | **纯领域模型 + 序列化 + 纯算法**。无 Android 依赖（除 `java.util`）、无 Compose | 无 | 全部 |
 | 3 | `:core-engine` | `com.rickeal.agent.core.engine` | com.android.library | 引擎抽象 + LiteRT-LM 实现 + OpenAI 兼容实现 + 能力探测 | `:core-model` | `:core-agent`、feature、`app` |
 | 4 | `:core-agent` | `com.rickeal.agent.core.agent` | com.android.library | Agent 循环、工具注册中心、内置工具、上下文压缩 | `:core-model`、`:core-engine` | feature、`app` |
-| 5 | `:core-data` | `com.rickeal.agent.core.data` | com.android.library | DataStore + JSON 文件持久化 + 仓库 + **AppContainer + CompositionLocal** | `:core-model` | feature、`app` |
+| 5 | `:core-data` | `com.rickeal.agent.core.data` | com.android.library | DataStore + JSON 文件持久化 + 仓库 + **AppContainer + CompositionLocal** + **设备能力探测（`DeviceCapability`）** | `:core-model`、`:core-engine` | feature、`app` |
 | 6 | `:core-design` | `com.rickeal.agent.core.design` | com.android.library | Liquid Glass 设计系统（tokens / 颜色 / 动效 / 组件）+ 窗口尺寸自适应工具 | 无（纯 Compose） | feature、`app` |
 | 7 | `:feature-chat` | `com.rickeal.agent.feature.chat` | com.android.library | 对话页 + 参数面板 + 多模态输入 | 2,3,4,5,6 | `app` |
 | 8 | `:feature-models` | `com.rickeal.agent.feature.models` | com.android.library | 模型库 / 导入 / 加载 / 后端选择 / 能力探测 | 2,3,5,6 | `app` |
