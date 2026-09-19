@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 enum class ModelFamily {
     GEMMA_3N,
     GEMMA_3,
+    GEMMA_4,
     QWEN_3,
     LLAMA,
     PHI,

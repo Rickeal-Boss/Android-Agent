@@ -59,6 +59,8 @@ object ModelHeuristics {
         // 注意顺序：gemma-3n 同时含 "3n" 与 "gemma-3"，必须先判 3n
         lower.contains("3n") -> ModelFamily.GEMMA_3N
         lower.contains("gemma-3") || lower.contains("gemma3") -> ModelFamily.GEMMA_3
+        // gemma-4 不含 "3n"、也不含 "gemma-3"，与上面两条不冲突；紧邻 Gemma 分支保持可读
+        lower.contains("gemma-4") || lower.contains("gemma4") -> ModelFamily.GEMMA_4
         lower.contains("qwen3") || lower.contains("qwen-3") -> ModelFamily.QWEN_3
         lower.contains("llama") -> ModelFamily.LLAMA
         lower.contains("phi") -> ModelFamily.PHI
@@ -94,6 +96,27 @@ object ModelHeuristics {
             preferredBackends = setOf(InferenceBackend.GPU, InferenceBackend.CPU),
         )
 
+        // Gemma 4（E2B / E4B，litert-community 的 .litertlm 版本）—— 能力位逐项依据：
+        // - image / audio：litert-community 模型卡写明「the Vision and Audio models are loaded
+        //   on demand / as needed」；Google Gemma 4 模型卡写明「handling text and image input
+        //   (with audio supported on E2B, E4B, and 12B models)」。
+        // - toolCalling：Google Gemma 4 模型卡「Function Calling – Native support for structured
+        //   tool use, enabling agentic workflows」。
+        // - thinking：未在 LiteRT-LM 侧查到「思考通道」的可靠依据，按「查不到就不设」保守关闭。
+        // - speculativeDecoding：litert-community 两张模型卡均有独立章节写明
+        //   「Speculative decoding is available on CPU and GPU on Mobile and Desktop」。
+        // - 后端：模型卡 Android 基准只列 CPU / GPU（NPU 仅出现在 IoT 的独立 NPU 模型上），
+        //   本工程预设也只提供 CPU / GPU 两个文件，故取 GPU + CPU。
+        ModelFamily.GEMMA_4 -> ModelCapabilities(
+            text = true,
+            image = true,
+            audio = true,
+            toolCalling = true,
+            thinking = false,
+            speculativeDecoding = lower.contains("e2b") || lower.contains("e4b"),
+            preferredBackends = setOf(InferenceBackend.GPU, InferenceBackend.CPU),
+        )
+
         ModelFamily.QWEN_3 -> ModelCapabilities(
             text = true,
             image = false,
@@ -123,6 +146,9 @@ object ModelHeuristics {
         return when (family) {
             ModelFamily.GEMMA_3N -> 8192
             ModelFamily.GEMMA_3 -> 8192
+            // litert-community 模型卡称「可支持到 32k」，但本工程预设的内存估算按 KV@4096 计的，
+            // 按「宁可给小不给大」先与 GEMMA_3N / GEMMA_3 对齐取 8192。
+            ModelFamily.GEMMA_4 -> 8192
             ModelFamily.QWEN_3 -> 32768
             ModelFamily.LLAMA -> 8192
             ModelFamily.PHI -> 4096
