@@ -23,6 +23,16 @@ package com.rickeal.agent.feature.models
  *   - `KV(n)` = 2 × L(层) × H_kv(kv 头数) × D(head_dim) × n(上下文 token) × 2 字节
  *   - `O` = max(200MB, 0.12 × W)（运行时 + prefill 激活）
  *   - `×1.25` = Android 安全余量（无 swap + LMK + App 自身 150~300MB）
+ *   - **没有预设可对时**（SAF 导入的自定义模型、或因重名落成 `name-1.ext` 的下载），
+ *     `ModelsViewModel.estimateRequiredRamBytes` 用同一条式子但**没有 KV 项**，于是系统性
+ *     偏乐观，由调用点乘补偿系数 `×1.13` 补上（常量
+ *     `ModelsViewModel.NO_PRESET_KV_COMPENSATION`）。它不是随手定的：按下面 8 条反算
+ *     「估算 / 预设」的比值，最大缺口出现在 E2B·GPU = **1.1242**（其余 1.000~1.112），
+ *     向上取整即 1.13。
+ *   - **这个补偿只作用于无预设那一支**：有预设时预设才是权威值（`maxOf(preset, 估算)`，
+ *     估算保持 `×1.25`）。给有预设的模型也乘一次，会把闸门抬到预设之上 —— 例如
+ *     Phi-4-mini 会从 5.6 被抬到 6.0 GiB，把刚消掉的「大模型误拦」加回来，而且卡片上
+ *     「≥ 5.6 GB」的文案会和实际闸门对不上。**改这里的系数要同步改那边，反之亦然。**
  *
  * 两点必须避开：
  *  1. **不要拿 Edge0 披露的 2.9GB / 1.0GB 反推系数** —— 那是 MoE + SSD 流式加载下的
@@ -59,6 +69,14 @@ data class ModelPreset(
 object ModelPresets {
 
     private const val BASE = "https://huggingface.co/litert-community"
+
+    /**
+     * 1 GiB（2^30）。**刻意沿用「GB」这个命名、以及界面上「GB」的写法，别改。**
+     *
+     * 数值口径是二进制的（`sizeBytes` / `requiredRamBytes` / `formatBytes` 全部按 2^30 算），
+     * 但面向用户的文案写「GiB」只是给非技术用户加噪音，而 2^30 与 10^9 之间那 7% 的差异
+     * 落在一个本身还是估算值的阈值上，不构成任何决策变化。所以：**内部按 GiB 算，对外说 GB**。
+     */
     private const val GB = 1_073_741_824L
 
     private const val BASIS_GPU =

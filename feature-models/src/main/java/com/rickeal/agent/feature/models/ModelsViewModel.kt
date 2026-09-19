@@ -27,6 +27,63 @@ private const val DOWNLOAD_FAST_POLL_WINDOW_MILLIS = 3_000L
 /** 速率 EMA 的平滑系数（新样本权重）：越小越平滑、越大越灵敏。 */
 private const val DOWNLOAD_RATE_EMA_ALPHA = 0.3
 
+/**
+ * **只作用于「查不到预设」那一支**的 KV 缺口补偿系数，别当成全局安全系数用。
+ *
+ * ## 来历
+ *
+ * 预设式是 `(W·f + KV(n) + O) × 1.25`，KV 项是**显式算进去的**；而
+ * [ModelsViewModel.estimateRequiredRamBytes] 这条估算式**没有 KV 项**（层数 / kv 头数 /
+ * head_dim 只有真正打开模型文件才探得到），所以它系统性偏乐观。
+ *
+ * 按 8 条预设反算「估算值 / 预设值」，最大缺口出现在 E2B·GPU = **1.1242**（其余 1.000~1.112），
+ * 向上取整到 1.13 即可覆盖。
+ *
+ * ## 作用域（改之前先读这段）
+ *
+ * **只有 `ModelPresets.findByFileName` 返回 null 时**才乘它：`name-1.ext` 重名下载、
+ * SAF 导入的自定义文件 —— 也就是我们对该模型一无所知的那条路。
+ *
+ * 有预设时**绝不能**乘：预设才是权威值，估算只用来兜「用户把后端从 CPU 切到 GPU/NPU」
+ * 那一支（`maxOf`）。多乘一次会把闸门抬到预设之上，把刚消掉的「大模型误拦」又加回来 ——
+ * 例如 Phi-4-mini 会从 5.6 被抬到 6.0 GiB，而且卡片上「≥ 5.6 GB」的文案会和实际闸门对不上。
+ */
+private const val NO_PRESET_KV_COMPENSATION = 1.13
+
+/**
+ * 内存闸门拦下一次加载时带出的信息，供 UI 渲染「仍要加载」确认框。
+ *
+ * ## 为什么估算值必须配一个出口
+ *
+ * [requiredBytes] 是**估算值，不是实测值**（口径见 `ModelPresets` 顶部注释：连
+ * `sizeBytes` 都还没在真机上校准过）。在一个自己标注为估算值的数字上做**不可绕过**的
+ * 决策，是拿精度不足的尺子去堵死用户 —— 估算偏保守时机器其实跑得动，用户只会以为
+ * 「我的手机不行」，而且没有任何自救手段。
+ *
+ * 一致性上也是这么定的：NPU 门控（`DeviceCapability`，阈值同样是估计值）走的就是
+ * warning-only。内存阈值既然是估算，就不该比它更硬。
+ *
+ * 所以闸门从「硬拦」降级为「警告 + 仍要加载」：**不是放开保护，是不用估算值替用户
+ * 做不可逆的决定**。风险由 [riskText] 讲清楚，决定权交回用户。
+ *
+ * ## UI 接法
+ *
+ * `memoryGateBlock != null` 时弹确认框；两个按钮分别调 [ModelsViewModel.onLoadIgnoringMemoryGate]
+ * 与 [ModelsViewModel.dismissMemoryGate]。正文直接用 [riskText]（文案放数据层是为了保证
+ * 「风险说明」不会被 UI 漏掉）。
+ */
+@Immutable
+data class MemoryGateBlock(
+    val modelId: String,
+    val fileName: String,
+    /** 估算需要的可用内存（字节）。估算值，非实测值。 */
+    val requiredBytes: Long,
+    /** 检测时的可用内存（字节）。 */
+    val availableBytes: Long,
+    /** 给 UI 直接渲染的正文，含风险说明。 */
+    val riskText: String,
+)
+
 @Immutable
 data class ModelsUiState(
     val models: List<ModelDescriptor> = emptyList(),
@@ -52,6 +109,8 @@ data class ModelsUiState(
     val allowMeteredDownload: Boolean = false,
     val message: String? = null,
     val error: String? = null,
+    /** 非空表示：内存闸门拦下了一次加载，等用户决定是否「仍要加载」 */
+    val memoryGateBlock: MemoryGateBlock? = null,
     val capabilitiesText: String? = null,
 )
 
@@ -239,9 +298,17 @@ class ModelsViewModel(
                         // 2~4GB 的模型因此省掉一次完整拷贝（I/O、耗时、以及复制瞬间的 2 倍峰值占用）。
                         val descriptor = registerDownloaded(progress.localUri, fileName, progress.fromCursor)
                         activeDownloadId = null
-                        // 完整性校验：半成品模型会在 native 层崩溃（用户只看到闪退），必须在这里拦下
-                        val mismatch = descriptor?.let { verifySize(it, preset) }
-                        if (descriptor != null && mismatch == null) {
+                        // 体积体检只产出一句提示，**不产出判决**：DM 说下完了就照常登记、照常设为当前模型。
+                        // 判据与「为什么不能删」见 sizeHint 的注释（旧实现在这里形成过下载死循环）。
+                        val hint = descriptor?.let {
+                            sizeHint(
+                                descriptor = it,
+                                preset = preset,
+                                downloadedBytes = progress.bytesDownloaded,
+                                totalBytes = progress.totalBytes,
+                            )
+                        }
+                        if (descriptor != null) {
                             // 小白友好：下完直接用，不用再手动选一次模型
                             container.settingsRepository.setActiveModel(descriptor.id)
                             // 注意：这里**绝不能**再删下载目录里的文件 —— 就地登记后它本身就是模型文件。
@@ -253,19 +320,15 @@ class ModelsViewModel(
                                 downloadPercent = null,
                                 downloadSpeedBytesPerSecond = null,
                                 downloadEtaSeconds = null,
-                                error = mismatch
-                                    ?: if (descriptor == null) "下载完成，但登记失败" else null,
+                                error = if (descriptor == null) "下载完成，但登记失败" else null,
                                 message = when {
-                                    mismatch != null -> null
-                                    descriptor != null ->
+                                    descriptor == null -> "下载完成，登记失败"
+                                    hint != null ->
+                                        "已加入模型库 ${descriptor.fileName}，已设为当前模型。$hint"
+                                    else ->
                                         "已加入模型库 ${descriptor.fileName}，已设为当前模型，现在可以去对话页开始聊天了"
-                                    else -> "下载完成，登记失败"
                                 },
-                                activeModelId = if (mismatch == null) {
-                                    descriptor?.id ?: it.activeModelId
-                                } else {
-                                    it.activeModelId
-                                },
+                                activeModelId = descriptor?.id ?: it.activeModelId,
                             )
                         }
                         return@launch
@@ -382,15 +445,42 @@ class ModelsViewModel(
     }
 
     fun onLoad(id: String) {
+        loadModel(id, ignoreMemoryGate = false)
+    }
+
+    /**
+     * 用户在「内存可能不足」提示里点了「仍要加载」。
+     *
+     * 只有从 [MemoryGateBlock] 走过来的请求才允许绕过闸门 —— 也就是说用户确实看过
+     * 风险说明并做了选择。没有待确认项时直接忽略，避免被误调用成「无条件跳过闸门」。
+     */
+    fun onLoadIgnoringMemoryGate() {
+        val blocked = _uiState.value.memoryGateBlock ?: return
+        _uiState.update { it.copy(memoryGateBlock = null) }
+        loadModel(blocked.modelId, ignoreMemoryGate = true)
+    }
+
+    /** 用户在「内存可能不足」提示里点了取消。 */
+    fun dismissMemoryGate() {
+        _uiState.update { it.copy(memoryGateBlock = null, message = null) }
+    }
+
+    private fun loadModel(id: String, ignoreMemoryGate: Boolean) {
         viewModelScope.launch {
-            _uiState.update { it.copy(loadingModelId = id, error = null, message = null) }
+            _uiState.update {
+                it.copy(loadingModelId = id, error = null, message = null, memoryGateBlock = null)
+            }
             val model = container.modelRepository.find(id)
             if (model == null) {
                 _uiState.update { it.copy(loadingModelId = null, error = "模型不存在") }
                 return@launch
             }
             // 内存闸门：本地推理的内存不足会在 native 层表现为崩溃（用户看到的是闪退），
-            // 提前拦下比加载几十秒后崩溃体验好得多。
+            // 提前提醒比加载几十秒后崩溃体验好得多。
+            //
+            // 但**不硬拦**：阈值是估算值，估算偏保守时机器其实跑得动，硬拦会让用户以为
+            // 「我的手机不行」且毫无自救手段。所以这里只把信息放进 memoryGateBlock，
+            // 由用户决定是否仍要加载（理由见 MemoryGateBlock 的注释）。
             //
             // 阈值口径：**优先用预设里按公式推导的 requiredRamBytes**（口径见 ModelPresets 顶部
             // 注释），查不到预设时才退回估算。
@@ -402,8 +492,11 @@ class ModelsViewModel(
             //    注释警告了，代码没照做。
             //  - 大模型被**高估**：Phi-4-mini 体积 3.64GB，2× = 7.28GB，而推导值是 5.6GB
             //    —— 12GB 机型可用内存常年 6~7GB，本来能跑却被拦死。
-            if (model.sizeBytes > 0L) {
+            if (model.sizeBytes > 0L && !ignoreMemoryGate) {
                 val backend = _uiState.value.config.backend
+                val preset = ModelPresets.findByFileName(model.fileName)
+                // 口径与预设式一致（不含 KV 项）。**不要在这里叠 KV 补偿**：补偿只属于
+                // 「查不到预设」那一支，理由见 NO_PRESET_KV_COMPENSATION 的注释。
                 val estimated = estimateRequiredRamBytes(model.sizeBytes, backend)
                 // 预设值只在「与它的推导后端一致」时才是权威的，所以要跟估算取较大值：
                 //
@@ -417,17 +510,31 @@ class ModelsViewModel(
                 //  反过来不会多拦：后端与预设口径一致时，预设值恒 ≥ 估算值（预设含 KV cache、
                 //  估算不含，这个差额足以覆盖），我按 8 条逐个回算验证过。所以 maxOf 只在
                 //  「后端比预设口径更贵」时才生效，正好补缺口。
-                val required = ModelPresets.findByFileName(model.fileName)
+                //
+                // 无预设那一支才补 KV 缺口，且补偿写在调用点 —— 让「它只作用于这一支」一眼可见。
+                val required = preset
                     ?.requiredRamBytes
                     ?.let { maxOf(it, estimated) }
-                    ?: estimated
+                    ?: (estimated * NO_PRESET_KV_COMPENSATION).toLong()
                 val available = container.availableMemoryBytes()
                 if (available < required) {
+                    val riskText = "加载这个模型大约需要 ${formatBytes(required)} 可用内存，" +
+                        "当前只有 ${formatBytes(available)}。" +
+                        "强行加载可能会失败并闪退，正在进行的对话如果还没保存可能会丢失。"
                     _uiState.update {
                         it.copy(
                             loadingModelId = null,
-                            error = "可用内存不足：需要约 ${formatBytes(required)}，" +
-                                "当前可用 ${formatBytes(available)}。请在模型库改用更小/量化更狠的模型，或先释放后台应用。",
+                            memoryGateBlock = MemoryGateBlock(
+                                modelId = id,
+                                fileName = model.fileName,
+                                requiredBytes = required,
+                                availableBytes = available,
+                                riskText = riskText,
+                            ),
+                            // 兜底显示：确认框还没接上时，至少要解释「点了为什么没反应」，
+                            // 否则闸门从「报错」降级成「静默无响应」是纯粹的退步。
+                            // UI 接好后这条 message 可以删（对话框直接用 memoryGateBlock.riskText）。
+                            message = riskText,
                         )
                     }
                     return@launch
@@ -541,28 +648,58 @@ class ModelsViewModel(
         return "能力：${caps.joinToString("·")}　后端：$backendText"
     }
     /**
-     * 校验下载结果是否完整：与预设体积偏差超过 2% 即判定为不完整。
+     * 下载完成后的体积体检。**返回的是一句提示，不是判决；本函数永远不会删文件。**
      *
-     * 为什么必须做：网络中断/截断会留下不完整的模型文件，而 LiteRT-LM 加载这种文件时
-     * 是在 **native 层**失败——用户看到的是 App 闪退，完全不知道是文件坏了。
-     * 这里提前拦下并给出明确提示，同时删掉坏文件避免它留在模型库里。
+     * ## 为什么不能拿体积当删除依据（这曾经是个死循环）
+     *
+     * 旧实现是「实际体积 < 预设 `sizeBytes` × 0.98 → 删掉文件并报错」。问题在于
+     * `sizeBytes` 是**手写进源码的估算值**，谁也没在真机上验过。一旦某个预设填大了
+     * （例如上游换成了更大的打包，或当初就是估的），用户每次下完 2~4GB 都会被判成
+     * 「不完整」→ 删除 → 提示重新下载 → 再下再删。用户永远下不完一个模型，而且
+     * 每次都要重新花流量和时间。**拿估算值当真相，就必然出现这种循环。**
+     *
+     * ## 完整性只认 DownloadManager 的账本
+     *
+     * `bytesDownloaded == totalBytes` 是唯一能区分「下完了」与「下了一半」的信息源，
+     * 它是真实传输过程的记录，不是估算。DM 说下完了，我们就认为下完了：
+     * 照常登记、照常设为当前模型，`sizeBytes` 只用来提示「上游仓库可能换过文件」。
+     *
+     * ## 拿不到 DM 总数时
+     *
+     * 才退回体积比对，且阈值放宽到 0.70、**只警告不删**。放宽是因为这个兜底同样
+     * 建立在估算值上，宁可漏报（让用户自己去试加载）也不能误报（删掉一个可能是好的文件）。
      *
      * 就地登记后 [ModelDescriptor.path] 指向的就是下载目录里的那个文件，
-     * 所以这里的删除依然作用于「下载落盘文件」本身，口径没变。
+     * 所以这里曾经删的确实是「下载落盘文件」本身——口径没错，错的是判据。
      */
-    private fun verifySize(descriptor: ModelDescriptor, preset: ModelPreset?): String? {
+    private fun sizeHint(
+        descriptor: ModelDescriptor,
+        preset: ModelPreset?,
+        downloadedBytes: Long,
+        totalBytes: Long,
+    ): String? {
         val expected = preset?.sizeBytes ?: return null
         val actual = descriptor.sizeBytes
         if (expected <= 0L || actual <= 0L) return null
-        // 只判「明显小于」，不判「明显大于」：
-        // sizeBytes 是我们硬编码的估算值，若预设填小了（实测 > 预期），文件其实很可能是完整的，
-        // 绝不能因为预设不准就把用户下完的 2~4GB 删掉。双向判定 = 拿估算值当真相。
-        if (actual < expected * 0.98) {
-            runCatching { java.io.File(descriptor.path).delete() }
-            return "下载的文件不完整（预期 " + formatBytes(expected) + "，实际 " +
-                formatBytes(actual) + "），已删除，请重新下载"
+
+        // 偏小 30% 以上 → 更可能是真的没下完（截断）
+        val looksTruncated = actual < expected * 0.70
+        // 偏离 ±2% → 更可能是上游换了打包（估算值本身的误差不会到这个量级）
+        val looksChanged = actual < expected * 0.98 || actual > expected * 1.02
+        // DownloadManager 的账本：它说下完了，就不能因为体积不符而拒绝登记
+        val dmSaysComplete = totalBytes > 0L && downloadedBytes >= totalBytes
+
+        return when {
+            looksTruncated ->
+                "警告：文件体积（${formatBytes(actual)}）明显小于预期（${formatBytes(expected)}），" +
+                    "可能没有下载完整。建议删掉后重新下载；如仍要使用，加载失败时请删除它。"
+            looksChanged && dmSaysComplete ->
+                "提示：文件体积（${formatBytes(actual)}）与预期（${formatBytes(expected)}）不一致，" +
+                    "上游仓库可能换过文件。如果加载失败，请删掉后重新下载。"
+            // 拿不到 DM 总数时，±2% 的小偏差不足以下结论（预期值本身就是估算），
+            // 所以只有「明显偏小」才提醒 —— 阈值放宽到 0.70 的理由。
+            else -> null
         }
-        return null
     }
 
     private fun formatBytes(bytes: Long): String = when {
@@ -572,18 +709,22 @@ class ModelsViewModel(
     }
 
     /**
-     * 没有预设可对时的内存需求估算（SAF 导入的自定义模型、或因重名落成 `name-1.ext` 的下载）。
-     *
-     * 口径照 `ModelPresets` 顶部注释简化：`(W × f_backend + O) × 1.25`，其中
+     * 内存需求估算，**口径与预设式一致**：`(W × f_backend + O) × 1.25`，其中
      * `f_backend` = CPU 1.05 / GPU 1.25 / NPU **未实测**（理由见下面 `when` 里的注释），
-     * `O = max(200MB, 0.12 × W)`。
+     * `O = max(200MB, 0.12 × W)`，`1.25` = Android 安全余量（无 swap + LMK + App 自身 150~300MB）。
+     *
+     * 这个返回值有两处用途，语义不同，别混：
+     *  1. **有预设**（`loadModel` 里的 `maxOf`）：只用来兜「用户把后端从 CPU 切到 GPU/NPU」
+     *     那一支。预设已经显式算了 KV(n)，所以这里**不能**再叠 KV 补偿，否则闸门会高于预设值。
+     *  2. **无预设**：调用方乘 [NO_PRESET_KV_COMPENSATION] 补上缺掉的 KV 项。补偿放在
+     *     调用点而不是这里，就是为了让「它只作用于哪一支」一眼可见。
      *
      * **2GB 下限是必须的，不是保险丝**：小模型的固定开销（运行时 + prefill 激活 + App 自身）
      * 不随权重线性缩放，纯按体积算会把「0.5GB 的模型」误判成「1GB 内存就能跑」，然后在 native
      * 层崩溃。这正是预设里 LFM2.5-VL 450M 的 `requiredRamBytes` 取 2.0GB 而不是按体积算的原因。
      *
      * 已知偏乐观之处：**不含 KV cache**（需要层数 / kv 头数 / head_dim，只有真正打开模型文件
-     * 才探得到），所以长上下文场景下这个值是偏低的。带预设的模型走精确值，这里只服务兜底路径。
+     * 才探得到），所以长上下文场景下这个值是偏低的 —— 缺口由上面第 2 条补偿。
      */
     private fun estimateRequiredRamBytes(weights: Long, backend: InferenceBackend): Long {
         val factor = when (backend) {
