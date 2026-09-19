@@ -35,6 +35,10 @@ data class ModelPreset(
     val ramText: String,
     /** 加载前内存闸门用的阈值（字节）。 */
     val requiredRamBytes: Long,
+    /** 下载体积（字节），用于下载前的存储空间检查。 */
+    val sizeBytes: Long,
+    /** 是否推荐给新手（排序时置顶，UI 打「新手推荐」标识）。 */
+    val recommended: Boolean = false,
     /** 数字是怎么来的，写进数据里，后人才能校准。 */
     val memBasis: String,
     val note: String,
@@ -58,7 +62,9 @@ object ModelPresets {
             ramText = "≥ 3.6 GB",
             requiredRamBytes = (3.6 * GB).toLong(),
             memBasis = BASIS_GPU,
-            note = "端侧主力：GPU / NPU 后端首选，速度与质量平衡",
+            note = "端侧主力：画质与速度平衡，有 GPU/NPU 的手机首选",
+            sizeBytes = 2007897210,
+            recommended = true,
         ),
         ModelPreset(
             label = "Gemma 4 E2B · CPU",
@@ -67,7 +73,9 @@ object ModelPresets {
             ramText = "≥ 3.9 GB",
             requiredRamBytes = (3.9 * GB).toLong(),
             memBasis = BASIS_CPU,
-            note = "同模型的 CPU 版，兼容性最好、无 GPU 依赖",
+            note = "同上的 CPU 版：兼容性最好，慢一些但不容易出错",
+            sizeBytes = 2587717795,
+            recommended = false,
         ),
         ModelPreset(
             label = "Gemma 4 E4B · GPU",
@@ -76,7 +84,9 @@ object ModelPresets {
             ramText = "≥ 5.2 GB",
             requiredRamBytes = (5.2 * GB).toLong(),
             memBasis = BASIS_GPU,
-            note = "更大有效参数量，需 8GB+ 内存机型",
+            note = "更大的模型：回答更好，需要 8GB 以上内存的手机",
+            sizeBytes = 2974264852,
+            recommended = false,
         ),
         ModelPreset(
             label = "Qwen2.5 1.5B · q8",
@@ -85,7 +95,9 @@ object ModelPresets {
             ramText = "≥ 2.4 GB",
             requiredRamBytes = (2.4 * GB).toLong(),
             memBasis = BASIS_CPU,
-            note = "中文表现好、体积小，低配机型友好",
+            note = "中文好、体积小，6GB 内存的手机也能流畅跑",
+            sizeBytes = 1599875317,
+            recommended = true,
         ),
         ModelPreset(
             label = "DeepSeek-R1 蒸馏 Qwen 1.5B",
@@ -94,7 +106,9 @@ object ModelPresets {
             ramText = "≥ 2.7 GB",
             requiredRamBytes = (2.7 * GB).toLong(),
             memBasis = BASIS_CPU,
-            note = "蒸馏自带思维链，适合验证「思考模式」",
+            note = "会先「想一想」再回答，适合体验思考过程",
+            sizeBytes = 1836098519,
+            recommended = false,
         ),
         ModelPreset(
             label = "MiniCPM5 2B · int4",
@@ -103,7 +117,9 @@ object ModelPresets {
             ramText = "≥ 2.4 GB",
             requiredRamBytes = (2.4 * GB).toLong(),
             memBasis = BASIS_CPU,
-            note = "小体积、高质量，中文任务表现佳",
+            note = "新手推荐：体积小、中文强，大多数手机都能跑",
+            sizeBytes = 1556925644,
+            recommended = true,
         ),
         ModelPreset(
             label = "Phi-4-mini · q8",
@@ -112,7 +128,9 @@ object ModelPresets {
             ramText = "≥ 5.6 GB",
             requiredRamBytes = (5.6 * GB).toLong(),
             memBasis = BASIS_CPU,
-            note = "推理与代码能力强，仅建议 12GB+ 机型",
+            note = "推理与代码能力强，但体积大，仅建议 12GB 内存机型",
+            sizeBytes = 3908420239,
+            recommended = false,
         ),
         ModelPreset(
             label = "LFM2.5-VL 450M · 视觉",
@@ -121,9 +139,14 @@ object ModelPresets {
             ramText = "≥ 1.0 GB",
             requiredRamBytes = (1.0 * GB).toLong(),
             memBasis = BASIS_CPU,
-            note = "视觉语言模型，用来验证图片输入（多模态）",
+            note = "能看懂图片：用来体验拍照问答，体积最小",
+            sizeBytes = 558345748,
+            recommended = false,
         ),
     )
+
+    /** 推荐项置顶，供「一键获取模型」对话框使用。 */
+    val recommendedFirst: List<ModelPreset> = all.sortedByDescending { it.recommended }
 
     /** 按 URL 反查预设（用于下载卡片显示口径与内存阈值）。 */
     fun findByUrl(url: String): ModelPreset? = all.firstOrNull { it.url == url }

@@ -107,6 +107,21 @@ class ModelsViewModel(
             return
         }
         viewModelScope.launch {
+            // 下载前检查存储空间：GB 级文件下到一半失败，代价太高
+            val preset = ModelPresets.findByUrl(trimmed)
+            if (preset != null) {
+                val need = (preset.sizeBytes * 1.2 + 200L * 1024 * 1024).toLong()
+                val available = container.availableStorageBytes()
+                if (available < need) {
+                    _uiState.update {
+                        it.copy(
+                            error = "存储空间不足：需要约 ${formatBytes(need)}，当前可用 ${formatBytes(available)}。请先清理空间。",
+                            message = null,
+                        )
+                    }
+                    return@launch
+                }
+            }
             val fileName = trimmed.substringBefore('?').substringAfterLast('/').ifBlank { "model.litertlm" }
             val downloadId = container.modelDownloader.enqueue(trimmed, fileName)
             if (downloadId == null) {
@@ -125,13 +140,19 @@ class ModelsViewModel(
                     DownloadManager.STATUS_SUCCESSFUL -> {
                         val descriptor = importDownloaded(progress.localUri)
                         activeDownloadId = null
+                        if (descriptor != null) {
+                            // 小白友好：下完直接用，不用再手动选一次模型
+                            container.settingsRepository.setActiveModel(descriptor.id)
+                        }
                         _uiState.update {
                             it.copy(
                                 downloadName = null,
                                 downloadPercent = null,
                                 error = if (descriptor == null) "下载完成，但导入失败" else null,
-                                message = descriptor?.let { m -> "已导入 ${m.fileName}" }
-                                    ?: "下载完成，导入失败",
+                                message = descriptor?.let { m ->
+                                    "已导入 ${m.fileName}，已设为当前模型，现在可以去对话页开始聊天了"
+                                } ?: "下载完成，导入失败",
+                                activeModelId = descriptor?.id ?: it.activeModelId,
                             )
                         }
                         return@launch

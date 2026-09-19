@@ -64,6 +64,7 @@ fun ModelsScreen(
     var pendingUri by remember { mutableStateOf<Uri?>(null) }
     var pendingName by remember { mutableStateOf("") }
     var pendingCaps by remember { mutableStateOf(ModelCapabilities()) }
+    var showPresetDialog by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -133,9 +134,9 @@ fun ModelsScreen(
             }
             if (state.models.isEmpty()) {
                 item {
-                    GlassEmptyState(
-                        title = "暂无本地模型",
-                        subtitle = "点右下角导入 .litertlm / .task，或把文件放到内部 models 目录后扫描",
+                    BeginnerImportCard(
+                        onGetModel = { showPresetDialog = true },
+                        onPickFile = { picker.launch(arrayOf("*/*")) },
                     )
                 }
             }
@@ -174,6 +175,19 @@ fun ModelsScreen(
                 }
             }
         }
+    }
+
+    if (showPresetDialog) {
+        RecommendedModelDialog(
+            downloadingName = state.downloadName,
+            downloadPercent = state.downloadPercent,
+            onPick = { preset ->
+                showPresetDialog = false
+                viewModel.onDownloadFromUrl(preset.url)
+            },
+            onCancelDownload = viewModel::onCancelDownload,
+            onDismiss = { showPresetDialog = false },
+        )
     }
 
     val uri = pendingUri
@@ -280,6 +294,50 @@ private fun ModelDownloadCard(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+        }
+    }
+}
+
+/**
+ * 没有任何模型时的引导卡 —— 面向小白，不说术语、替用户做决定。
+ *
+ * 主路径是「一键下载」（用户此刻几乎肯定没有模型文件），
+ * 次路径才是「我已有模型文件」（给已经下好的进阶用户）。
+ */
+@Composable
+private fun BeginnerImportCard(
+    onGetModel: () -> Unit,
+    onPickFile: () -> Unit,
+) {
+    val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
+
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "还没有模型",
+                style = MaterialTheme.typography.titleMedium,
+                color = colors.onGlass,
+            )
+            Text(
+                text = "可以直接下载一个（约 1~4GB，建议连 Wi-Fi），也可以选择你已经下载好的文件。",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onGlassMuted,
+                modifier = Modifier.padding(top = tokens.gapSm),
+            )
+            Spacer(modifier = Modifier.height(tokens.gapMd))
+            GlassButton(
+                text = "一键获取模型（推荐）",
+                onClick = onGetModel,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(modifier = Modifier.height(tokens.gapSm))
+            GlassButton(
+                text = "我已有模型文件",
+                onClick = onPickFile,
+                material = GlassMaterial.THIN,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

@@ -108,6 +108,14 @@ class AppContainer(private val context: Context) {
         }.getOrDefault(Long.MAX_VALUE)
     }
 
+    /**
+     * 可用存储空间（字节）。用于「下载模型前」的检查：
+     * 4B 模型 1~4GB，下到一半空间不足会浪费用户大量时间和流量，必须提前拦下。
+     */
+    fun availableStorageBytes(): Long = runCatching {
+        android.os.StatFs(context.filesDir.absolutePath).availableBytes
+    }.getOrDefault(Long.MAX_VALUE)
+
     fun close() {
         engineFactory.closeAll()
     }
