@@ -111,14 +111,12 @@ class AppContainer(private val context: Context) {
         val info = ActivityManager.MemoryInfo()
         return runCatching {
             manager.getMemoryInfo(info)
-            // Android 14（API 34）起 availMem 在大内存机型上会比真实可用内存低 1.5~3GB，
-            // 会让内存闸门误报「内存不足」，把本可运行的模型拦下来。advertisedMem 是修正值。
-            // 用全限定名，避免与既有 import 冲突（本项目踩过重复导入导致 ambiguous 的坑）。
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                info.advertisedMem
-            } else {
-                info.availMem
-            }
+            // 不要改用 advertisedMem（API 34+）：它是「设备标称内存」（营销档位的 8GB / 12GB），
+            // 不是当前可用内存。用它做闸门会让闸门几乎永远通过 —— 该拦的拦不住，
+            // 用户点加载就直接 native 崩溃。
+            // 失败模式的取舍很明确：误报只是「拦下、用户换个更小的模型」，
+            // 而闸门失效是崩溃。宁可偏保守。
+            info.availMem
         }.getOrDefault(Long.MAX_VALUE)
     }
 
