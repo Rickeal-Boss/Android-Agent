@@ -111,7 +111,8 @@ class ModelsViewModel(
             val preset = ModelPresets.findByUrl(trimmed)
             if (preset != null) {
                 val need = (preset.sizeBytes * 1.2 + 200L * 1024 * 1024).toLong()
-                val available = container.availableStorageBytes()
+                // StatFs 是阻塞 I/O，别占着主线程
+                val available = withContext(Dispatchers.IO) { container.availableStorageBytes() }
                 if (available < need) {
                     _uiState.update {
                         it.copy(

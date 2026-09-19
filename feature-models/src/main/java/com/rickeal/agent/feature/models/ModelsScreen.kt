@@ -295,6 +295,13 @@ private fun ModelDownloadCard(
                     enabled = url.isNotBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(modifier = Modifier.height(tokens.gapSm))
+                GlassButton(
+                    text = "不知道选哪个？一键获取模型",
+                    onClick = onPickRecommended,
+                    material = GlassMaterial.THIN,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }

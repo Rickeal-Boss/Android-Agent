@@ -119,7 +119,7 @@ object ModelPresets {
             ramText = "≥ 2.4 GB",
             requiredRamBytes = (2.4 * GB).toLong(),
             memBasis = BASIS_CPU,
-            note = "新手推荐：体积小、中文强，大多数手机都能跑",
+            note = "体积小、中文强，大多数手机都能跑",
             sizeBytes = 1556925644,
             recommended = true,
         ),
@@ -148,7 +148,18 @@ object ModelPresets {
     )
 
     /** 推荐项置顶，供「一键获取模型」对话框使用。 */
-    val recommendedFirst: List<ModelPreset> = all.sortedByDescending { it.recommended }
+    /** 推荐项的展示顺序（数字小的在前）。别依赖 sortedByDescending 的稳定性。 */
+    private val recommendedOrder = listOf(
+        "MiniCPM5 2B · int4",
+        "Gemma 4 E2B · GPU",
+    )
+
+    /** 推荐项置顶且按 recommendedOrder 排序，供「一键获取模型」对话框使用。 */
+    val recommendedFirst: List<ModelPreset> =
+        all.filter { it.recommended }.sortedBy { preset ->
+            val index = recommendedOrder.indexOf(preset.label)
+            if (index < 0) Int.MAX_VALUE else index
+        } + all.filter { !it.recommended }
 
     /** 按 URL 反查预设（用于下载卡片显示口径与内存阈值）。 */
     fun findByUrl(url: String): ModelPreset? = all.firstOrNull { it.url == url }

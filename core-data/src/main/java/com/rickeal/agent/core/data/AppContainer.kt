@@ -111,10 +111,25 @@ class AppContainer(private val context: Context) {
     /**
      * 可用存储空间（字节）。用于「下载模型前」的检查：
      * 4B 模型 1~4GB，下到一半空间不足会浪费用户大量时间和流量，必须提前拦下。
+     *
+     * 口径：模型先落到 `externalFilesDir/Download`（DownloadManager 的落盘位置），
+     * 完成后再复制进内部 models 目录 —— 两处都得有余量，所以取两者的**较小值**；
+     * 只查内部目录会在「外置分区更小」的机型上低估风险。
+     *
+     * 一个目录都读不到时返回 [Long.MAX_VALUE]（视为不限制）：宁可放行，
+     * 也不要因为读不到就误拦，让用户下不了模型。
      */
-    fun availableStorageBytes(): Long = runCatching {
-        android.os.StatFs(context.filesDir.absolutePath).availableBytes
-    }.getOrDefault(Long.MAX_VALUE)
+    fun availableStorageBytes(): Long {
+        val dirs = listOfNotNull(context.getExternalFilesDir(null), context.filesDir)
+        var min = Long.MAX_VALUE
+        for (dir in dirs) {
+            val bytes = runCatching {
+                android.os.StatFs(dir.absolutePath).availableBytes
+            }.getOrNull() ?: continue
+            if (bytes < min) min = bytes
+        }
+        return min
+    }
 
     fun close() {
         engineFactory.closeAll()
