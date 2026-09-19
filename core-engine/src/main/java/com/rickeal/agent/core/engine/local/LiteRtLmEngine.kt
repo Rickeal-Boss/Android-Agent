@@ -131,6 +131,20 @@ class LiteRtLmEngine(
                 // 用户只能杀掉 App 才能重试。
                 val wantsVision = config.model?.capabilities?.image == true
                 val wantsAudio = config.model?.capabilities?.audio == true
+                // 「引擎实际会拿到的后端」，而不是用户配置里的原始值。
+                // 两者必须同源（`EngineConfig` 也用这两个值），否则判据与事实脱节：
+                // 模型不支持视觉时原始配置可能是 null 也可能是用户随手设的 GPU，
+                // 但引擎实际拿到的一定是 null —— 拿原始值去比会得出「没变」的错误结论。
+                val resolvedVisionBackend = if (wantsVision) {
+                    config.config.visionBackend ?: InferenceBackend.GPU
+                } else {
+                    null
+                }
+                val resolvedAudioBackend = if (wantsAudio) {
+                    config.config.audioBackend ?: InferenceBackend.CPU
+                } else {
+                    null
+                }
                 // 复用判据**分两组，别混**：
                 //  - sampling（temperature / topP / topK）：随 Conversation 一起固化，
                 //    所以变了只需**重建会话**（重建 4B 引擎要几十秒，能省就省）；
@@ -140,15 +154,18 @@ class LiteRtLmEngine(
                 //    会话重建完了但引擎里的 visionBackend 还是旧的，改了等于没改
                 //    （与 ENG-2 原本「调参不生效」是同一类症状）。所以它们变了必须**整机重建**。
                 //
-                // 只有模型确实支持该模态时才纳入比较：不支持时该配置恒为 null，
-                // 无条件比较会让「换了个不支持视觉的模型」也触发一次整机重建，白白多等几十秒。
+                // 比的是**解析后的值**，因此也自动覆盖了「模态从无到有」：
+                // 用户在模型页把能力位 image 从 false 改成 true（onEditCapabilities / probe 补齐），
+                // 解析值就从 null 变成 GPU —— 判据为 false，引擎重建，视觉后端才会真正存在。
+                // 若改成拿原始配置比并加 `!wantsVision ||` 前缀，这条路径会判成「可复用」，
+                // 于是模型被标成支持视觉、UI 允许发图，而底层 Engine 根本没有视觉后端 —— 静默失效。
                 val sameEngine = loaded &&
                     engine != null &&
                     loadedModelPath == modelPath &&
                     loadedMaxTokens == config.config.maxTokens &&
                     loadedBackend == config.config.backend &&
-                    (!wantsVision || loadedVisionBackend == config.config.visionBackend) &&
-                    (!wantsAudio || loadedAudioBackend == config.config.audioBackend)
+                    loadedVisionBackend == resolvedVisionBackend &&
+                    loadedAudioBackend == resolvedAudioBackend
                 if (sameEngine) {
                     loadConfig = config
                     // 采样参数是随 Conversation 一起固化的，只改这些参数**不必**重建引擎
@@ -172,15 +189,12 @@ class LiteRtLmEngine(
                 val engineConfig = EngineConfig(
                     modelPath = modelPath,
                     backend = backend,
-                    visionBackend = if (wantsVision) {
-                        toBackend(config.config.visionBackend ?: InferenceBackend.GPU, config.nativeLibraryDir)
-                    } else {
-                        null
+                    // 复用上面算好的解析值：默认值只在这一处落地，判据与引擎不会各写一份而走偏。
+                    visionBackend = resolvedVisionBackend?.let {
+                        toBackend(it, config.nativeLibraryDir)
                     },
-                    audioBackend = if (wantsAudio) {
-                        toBackend(config.config.audioBackend ?: InferenceBackend.CPU, config.nativeLibraryDir)
-                    } else {
-                        null
+                    audioBackend = resolvedAudioBackend?.let {
+                        toBackend(it, config.nativeLibraryDir)
                     },
                     maxNumTokens = config.config.maxTokens,
                     cacheDir = config.externalFilesDir ?: config.cacheDir,
@@ -205,8 +219,10 @@ class LiteRtLmEngine(
                     loadedMaxTokens = config.config.maxTokens
                     loadedBackend = config.config.backend
                     loadedSampling = config.config.sampling
-                    loadedVisionBackend = config.config.visionBackend
-                    loadedAudioBackend = config.config.audioBackend
+                    // 记**解析后的值**，与 sameEngine 判据同源；记原始配置会让
+                    // 「能力位从 false 改 true」时两侧都是同一个原始值而误判为可复用。
+                    loadedVisionBackend = resolvedVisionBackend
+                    loadedAudioBackend = resolvedAudioBackend
                     loadConfig = config
                     loaded = true
                 } catch (t: Throwable) {
