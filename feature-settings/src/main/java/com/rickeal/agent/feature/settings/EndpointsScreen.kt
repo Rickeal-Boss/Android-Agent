@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -234,8 +235,14 @@ private fun EndpointEditDialog(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // 限高必须保留：Dialog 高度约束无界时 verticalScroll 会抛
+                // IllegalStateException —— 这里只是再叠加 IME / 导航栏避让。
+                // Dialog 跑在独立窗口里，420.dp 高 + 键盘几乎必然重叠；
+                // 顺序「先 ime 后 nav」（Type.ime() 不含导航栏高度，两者相加）。
                 .heightIn(max = 420.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .imePadding()
+                .navigationBarsPadding(),
         ) {
             Field("名称") {
                 GlassTextField(

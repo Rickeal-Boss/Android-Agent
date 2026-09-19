@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -67,6 +68,10 @@ fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // 本页有「系统提示词」输入框，键盘升起时必须把可滚动视口压短，
+                // 否则输入框被盖住（项目是 edge-to-edge，系统不会自动顶）。
+                // 顺序「先 ime 后 nav」：Type.ime() 不含导航栏高度，两者相加才对。
+                .imePadding()
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 14.dp, vertical = 12.dp),

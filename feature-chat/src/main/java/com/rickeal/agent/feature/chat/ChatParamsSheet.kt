@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -106,6 +108,13 @@ fun ChatParamsSheet(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
+                            // 项目走了 setDecorFitsSystemWindows(false)（edge-to-edge），
+                            // 抽屉底部 78% 高度 + 键盘几乎必然重叠，最下面的「系统提示词」
+                            // 输入框会被键盘盖住。顺序为「先 ime 后 nav」：API 30+ 的
+                            // Type.ime() 只报键盘自身高度、不含导航栏，两者相加才对
+                            // （与 ChatInputBar 的做法一致）。
+                            .imePadding()
+                            .navigationBarsPadding()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                 }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -71,6 +72,9 @@ fun ToolsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // 「参数 JSON」输入框在卡片最下方，键盘升起时会把它盖住。
+                // 顺序「先 ime 后 nav」：Type.ime() 不含导航栏高度，两者相加才对。
+                .imePadding()
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 14.dp, vertical = 12.dp),
