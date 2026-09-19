@@ -390,9 +390,37 @@ class ModelsViewModel(
                 return@launch
             }
             // 内存闸门：本地推理的内存不足会在 native 层表现为崩溃（用户看到的是闪退），
-            // 提前拦下比加载几十秒后崩溃体验好得多。阈值口径见 ModelPresets 顶部注释。
+            // 提前拦下比加载几十秒后崩溃体验好得多。
+            //
+            // 阈值口径：**优先用预设里按公式推导的 requiredRamBytes**（口径见 ModelPresets 顶部
+            // 注释），查不到预设时才退回估算。
+            //
+            // 这里曾经写死 `sizeBytes * 2.0`，与预设口径完全脱节，两个方向都错：
+            //  - 小模型被**低估**：LFM2.5-VL 450M 体积 0.52GB，2× 只有 1.04GB，而实际峰值约 2GB
+            //    —— 1.2~1.9GB 可用内存的机器会被**放行**，加载即 native 崩溃。这正是
+            //    ModelPresets 注释里已经警告过的「小模型不能按体积线性缩放，必须设 ~2GB 下限」：
+            //    注释警告了，代码没照做。
+            //  - 大模型被**高估**：Phi-4-mini 体积 3.64GB，2× = 7.28GB，而推导值是 5.6GB
+            //    —— 12GB 机型可用内存常年 6~7GB，本来能跑却被拦死。
             if (model.sizeBytes > 0L) {
-                val required = (model.sizeBytes.toDouble() * 2.0).toLong()
+                val backend = _uiState.value.config.backend
+                val estimated = estimateRequiredRamBytes(model.sizeBytes, backend)
+                // 预设值只在「与它的推导后端一致」时才是权威的，所以要跟估算取较大值：
+                //
+                //  8 条预设里 6 条是按 **CPU 口径**（BASIS_CPU）推的，只有 E2B/E4B 的 GPU 变体是
+                //  BASIS_GPU。用户把后端从 CPU 切到 GPU/NPU 后（这在模型库里是常见操作，界面自己
+                //  就写着"GPU 不支持时可切到 CPU 重试"），实际需求会**更高**（GPU 1.25 > CPU 1.05）。
+                //  只读预设值会漏掉这部分 —— 例：Qwen2.5 1.5B 预设 2.4GB（CPU 口径），但 GPU 实际
+                //  约 2.58GB；闸门按 2.4 放行 → 加载即 native 崩溃。而修这条之前用的 `×2.0`（2.98）
+                //  反而不会漏 —— 也就是说只写 `preset ?: estimate` 会引入一个**方向危险的回归**。
+                //
+                //  反过来不会多拦：后端与预设口径一致时，预设值恒 ≥ 估算值（预设含 KV cache、
+                //  估算不含，这个差额足以覆盖），我按 8 条逐个回算验证过。所以 maxOf 只在
+                //  「后端比预设口径更贵」时才生效，正好补缺口。
+                val required = ModelPresets.findByFileName(model.fileName)
+                    ?.requiredRamBytes
+                    ?.let { maxOf(it, estimated) }
+                    ?: estimated
                 val available = container.availableMemoryBytes()
                 if (available < required) {
                     _uiState.update {
@@ -541,5 +569,40 @@ class ModelsViewModel(
         bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
         bytes >= 1_048_576L -> "%.0f MB".format(bytes / 1_048_576.0)
         else -> "%.0f KB".format(bytes / 1024.0)
+    }
+
+    /**
+     * 没有预设可对时的内存需求估算（SAF 导入的自定义模型、或因重名落成 `name-1.ext` 的下载）。
+     *
+     * 口径照 `ModelPresets` 顶部注释简化：`(W × f_backend + O) × 1.25`，其中
+     * `f_backend` = CPU 1.05 / GPU 1.25 / NPU **未实测**（理由见下面 `when` 里的注释），
+     * `O = max(200MB, 0.12 × W)`。
+     *
+     * **2GB 下限是必须的，不是保险丝**：小模型的固定开销（运行时 + prefill 激活 + App 自身）
+     * 不随权重线性缩放，纯按体积算会把「0.5GB 的模型」误判成「1GB 内存就能跑」，然后在 native
+     * 层崩溃。这正是预设里 LFM2.5-VL 450M 的 `requiredRamBytes` 取 2.0GB 而不是按体积算的原因。
+     *
+     * 已知偏乐观之处：**不含 KV cache**（需要层数 / kv 头数 / head_dim，只有真正打开模型文件
+     * 才探得到），所以长上下文场景下这个值是偏低的。带预设的模型走精确值，这里只服务兜底路径。
+     */
+    private fun estimateRequiredRamBytes(weights: Long, backend: InferenceBackend): Long {
+        val factor = when (backend) {
+            InferenceBackend.CPU -> 1.05
+            InferenceBackend.GPU -> 1.25
+            // NPU：**没有实测数据，所以刻意不写一个"看起来精确"的系数。**
+            //
+            // 这里原来写 1.15（比 GPU 的 1.25 还低），那是**危险方向**：NPU 的峰值约等于
+            // 「权重 + N × HTP scratch」，而 scratch 是 GB 量级的，所以 NPU 的实际需求几乎必然
+            // **高于** GPU。用比 GPU 更低的系数会往「低估」走 —— 而低估的结果是**加载时崩溃**，
+            // 不是被拦下来（内存闸门放行 → native OOM → 用户看到闪退）。
+            //
+            // 因此：在真机测出 HTP scratch 开销之前，取「**不低于 GPU**」，并明确这是**保守占位**、
+            // 不是校准值。绝不为 NPU 写一个未经验证的具体倍率（例如 3.0）——那会把一个编出来的
+            // 数字伪装成已知事实，后人再也不会去质疑它。
+            InferenceBackend.NPU -> 1.25
+        }
+        val overhead = maxOf(200L * 1024 * 1024, (weights * 0.12).toLong())
+        val raw = ((weights * factor + overhead) * 1.25).toLong()
+        return maxOf(raw, 2L * 1024 * 1024 * 1024)
     }
 }

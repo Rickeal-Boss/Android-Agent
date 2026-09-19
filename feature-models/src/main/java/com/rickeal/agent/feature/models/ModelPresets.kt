@@ -12,10 +12,14 @@ package com.rickeal.agent.feature.models
  *
  * 估算公式：**(W × f_backend + KV(n) + O) × 1.25**
  *   - `W` = `.litertlm` 文件体积（权重）
- *   - `f_backend` = CPU 1.05 / **GPU 1.25** / NPU 1.15
+ *   - `f_backend` = CPU 1.05 / **GPU 1.25** / NPU **未实测**
  *     —— 系数必须**区分后端**：GPU 后端除常驻权重外还要额外承担 OpenCL buffer 与可能的 fp16 权重副本。
  *     注意 GPU 变体的**文件更小**（E2B-GPU 1.87GB < CPU 版 2.41GB），那是重新打包省的磁盘体积，
  *     **不是运行内存**。早期版本用统一的 1.5× 估算，导致 GPU 变体低估约 20~27%。
+ *   - **NPU 刻意不给具体数字**：NPU 峰值约等于「权重 + N × HTP scratch」，而 scratch 是 GB 量级的，
+ *     实际需求几乎必然**高于** GPU。曾写过的 NPU 1.15（比 GPU 还低）是危险方向 —— 低估会让内存
+ *     闸门放行、加载时 native 崩溃，而不是把用户拦下。所以需要时按「**不低于 GPU**」处理，等真机
+ *     测出 scratch 开销再校准。**别为了"看起来完整"补一个未经验证的倍率。**
  *   - `KV(n)` = 2 × L(层) × H_kv(kv 头数) × D(head_dim) × n(上下文 token) × 2 字节
  *   - `O` = max(200MB, 0.12 × W)（运行时 + prefill 激活）
  *   - `×1.25` = Android 安全余量（无 swap + LMK + App 自身 150~300MB）
@@ -170,4 +174,18 @@ object ModelPresets {
 
     /** 按 URL 反查预设（用于下载卡片显示口径与内存阈值）。 */
     fun findByUrl(url: String): ModelPreset? = all.firstOrNull { it.url == url }
+
+    /**
+     * 按**文件名**反查预设。
+     *
+     * 为什么需要它：加载前的内存闸门（`ModelsViewModel.onLoad`）手上只有一个
+     * [com.rickeal.agent.core.model.ModelDescriptor]，**没有 URL**，拿不到 [ModelPreset.requiredRamBytes]。
+     * 下载链路里文件名就是 URL 的末段（`onDownloadFromUrl` 的 `fileName` 派生），而 8 个预设的
+     * 文件名只含 `[A-Za-z0-9._-]`，不会被 `ModelDownloader.sanitizeFileName` 改写，所以能稳定匹配。
+     *
+     * **查不到是正常情况，不是错误**：SAF 导入的用户自定义文件、以及因重名被 DownloadManager
+     * 落成 `name-1.ext` 的下载，都匹配不上 —— 调用方必须自带兜底估算，不能把 null 当异常。
+     */
+    fun findByFileName(name: String): ModelPreset? =
+        all.firstOrNull { it.url.substringAfterLast('/') == name }
 }
