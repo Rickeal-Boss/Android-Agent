@@ -30,6 +30,8 @@ private val MODEL_EXTENSIONS = setOf("litertlm", "task", "bin", "tflite")
  * 目录约定：
  *  - 内部：`filesDir/models/` —— 通过 SAF 导入的模型会被**复制**到这里（App 卸载即清理）
  *  - 外部：`getExternalFilesDir(null)/models/` —— 用户自己 adb push 进来的，只读扫描
+ *  - 下载：`getExternalFilesDir(DIRECTORY_DOWNLOADS)/` —— DownloadManager 的落盘处，
+ *    下载完成后**就地登记**（不复制），见 [importFromPath]
  *  - 索引：`filesDir/model_index/models.json`（不放进 models/ 是为了避免扫描时把它当模型文件）
  *
  * 所有文件 IO 都在 Dispatchers.IO；任何解析/读取失败都退化成「当作没有」，不抛异常。
@@ -57,6 +59,10 @@ class ModelRepository(
             ?: emptyList()
         val knownPaths = known.map { it.path }.toSet()
         val discovered = scanDirectories().filter { it.path !in knownPaths }
+        // 双重去重：
+        //  1) knownPaths 挡掉「已登记 + 又被扫描到」的同路径文件 —— 就地登记的下载文件正好走这条
+        //     （scanDirectories 本来就包含下载目录，登记后仍会被扫到）；
+        //  2) distinctBy 兜底 known 自身可能存在的同路径重复项，保留先出现的那个。
         val next = (known + discovered)
             .map { ModelHeuristics.applyTo(it) }
             .distinctBy { it.path }
@@ -129,8 +135,12 @@ class ModelRepository(
     /**
      * 导入本地模型文件：把 Uri 内容**复制**进 `filesDir/models/`。
      *
-     * 为什么复制而不是直接记路径：SAF 返回的 `content://` Uri 在 App 重启后可能失效，
-     * 且 LiteRT-LM 只接受真实文件路径。复制一份是最省事也最可靠的做法。
+     * 为什么必须复制而不是直接记路径：SAF 返回的 `content://` Uri 的读取授权是**有时效**的
+     * （重启 / 授权撤销后可能失效），且 LiteRT-LM 只接受真实文件路径。
+     *
+     * 注意与 [importFromPath] 的区别：**只有 SAF 来源才复制**。
+     * 我们自己用 DownloadManager 下到 `externalFilesDir/Download` 的文件属于 App 私有目录、
+     * 路径长期有效，走 [importFromPath] 就地登记即可，不必再拷一份 2~4GB。
      *
      * @return 成功返回新的 ModelDescriptor；失败（Uri 读不到 / IO 错误）返回 null。
      */
@@ -159,17 +169,27 @@ class ModelRepository(
             }
         }
 
-    /** 导入一个已知绝对路径（外部目录里用户自己放的文件）。 */
+    /**
+     * **就地登记**一个已知绝对路径的文件：只在清单里写一条记录，**不复制文件**。
+     *
+     * 适用场景（文件已落在我们长期可读的位置）：
+     *  - `getExternalFilesDir(DIRECTORY_DOWNLOADS)`：我们自己用 DownloadManager 下的模型；
+     *  - `getExternalFilesDir(null)/models`：用户 adb push 进来的。
+     * 这些路径不依赖 SAF 授权，重启后依然有效，所以「文件位置」就是「模型位置」（零拷贝）。
+     *
+     * **不要**用它登记 SAF 的 `content://`（授权有时效），那类必须走 [importFromUri] 复制。
+     *
+     * 幂等：同一路径重复登记（下载完成后 refresh() 又扫到、用户重试下载）会复用已有条目的 id，
+     * 避免清单里出现「同路径不同 id」的重复项。
+     */
     suspend fun importFromPath(path: String): ModelDescriptor? = withContext(Dispatchers.IO) {
         val file = File(path)
         if (!file.isFile) return@withContext null
-        val descriptor = ModelHeuristics.applyTo(
-            ModelDescriptor(
-                path = file.absolutePath,
-                fileName = file.name,
-                sizeBytes = file.length(),
-            )
-        )
+        val absolute = file.absolutePath
+        val existing = _models.value.firstOrNull { it.path == absolute }
+        val base = existing?.copy(fileName = file.name, sizeBytes = file.length())
+            ?: ModelDescriptor(path = absolute, fileName = file.name, sizeBytes = file.length())
+        val descriptor = ModelHeuristics.applyTo(base)
         upsert(descriptor)
         descriptor
     }
@@ -177,8 +197,9 @@ class ModelRepository(
     private fun scanDirectories(): List<ModelDescriptor> {
         val out = ArrayList<ModelDescriptor>()
         // DownloadManager 的落盘目录（可能为 null，交给 listOfNotNull 过滤）：
-        // 下载完成但还没来得及登记就被中断（进程被杀 / 导入失败）时，用户点「扫描」
-        // 还能把这 2~4GB 找回来，不至于白下载一次。是**追加**，不替换上面的目录。
+        // 下载完成后**就地登记**的模型本来就住在这里，登记过就会被 refresh() 的 knownPaths 挡掉，
+        // 不会重复；只有「下完还没来得及登记就被中断（进程被杀 / 登记失败）」的文件才会被这里
+        // 重新发现，用户点「扫描」就能把这 2~4GB 找回来，不至于白下载一次。是**追加**，不替换上面的目录。
         val downloadDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
         val dirs = listOfNotNull(modelsDir, externalDir, downloadDir)
         for (dir in dirs) {

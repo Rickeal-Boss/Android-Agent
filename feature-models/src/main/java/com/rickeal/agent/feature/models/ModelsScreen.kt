@@ -130,6 +130,8 @@ fun ModelsScreen(
                 ModelDownloadCard(
                     downloadName = state.downloadName,
                     downloadPercent = state.downloadPercent,
+                    downloadSpeedBytesPerSecond = state.downloadSpeedBytesPerSecond,
+                    downloadEtaSeconds = state.downloadEtaSeconds,
                     allowMeteredDownload = state.allowMeteredDownload,
                     onAllowMeteredChange = viewModel::setAllowMeteredDownload,
                     onDownload = viewModel::onDownloadFromUrl,
@@ -254,6 +256,8 @@ private fun guessCapabilities(fileName: String): ModelCapabilities {
 private fun ModelDownloadCard(
     downloadName: String?,
     downloadPercent: Int?,
+    downloadSpeedBytesPerSecond: Long?,
+    downloadEtaSeconds: Long?,
     allowMeteredDownload: Boolean,
     onAllowMeteredChange: (Boolean) -> Unit,
     onDownload: (String) -> Unit,
@@ -315,7 +319,12 @@ private fun ModelDownloadCard(
             if (downloadName != null) {
                 Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     Text(
-                        text = "$downloadName ${downloadPercent ?: 0}%",
+                        text = downloadStatusText(
+                            name = downloadName,
+                            percent = downloadPercent,
+                            bytesPerSecond = downloadSpeedBytesPerSecond,
+                            etaSeconds = downloadEtaSeconds,
+                        ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.onGlass,
                         modifier = Modifier.weight(1f),
@@ -394,5 +403,44 @@ private fun BeginnerImportCard(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+    }
+}
+
+/**
+ * 下载中的一行状态文案，例如 `gemma-4-E2B-it-gpu.litertlm 42% · 3.2 MB/s · 剩余 2 分 15 秒`。
+ *
+ * 速度 / 剩余时间拿不到时（刚起步、总大小未知、速率为 0）就只显示百分比，
+ * 不留 "0 B/s" / "剩余 --" 这类没意义的占位。
+ */
+private fun downloadStatusText(
+    name: String,
+    percent: Int?,
+    bytesPerSecond: Long?,
+    etaSeconds: Long?,
+): String {
+    val builder = StringBuilder(name).append(' ').append(percent ?: 0).append('%')
+    if (bytesPerSecond != null && bytesPerSecond > 0L) {
+        builder.append(" · ").append(formatSpeed(bytesPerSecond))
+    }
+    if (etaSeconds != null && etaSeconds >= 0L) {
+        builder.append(" · 剩余 ").append(formatDuration(etaSeconds))
+    }
+    return builder.toString()
+}
+
+/** 速率文案：≥1MB/s 用 MB/s，≥1KB/s 用 KB/s，否则用 B/s（1024 进制，与系统下载通知口径一致）。 */
+private fun formatSpeed(bytesPerSecond: Long): String = when {
+    bytesPerSecond >= 1_048_576L -> "%.1f MB/s".format(bytesPerSecond / 1_048_576.0)
+    bytesPerSecond >= 1024L -> "%.0f KB/s".format(bytesPerSecond / 1024.0)
+    else -> "$bytesPerSecond B/s"
+}
+
+/** 剩余时间文案：≥1 小时显示「x 时 y 分」，≥1 分钟显示「x 分 y 秒」，否则「x 秒」。 */
+private fun formatDuration(seconds: Long): String {
+    val safe = seconds.coerceAtLeast(0L)
+    return when {
+        safe >= 3600L -> "${safe / 3600L} 时 ${(safe % 3600L) / 60L} 分"
+        safe >= 60L -> "${safe / 60L} 分 ${safe % 60L} 秒"
+        else -> "$safe 秒"
     }
 }

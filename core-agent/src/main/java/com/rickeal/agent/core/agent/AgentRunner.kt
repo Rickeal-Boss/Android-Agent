@@ -63,6 +63,10 @@ class AgentRunner(
         } else {
             emptyList()
         }
+        // 文本协议模式的「可执行」判据：工具名必须真的在当前可用集合里。
+        // 名字不认识的 JSON 一律按最终答案处理（见 TextToolProtocol.parse 注释），
+        // 否则模型输出普通 JSON（如 {"name":"张三"}）时会被误判成工具调用而反复重试。
+        val registeredToolNames: Set<String> = availableTools.map { it.name }.toSet()
 
         val working = ArrayList<ChatMessage>()
         if (config.systemInstruction.isNotBlank()) {
@@ -92,7 +96,9 @@ class AgentRunner(
 
             val accumulator = StreamAccumulator()
             val generationRequest = GenerationRequest(
-                messages = window,
+                // 发出去之前做一次配对清洗：压缩可能切掉工具组的一半，这里补上最后一道保险，
+                // 避免 provider 收到「有 tool 结果没 tool_call」而报 400。
+                messages = sanitizeForProvider(window),
                 config = config,
                 model = request.model,
                 remote = request.endpoint,
@@ -123,16 +129,23 @@ class AgentRunner(
             lastModelText = accumulator.text
 
             val nativeCalls = accumulator.toolCalls()
-            val calls: List<ToolCall> = if (nativeCalls.isNotEmpty()) {
-                nativeCalls
-            } else if (policy.enableTextProtocol) {
-                TextToolProtocol.parse(accumulator.text)
+            val protocol: ProtocolResult = if (nativeCalls.isEmpty() && policy.enableTextProtocol) {
+                TextToolProtocol.parse(accumulator.text, registeredToolNames)
             } else {
-                emptyList()
+                ProtocolResult.NoProtocol
             }
+            val calls: List<ToolCall> = when {
+                nativeCalls.isNotEmpty() -> nativeCalls
+                protocol is ProtocolResult.Calls -> protocol.calls
+                else -> emptyList()
+            }
+            // 「形状像工具调用但工具名没注册 / 参数不合法」→ 直接当最终答案收尾，绝不重试解析，
+            // 否则模型把用户要的 JSON 当答案输出时会无限循环。此处保留原文（不 strip），
+            // 因为用户可能就是要这段 JSON。
+            val protocolFinalAnswer: String? = (protocol as? ProtocolResult.FinalAnswer)?.text
 
             if (calls.isEmpty()) {
-                val cleanText = if (policy.enableTextProtocol) {
+                val cleanText = protocolFinalAnswer ?: if (policy.enableTextProtocol) {
                     TextToolProtocol.strip(accumulator.text)
                 } else {
                     accumulator.text

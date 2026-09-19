@@ -179,6 +179,8 @@ class LiteRtLmEngine(
         if (request.conversationId != currentConversationId) {
             runCatching { conversation?.close() }
             conversation = null
+            // 换了会话 = 换了 KV cache，水印必须一起清零，否则历史不会被重发 → 新会话丢上下文
+            sentMessageIds.clear()
         }
         // 关键：上一条流若被取消或出错（cancelProcess / onError），Conversation 可能停留在
         // 半截状态（prefill 完成一半、KV cache 状态不完整）。带着这种状态继续 sendMessageAsync
@@ -187,6 +189,8 @@ class LiteRtLmEngine(
             runCatching { conversation?.close() }
             conversation = null
             conversationDirty = false
+            // 同上：重建后的会话是空的，水印不清零会让「已发过」的历史永远不再发送
+            sentMessageIds.clear()
         }
         val existing = conversation
         if (existing != null) return existing
