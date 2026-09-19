@@ -1,6 +1,8 @@
 package com.rickeal.agent.core.data
 
 import android.app.ActivityManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.content.ClipboardManager
 import android.content.Context
@@ -129,6 +131,26 @@ class AppContainer(private val context: Context) {
             if (bytes < min) min = bytes
         }
         return min
+    }
+
+    /**
+     * 当前网络是否为「按流量计费」（通常是移动数据）。
+     *
+     * 用于下载 GB 级模型前的二次确认：用户稀里糊涂用流量下 4GB 的代价太高，
+     * 而我们在 UI 上写的「建议连 Wi-Fi」只是一句文案，不检查等于没有。
+     *
+     * 判断依据：活动网络是否具备 NET_CAPABILITY_NOT_METERED（Wi-Fi 通常具备）。
+     * **无法判断时返回 true** —— 宁可多问一句，也不要让用户白白花掉流量。
+     */
+    fun isMeteredNetwork(): Boolean {
+        val manager =
+            context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return true
+        return runCatching {
+            val network = manager.activeNetwork ?: return true
+            val caps = manager.getNetworkCapabilities(network) ?: return true
+            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        }.getOrDefault(true)
     }
 
     fun close() {

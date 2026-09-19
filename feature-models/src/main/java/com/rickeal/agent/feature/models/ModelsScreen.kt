@@ -44,6 +44,8 @@ import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassFab
+import com.rickeal.agent.core.design.GlassSettingRow
+import com.rickeal.agent.core.design.GlassSwitch
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LocalGlassColors
@@ -127,6 +129,8 @@ fun ModelsScreen(
                 ModelDownloadCard(
                     downloadName = state.downloadName,
                     downloadPercent = state.downloadPercent,
+                    allowMeteredDownload = state.allowMeteredDownload,
+                    onAllowMeteredChange = viewModel::setAllowMeteredDownload,
                     onDownload = viewModel::onDownloadFromUrl,
                     onCancel = viewModel::onCancelDownload,
                     onPickRecommended = { showPresetDialog = true },
@@ -177,6 +181,34 @@ fun ModelsScreen(
         }
     }
 
+    // 移动数据保护：GB 级模型用流量下载代价太高，先问一次
+    val meteredUrl = state.meteredConfirmUrl
+    if (meteredUrl != null) {
+        val meteredPreset = ModelPresets.findByUrl(meteredUrl)
+        GlassDialog(
+            onDismissRequest = viewModel::dismissMeteredConfirm,
+            title = "正在使用移动数据",
+            confirmLabel = "仍然下载",
+            onConfirm = viewModel::confirmMeteredDownload,
+            dismissLabel = "先用 Wi-Fi",
+            content = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "即将下载 " + (meteredPreset?.sizeText ?: "数 GB") + " 的模型，当前网络可能是按流量计费的。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onGlass,
+                    )
+                    Text(
+                        text = "建议连接 Wi-Fi 后再下载，以免产生大额流量费用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onGlassMuted,
+                        modifier = Modifier.padding(top = tokens.gapSm),
+                    )
+                }
+            },
+        )
+    }
+
     if (showPresetDialog) {
         RecommendedModelDialog(
             downloadingName = state.downloadName,
@@ -221,6 +253,8 @@ private fun guessCapabilities(fileName: String): ModelCapabilities {
 private fun ModelDownloadCard(
     downloadName: String?,
     downloadPercent: Int?,
+    allowMeteredDownload: Boolean,
+    onAllowMeteredChange: (Boolean) -> Unit,
     onDownload: (String) -> Unit,
     onCancel: () -> Unit,
     onPickRecommended: () -> Unit,
@@ -303,6 +337,17 @@ private fun ModelDownloadCard(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+            Spacer(modifier = Modifier.height(tokens.gapMd))
+            GlassSettingRow(
+                title = "允许使用移动数据下载",
+                subtitle = if (allowMeteredDownload) "已允许：下载前不再询问" else "关闭时，检测到移动数据会先问一次",
+                trailing = {
+                    GlassSwitch(
+                        checked = allowMeteredDownload,
+                        onCheckedChange = onAllowMeteredChange,
+                    )
+                },
+            )
         }
     }
 }

@@ -36,6 +36,10 @@ data class ModelsUiState(
     val downloadName: String? = null,
     /** 下载进度 0~100 */
     val downloadPercent: Int? = null,
+    /** 非空表示：检测到当前可能是按流量计费的网络，等用户确认是否仍要下载 */
+    val meteredConfirmUrl: String? = null,
+    /** 设置项：允许用移动数据下载（开启后不再弹确认） */
+    val allowMeteredDownload: Boolean = false,
     val message: String? = null,
     val error: String? = null,
     val capabilitiesText: String? = null,
@@ -46,6 +50,12 @@ class ModelsViewModel(
 ) : ViewModel() {
 
     private var activeDownloadId: Long? = null
+
+    /** 用户已在「移动数据下载」确认框里点过继续（一次性，用完即清） */
+    private var meteredConfirmed: Boolean = false
+
+    /** 来自设置的持久开关：允许用移动数据下载（开启后不再弹确认） */
+    private var allowMeteredSetting: Boolean = false
 
     private val _uiState = MutableStateFlow(ModelsUiState())
     val uiState: StateFlow<ModelsUiState> = _uiState.asStateFlow()
@@ -68,6 +78,13 @@ class ModelsViewModel(
         viewModelScope.launch {
             container.settingsRepository.inferenceConfig.collect { config ->
                 _uiState.update { it.copy(config = config, backend = config.backend) }
+            }
+        }
+
+        viewModelScope.launch {
+            container.settingsRepository.allowMeteredDownload.collect { allow ->
+                allowMeteredSetting = allow
+                _uiState.update { it.copy(allowMeteredDownload = allow) }
             }
         }
     }
@@ -107,6 +124,16 @@ class ModelsViewModel(
             return
         }
         viewModelScope.launch {
+            // 计量网络（通常是移动数据）保护：GB 级文件用流量下的代价太高。
+            // UI 上的「建议连 Wi-Fi」只是一句文案，不实际检查等于没有。
+            if (!meteredConfirmed && !allowMeteredSetting &&
+                withContext(Dispatchers.IO) { container.isMeteredNetwork() }
+            ) {
+                _uiState.update { it.copy(meteredConfirmUrl = trimmed, error = null, message = null) }
+                return@launch
+            }
+            meteredConfirmed = false
+
             // 下载前检查存储空间：GB 级文件下到一半失败，代价太高
             val preset = ModelPresets.findByUrl(trimmed)
             if (preset != null) {
@@ -173,6 +200,23 @@ class ModelsViewModel(
                 }
             }
         }
+    }
+
+    /** 用户在「正在使用移动数据」对话框里点了「仍然下载」。 */
+    fun confirmMeteredDownload() {
+        val url = _uiState.value.meteredConfirmUrl ?: return
+        meteredConfirmed = true
+        _uiState.update { it.copy(meteredConfirmUrl = null) }
+        onDownloadFromUrl(url)
+    }
+
+    fun dismissMeteredConfirm() {
+        meteredConfirmed = false
+        _uiState.update { it.copy(meteredConfirmUrl = null) }
+    }
+
+    fun setAllowMeteredDownload(allow: Boolean) {
+        viewModelScope.launch { container.settingsRepository.setAllowMeteredDownload(allow) }
     }
 
     fun onCancelDownload() {

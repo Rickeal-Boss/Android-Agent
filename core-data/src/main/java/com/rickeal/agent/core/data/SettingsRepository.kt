@@ -31,6 +31,7 @@ class SettingsRepository(private val context: Context) {
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
         val GLASS_INTENSITY = floatPreferencesKey("glass_intensity")
         val ENABLE_NOISE = booleanPreferencesKey("enable_noise")
+        val ALLOW_METERED_DOWNLOAD = booleanPreferencesKey("allow_metered_download")
     }
 
     val inferenceConfig: Flow<InferenceConfig> = context.settingsDataStore.data
@@ -53,6 +54,15 @@ class SettingsRepository(private val context: Context) {
                 enableNoise = prefs[Keys.ENABLE_NOISE] ?: true,
             )
         }
+
+    /**
+     * 是否允许在「按流量计费」的网络（通常是移动数据）上下载模型。
+     * 默认 false：下载前会弹二次确认。部分用户确实需要用流量下载，
+     * 所以这里是「开关」而不是「一刀切禁止」。
+     */
+    val allowMeteredDownload: Flow<Boolean> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { it[Keys.ALLOW_METERED_DOWNLOAD] ?: false }
 
     val activeModelId: Flow<String?> = context.settingsDataStore.data
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
@@ -90,6 +100,11 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { prefs ->
             if (id == null) prefs.remove(Keys.ACTIVE_MODEL_ID) else prefs[Keys.ACTIVE_MODEL_ID] = id
         }
+    }
+
+
+    suspend fun setAllowMeteredDownload(allow: Boolean) {
+        context.settingsDataStore.edit { it[Keys.ALLOW_METERED_DOWNLOAD] = allow }
     }
 
     suspend fun setActiveEndpoint(id: String?) {

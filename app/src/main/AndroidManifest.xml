@@ -10,19 +10,27 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- 本地模型 / 多模态附件读取。
-         API 33+ 走 READ_MEDIA_*；API 31/32 走 READ_EXTERNAL_STORAGE。
-         注意：主路径是 SAF（ACTION_OPEN_DOCUMENT），不需要任何运行时权限，
-         这里声明的只是为了兼容「直接用文件路径导入」的场景。 -->
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <!-- 存储权限：本应用**刻意不申请任何存储权限**。
+         模型与附件的读取全部走系统文件选择器（ACTION_OPEN_DOCUMENT），由用户显式授权，
+         既不需要运行时权限，也不会触发应用商店对敏感权限的审核。
+         下载的模型落在应用专属目录（getExternalFilesDir），同样无需权限。
+
+         注意：READ_EXTERNAL_STORAGE 在 Android 11（API 30）之后**已无法读取非媒体文件**
+         （.litertlm / .task 不属于图片/音视频），在 API 33+ 更是被细分的媒体权限取代。
+         声明它既无用、又会让用户在安装时看到一项申请了却用不到的权限，故移除。 -->
 
     <!-- 端侧 4B 模型：读写 .litertlm / .task 需要较大的可用内存 -->
 
+    <!-- 关闭自动备份（Auto Backup）：
+         filesDir 下存着三类不该上云的数据 ——
+           1. 远程端点的 API Key（endpoints/*.json，明文）；
+           2. 用户会话全文（conversations/*.json，隐私）；
+           3. GB 级模型文件（models/，远超 25MB 备份上限，会导致备份失败并浪费用户云端配额）。
+         端侧优先 + 隐私优先，这里整体关闭；将来若需要换机迁移，应提供显式的导出/导入，
+         而不是依赖系统静默备份。 -->
     <application
         android:name=".LiquidAgentApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:appCategory="productivity"
         android:hardwareAccelerated="true"
         android:icon="@mipmap/ic_launcher"
