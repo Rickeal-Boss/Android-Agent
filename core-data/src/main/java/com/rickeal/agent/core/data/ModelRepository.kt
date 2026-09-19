@@ -21,6 +21,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
+import java.util.Locale
 
 /** 别名：与任务书里的命名对齐（真正实现的类名沿用架构文档 §6.3 的 ModelRepository）。 */
 typealias ModelsRepository = ModelRepository
@@ -35,6 +36,30 @@ private val MODEL_EXTENSIONS = setOf("litertlm", "task", "bin", "tflite")
  * （半截文件叫 `<name>.part`，扩展名不在这里，根本扫不到）。
  */
 private const val MIN_MODEL_FILE_BYTES = 1024L * 1024L
+
+/**
+ * 扫描时**排除**的「非 Android 架构权重」标记。
+ *
+ * 同一个模型仓库常常同时提供多架构产物（x86 / macOS / Windows 的 .task、gguf、onnx …），
+ * 它们落在同一个目录里、扩展名又都命中 [MODEL_EXTENSIONS]，于是会被一并登记成
+ * 「可加载模型」—— 用户点加载，LiteRT native 直接崩（表现为闪退）。
+ *
+ * **刻意不含 `linux` 与 `arm64`**：本工程 preset 与官方 litert-community 的文件名里
+ * 带 `arm64-linux` / `cpu-arm64` 这种形态，把这两个 token 加进来会把**自己的模型全误杀**。
+ *
+ * 被排除的文件**只是不登记，绝不删除** —— 判别依据是文件名字符串，误判的代价必须可逆。
+ */
+private val FOREIGN_ARCH_TOKENS = setOf(
+    "x86",
+    "x86_64",
+    "i686",
+    "macos",
+    "darwin",
+    "windows",
+    "win64",
+    "gguf",
+    "onnx",
+)
 
 /**
  * 本地模型清单。
@@ -294,7 +319,13 @@ class ModelRepository(
             val files = dir.listFiles() ?: continue
             for (file in files) {
                 if (!file.isFile) continue
-                if (file.extension.lowercase() !in MODEL_EXTENSIONS) continue
+                // lowercase 必须显式给 Locale.ROOT：默认 Locale 在土耳其语区会把 "I" 折成 "ı"，
+                // 于是 "LFM2.5-VL-450M_INT8.litertlm" 的扩展名匹配不上 —— 模型凭空消失。
+                val lowerName = file.name.lowercase(Locale.ROOT)
+                if (file.extension.lowercase(Locale.ROOT) !in MODEL_EXTENSIONS) continue
+                // 挡掉别的架构的权重文件（x86 / macOS / Windows / gguf / onnx …），
+                // 它们扩展名合法但本设备根本加载不了，登记进来只会让用户点一下就崩。
+                if (FOREIGN_ARCH_TOKENS.any { token -> lowerName.contains(token) }) continue
                 // 廉价防御：只挡空文件/占位文件，挡不住半截的大文件（那种靠 .part 命名规避）
                 if (file.length() < MIN_MODEL_FILE_BYTES) continue
                 out.add(

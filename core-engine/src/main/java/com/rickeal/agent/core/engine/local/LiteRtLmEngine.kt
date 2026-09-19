@@ -129,18 +129,31 @@ class LiteRtLmEngine(
                 // 少了 loaded，一次失败的加载会留下 engine != null 的半死状态，下次 load()
                 // 直接短路并把 loaded 置 true，上层就以为引擎可用 —— 实际底层是坏的，
                 // 用户只能杀掉 App 才能重试。
+                val wantsVision = config.model?.capabilities?.image == true
+                val wantsAudio = config.model?.capabilities?.audio == true
+                // 复用判据**分两组，别混**：
+                //  - sampling（temperature / topP / topK）：随 Conversation 一起固化，
+                //    所以变了只需**重建会话**（重建 4B 引擎要几十秒，能省就省）；
+                //  - visionBackend / audioBackend：是 **EngineConfig 级别**的参数，
+                //    只在 `Engine(engineConfig)` 构造时传入，`createConversation()` 根本拿不到。
+                //    把它们放进「重建会话」那一组是静默失效 —— 用户改了视觉后端，
+                //    会话重建完了但引擎里的 visionBackend 还是旧的，改了等于没改
+                //    （与 ENG-2 原本「调参不生效」是同一类症状）。所以它们变了必须**整机重建**。
+                //
+                // 只有模型确实支持该模态时才纳入比较：不支持时该配置恒为 null，
+                // 无条件比较会让「换了个不支持视觉的模型」也触发一次整机重建，白白多等几十秒。
                 val sameEngine = loaded &&
                     engine != null &&
                     loadedModelPath == modelPath &&
                     loadedMaxTokens == config.config.maxTokens &&
-                    loadedBackend == config.config.backend
+                    loadedBackend == config.config.backend &&
+                    (!wantsVision || loadedVisionBackend == config.config.visionBackend) &&
+                    (!wantsAudio || loadedAudioBackend == config.config.audioBackend)
                 if (sameEngine) {
                     loadConfig = config
                     // 采样参数是随 Conversation 一起固化的，只改这些参数**不必**重建引擎
                     // （重建 4B 引擎要几十秒），但必须重建会话，否则新参数永远不生效。
-                    val samplingChanged = loadedSampling != config.config.sampling ||
-                        loadedVisionBackend != config.config.visionBackend ||
-                        loadedAudioBackend != config.config.audioBackend
+                    val samplingChanged = loadedSampling != config.config.sampling
                     if (samplingChanged) {
                         runCatching { conversation?.close() }
                         conversation = null
@@ -150,15 +163,11 @@ class LiteRtLmEngine(
                         sentMessageIds.clear()
                     }
                     loadedSampling = config.config.sampling
-                    loadedVisionBackend = config.config.visionBackend
-                    loadedAudioBackend = config.config.audioBackend
                     return@withLock
                 }
                 releaseInternal()
 
                 val backend = toBackend(config.config.backend, config.nativeLibraryDir)
-                val wantsVision = config.model?.capabilities?.image == true
-                val wantsAudio = config.model?.capabilities?.audio == true
 
                 val engineConfig = EngineConfig(
                     modelPath = modelPath,
@@ -491,10 +500,15 @@ class LiteRtLmEngine(
         }
         withContext(engineDispatcher) {
             mutex.withLock {
-                runCatching { conversation?.close() }
-                conversation = null
-                currentConversationId = null
-                loaded = false
+                // 必须复用 releaseInternal()，不要在这里另抄一份字段清单：
+                // 原来只清了 conversation / currentConversationId / loaded，把 **Engine 本身**
+                // （2~3GB 权重）以及 loadedModelPath / loadedMaxTokens / loadedBackend /
+                // loaded*Sampling / sentMessageIds 全留在原地 ——
+                // 表现是「UI 显示已卸载，内存一点没降；再去加载别的模型直接 OOM」。
+                // 抄一份字段清单迟早会漏（close() 的注释里已经记过一次这个教训）。
+                releaseInternal()
+                // 会话脏标记属于「上一次加载」，一起清；下次 load() 从干净状态开始。
+                conversationDirty = false
             }
         }
     }
