@@ -58,6 +58,24 @@ object AgentLogStore {
         RegexOption.IGNORE_CASE,
     )
 
+    /**
+     * 可选的进程外出口（见 [AgentLogSink]）。由上层在启动时注入；`null` 表示纯内存模式。
+     *
+     * `@Volatile`：`setSink` 在启动线程调用，`record` 可能在任意线程读。
+     */
+    @Volatile
+    private var sink: AgentLogSink? = null
+
+    /**
+     * 安装 / 卸载日志出口。传 `null` 即卸载（测试与「纯内存模式」用）。
+     *
+     * 只影响「是否额外转发」，**不改变**缓冲区的容量与语义：无论有没有出口，
+     * 日志都会照常进内存缓冲。
+     */
+    fun setSink(sink: AgentLogSink?) {
+        this.sink = sink
+    }
+
     fun info(message: String) = record(AgentLogLevel.INFO, message)
 
     fun warn(message: String) = record(AgentLogLevel.WARN, message)
@@ -74,6 +92,13 @@ object AgentLogStore {
             if (buffer.size >= DEFAULT_CAPACITY) buffer.removeFirst()
             buffer.addLast(entry)
         }
+        // 出口回调放在**锁外**：实现方要做文件 IO，绝不能持锁执行。
+        // 先取到本地引用再调用，避免调用途中 sink 被替换造成的可见性问题。
+        val target = sink ?: return
+        // 兜底 try/catch：record() 会在 AgentRunner 的 catch 块里被调用，
+        // 出口一旦抛异常就会把原始错误顶掉、甚至让工具执行路径崩掉。
+        // 日志设施绝不能反过来影响主流程。
+        runCatching { target.onLog(level, entry.message, entry.atMillis) }
     }
 
     /**

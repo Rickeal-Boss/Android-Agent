@@ -30,6 +30,22 @@ class AppContainer(private val context: Context) {
     val endpointRepository: EndpointRepository = EndpointRepository(context)
     val conversationRepository: ConversationRepository = ConversationRepository(context)
 
+    /**
+     * ERROR 级日志的「崩溃幸存」落盘（见 [AgentLogFileStore]）。
+     *
+     * 放在 filesDir 而不是 cacheDir：cacheDir 会被系统在存储紧张时清掉，
+     * 而崩溃现场恰恰可能在系统刚清理过之后才被查看。隐私上的代价由写入前的脱敏承担
+     * （见 AgentLogStore.sanitize）。
+     */
+    val agentLogFileStore: AgentLogFileStore =
+        AgentLogFileStore(File(context.filesDir, "diagnostics/last_errors.log"))
+
+    init {
+        // 尽早装上报错落盘：崩溃前最后一条 ERROR 必须已经写到磁盘上，
+        // 否则「重启后诊断页一片空白」这个最要命的场景依然存在。
+        agentLogFileStore.install()
+    }
+
     // ---- 命名别名：两种叫法都能用，避免 UI 层因为叫错名字编译不过 ----
     val modelsRepository: ModelRepository get() = modelRepository
     val remoteEndpointsRepository: EndpointRepository get() = endpointRepository

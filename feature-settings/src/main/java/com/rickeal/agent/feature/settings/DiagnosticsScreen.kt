@@ -17,9 +17,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,34 +42,54 @@ import com.rickeal.agent.core.model.AgentLogStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
- * 诊断页：展示进程内最近的运行日志（黑匣子）。
+ * 诊断页：展示进程内最近的运行日志（黑匣子），以及**上次崩溃前落盘的 ERROR 记录**。
  *
  * 为什么没有 ViewModel：日志收集器在 `:core-model`，那里**没有协程依赖**（该模块只有
  * kotlinx-serialization），因此没有 StateFlow 可以订阅。与其为此新增依赖或把状态机搬来搬去，
  * 不如老老实实「进页面取一次快照 + 手动刷新」—— 简单、无新依赖、行为可预期。
+ *
+ * 两个数据源刻意**分开呈现**、不合并：内存缓冲是「本次运行」，磁盘文件是「上次崩溃之前」。
+ * 混在一起会让人误以为崩溃前的记录也在内存里（那样的话它们根本活不到现在）。
+ *
+ * @param readPersistedErrors 读回落盘的 ERROR 记录（阻塞 IO，调用方保证在 IO 线程执行）
+ * @param clearPersistedErrors 清空落盘记录
  */
 @Composable
 fun DiagnosticsScreen(
     onBack: () -> Unit,
+    readPersistedErrors: () -> List<AgentLog>,
+    clearPersistedErrors: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
+    val scope = rememberCoroutineScope()
 
     var filterIndex by remember { mutableStateOf(0) }
     var snapshot by remember { mutableStateOf(AgentLogStore.recent(MAX_SHOWN)) }
+    var persisted by remember { mutableStateOf(emptyList<AgentLog>()) }
+
+    // 磁盘读取必须离开组合阶段（组合跑在主线程，不该做磁盘 IO）。
+    LaunchedEffect(Unit) {
+        persisted = withContext(Dispatchers.IO) { readPersistedErrors() }
+    }
 
     val levelFilter = levelOfFilter(filterIndex)
     val visible = if (levelFilter == null) snapshot else snapshot.filter { it.level == levelFilter }
+    // 落盘只有 ERROR 级：筛选到 INFO / WARN 时显示这一区会自相矛盾，所以只在「全部 / ERROR」下显示。
+    val showPersisted = filterIndex == 0 || levelFilter == AgentLogLevel.ERROR
 
     GlassScaffold(
         modifier = modifier,
         topBar = {
             GlassTopBar(
                 title = "诊断信息",
-                subtitle = "共 ${snapshot.size} 条 · 上限 ${AgentLogStore.DEFAULT_CAPACITY} 条",
+                subtitle = "内存 ${snapshot.size} 条 · 磁盘 ${persisted.size} 条",
                 modifier = Modifier.statusBarsPadding(),
                 navigationIcon = {
                     Box(
@@ -108,19 +130,68 @@ fun DiagnosticsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = "只记录异常与决策点；仅存于内存，重启 App 即清空",
+                            text = "只记录异常与决策点；ERROR 级额外落盘，其余仅存内存",
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.onGlassSubtle,
                             modifier = Modifier.weight(1f),
                         )
                         GlassButton(
                             text = "刷新",
-                            onClick = { snapshot = AgentLogStore.recent(MAX_SHOWN) },
+                            onClick = {
+                                snapshot = AgentLogStore.recent(MAX_SHOWN)
+                                scope.launch {
+                                    persisted = withContext(Dispatchers.IO) { readPersistedErrors() }
+                                }
+                            },
                             modifier = Modifier.padding(start = 10.dp),
                         )
                     }
                 }
             }
+
+            /* ------------------------------------------ 上次崩溃前的记录（磁盘） */
+            // 这一区是整个诊断设施存在的理由：崩溃 = 进程死 = 内存缓冲全没，
+            // 所以「最需要日志的场景」只能靠落盘文件回答。
+            if (showPersisted && persisted.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "上次崩溃前的记录（${persisted.size} 条）",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = colors.onGlass,
+                        )
+                        Text(
+                            text = "来自磁盘：ERROR 级在写入时即落盘，重启 App 后仍可回看",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onGlassSubtle,
+                        )
+                    }
+                    GlassButton(
+                        text = "清空",
+                        onClick = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) { clearPersistedErrors() }
+                                persisted = withContext(Dispatchers.IO) { readPersistedErrors() }
+                            }
+                        },
+                        modifier = Modifier.padding(start = 10.dp),
+                    )
+                }
+                for (log in persisted.asReversed()) {
+                    LogRow(log)
+                }
+            }
+
+            /* ------------------------------------------ 本次运行（内存） */
+            Text(
+                text = "本次运行（内存 ${snapshot.size} 条 · 上限 ${AgentLogStore.DEFAULT_CAPACITY}）",
+                style = MaterialTheme.typography.titleSmall,
+                color = colors.onGlass,
+                modifier = Modifier.padding(top = 4.dp),
+            )
 
             if (visible.isEmpty()) {
                 GlassEmptyState(

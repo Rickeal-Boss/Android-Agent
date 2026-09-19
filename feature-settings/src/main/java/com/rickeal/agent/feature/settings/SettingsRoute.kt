@@ -65,7 +65,12 @@ fun NavGraphBuilder.settingsGraph(
     }
 
     composable(route = DiagnosticsRoute.ROUTE) {
-        DiagnosticsScreen(onBack = { navController.popBackStack() })
+        val container = LocalAppContainer.current
+        DiagnosticsScreen(
+            onBack = { navController.popBackStack() },
+            readPersistedErrors = { container.agentLogFileStore.read() },
+            clearPersistedErrors = { container.agentLogFileStore.clear() },
+        )
     }
 
     composable(route = EndpointsRoute.ROUTE) {
