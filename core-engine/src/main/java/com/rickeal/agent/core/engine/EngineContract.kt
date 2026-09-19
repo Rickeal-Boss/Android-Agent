@@ -112,5 +112,22 @@ interface EngineFactory {
      */
     fun evict(kind: EngineKind)
 
+    /**
+     * 关闭并丢弃所有缓存引擎。
+     *
+     * ⚠️ **本方法是同步的，无法等待在途生成收敛**（`LlmEngine.close()` 不是 suspend）。
+     * 若调用时仍存在在途生成，等同于 native use-after-free —— 表现为 SIGSEGV：
+     * `runCatching` **抓不到**、崩溃日志**记不下来**（进程被内核直接杀掉），
+     * 只会表现为「偶发闪退、什么都没留下」。
+     *
+     * 因此调用点必须自行确保已无在途生成；需要优雅停止请走 `LlmEngine.stop()` 并显式等待。
+     * 可以先读 `LlmEngine.isBusy` 做前置判断，但那只是 Boolean、读与调之间有窗口，
+     * **不能**作为唯一防线。
+     *
+     * 当前唯一调用点是 `AppContainer.close()` ← `LiquidAgentApplication.onTerminate()`，
+     * 而 `onTerminate()` 在真机上**从不触发**（官方口径：仅供模拟进程环境），所以今天这里是安全的。
+     * **但请不要「顺手改进」成挂在 `Activity.onDestroy()` / `ViewModel.onCleared()` 上** ——
+     * 那会让上面这个窗口立刻变成真窗口，且只在「生成中 + 退出页面」时偶发，排查成本极高。
+     */
     fun closeAll()
 }

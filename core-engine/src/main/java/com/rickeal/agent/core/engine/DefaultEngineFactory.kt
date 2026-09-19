@@ -42,6 +42,7 @@ class DefaultEngineFactory(
         engines.remove(kind)?.let { stale -> runCatching { stale.close() } }
     }
 
+    /** 完整的安全约束见 [EngineFactory.closeAll] 的 KDoc —— 那里写明了为什么不能随便挪调用点。 */
     override fun closeAll() {
         for (engine in engines.values) runCatching { engine.close() }
         engines.clear()
