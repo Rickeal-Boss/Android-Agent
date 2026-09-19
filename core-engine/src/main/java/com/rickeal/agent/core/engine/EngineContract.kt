@@ -67,6 +67,17 @@ interface LlmEngine {
     /** 当前是否已可生成。 */
     val isLoaded: Boolean
 
+    /**
+     * 当前是否有在途生成。UI 用它做前置判断（例如「正在生成时禁用卸载按钮」）。
+     *
+     * **它只能减少误触，不能替代引擎侧的硬闸门**：这是普通 Boolean，不是 StateFlow，
+     * 「读到 false」与「真正调用 load()/unload()」之间天然存在一个窗口，
+     * 期间另一条流完全可以起来。所以 load() / unload() 里的
+     * `waitForGenerationsToFinish()` 闸门必须保留，不可因为加了本字段而移除。
+     */
+    val isBusy: Boolean
+        get() = false
+
     /** 幂等加载。同 model/endpoint + 同 config 时直接返回。 */
     suspend fun load(config: EngineLoadConfig)
 

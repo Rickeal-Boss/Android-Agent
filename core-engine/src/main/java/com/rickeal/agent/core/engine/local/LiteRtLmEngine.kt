@@ -107,6 +107,9 @@ class LiteRtLmEngine(
     override val isLoaded: Boolean
         get() = loaded
 
+    override val isBusy: Boolean
+        get() = activeGenerations.get() > 0
+
     // ---------------------------------------------------------------- load
 
     override suspend fun load(config: EngineLoadConfig) {
@@ -478,9 +481,14 @@ class LiteRtLmEngine(
     override suspend fun tokenCount(text: String): Int = TokenEstimator.estimate(text)
 
     override suspend fun unload() {
-        // 同上：等不到就放弃释放。宁可让引擎继续占着内存，
-        // 也不能在 native 解码还在跑的时候把 Conversation 从脚底下抽走。
-        if (!waitForGenerationsToFinish()) return
+        // 与 load() **同构**：等不到就抛错，绝不静默 return。
+        // 静默 return 会让「已卸载」变成假状态 —— unload() 返回成功而引擎仍 loaded=true、
+        // Conversation 还活着，UI 照着返回值显示「已卸载」，用户再点加载却撞上 load() 的
+        // 抛错分支，看到「上一次生成仍在继续」，两句话完全对不上。
+        // （唯一调用点 ModelsViewModel.onUnload() 外面套着 runCatching，抛出去不会炸到别处。）
+        if (!waitForGenerationsToFinish()) {
+            throw EngineException("LiteRT-LM：上一次生成仍在继续，请稍候重试")
+        }
         withContext(engineDispatcher) {
             mutex.withLock {
                 runCatching { conversation?.close() }

@@ -82,6 +82,11 @@ class OpenAiCompatibleEngine(
     override val isLoaded: Boolean
         get() = loaded
 
+    // 与本地引擎同义：有在途 HTTP 流即视为忙碌。
+    // 同样只是 UI 前置判断用，不能替代引擎侧硬闸门（详见接口处的 KDoc）。
+    override val isBusy: Boolean
+        get() = activeCall != null
+
     override suspend fun load(config: EngineLoadConfig) {
         val remote = config.remote ?: throw EngineException("远程引擎：未配置 RemoteEndpoint")
         if (remote.baseUrl.isBlank()) throw EngineException("远程引擎：baseUrl 为空")
