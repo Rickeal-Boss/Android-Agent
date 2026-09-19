@@ -60,6 +60,9 @@ class LiteRtLmEngine(
 
     override val kind: EngineKind = EngineKind.LOCAL
 
+    /** 在途生成数量。卸载/关闭引擎前必须等它归零，否则会从脚底下抽掉 native 对象。 */
+    private val activeGenerations = java.util.concurrent.atomic.AtomicInteger(0)
+
     /** 上一条流是否被「非正常结束」（用户停止 / 取消 / onError）。 */
     @Volatile
     private var conversationDirty = false
@@ -203,6 +206,7 @@ class LiteRtLmEngine(
 
     override fun generateStream(request: GenerationRequest): Flow<GenerationChunk> = flow {
         val conv = ensureConversation(request)
+        activeGenerations.incrementAndGet()
         val thinkingOn = when (request.config.thinking) {
             ThinkingMode.ON -> true
             ThinkingMode.OFF -> false
@@ -267,6 +271,7 @@ class LiteRtLmEngine(
         try {
             channel.consumeAsFlow().collect { chunk -> emit(chunk) }
         } finally {
+            activeGenerations.decrementAndGet()
             // 只有 onDone 正常收尾才算“健康”；被取消 / 出错 / 被外部 stop 都要重建会话
             if (!finished) conversationDirty = true
             // 流结束（正常 / 取消 / 异常）都确保底层停止，避免 GPU 继续烧电
@@ -354,6 +359,16 @@ class LiteRtLmEngine(
         }
     }
 
+    /** 等待在途生成结束（最多约 5 秒），避免在生成过程中卸载 native 引擎导致崩溃。 */
+    private suspend fun waitForGenerationsToFinish() {
+        withContext(Dispatchers.IO) {
+            repeat(50) {
+                if (activeGenerations.get() <= 0) return@withContext
+                kotlinx.coroutines.delay(100)
+            }
+        }
+    }
+
     override suspend fun stop() {
         withContext(engineDispatcher) {
             runCatching { conversation?.cancelProcess() }
@@ -365,6 +380,7 @@ class LiteRtLmEngine(
     override suspend fun tokenCount(text: String): Int = TokenEstimator.estimate(text)
 
     override suspend fun unload() {
+        waitForGenerationsToFinish()
         withContext(engineDispatcher) {
             mutex.withLock {
                 runCatching { conversation?.close() }
@@ -376,6 +392,7 @@ class LiteRtLmEngine(
     }
 
     override fun close() {
+        // close() 不是 suspend，无法优雅等待；这里只做尽力而为的清理
         runCatching { conversation?.close() }
         runCatching { engine?.close() }
         conversation = null

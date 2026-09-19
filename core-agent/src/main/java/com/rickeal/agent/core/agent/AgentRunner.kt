@@ -209,7 +209,10 @@ class AgentRunner(
     private suspend fun executeWithGuard(call: ToolCall, tool: Tool, policy: AgentPolicy): ToolResult {
         val started = System.currentTimeMillis()
         return try {
-            val raw = withTimeout(policy.toolTimeoutMillis) { tool.invoke(call.argumentsJson) }
+            // 工具会做文件读写 / 剪贴板 / 进程外调用，必须离开调用方线程（Default/Main）跑在 IO 上
+            val raw = withTimeout(policy.toolTimeoutMillis) {
+                withContext(Dispatchers.IO) { tool.invoke(call.argumentsJson) }
+            }
             val output = raw.output
             val truncated = output.length > policy.maxToolOutputChars
             raw.copy(
