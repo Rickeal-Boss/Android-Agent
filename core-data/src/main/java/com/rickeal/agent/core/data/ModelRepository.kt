@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.OpenableColumns
 import com.rickeal.agent.core.engine.local.ModelCapabilityProbe
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ModelCapabilities
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelHeuristics
@@ -15,6 +16,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
@@ -55,47 +58,108 @@ class ModelRepository(
     private val externalDir: File? = context.getExternalFilesDir(null)?.let { File(it, "models") }
     private val store = JsonFileStore(File(context.filesDir, "model_index"))
 
+    /**
+     * 串行化所有「读-改-写」清单的操作。
+     *
+     * `upsert` / `refresh` / `remove` 都是「读 `_models.value` → 改 → 写 models.json」，
+     * 无锁并发时后写的整份会覆盖先写的，表现为「刚导入的模型从清单里消失」且无任何报错。
+     * 注意 `Mutex` 不可重入：这三个方法之间不互相调用（`probe` / `setCapabilities` /
+     * `importFrom*` 只调 `upsert`，自己不加锁），不会自锁。
+     */
+    private val writeMutex = Mutex()
+
     private val _models = MutableStateFlow<List<ModelDescriptor>>(emptyList())
     val models: StateFlow<List<ModelDescriptor>> = _models.asStateFlow()
 
     /** 内部导入目录的绝对路径，UI 提示用户「把 .litertlm 放到这里」时用。 */
     val importDirPath: String get() = modelsDir.absolutePath
 
+    /**
+     * 重新加载清单：读 `models.json` → 扫描目录补漏 → 回写。
+     *
+     * ## 解析失败时**绝不写回**（本方法最重要的一条不变式）
+     *
+     * `models.json` 半截 / 损坏时 [JsonFileStore.read] 返回 null。若照常走到写回那一步，
+     * 写进去的就是「只有本次扫描到的那几条」——用户手动登记、就地登记的模型条目会被
+     * **永久删除**（磁盘上的文件还在，但清单没了，UI 再也看不到）。
+     *
+     * 会触发它的真实例子：`SamplingParams.init` 的 `require` 在**反序列化**时抛异常
+     * （一条历史脏数据就能让整个 `List<ModelDescriptor>` 解析失败）。
+     *
+     * 关于那条 `require` 的取舍（主理人裁决，勿改）：
+     *  **保留原样**。收紧会把 `temperature == 0f` 这类历史数据也变成异常，把问题放大；
+     *  放宽则失去一处防御。真正切断「一条坏数据 → 用户模型清单被清空」链条的是**这里**
+     *  的不写回，所以 `SamplingParams.init` 既不要收紧也不要放宽。
+     */
     suspend fun refresh() = withContext(Dispatchers.IO) {
-        modelsDir.mkdirs()
-        val known = store.read("models.json", ListSerializer(ModelDescriptor.serializer()))
-            ?.filter { it.path.isNotBlank() }
-            ?: emptyList()
-        val knownPaths = known.map { it.path }.toSet()
-        val discovered = scanDirectories().filter { it.path !in knownPaths }
-        // 双重去重：
-        //  1) knownPaths 挡掉「已登记 + 又被扫描到」的同路径文件 —— 就地登记的下载文件正好走这条
-        //     （scanDirectories 本来就包含下载目录，登记后仍会被扫到）；
-        //  2) distinctBy 兜底 known 自身可能存在的同路径重复项，保留先出现的那个。
-        val next = (known + discovered)
-            .map { ModelHeuristics.applyTo(it) }
-            .distinctBy { it.path }
-        _models.value = next
-        store.write("models.json", next, ListSerializer(ModelDescriptor.serializer()))
+        writeMutex.withLock {
+            modelsDir.mkdirs()
+            // 必须先区分「文件不存在」与「文件在但解析不出来」：
+            // 前者是首次启动，写回是必需的（把扫描结果固化下来）；后者是数据损坏，写回即销毁。
+            val hasFile = store.exists("models.json")
+            val parsed = store.read("models.json", ListSerializer(ModelDescriptor.serializer()))
+            val parseFailed = hasFile && parsed == null
+            val known = parsed?.filter { it.path.isNotBlank() } ?: emptyList()
+            val knownPaths = known.map { it.path }.toSet()
+            val discovered = scanDirectories().filter { it.path !in knownPaths }
+            // 双重去重：
+            //  1) knownPaths 挡掉「已登记 + 又被扫描到」的同路径文件 —— 就地登记的下载文件正好走这条
+            //     （scanDirectories 本来就包含下载目录，登记后仍会被扫到）；
+            //  2) distinctBy 兜底 known 自身可能存在的同路径重复项，保留先出现的那个。
+            val next = (known + discovered)
+                .map { ModelHeuristics.applyTo(it) }
+                .distinctBy { it.path }
+            _models.value = next
+            if (parseFailed) {
+                // 只更新内存，**一个字节都不写**。磁盘上那份坏文件保持原样：
+                // 用户还有机会手动修 / 等下次解析成功时原样读回，而写回是不可逆的。
+                //
+                // 不记文件名以外的任何内容（不记路径、不记条数），避免把用户的模型清单
+                // 通过日志带出去；这里要留下的只是「发生了」这个事实。
+                AgentLogStore.error("模型清单解析失败：已跳过回写，磁盘上的 models.json 保持原样")
+                return@withLock
+            }
+            store.write("models.json", next, ListSerializer(ModelDescriptor.serializer()))
+        }
     }
 
     suspend fun upsert(model: ModelDescriptor) = withContext(Dispatchers.IO) {
-        val next = _models.value.filter { it.id != model.id } + model
-        store.write("models.json", next, ListSerializer(ModelDescriptor.serializer()))
-        _models.value = next
+        writeMutex.withLock {
+            val next = _models.value.filter { it.id != model.id } + model
+            store.write("models.json", next, ListSerializer(ModelDescriptor.serializer()))
+            _models.value = next
+        }
     }
 
-    /** @param deleteFile 是否连带删除磁盘上的模型文件（默认只从清单移除）。 */
+    /**
+     * @param deleteFile 是否连带删除磁盘上的模型文件（默认只从清单移除）。
+     *
+     * `deleteFile = true` 时**只有确认没有别的条目仍指向同一路径才删文件**：
+     * 两个条目完全可能指向同一个文件（手工登记一次 + 扫描又登记一次、或用户自己
+     * 登记了同一个路径两次），此时删掉其中一条就会让另一条变成"清单里有、磁盘上没有"
+     * 的死条目 —— 用户点加载直接 native 崩溃（表现为闪退）。
+     * 文件本身的删除是**不可逆**的，所以宁可留一个孤儿文件（用户可以自己清理），
+     * 也不要误删别人还在用的。
+     */
     suspend fun remove(id: String, deleteFile: Boolean = false) = withContext(Dispatchers.IO) {
-        if (deleteFile) {
-            val target = _models.value.firstOrNull { it.id == id }
-            if (target != null && target.path.isNotBlank()) {
-                runCatching { File(target.path).delete() }
+        writeMutex.withLock {
+            if (deleteFile) {
+                val target = _models.value.firstOrNull { it.id == id }
+                if (target != null && target.path.isNotBlank()) {
+                    // File(path).absolutePath 归一：同一文件可能登记成相对 / 带 ".." 的两种写法
+                    val absolute = File(target.path).absolutePath
+                    val stillReferenced = _models.value.any { other ->
+                        other.id != id &&
+                            other.path.isNotBlank() &&
+                            File(other.path).absolutePath == absolute
+                    }
+                    if (!stillReferenced) runCatching { File(target.path).delete() }
+                }
             }
+            val next = _models.value.filter { it.id != id }
+            store.write("models.json", next, ListSerializer(ModelDescriptor.serializer()))
+            _models.value = next
         }
-        val next = _models.value.filter { it.id != id }
-        store.write("models.json", next, ListSerializer(ModelDescriptor.serializer()))
-        _models.value = next
     }
 
     suspend fun find(id: String?): ModelDescriptor? =
@@ -155,15 +219,26 @@ class ModelRepository(
      */
     suspend fun importFromUri(uri: Uri, displayName: String? = null): ModelDescriptor? =
         withContext(Dispatchers.IO) {
+            var part: File? = null
             try {
                 if (!modelsDir.exists()) modelsDir.mkdirs()
                 val raw = displayName ?: queryDisplayName(uri) ?: "model_${System.currentTimeMillis()}"
                 val safe = sanitizeFileName(raw)
                 val target = uniqueFile(modelsDir, safe)
+                // 与 ModelDownloader 的 ".part" 约定对齐：先写 `<name>.part`。
+                // 它的扩展名不命中 MODEL_EXTENSIONS，扫描永远扫不到 —— 于是「导入 2~4GB 模型时
+                // 存储耗尽 / 切后台被杀」留下的半截文件不会被当成正常模型。
+                // （原实现直接写最终名且失败不清理：那种半截 `.litertlm` 体积也满足 ≥1MB，
+                //  重启后被扫成可加载模型，用户点加载 → LiteRT native 崩溃闪退。）
+                val tmp = File(modelsDir, target.name + ".part")
+                part = tmp
                 val stream = context.contentResolver.openInputStream(uri)
                     ?: return@withContext null
                 // 1MB 缓冲：默认 8KB 拷 3.6GB 要走几十万次循环，明显拖慢导入
-                stream.use { input -> target.outputStream().use { output -> input.copyTo(output, 1024 * 1024) } }
+                stream.use { input -> tmp.outputStream().use { output -> input.copyTo(output, 1024 * 1024) } }
+                // 只有真正写完才转正
+                if (!tmp.renameTo(target)) return@withContext null
+                part = null
                 val descriptor = ModelHeuristics.applyTo(
                     ModelDescriptor(
                         path = target.absolutePath,
@@ -175,6 +250,9 @@ class ModelRepository(
                 descriptor
             } catch (t: Throwable) {
                 null
+            } finally {
+                // 任何失败路径（Uri 读不到 / IO 错误 / 存储耗尽 / 协程被取消）都清掉半截文件
+                runCatching { part?.delete() }
             }
         }
 

@@ -47,6 +47,7 @@ class AgentLogFileStore(private val file: File) {
      * 解析失败的行一律**跳过**而不是整体失败：崩溃时最后一行很可能被撕成半截，
      * 不能因为最后一行坏了就把前面完好的记录一起丢掉。文件不存在 / 读不到都返回空列表。
      */
+    @Synchronized
     fun read(): List<AgentLog> {
         return runCatching {
             if (!file.exists()) return@runCatching emptyList<AgentLog>()
@@ -63,10 +64,23 @@ class AgentLogFileStore(private val file: File) {
     }
 
     /** 清空落盘记录（诊断页的「清空」按钮）。 */
+    @Synchronized
     fun clear() {
         runCatching { file.delete() }
     }
 
+    /**
+     * 追加一条记录。
+     *
+     * **必须加锁**：`ensureLineBoundary()` 与 `appendText()` 是「读长度 → 补换行 → 追加」三步，
+     * 两条日志并发进来会互相穿插 —— 两条都变成半截行，而 [read] 的解析是「坏行整条跳过」，
+     * 结果就是**崩溃前的两条关键记录一起消失**，恰恰是本类最该保住的东西。
+     * 用 `@Synchronized` 而不是协程 Mutex：本方法是同步写（不能挂起），且可能被非协程线程调用。
+     *
+     * 仍然是**同步**写（不改成异步、不加缓冲）：崩溃可能就发生在写日志的下一行代码，
+     * 异步写会把「崩溃前最后一条」一起丢掉。
+     */
+    @Synchronized
     private fun append(atMillis: Long, level: AgentLogLevel, message: String) {
         runCatching {
             file.parentFile?.mkdirs()
@@ -112,7 +126,12 @@ class AgentLogFileStore(private val file: File) {
         val lines = runCatching { file.readLines() }.getOrNull() ?: return
         if (lines.size <= MAX_ENTRIES) return
         val tmp = File(file.parentFile, "${file.name}.${System.nanoTime()}.tmp")
-        tmp.writeText(lines.takeLast(MAX_ENTRIES).joinToString(separator = "\n", postfix = "\n"))
+        // 刻意压到 MAX_ENTRIES - COMPACT_SLACK 而不是正好 MAX_ENTRIES：
+        // 压到正好 50 之后，下一条 ERROR 立刻又是 51 → 又触发一次全文重写。
+        // 稳定状态下每写一条都要读全文 + 写全文，而这里恰恰跑在「刚出错、可能马上又崩」的路径上 ——
+        // 留 10 条余量把重写频率降到十分之一。
+        val keep = (MAX_ENTRIES - COMPACT_SLACK).coerceAtLeast(1)
+        tmp.writeText(lines.takeLast(keep).joinToString(separator = "\n", postfix = "\n"))
         try {
             Files.move(
                 tmp.toPath(),
@@ -146,5 +165,8 @@ class AgentLogFileStore(private val file: File) {
     private companion object {
         /** 磁盘上最多保留多少条 ERROR。崩溃现场通常只看最后几条，50 条足够且体积可控。 */
         const val MAX_ENTRIES = 50
+
+        /** 压缩时留出的余量：避免压到正好上限后「每写一条都全文重写」，见 [compactIfNeeded]。 */
+        const val COMPACT_SLACK = 10
     }
 }

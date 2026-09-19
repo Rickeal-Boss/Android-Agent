@@ -532,6 +532,9 @@ class ModelsViewModel(
 
                     DownloadManager.STATUS_FAILED -> {
                         activeDownloadId = null
+                        // 终态：本次下载不会再有人继续写，清掉磁盘上的半截 .part（否则就是几 GB 的孤儿文件）。
+                        // 只在这里 / onCancelDownload 调，**绝不能放进上面的每秒轮询**。
+                        container.modelDownloader.discardPartFiles(fileName)
                         // ERROR：用户可见的终态。记原因码 + 已下载/总字节，是为了能区分两类失败：
                         // 「0 KB 就失败」（连接都没建立，多是地址/网络问题）与
                         // 「下了 2.1 GB 才失败」（中断或磁盘写满）—— 这两者的处置完全不同。
@@ -604,7 +607,13 @@ class ModelsViewModel(
 
     fun onCancelDownload() {
         val id = activeDownloadId ?: return
-        container.modelDownloader.cancel(id)
+        // cancel / discardPartFiles 都是 suspend（内部有磁盘 IO），必须进协程。
+        // discardPartFiles 只在这里调：此刻下载已进入终态，磁盘上的 .part 不会再有人继续写。
+        val name = _uiState.value.downloadName
+        viewModelScope.launch {
+            container.modelDownloader.cancel(id)
+            if (!name.isNullOrBlank()) container.modelDownloader.discardPartFiles(name)
+        }
         activeDownloadId = null
         _uiState.update {
             it.copy(

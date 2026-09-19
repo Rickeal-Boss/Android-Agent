@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
@@ -26,6 +28,17 @@ class ConversationRepository(context: Context) {
     private val _metas = MutableStateFlow<List<ConversationMeta>>(emptyList())
     val metas: StateFlow<List<ConversationMeta>> = _metas.asStateFlow()
 
+    /**
+     * 串行化「读全文 → 改 → 写全文 + 写索引」的复合操作。
+     *
+     * 只加在 [appendMessage] / [rename] / [autoTitle] / [delete] 这些"读-改-写"入口上，
+     * **[save] 本身不加锁**：它是这些入口的公共落盘步骤，加锁会让它们自锁。
+     * （`Mutex` **不可重入**：同一协程二次 `withLock` 会永久挂起，不是抛异常——
+     * 所以下面每个加锁的入口都直接调 [save]，绝不改调另一个加锁的方法。
+     * [autoTitle] 尤其要注意：它曾经转调 [rename]，加互斥后必须改成自己 save。）
+     */
+    private val writeMutex = Mutex()
+
     suspend fun refresh() = withContext(Dispatchers.IO) {
         val list = store.read("index.json", ListSerializer(ConversationMeta.serializer())) ?: emptyList()
         _metas.value = list.sortedByDescending { it.updatedAtMillis }
@@ -34,24 +47,42 @@ class ConversationRepository(context: Context) {
     suspend fun load(id: String): Conversation? =
         store.read("$id.json", Conversation.serializer())
 
+    /**
+     * 落盘：索引 `index.json` + 全文 `<id>.json`。
+     *
+     * **顺序是「先索引、后全文」**：两次写之间进程被杀，宁可留下
+     * "列表里有一条、点进去是空的"（用户看得见，还能从中恢复/删掉），
+     * 也不要"列表里根本没有这条"（整段会话无声消失，用户以为从没存过）。
+     *
+     * 不加 [writeMutex]，见那里的说明。
+     */
     suspend fun save(conversation: Conversation) = withContext(Dispatchers.IO) {
-        store.write("${conversation.id}.json", conversation, Conversation.serializer())
         val next = (_metas.value.filter { it.id != conversation.id } + conversation.toMeta())
             .sortedByDescending { it.updatedAtMillis }
-        _metas.value = next
         store.write("index.json", next, ListSerializer(ConversationMeta.serializer()))
+        _metas.value = next
+        store.write("${conversation.id}.json", conversation, Conversation.serializer())
     }
 
     suspend fun appendMessage(conversationId: String, message: ChatMessage) {
-        val current = load(conversationId) ?: Conversation(id = conversationId)
-        save(current.copy(messages = current.messages + message, updatedAtMillis = System.currentTimeMillis()))
+        writeMutex.withLock {
+            val current = load(conversationId) ?: Conversation(id = conversationId)
+            save(
+                current.copy(
+                    messages = current.messages + message,
+                    updatedAtMillis = System.currentTimeMillis(),
+                )
+            )
+        }
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
-        store.delete("$id.json")
-        val next = _metas.value.filter { it.id != id }
-        _metas.value = next
-        store.write("index.json", next, ListSerializer(ConversationMeta.serializer()))
+        writeMutex.withLock {
+            store.delete("$id.json")
+            val next = _metas.value.filter { it.id != id }
+            _metas.value = next
+            store.write("index.json", next, ListSerializer(ConversationMeta.serializer()))
+        }
     }
 
     suspend fun create(title: String = "新对话"): Conversation {
@@ -62,17 +93,23 @@ class ConversationRepository(context: Context) {
 
     /** 首条用户消息到达时用它自动生成标题。 */
     suspend fun rename(id: String, title: String) {
-        val current = load(id) ?: return
-        save(current.copy(title = title, updatedAtMillis = System.currentTimeMillis()))
+        writeMutex.withLock {
+            val current = load(id) ?: return@withLock
+            save(current.copy(title = title, updatedAtMillis = System.currentTimeMillis()))
+        }
     }
 
     /** 用第一条用户消息的前 N 字作为标题（避免所有会话都叫「新对话」）。 */
     suspend fun autoTitle(id: String, fallback: String = "新对话") {
-        val current = load(id) ?: return
-        if (current.title != "新对话") return
-        val firstUser = current.messages.firstOrNull { it.text.isNotBlank() }?.text ?: return
-        val title = firstUser.trim().replace('\n', ' ').take(24)
-        if (title.isBlank()) return
-        rename(id, title.ifBlank { fallback })
+        writeMutex.withLock {
+            val current = load(id) ?: return@withLock
+            if (current.title != "新对话") return@withLock
+            val firstUser = current.messages.firstOrNull { it.text.isNotBlank() }?.text ?: return@withLock
+            val title = firstUser.trim().replace('\n', ' ').take(24)
+            if (title.isBlank()) return@withLock
+            // 这里**必须自己 save，不能转调 rename()**：writeMutex 不可重入，
+            // rename 里的那次 withLock 会把自己永久挂起。
+            save(current.copy(title = title.ifBlank { fallback }, updatedAtMillis = System.currentTimeMillis()))
+        }
     }
 }

@@ -2,7 +2,12 @@ package com.rickeal.agent.core.data
 
 import android.content.Context
 import android.net.Uri
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
+
+/** 拷贝附件用的缓冲大小（1MB）：默认 8KB 拷几十 MB 的图片/音频要走上万次循环。 */
+private const val COPY_BUFFER_BYTES = 1024 * 1024
 
 /**
  * 附件存储器。
@@ -21,25 +26,31 @@ class AttachmentStore(private val context: Context) {
     /**
      * 把 Uri 复制进内部目录，返回可直接当文件路径使用的绝对路径；失败返回 null。
      * 若传入的已经是本地文件路径，则原样返回（不重复拷贝）。
+     *
+     * **必须是 suspend + Dispatchers.IO**：这里是几十 MB 的阻塞拷贝，
+     * 调用方是 `viewModelScope`（默认主线程），同步版本会把"选张图"变成 ANR。
      */
-    fun copyToInternal(uriString: String, displayName: String): String? {
-        if (uriString.isBlank()) return null
-        // 已经是真实路径（内部文件 / 用户自己提供的绝对路径）
-        if (!uriString.startsWith("content://", ignoreCase = true)) {
-            val maybeFile = File(uriString.removePrefix("file://"))
-            if (maybeFile.exists() && maybeFile.isFile) return maybeFile.absolutePath
+    suspend fun copyToInternal(uriString: String, displayName: String): String? =
+        withContext(Dispatchers.IO) {
+            if (uriString.isBlank()) return@withContext null
+            // 已经是真实路径（内部文件 / 用户自己提供的绝对路径）
+            if (!uriString.startsWith("content://", ignoreCase = true)) {
+                val maybeFile = File(uriString.removePrefix("file://"))
+                if (maybeFile.exists() && maybeFile.isFile) return@withContext maybeFile.absolutePath
+            }
+            runCatching {
+                val uri = Uri.parse(uriString)
+                val safeName = sanitize(displayName)
+                val target = uniqueFile(safeName)
+                val input = context.contentResolver.openInputStream(uri)
+                    ?: return@runCatching null
+                input.use { source ->
+                    target.outputStream().use { output -> source.copyTo(output, COPY_BUFFER_BYTES) }
+                }
+                if (!target.exists() || target.length() <= 0L) return@runCatching null
+                target.absolutePath
+            }.getOrNull()
         }
-        return runCatching {
-            val uri = Uri.parse(uriString)
-            val safeName = sanitize(displayName)
-            val target = uniqueFile(safeName)
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
-            } ?: return null
-            if (!target.exists() || target.length() <= 0L) return null
-            target.absolutePath
-        }.getOrNull()
-    }
 
     private fun sanitize(raw: String): String {
         val base = raw.substringAfterLast('/').substringBefore('?').trim()

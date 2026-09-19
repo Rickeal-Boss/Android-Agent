@@ -10,13 +10,19 @@ import android.content.Context
 import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.rickeal.agent.core.agent.AgentRunner
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.agent.ToolContext
 import com.rickeal.agent.core.agent.ToolRegistry
 import com.rickeal.agent.core.agent.installBuiltInTools
 import com.rickeal.agent.core.engine.DefaultEngineFactory
 import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
+
+/** 附件拷贝缓冲（1MB）：默认 8KB 拷几十 MB 的高清原图要走上万次循环。 */
+private const val ATTACHMENT_COPY_BUFFER_BYTES = 1024 * 1024
 
 /**
  * 手写 DI 容器（简报 §6：禁 Hilt/Koin）。
@@ -84,11 +90,22 @@ class AppContainer(private val context: Context) {
         environment = engineEnvironment,
     )
 
-    /** 冷启动预热：把三个仓库的内存快照拉起来。 */
+    /**
+     * 冷启动预热：把三个仓库的内存快照拉起来。
+     *
+     * 三个 refresh **各自独立 runCatching**：串行直调时前一个抛异常，后两个就彻底不执行 ——
+     * 一次 `models.json` 解析失败（或存储满导致写失败）就会让用户自己存的端点与 API Key
+     * 全看不见、会话列表为空，而日志里一条记录都没有。
+     * 这三者互相没有依赖（各自的 JSON 文件、各自的 StateFlow），独立隔离是安全的。
+     * 每个失败都记 ERROR：这是唯一能让"冷启动静默失败"变得可诊断的手段。
+     */
     suspend fun bootstrap() {
-        modelRepository.refresh()
-        endpointRepository.refresh()
-        conversationRepository.refresh()
+        runCatching { modelRepository.refresh() }
+            .onFailure { AgentLogStore.error("模型清单加载失败（${it.javaClass.simpleName}）") }
+        runCatching { endpointRepository.refresh() }
+            .onFailure { AgentLogStore.error("端点清单加载失败（${it.javaClass.simpleName}）") }
+        runCatching { conversationRepository.refresh() }
+            .onFailure { AgentLogStore.error("会话索引加载失败（${it.javaClass.simpleName}）") }
     }
 
     /**
@@ -96,25 +113,34 @@ class AppContainer(private val context: Context) {
      *
      * 必须做这一步：本地引擎与远程引擎都按「文件路径」读取附件字节，
      * 直接存 content:// Uri 会导致图片/音频 100% 读取失败（多模态形同虚设）。
+     *
+     * **必须是 suspend + Dispatchers.IO**：这里是几十 MB 的阻塞拷贝（高清原图 / 长录音），
+     * 调用方 `ChatViewModel.onAttachImage/onAttachAudio` 在 `viewModelScope`（默认主线程）里
+     * 直接调用，同步版本会把"选一张图"变成 ANR + StrictMode 违规。
      */
-    fun importAttachment(uriString: String, fileName: String): String? {
-        val raw = uriString.trim()
-        if (raw.isBlank()) return null
-        // 已经是真实路径的情况（部分设备 / 自定义来源）直接用
-        val direct = if (raw.startsWith("file://")) raw.removePrefix("file://") else raw
-        if (direct.startsWith("/") && File(direct).exists()) return direct
-        return runCatching {
-            val uri = Uri.parse(raw)
-            val dir = File(context.filesDir, "attachments").apply { mkdirs() }
-            val safeName = fileName.substringAfterLast('/').ifBlank { "attachment_${System.currentTimeMillis()}" }
-            val target = File(dir, "${System.currentTimeMillis()}_$safeName")
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
-            } ?: return null
-            if (target.length() <= 0L) return null
-            target.absolutePath
-        }.getOrNull()
-    }
+    suspend fun importAttachment(uriString: String, fileName: String): String? =
+        withContext(Dispatchers.IO) {
+            val raw = uriString.trim()
+            if (raw.isBlank()) return@withContext null
+            // 已经是真实路径的情况（部分设备 / 自定义来源）直接用
+            val direct = if (raw.startsWith("file://")) raw.removePrefix("file://") else raw
+            if (direct.startsWith("/") && File(direct).exists()) return@withContext direct
+            runCatching {
+                val uri = Uri.parse(raw)
+                val dir = File(context.filesDir, "attachments").apply { mkdirs() }
+                val safeName =
+                    fileName.substringAfterLast('/').ifBlank { "attachment_${System.currentTimeMillis()}" }
+                val target = File(dir, "${System.currentTimeMillis()}_$safeName")
+                val input = context.contentResolver.openInputStream(uri)
+                    ?: return@runCatching null
+                // 1MB 缓冲：默认 8KB 拷几十 MB 要走上万次循环
+                input.use { source ->
+                    target.outputStream().use { output -> source.copyTo(output, ATTACHMENT_COPY_BUFFER_BYTES) }
+                }
+                if (target.length() <= 0L) return@runCatching null
+                target.absolutePath
+            }.getOrNull()
+        }
 
     /**
      * 当前可用内存（字节）。用于「加载模型前的内存闸门」：

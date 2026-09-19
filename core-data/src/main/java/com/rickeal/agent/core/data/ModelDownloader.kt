@@ -4,6 +4,8 @@ import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -63,8 +65,8 @@ class ModelDownloader(private val context: Context) {
      * 入队一个下载任务，返回 downloadId；失败返回 null。
      * 注意：4B 模型通常 2~4GB，建议只在 Wi-Fi 下调用（UI 层负责提示）。
      */
-    fun enqueue(url: String, fileName: String): Long? {
-        val dm = manager ?: return null
+    suspend fun enqueue(url: String, fileName: String): Long? = withContext(Dispatchers.IO) {
+        val dm = manager ?: return@withContext null
         val safeName = sanitizeFileName(fileName)
         // 清掉上次中断遗留的 *.part：它们按定义都是不完整的。留着会让 DownloadManager
         // 因目标名被占用而落成 "name-1.ext.part"，导致"哪个 .part 属于本次下载"变得不确定。
@@ -84,19 +86,25 @@ class ModelDownloader(private val context: Context) {
                 safeName + PART_SUFFIX,
             )
             .setMimeType("application/octet-stream")
-        return runCatching { dm.enqueue(request) }.getOrNull()
+        runCatching { dm.enqueue(request) }.getOrNull()
     }
 
     /** 查询进度。任务不存在时按「已完成」处理，避免上层死等。 */
-    fun progress(downloadId: Long): DownloadProgress {
-        val dm = manager ?: return DownloadProgress(
+    suspend fun progress(downloadId: Long): DownloadProgress = withContext(Dispatchers.IO) {
+        val dm = manager ?: return@withContext DownloadProgress(
             status = DownloadManager.STATUS_FAILED,
             percent = 0,
             reason = "系统下载服务不可用",
         )
         val cursor = dm.query(DownloadManager.Query().setFilterById(downloadId))
-            ?: return DownloadProgress(DownloadManager.STATUS_FAILED, 0, reason = "无法查询下载状态")
-        return try {
+            ?: return@withContext DownloadProgress(
+                DownloadManager.STATUS_FAILED,
+                0,
+                reason = "无法查询下载状态",
+            )
+        // 原来是 `return try {...} finally {...}`：挪进 withContext 的 lambda 后
+        // 非局部 return 就非法了，必须改成带标签的 return@withContext。
+        return@withContext try {
             if (!cursor.moveToFirst()) {
                 DownloadProgress(DownloadManager.STATUS_SUCCESSFUL, 100, reason = "任务已不存在")
             } else {
@@ -174,22 +182,27 @@ class ModelDownloader(private val context: Context) {
      * @param allowPromote 是否允许把 `.part` 转正。
      * @return 真实存在的绝对路径；null 表示确实解析不出来（调用方再退回复制导入）。
      */
-    fun downloadedPath(
+    suspend fun downloadedPath(
         localUri: String?,
         fileName: String?,
         // 默认 false = fail-safe：不显式声明"我有成功证据"就一律不转正。
         // 曾经默认 true（由本函数自己判断），但那让任何不传参的调用方都暴露在
         // 「陈旧成功记录 → 半截 .part 被转正」这条路径上；真正的证据只能来自调用方。
         allowPromote: Boolean = false,
-    ): String? {
+    ): String? = withContext(Dispatchers.IO) {
+        // 本函数要做多次磁盘探测（isFile / listFiles / rename），属阻塞 IO：
+        // 上层是在协程里调用的，但默认可能是主线程，所以这里必须显式切到 IO。
         val fromUri = localUri
             ?.takeIf { it.startsWith("file://", ignoreCase = true) }
             ?.let { runCatching { Uri.parse(it).path }.getOrNull() }
         // 绝不允许把 .part 路径交出去：那会登记成一个扫不到、加载必崩的模型条目
-        if (fromUri != null && File(fromUri).isFile && !fromUri.endsWith(PART_SUFFIX)) return fromUri
+        if (fromUri != null && File(fromUri).isFile && !fromUri.endsWith(PART_SUFFIX)) {
+            return@withContext fromUri
+        }
 
-        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return null
-        val name = fileName?.let { sanitizeFileName(it) } ?: return null
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: return@withContext null
+        val name = fileName?.let { sanitizeFileName(it) } ?: return@withContext null
 
         // 下载完成那一刻把 "<name>.part" 转正。放在这一层（而不是上层回调里）是因为
         // 「落盘目录 + .part 约定」是本类的知识，上层只该拿到真名路径。
@@ -206,13 +219,13 @@ class ModelDownloader(private val context: Context) {
 
         // 先认本次 rename 出来的文件：真名被占用时 renameToUnique 会落到 "name-1.ext"，
         // 此时若先去匹配 dir/name，会把**另一个同名旧文件**当成本次下载登记。
-        if (promoted != null && File(promoted).isFile) return promoted
+        if (promoted != null && File(promoted).isFile) return@withContext promoted
         val exact = File(dir, name)
-        if (exact.isFile) return exact.absolutePath
+        if (exact.isFile) return@withContext exact.absolutePath
         // 同名文件已存在时 DownloadManager 会落成 "name-1.ext"，按「去掉 -N 的基名」找最新的那个。
         // 这一路同时服务「DM 记录已被用户删除、但文件已下完」的恢复场景：那时磁盘上的完整文件
         // 已经是真名（rename 早已发生），半截文件则永远是 .part，被下面这行天然排除。
-        return dir.listFiles()
+        return@withContext dir.listFiles()
             ?.filter { it.isFile && !it.name.endsWith(PART_SUFFIX) && stripDuplicateSuffix(it.name) == name }
             ?.maxByOrNull { it.lastModified() }
             ?.absolutePath
@@ -287,8 +300,37 @@ class ModelDownloader(private val context: Context) {
         return match.groupValues[1] + match.groupValues[2]
     }
 
-    /** 取消并删除下载记录。 */
-    fun cancel(downloadId: Long) {
+    /**
+     * 丢弃某个名字遗留的所有 `*.part`，并忘掉它的"曾成功过"记录。
+     *
+     * `.part` 落在 App 私有的 Download 目录里，系统不会替我们清，DownloadManager 也不会。
+     * 不清理的话，用户「下到 3GB 嫌慢 → 取消 → 再下 → 又取消」两次就能攒出几个 GB 的孤儿文件，
+     * 而这些文件在存储紧张时恰恰是最该先回收的空间。
+     *
+     * ## ⚠️ 只能在本次下载进入**终态**时调用（成功转正之后 / 失败 / 取消）
+     *
+     * **绝不能放进 `progress()` 的每秒轮询里** —— 那会删掉**正在写入**的 `.part`，
+     * 表现是"下载进度一直在走，但最后文件没了"。本函数删的是"不会再有人继续写"的半成品。
+     *
+     * @param fileName 入队时用的文件名（会按 [sanitizeFileName] 归一后再匹配）。
+     */
+    suspend fun discardPartFiles(fileName: String) = withContext(Dispatchers.IO) {
+        val safe = sanitizeFileName(fileName)
+        deletePartFiles(safe)
+        // 同时忘掉这个名字的"成功证据"：它是**上一次**下载的证据，
+        // 留着会给"本次取消后残留的半截文件"背书（详见 downloadedPath 的 KDoc）。
+        confirmedNames.remove(safe)
+    }
+
+    /**
+     * 取消并删除下载记录。
+     *
+     * 注意：本函数**只删记录，不删文件**。要回收磁盘上的半截 `.part` 请显式调 [discardPartFiles]
+     * —— 分开是有意的：取消之后用户可能马上点"重新下载"，那时留着 `.part` 没有任何意义
+     * （DownloadManager 的断点续传靠的是它自己的数据库，不是这个文件），所以调用方应当
+     * 在取消后立刻清掉；但若将来要支持"暂停后继续"，这一层分离就是必要的。
+     */
+    suspend fun cancel(downloadId: Long) = withContext(Dispatchers.IO) {
         runCatching { manager?.remove(downloadId) }
     }
 
