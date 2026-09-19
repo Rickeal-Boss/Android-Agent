@@ -184,7 +184,6 @@ fun ModelsScreen(
         }
     }
 
-    // 移动数据保护：GB 级模型用流量下载代价太高，先问一次
     // 内存闸门：估算值不足时不再硬拦，而是讲清风险、把决定权交回用户。
     // 文案放在数据层（MemoryGateBlock.riskText），就是为了防止 UI 侧把它简化成
     // 一句没有信息量的「内存不足」——用户需要知道继续的代价是闪退和可能的会话丢失。
@@ -208,6 +207,29 @@ fun ModelsScreen(
         )
     }
 
+    // 存储闸门：与内存闸门同一套哲学——估算值不足时讲清代价，由用户决定。
+    // 代价不是崩溃，而是下载中途失败、白白耗掉几 GB（用移动数据则流量照常扣）。
+    val storageGateBlock = state.storageGateBlock
+    if (storageGateBlock != null) {
+        GlassDialog(
+            onDismissRequest = viewModel::dismissStorageGate,
+            title = "存储空间可能不够",
+            confirmLabel = "仍要下载",
+            onConfirm = viewModel::onDownloadIgnoringStorageGate,
+            dismissLabel = "先清理空间",
+            content = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = storageGateBlock.riskText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onGlass,
+                    )
+                }
+            },
+        )
+    }
+
+    // 移动数据保护：GB 级模型用流量下载代价太高，先问一次
     val meteredUrl = state.meteredConfirmUrl
     if (meteredUrl != null) {
         val meteredPreset = ModelPresets.findByUrl(meteredUrl)

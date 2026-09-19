@@ -5,12 +5,14 @@ import com.rickeal.agent.core.engine.EngineFactory
 import com.rickeal.agent.core.engine.EngineLoadConfig
 import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.StreamAccumulator
+import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
@@ -101,6 +103,11 @@ class AgentRunner(
                 return@flow
             }
             // 重建成功、即将重新 load：发一次重试信号，避免 UI 在重建期间静默卡在旧状态。
+            // 日志只记后端类型与异常类型/消息：这里拿得到 loadConfig 和端点对象，
+            // 但**绝不**把它们写进日志（端点上带 API Key）。
+            AgentLogStore.warn(
+                "引擎重建：$kind 加载失败（${t.javaClass.simpleName}: ${t.message}），已换新实例重试"
+            )
             emit(AgentEvent.Retrying("引擎加载失败，已重建引擎并重试"))
         }
 
@@ -162,6 +169,16 @@ class AgentRunner(
             } else {
                 working
             }
+            // 压缩是「静默」的：生效与否只体现在后续请求里，出问题时无法从结果反推。
+            // 这里只在**真的发生决策**时记一条：要么裁掉了消息，要么该裁却没裁成。
+            // 注意判据与压缩器内部一致（estimate > budget 才会走压缩），所以不会误报。
+            if (policy.compressContext) {
+                if (window.size < working.size) {
+                    AgentLogStore.info("上下文压缩：${working.size} → ${window.size} 条（预算 $budget token）")
+                } else if (working.size > 1 && TokenEstimator.estimate(working) > budget) {
+                    AgentLogStore.info("上下文压缩放弃：未找到安全切点，原样发送 ${working.size} 条（预算 $budget token）")
+                }
+            }
 
             var accumulator = StreamAccumulator()
             val generationRequest = GenerationRequest(
@@ -211,6 +228,9 @@ class AgentRunner(
                     // （重建失败就直接 Failed 返回，不该先清 UI）、在下一圈 generateStream 之前。
                     // 重试是在同一个 round 内重跑，不会经过 RoundStarted，UI 若不在此清空流式缓冲，
                     // 上一轮已经流出的半截文本会和重试的输出叠在一起。
+                    AgentLogStore.warn(
+                        "引擎重建：$kind 生成失败（${t.javaClass.simpleName}: ${t.message}），已换新实例重试本轮"
+                    )
                     emit(AgentEvent.Retrying("生成失败，已重建引擎并重试本轮"))
                 }
             }
@@ -227,6 +247,20 @@ class AgentRunner(
                 TextToolProtocol.parse(accumulator.text, registeredToolNames)
             } else {
                 ProtocolResult.NoProtocol
+            }
+            // 文本协议的三态判定是「静默决策」：判定错了会表现成「模型反复输出同一段 JSON」
+            // 或者「工具明明调了却没执行」，事后无法从 UI 看出到底判成了哪一态。
+            // 只记异常的两态：Calls 是真正要执行的调用，FinalAnswer 是「有工具形状但不可执行」
+            // （工具名未注册 / 参数不合法）。NoProtocol 是每轮都走的正常路径，记了只会淹没关键信息。
+            when (protocol) {
+                is ProtocolResult.Calls -> {
+                    // 先把工具名拼出来再进模板：避免在字符串模板里嵌 lambda（可读性也更好）。
+                    val names = protocol.calls.joinToString(",") { it.name }
+                    AgentLogStore.info("文本协议：识别到 ${protocol.calls.size} 个工具调用（$names）")
+                }
+                is ProtocolResult.FinalAnswer ->
+                    AgentLogStore.info("文本协议：判定为最终答案（工具名未注册或参数不合法），不重试解析")
+                ProtocolResult.NoProtocol -> Unit
             }
             val calls: List<ToolCall> = when {
                 nativeCalls.isNotEmpty() -> nativeCalls
@@ -246,6 +280,7 @@ class AgentRunner(
                 // 纪律：先把「已提醒」标记置位，再排队提醒 —— 即使后续注入失败也不会重试，
                 // 从而杜绝提醒风暴。每个签名至多提醒一次。
                 if (!firstSight && remindedSignatures.add(signature)) {
+                    AgentLogStore.info("无进展检测：第 ${round + 1} 轮命中重复回答（与历史签名相同），注入提醒")
                     pendingReminder = REPEAT_REMINDER
                 }
             }
@@ -255,6 +290,7 @@ class AgentRunner(
                 noToolStreak++
                 if (noToolStreak >= NO_TOOL_STREAK_LIMIT && !noToolReminderSent && pendingReminder == null) {
                     noToolReminderSent = true        // 同样是先置位、再排队
+                    AgentLogStore.info("无进展检测：第 ${round + 1} 轮起连续 $noToolStreak 轮零工具调用，注入提醒")
                     pendingReminder = NO_TOOL_REMINDER
                 }
             } else {
@@ -317,6 +353,11 @@ class AgentRunner(
             for (call in calls) {
                 val tool = toolRegistry.get(call.name)
                 if (tool == null) {
+                    // 未注册的工具名 = 模型幻觉（或白名单把它排除了）。把当前可用清单一起记下来，
+                    // 才能区分「模型编了名字」和「工具其实在，只是没启用」。
+                    AgentLogStore.warn(
+                        "调用了未注册的工具：${call.name}；当前可用：${registeredToolNames.joinToString(",")}"
+                    )
                     val result = commitToolMessage(
                         working,
                         call,
@@ -379,6 +420,13 @@ class AgentRunner(
             visible.ifBlank {
                 "本轮因达到轮次上限（${policy.maxRounds} 轮）而结束。可以让我继续，或换一种说法再试。"
             }
+        }
+        // 终止原因是排查「模型不会停」的第一现场：同样跑满 8 轮，是「自己停了」还是
+        // 「被 maxRounds 硬截断」在 UI 上看起来几乎一样，但结论完全不同。
+        if (exhausted) {
+            AgentLogStore.info("轮次耗尽：已跑 $round 轮（上限 ${policy.maxRounds}），按兜底收尾")
+        } else {
+            AgentLogStore.info("正常结束：$round 轮，模型自行给出最终答案")
         }
         emit(
             AgentEvent.Finished(
@@ -450,6 +498,7 @@ class AgentRunner(
             )
         } catch (t: Throwable) {
             val message = if (t is kotlinx.coroutines.TimeoutCancellationException) {
+                AgentLogStore.warn("工具执行超时：${call.name}（${policy.toolTimeoutMillis}ms）")
                 "工具执行超时（${policy.toolTimeoutMillis}ms）"
             } else {
                 t.message ?: "工具执行异常"

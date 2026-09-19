@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -44,6 +45,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     onOpenEndpoints: () -> Unit,
     onOpenTools: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -265,6 +267,19 @@ fun SettingsScreen(
                         trailing = {
                             Icon(
                                 imageVector = Icons.Filled.Build,
+                                contentDescription = null,
+                                tint = colors.accent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                    )
+                    GlassSettingRow(
+                        title = "诊断信息",
+                        subtitle = "最近的运行日志：异常与决策点（仅内存，最多 200 条）",
+                        onClick = onOpenDiagnostics,
+                        trailing = {
+                            Icon(
+                                imageVector = Icons.Filled.Info,
                                 contentDescription = null,
                                 tint = colors.accent,
                                 modifier = Modifier.size(18.dp),

@@ -24,6 +24,12 @@ object EndpointsRoute {
     fun build(): String = ROUTE
 }
 
+object DiagnosticsRoute {
+    const val ROUTE = "settings/diagnostics"
+
+    fun build(): String = ROUTE
+}
+
 fun settingsViewModelFactory(container: AppContainer): ViewModelProvider.Factory =
     viewModelFactory { SettingsViewModel(container) }
 
@@ -37,7 +43,12 @@ fun NavGraphBuilder.settingsGraph(
             viewModel = viewModel(factory = settingsViewModelFactory(container)),
             onOpenEndpoints = { navController.navigate(EndpointsRoute.build()) },
             onOpenTools = { navController.navigate(ToolsRoute.build()) },
+            onOpenDiagnostics = { navController.navigate(DiagnosticsRoute.build()) },
         )
+    }
+
+    composable(route = DiagnosticsRoute.ROUTE) {
+        DiagnosticsScreen(onBack = { navController.popBackStack() })
     }
 
     composable(route = EndpointsRoute.ROUTE) {

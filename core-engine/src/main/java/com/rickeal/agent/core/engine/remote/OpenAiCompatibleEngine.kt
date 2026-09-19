@@ -5,6 +5,7 @@ import com.rickeal.agent.core.engine.EngineException
 import com.rickeal.agent.core.engine.EngineLoadConfig
 import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.EngineKind
@@ -285,6 +286,13 @@ class OpenAiCompatibleEngine(
                     sawDone -> FinishReason.STOP
                     else -> FinishReason.LENGTH
                 }
+                // 「有内容、但服务端既没给 finish_reason 也没给 [DONE]」= 连接被中途掐断。
+                // 这是静默缺陷的典型现场（半截回答被当完整回答落库），必须留下证据：
+                // 记下已收到多少 chunk，便于区分「模型只吐了一半」和「网络提前断了」。
+                // 只记 chunk 数与原因，不记内容 —— 模型输出可能含用户隐私。
+                if (reason == FinishReason.LENGTH) {
+                    AgentLogStore.warn("流式连接中断：已收到 $chunkCount 个 chunk 后 EOF（未见 [DONE]），补 LENGTH 终帧")
+                }
                 emit(GenerationChunk(finishReason = reason))
                 sentTerminal = true
             }
@@ -304,6 +312,9 @@ class OpenAiCompatibleEngine(
                 // 真实网络错误（socket 重置 / readTimeout 触发的 SocketTimeoutException 等）：
                 // 已产出的内容属于「被截断」，补一个 LENGTH 终帧再上抛，由 AgentRunner 决定重试或报错。
                 if (!sentTerminal && chunkCount > 0) {
+                    AgentLogStore.warn(
+                        "流式连接中断：已收到 $chunkCount 个 chunk 后读取失败（${t.javaClass.simpleName}），补 LENGTH 终帧"
+                    )
                     emit(GenerationChunk(finishReason = FinishReason.LENGTH))
                     sentTerminal = true
                 }

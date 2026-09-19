@@ -67,6 +67,41 @@ private const val NO_PRESET_KV_COMPENSATION = 1.41
 private const val MIN_REQUIRED_RAM_BYTES = 2L * 1024 * 1024 * 1024
 
 /**
+ * 存储闸门拦下一次下载时带出的信息，供 UI 渲染「仍要下载」确认框。
+ *
+ * ## 为什么和 [MemoryGateBlock] 是两个独立的 block，而不是合成一个
+ *
+ * 两个闸门用**同一类数据**（`ModelPresets.sizeBytes` / `requiredRamBytes` 都是手写估算值）
+ * 加一层余量，所以哲学必须一致 —— 都是「警告 + 用户可绕过」。但它们的**触发时机**与
+ * **失败代价**完全不同，合成一个会让文案没法同时说清两件事：
+ *
+ * | | 触发时机 | 失败代价 |
+ * |---|---|---|
+ * | 本 block | 下载**前** | 下载中途失败 → 白耗几 GB 流量与等待（不崩溃） |
+ * | [MemoryGateBlock] | 加载**前** | 加载时 native OOM → **闪退**，未保存的会话可能丢 |
+ *
+ * 「继续」在两个场景下意味着不同的风险，所以文案也必须不同。别为了少一个状态字段而合并。
+ *
+ * ## UI 接法
+ *
+ * `storageGateBlock != null` 时弹确认框；两个按钮分别调
+ * [ModelsViewModel.onDownloadIgnoringStorageGate] 与 [ModelsViewModel.dismissStorageGate]。
+ * 正文直接用 [riskText]。
+ */
+@Immutable
+data class StorageGateBlock(
+    /** 触发这次确认的下载地址。用户点「仍要下载」时用它原样重试，不会丢参数。 */
+    val url: String,
+    val fileName: String,
+    /** 估算需要的空间（字节）= `preset.sizeBytes × 1.2 + 200MB`。估算值，非实测值。 */
+    val requiredBytes: Long,
+    /** 检测时的可用空间（字节）。 */
+    val availableBytes: Long,
+    /** 给 UI 直接渲染的正文，含真实代价说明。 */
+    val riskText: String,
+)
+
+/**
  * 内存闸门拦下一次加载时带出的信息，供 UI 渲染「仍要加载」确认框。
  *
  * ## 为什么估算值必须配一个出口
@@ -125,6 +160,8 @@ data class ModelsUiState(
     val allowMeteredDownload: Boolean = false,
     val message: String? = null,
     val error: String? = null,
+    /** 非空表示：存储闸门拦下了一次下载，等用户决定是否「仍要下载」 */
+    val storageGateBlock: StorageGateBlock? = null,
     /** 非空表示：内存闸门拦下了一次加载，等用户决定是否「仍要加载」 */
     val memoryGateBlock: MemoryGateBlock? = null,
     val capabilitiesText: String? = null,
@@ -138,6 +175,15 @@ class ModelsViewModel(
 
     /** 用户已在「移动数据下载」确认框里点过继续（一次性，用完即清） */
     private var meteredConfirmed: Boolean = false
+
+    /**
+     * 用户已在「存储空间可能不足」确认框里点过继续（一次性，用完即清）。
+     *
+     * 两个确认标志都是**在「通过全部下载前检查、真正入队」时才消费**，见
+     * [onDownloadFromUrl] 里的注释 —— 提前消费会让「先过 A 闸门、再被 B 闸门拦下、
+     * 回头重走 A」把 A 的确认吃掉，用户会重复看到同一个确认框。
+     */
+    private var storageConfirmed: Boolean = false
 
     /** 来自设置的持久开关：允许用移动数据下载（开启后不再弹确认） */
     private var allowMeteredSetting: Boolean = false
@@ -223,6 +269,10 @@ class ModelsViewModel(
             return
         }
         viewModelScope.launch {
+            // 每次下载尝试都从「没有任何确认」开始，避免上一次的 block 残留在界面上
+            _uiState.update { it.copy(storageGateBlock = null) }
+            val fileName = trimmed.substringBefore('?').substringAfterLast('/').ifBlank { "model.litertlm" }
+
             // 计量网络（通常是移动数据）保护：GB 级文件用流量下的代价太高。
             // UI 上的「建议连 Wi-Fi」只是一句文案，不实际检查等于没有。
             if (!meteredConfirmed && !allowMeteredSetting &&
@@ -231,25 +281,48 @@ class ModelsViewModel(
                 _uiState.update { it.copy(meteredConfirmUrl = trimmed, error = null, message = null) }
                 return@launch
             }
-            meteredConfirmed = false
 
-            // 下载前检查存储空间：GB 级文件下到一半失败，代价太高
+            // 下载前检查存储空间：GB 级文件下到一半失败，代价太高。
+            //
+            // 但和内存闸门一样**不硬拦**：`sizeBytes` 是手写估算值，再乘 1.2 的余量是
+            // 「估上加估」。用它做不可绕过的决策，一旦某个预设填偏大，用户就会被
+            // 「存储空间不足」直接挡在下载入口外、毫无自救手段 —— 和内存侧被推翻的那个
+            // 失败模式同构。所以这里只警告 + 给出口，风险由 riskText 讲清。
             val preset = ModelPresets.findByUrl(trimmed)
-            if (preset != null) {
+            if (preset != null && !storageConfirmed) {
                 val need = (preset.sizeBytes * 1.2 + 200L * 1024 * 1024).toLong()
                 // StatFs 是阻塞 I/O，别占着主线程
                 val available = withContext(Dispatchers.IO) { container.availableStorageBytes() }
                 if (available < need) {
                     _uiState.update {
                         it.copy(
-                            error = "存储空间不足：需要约 ${formatBytes(need)}，当前可用 ${formatBytes(available)}。请先清理空间。",
+                            storageGateBlock = StorageGateBlock(
+                                url = trimmed,
+                                fileName = fileName,
+                                requiredBytes = need,
+                                availableBytes = available,
+                                // 存储不足的代价和内存不足**不同**：不是崩溃，是下到一半失败、
+                                // 那几 GB 白下。文案必须讲这个，用户才知道「继续」意味着什么。
+                                riskText = "存储空间可能不够：这个模型大约需要 ${formatBytes(need)}，" +
+                                    "当前可用 ${formatBytes(available)}。" +
+                                    "继续下载可能会下到一半就失败，那几 GB 就白下了" +
+                                    "（用移动数据的话流量照常扣）。建议先清理空间再下载。",
+                            ),
+                            error = null,
                             message = null,
                         )
                     }
                     return@launch
                 }
             }
-            val fileName = trimmed.substringBefore('?').substringAfterLast('/').ifBlank { "model.litertlm" }
+
+            // 两个一次性确认都在**这里**才消费：它们代表「用户已同意这一串检查里的每一项」，
+            // 而上面任何一个闸门提前 return 都意味着这一串还没走完。若在各自检查后立刻清，
+            // 就会出现「先确认流量 → 被存储闸门拦下 → 回头重走时流量确认已被吃掉 → 又弹一次
+            // 流量确认框」的来回弹窗。
+            meteredConfirmed = false
+            storageConfirmed = false
+
             val downloadId = container.modelDownloader.enqueue(trimmed, fileName)
             if (downloadId == null) {
                 _uiState.update { it.copy(error = "无法启动下载：系统下载服务不可用", message = null) }
@@ -379,6 +452,35 @@ class ModelsViewModel(
     fun dismissMeteredConfirm() {
         meteredConfirmed = false
         _uiState.update { it.copy(meteredConfirmUrl = null) }
+    }
+
+    /**
+     * 用户在「存储空间可能不够」提示里点了「仍要下载」。
+     *
+     * 只有从 [StorageGateBlock] 走过来的请求才允许绕过存储检查 —— 也就是说用户确实看过
+     * 代价说明并做了选择。没有待确认项时直接忽略，避免被误调用成「无条件跳过存储检查」。
+     *
+     * 用 [StorageGateBlock.url] 原样重试（而不是让 UI 再传一次），这样用户确认的一定是
+     * 他看到的那条链接，中途也不会因为输入框被改而变成下载别的东西。
+     */
+    fun onDownloadIgnoringStorageGate() {
+        val blocked = _uiState.value.storageGateBlock ?: return
+        storageConfirmed = true
+        _uiState.update { it.copy(storageGateBlock = null) }
+        onDownloadFromUrl(blocked.url)
+    }
+
+    /**
+     * 用户在「存储空间可能不够」提示里点了取消。
+     *
+     * 这里**同时清掉两个一次性确认**：用户取消的是「这一次下载尝试」，而流量确认
+     * （[meteredConfirmed]）是同一次尝试里的前置步骤 —— 只清存储那个的话，用户下次点下载
+     * 会因为流量确认还在而跳过流量提示，等于悄悄少问了一次。
+     */
+    fun dismissStorageGate() {
+        storageConfirmed = false
+        meteredConfirmed = false
+        _uiState.update { it.copy(storageGateBlock = null) }
     }
 
     fun setAllowMeteredDownload(allow: Boolean) {
