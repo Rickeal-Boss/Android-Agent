@@ -168,19 +168,31 @@ class ModelsViewModel(
                     DownloadManager.STATUS_SUCCESSFUL -> {
                         val descriptor = importDownloaded(progress.localUri)
                         activeDownloadId = null
-                        if (descriptor != null) {
+                        // 完整性校验：半成品模型会在 native 层崩溃（用户只看到闪退），必须在这里拦下
+                        val mismatch = descriptor?.let { verifySize(it, preset) }
+                        if (descriptor != null && mismatch == null) {
                             // 小白友好：下完直接用，不用再手动选一次模型
                             container.settingsRepository.setActiveModel(descriptor.id)
+                            // 导入成功：删掉下载目录里的源文件，否则 2.5GB 模型会占 5GB
+                            deleteDownloadedSource(progress.localUri, descriptor.path)
                         }
                         _uiState.update {
                             it.copy(
                                 downloadName = null,
                                 downloadPercent = null,
-                                error = if (descriptor == null) "下载完成，但导入失败" else null,
-                                message = descriptor?.let { m ->
-                                    "已导入 ${m.fileName}，已设为当前模型，现在可以去对话页开始聊天了"
-                                } ?: "下载完成，导入失败",
-                                activeModelId = descriptor?.id ?: it.activeModelId,
+                                error = mismatch
+                                    ?: if (descriptor == null) "下载完成，但导入失败" else null,
+                                message = when {
+                                    mismatch != null -> null
+                                    descriptor != null ->
+                                        "已导入 ${descriptor.fileName}，已设为当前模型，现在可以去对话页开始聊天了"
+                                    else -> "下载完成，导入失败"
+                                },
+                                activeModelId = if (mismatch == null) {
+                                    descriptor?.id ?: it.activeModelId
+                                } else {
+                                    it.activeModelId
+                                },
                             )
                         }
                         return@launch
@@ -391,6 +403,44 @@ class ModelsViewModel(
         return "能力：${caps.joinToString("·")}　后端：$backendText"
     }
 }
+
+    /**
+     * 校验下载结果是否完整：与预设体积偏差超过 2% 即判定为不完整。
+     *
+     * 为什么必须做：网络中断/截断会留下不完整的模型文件，而 LiteRT-LM 加载这种文件时
+     * 是在 **native 层**失败——用户看到的是 App 闪退，完全不知道是文件坏了。
+     * 这里提前拦下并给出明确提示，同时删掉坏文件避免它留在模型库里。
+     */
+    private fun verifySize(descriptor: ModelDescriptor, preset: ModelPreset?): String? {
+        val expected = preset?.sizeBytes ?: return null
+        val actual = descriptor.sizeBytes
+        if (expected <= 0L || actual <= 0L) return null
+        val diff = kotlin.math.abs(actual - expected)
+        if (diff > expected * 0.02) {
+            runCatching { java.io.File(descriptor.path).delete() }
+            return "下载的文件不完整（预期 " + formatBytes(expected) + "，实际 " +
+                formatBytes(actual) + "），已删除，请重新下载"
+        }
+        return null
+    }
+
+    /**
+     * 导入成功后删除下载目录里的源文件。
+     *
+     * 因为导入是「复制」，不删的话一个 2.5GB 模型会同时占用 Download 目录和 models 目录，
+     * 也就是 5GB——对存储空间紧张的用户是实打实的浪费。
+     * 只删除我们自己下载目录里的文件，**绝不碰**用户通过 SAF 导入的原始文件。
+     */
+    private fun deleteDownloadedSource(localUri: String?, importedPath: String) {
+        val raw = localUri ?: return
+        val path = if (raw.startsWith("file://")) raw.removePrefix("file://") else raw
+        if (path.isBlank() || path == importedPath) return
+        val source = java.io.File(path)
+        val dlDir = container.downloadDirPath ?: return
+        if (source.exists() && source.absolutePath.startsWith(dlDir)) {
+            runCatching { source.delete() }
+        }
+    }
 
     private fun formatBytes(bytes: Long): String = when {
         bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)

@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Environment
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.runtime.ProvidableCompositionLocal
@@ -35,6 +36,10 @@ class AppContainer(private val context: Context) {
     val conversationsRepository: ConversationRepository get() = conversationRepository
 
     val sandboxDir: File = File(context.filesDir, "agent_sandbox").apply { mkdirs() }
+
+    /** 模型下载（系统 DownloadManager，落盘到 externalFilesDir/Download）。 */
+    val downloadDirPath: String?
+        get() = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath
 
     /** 模型下载（系统 DownloadManager，落盘到 externalFilesDir/Download）。 */
     val modelDownloader: ModelDownloader = ModelDownloader(context)
