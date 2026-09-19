@@ -1,9 +1,7 @@
 package com.rickeal.agent.core.data
 
 import android.app.ActivityManager
-import android.content.Context
 import android.net.Uri
-
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.runtime.ProvidableCompositionLocal
