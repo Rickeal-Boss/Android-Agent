@@ -244,7 +244,7 @@ private fun ModelDownloadCard(
             ) {
                 ModelPresets.all.forEach { preset ->
                     GlassChip(
-                        text = "${preset.label} · ${preset.sizeText}",
+                        text = "${preset.label} · ${preset.sizeText} · ${preset.ramText}",
                         selected = url == preset.url,
                         onClick = { url = preset.url },
                     )
@@ -252,7 +252,9 @@ private fun ModelDownloadCard(
             }
             if (url.isNotBlank()) {
                 Text(
-                    text = ModelPresets.all.firstOrNull { it.url == url }?.note ?: "自定义链接",
+                    text = ModelPresets.all.firstOrNull { it.url == url }?.let { preset ->
+                        "${preset.note} · 体积 ${preset.sizeText} · 建议可用内存 ${preset.ramText}"
+                    } ?: "自定义链接（请确认直链可直接下载）",
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.onGlassSubtle,
                     modifier = Modifier.padding(top = tokens.gapSm),
