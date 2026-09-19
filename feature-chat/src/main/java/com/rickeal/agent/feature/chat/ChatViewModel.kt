@@ -269,7 +269,11 @@ class ChatViewModel(
 
     fun onSend() {
         val state = _uiState.value
-        if (state.isStreaming) return
+        // 闸门统一用 isGenerating，与 onRetry() 一致（原来这里是 isStreaming）：
+        // 工具执行阶段 isStreaming 会回落（没在吐 token）而 isGenerating 仍为 true，
+        // 用 isStreaming 当闸门就放行第二次 run —— 两个 run 抢同一个引擎实例，
+        // 后一个 close() 掉前一个正在用的 LiteRT Conversation → native SIGSEGV 闪退。
+        if (state.isGenerating) return
         val text = state.draftInput
         if (text.isBlank() && state.attachments.isEmpty()) return
 
@@ -295,6 +299,9 @@ class ChatViewModel(
                 error = null,
             )
         }
+        // 覆盖 runJob 之前必须先取消旧的：core-agent 侧已有 runMutex 根治并发，
+        // 这里是第二层 —— 少这一行就是「两个 run 抢同一个引擎实例」的入口。
+        runJob?.cancel()
         runJob = viewModelScope.launch {
             val cid = ensureConversation(firstUserText(history))
             container.conversationRepository.appendMessage(cid, userMessage)
@@ -352,6 +359,10 @@ class ChatViewModel(
     }
 
     private fun onSendFrom(userMessage: ChatMessage, history: List<ChatMessage>) {
+        // 与 onSend() / onRetry() 同一道闸门。它现在是 private、只被 onRetry() 调，
+        // 但 onRetry() 自己也在改状态之后才调过来（中间有 _uiState.update 的间隙），
+        // 而这里才是真正起 runJob 的地方 —— 闸门放在真正启动的那一处才拦得住。
+        if (_uiState.value.isGenerating) return
         _uiState.update {
             it.copy(
                 messages = history,
@@ -365,6 +376,8 @@ class ChatViewModel(
                 error = null,
             )
         }
+        // 同上：覆盖 runJob 之前先取消旧的，绝不让两个 run 同时活着。
+        runJob?.cancel()
         runJob = viewModelScope.launch {
             val cid = ensureConversation(firstUserText(history))
             val config = _uiState.value.config
