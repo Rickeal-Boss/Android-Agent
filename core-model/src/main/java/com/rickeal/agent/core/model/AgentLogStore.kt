@@ -89,7 +89,7 @@ object AgentLogStore {
             atMillis = System.currentTimeMillis(),
         )
         synchronized(lock) {
-            if (buffer.size >= DEFAULT_CAPACITY) buffer.removeFirst()
+            if (buffer.size >= DEFAULT_CAPACITY) dropOneFor(entry)
             buffer.addLast(entry)
         }
         // 出口回调放在**锁外**：实现方要做文件 IO，绝不能持锁执行。
@@ -99,6 +99,44 @@ object AgentLogStore {
         // 出口一旦抛异常就会把原始错误顶掉、甚至让工具执行路径崩掉。
         // 日志设施绝不能反过来影响主流程。
         runCatching { target.onLog(level, entry.message, entry.atMillis) }
+    }
+
+    /**
+     * 缓冲满时腾一个位置给 [entry]，**优先丢 INFO**（调用方必须持有 [lock]）。
+     *
+     * 为什么需要它：本地推理每条工具调用、每次上下文压缩都会写 INFO，200 条缓冲很快
+     * 被 INFO 填满；若一律丢最旧的一条，那么**崩溃前刚发生的 WARN/ERROR 会被 INFO 挤掉** ——
+     * 恰恰是「用户来诊断页看日志」时最该看到的那几条没了。本类的存在意义就是保住它们。
+     *
+     * 因此：WARN/ERROR 进来时先找最旧的一条 INFO 丢掉；只有当缓冲里全是 WARN/ERROR
+     * （那说明确实一直在报错）才退化成丢最旧一条。INFO 进来时照旧丢最旧一条 ——
+     * INFO 之间互相淘汰，不会占用 WARN/ERROR 的位置。
+     *
+     * 用「整表重建」而不是 `iterator.remove()`：kotlin 的 `ArrayDeque` 迭代器是否支持
+     * `remove()` 没有保证，而这里是出错路径，绝不能再抛异常；缓冲只有 200 条，重建代价可忽略。
+     */
+    private fun dropOneFor(entry: AgentLog) {
+        if (entry.level == AgentLogLevel.INFO) {
+            buffer.removeFirst()
+            return
+        }
+        var victim = -1
+        for (i in buffer.indices) {
+            if (buffer[i].level == AgentLogLevel.INFO) {
+                victim = i
+                break
+            }
+        }
+        if (victim < 0) {
+            buffer.removeFirst()
+            return
+        }
+        val kept = ArrayList<AgentLog>(buffer.size - 1)
+        for (i in buffer.indices) {
+            if (i != victim) kept.add(buffer[i])
+        }
+        buffer.clear()
+        buffer.addAll(kept)
     }
 
     /**
