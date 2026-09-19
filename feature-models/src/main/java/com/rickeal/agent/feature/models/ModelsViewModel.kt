@@ -296,6 +296,14 @@ class ModelsViewModel(
             _uiState.update { it.copy(message = "正在导入…", error = null) }
             val descriptor = container.modelRepository.importFromUri(uri)
             if (descriptor == null) {
+                // ERROR：用户可见的终态（下面 error 就是给他看的）。
+                // 这里拿不到文件名（displayName 是在 repository 里查的，失败时还没查出来），
+                // 所以只记 Uri 的 **scheme / authority**：它能区分「用户是从哪个 provider 选的文件」
+                // （文件管理器 / 下载管理 / 网盘 …），这是导入失败最常见的分叉点。
+                // **不记 path** —— 完整路径可能含用户目录名与真实文件名。
+                AgentLogStore.error(
+                    "模型导入失败：无法读取或复制该 Uri（scheme=${uri.scheme}，authority=${uri.authority}）",
+                )
                 _uiState.update { it.copy(message = null, error = "导入失败：无法读取该文件或格式不支持") }
             } else {
                 _uiState.update { current ->
@@ -488,6 +496,20 @@ class ModelsViewModel(
                             // 注意：这里**绝不能**再删下载目录里的文件 —— 就地登记后它本身就是模型文件。
                             // （旧实现是「先复制进内部目录、再删掉下载源」；现在不复制了，也就不需要删。）
                         }
+                        if (descriptor == null) {
+                            // ERROR：用户可见的终态，而且是**最难自查**的一种 ——
+                            // 文件明明下完了却用不了。所以这里要留下「为什么没登记上」的判据三件套：
+                            //  1. fromCursor —— cursor 有没有真的报过成功（没有 ⇒ 磁盘上很可能还停在 .part）；
+                            //  2. localUri 有没有给 —— 少数机型/版本它不可靠，是解析失败的常见原因；
+                            //  3. 实际下到的字节数 —— 能区分「根本没开始」与「下到一半」。
+                            // 不记 localUri 本体（它是完整落盘路径），也不记 URL。
+                            AgentLogStore.error(
+                                "模型登记失败：下载已完成但无法登记 $fileName" +
+                                    "（fromCursor=${progress.fromCursor}，" +
+                                    "localUri=${if (progress.localUri == null) "null" else "有"}，" +
+                                    "已下载 ${formatBytes(progress.bytesDownloaded)}）",
+                            )
+                        }
                         _uiState.update {
                             it.copy(
                                 downloadName = null,
@@ -510,6 +532,14 @@ class ModelsViewModel(
 
                     DownloadManager.STATUS_FAILED -> {
                         activeDownloadId = null
+                        // ERROR：用户可见的终态。记原因码 + 已下载/总字节，是为了能区分两类失败：
+                        // 「0 KB 就失败」（连接都没建立，多是地址/网络问题）与
+                        // 「下了 2.1 GB 才失败」（中断或磁盘写满）—— 这两者的处置完全不同。
+                        // 不记 URL（直链可能带 token）与落盘路径。
+                        AgentLogStore.error(
+                            "模型下载失败：$fileName（${progress.reason ?: "无原因码"}，" +
+                                "已下载 ${formatBytes(progress.bytesDownloaded)} / 共 ${formatBytes(progress.totalBytes)}）",
+                        )
                         _uiState.update {
                             it.copy(
                                 downloadName = null,
@@ -881,6 +911,12 @@ class ModelsViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(message = "正在探测…", error = null) }
             val updated = container.modelRepository.probe(id)
+            // WARN：探测失败**不影响使用**（模型照常能加载、能对话），所以不是 error。
+            // 记在 update 之外，避免把副作用塞进状态更新 lambda。
+            // 只记 id（不透明标识），不记路径 —— 探测失败最常见的原因就是文件已被删除或移动。
+            if (updated == null) {
+                AgentLogStore.warn("模型能力探测失败：id=$id（文件可能已不存在或打不开）")
+            }
             _uiState.update {
                 if (updated == null) {
                     it.copy(message = null, error = "探测失败")
