@@ -1,6 +1,9 @@
 package com.rickeal.agent.ui
 
 import android.app.Activity
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +39,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.findStartDestination
 import com.rickeal.agent.LiquidAgentApplication
 import com.rickeal.agent.core.data.DarkMode
 import com.rickeal.agent.core.data.LocalAppContainer
@@ -158,6 +162,12 @@ private fun MainShell() {
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
+                // 默认 700ms 淡入淡出在切页签时明显“拖沓”，这里统一压到 160ms。
+                // 四个方向都显式给值，避免依赖 NavHost 各版本不同的默认值。
+                enterTransition = { fadeIn(animationSpec = tween(TOP_NAV_TRANSITION_MS)) },
+                exitTransition = { fadeOut(animationSpec = tween(TOP_NAV_TRANSITION_MS)) },
+                popEnterTransition = { fadeIn(animationSpec = tween(TOP_NAV_TRANSITION_MS)) },
+                popExitTransition = { fadeOut(animationSpec = tween(TOP_NAV_TRANSITION_MS)) },
             ) {
                 chatGraph(
                     navController = navController,
@@ -185,12 +195,32 @@ private fun MainShell() {
     }
 }
 
+/**
+ * 顶层页签跳转。
+ *
+ * 必须 `popUpTo` 到起始目的地，否则返回栈会随切页签无限增长
+ * （`[chat, models, chat, models]`）：按返回键变成“在上一个页签间倒着走”，
+ * 退出要按 N 次；更糟的是每个 `chat` 条目都有自己的 `ViewModelStore`，
+ * 每次切回对话页都是一个**全新的 ChatViewModel** —— 草稿、滚动位置、
+ * 正在流式生成的回答全都会从界面上消失（旧的 VM 还在后台空跑）。
+ *
+ * `saveState = true` + `restoreState = true` 成对出现才有意义：前者在 pop 时
+ * 保存该目的地的 SavedState，后者在重新 navigate 时把它还回去。
+ * `inclusive = false` 保留起始目的地本身。
+ */
 private fun NavHostController.navigateTop(route: String) {
     navigate(route) {
+        popUpTo(graph.findStartDestination().id) {
+            saveState = true
+            inclusive = false
+        }
         launchSingleTop = true
         restoreState = true
     }
 }
+
+/** 顶层页签切换的过渡时长（ms）。默认 700ms 太慢，160ms 既顺滑又不拖沓。 */
+private const val TOP_NAV_TRANSITION_MS = 160
 
 @Composable
 private fun GlassNavBar(

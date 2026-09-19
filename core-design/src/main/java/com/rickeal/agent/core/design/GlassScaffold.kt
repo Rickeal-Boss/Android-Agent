@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
@@ -63,6 +64,11 @@ fun GlassScaffold(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
+                    // 三键导航下导航栏高 48dp，只靠 20.dp 的 bottom padding 会让 FAB
+                    // 约 28dp 落进导航栏区域：视觉上被压住，点击也容易被导航栏吃掉。
+                    // navigationBarsPadding() 必须在 .padding(...) 之前 —— 先让出系统
+                    // 导航区，再在剩余空间里加设计给的 20dp 边距。
+                    .navigationBarsPadding()
                     .padding(end = 20.dp, bottom = 20.dp)
                     .windowInsetsPadding(contentWindowInsets),
             ) {

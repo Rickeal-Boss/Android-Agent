@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.data.LegalDocuments
@@ -106,13 +107,21 @@ private fun LegalStepLayout(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val uriHandler = LocalUriHandler.current
+    // 正文限高随窗口高度走：横屏可用高度约 280dp，写死 300.dp 会把
+    // 「同意并继续 / 不同意并退出」顶出屏幕 —— 用户既进不去也退不出，只能杀进程。
+    val bodyMaxHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.4f)
+        .coerceAtLeast(120.dp)
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp)
+            // 外层也要能滚：正文限高只保证“正文不挤按钮”，极端情况（大字体 +
+            // 横屏 + 小高度窗口）下整卡仍可能超过可用高度。加上外层滚动后，
+            // 「同意 / 退出」永远可达 —— 这是硬闸门，不能出现无路可走的版式。
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.Center,
     ) {
         GlassCard(
@@ -138,7 +147,9 @@ private fun LegalStepLayout(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 14.dp)
-                        .heightIn(max = 300.dp),
+                        // 限高必须保留：Dialog / 卡片高度约束无界时 verticalScroll 会抛
+                        // IllegalStateException。这里只是把固定 300.dp 换成随窗口高度缩放。
+                        .heightIn(max = bodyMaxHeight),
                     material = GlassMaterial.ULTRA_THIN,
                     cornerRadius = tokens.radiusSm,
                     contentPadding = PaddingValues(14.dp),
