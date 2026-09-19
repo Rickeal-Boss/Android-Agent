@@ -163,6 +163,26 @@ object AgentLogStore {
     /** 清空缓冲（供诊断页/测试使用）。 */
     fun clear() = synchronized(lock) { buffer.clear() }
 
+    /**
+     * 给**要显示给用户看**的文本做脱敏 —— 与进日志的是同一套规则（复用下面的 [sanitize]）。
+     *
+     * 为什么必须有它：上屏的文本和进日志的文本**风险等级不同**。日志留在设备上的私有目录里，
+     * 而上屏的文案会进截图、进录屏、进用户发给我们的 bug report —— 相当于主动外发。
+     * 真实的泄露路径已经存在：远程引擎的异常文案是 `"${remote.name} 需要填写 API Key"`，
+     * 而 `RemoteEndpoint.name` 为空时会回退成 `baseUrl`，用户自建反代的 baseUrl 完全可能
+     * 带 `?key=sk-xxxx`；这条异常消息被直接上屏，凭据就跟着截图走了。
+     *
+     * 覆盖三类：`Authorization: Bearer xxx`、`sk-xxxxxxxx`、以及
+     * `?key=` / `&api_key=` / `token: xxx` 这类 query 参数形态（**只替换值、保留参数名**，
+     * 脱敏后仍看得出是哪个参数漏了）。
+     *
+     * 注意：它会顺带按 [MAX_MESSAGE_CHARS]（400 字符）截断并补 "…"。对错误对话框是合适的
+     * （异常消息本来就不该整段糊在屏幕上），但如果将来要展示**完整**文本，别用这个入口。
+     *
+     * 这个方法是**纯函数**：不写缓冲、不触发 sink，可以在任意线程调用。
+     */
+    fun sanitizeUserFacing(raw: String): String = sanitize(raw)
+
     /** 脱敏 + 截断。两条都是为了「日志本身不能变成新的内存/安全风险」。 */
     private fun sanitize(raw: String): String {
         val redacted = secretPattern.replace(raw) { match ->
