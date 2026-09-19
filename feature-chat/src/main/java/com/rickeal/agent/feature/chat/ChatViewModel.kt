@@ -62,6 +62,13 @@ data class ChatUiState(
     val toolTraces: List<ToolTrace> = emptyList(),
     /** 已提交消息里被展开的「思考过程」 */
     val expandedThinkingIds: Set<String> = emptySet(),
+    /**
+     * 最近一次请求实际送进模型的上下文规模（`TokenUsage.promptTokens`）。
+     *
+     * 端侧窗口只有 4K 量级，超限会被静默压缩、模型随即「变傻」。这个值就是给用户看的前兆。
+     * `null` = 还没有可用数据（此时 UI 不显示任何占用量，而不是显示 0）。
+     */
+    val contextTokens: Int? = null,
 )
 
 class ChatViewModel(
@@ -111,12 +118,19 @@ class ChatViewModel(
             viewModelScope.launch {
                 val conversation = container.conversationRepository.load(initialConversationId)
                 if (conversation != null) {
+                    // 打开历史会话时把上一次的占用带出来，否则状态条要等用户再发一轮才出现。
+                    // 只认正数：0 是「引擎没给」，不是「上下文为空」。
+                    val lastContext = conversation.messages
+                        .lastOrNull { (it.usage?.promptTokens ?: 0) > 0 }
+                        ?.usage
+                        ?.promptTokens
                     _uiState.update {
                         it.copy(
                             conversationId = conversation.id,
                             title = conversation.title,
                             messages = conversation.messages,
                             config = conversation.config,
+                            contextTokens = lastContext,
                         )
                     }
                 }
@@ -469,6 +483,10 @@ class ChatViewModel(
                 if (text.isNotBlank() || thinking != null) {
                     commitAssistant(text, thinking, event.usage, conversationId)
                 }
+                // 本次请求的 prompt 规模 = 当前上下文占用。只有拿到正数才覆盖：
+                // 0 / null 表示「这次引擎没给这个字段」，用它覆盖会把上一次的真实占用抹成 0，
+                // 状态条会莫名其妙消失 —— 保留旧值比显示 0 更接近事实。
+                val promptTokens = event.usage?.promptTokens ?: 0
                 _uiState.update {
                     it.copy(
                         streamingText = "",
@@ -476,6 +494,7 @@ class ChatViewModel(
                         isStreaming = false,
                         isGenerating = false,
                         toolTraces = emptyList(),
+                        contextTokens = if (promptTokens > 0) promptTokens else it.contextTokens,
                     )
                 }
             }

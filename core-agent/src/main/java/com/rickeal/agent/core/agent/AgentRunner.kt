@@ -37,6 +37,16 @@ private val STOP_CONDITIONS: String = """
     5. 同一阻塞条件连续出现 3 轮才可报告「无法完成」；困难、缓慢、不确定都不算 blocked。
 """.trimIndent()
 
+/**
+ * 工具使用护栏（3 行）。端侧 4B 的高频失败：编造工具名、「想直接回答」被误判成工具调用。
+ */
+private val TOOL_GUARDRAILS: String = """
+    【工具使用规则】
+    1. 只使用上面列出的工具名，不要编造不存在的工具；需要的功能不在列表中时，用文字说明你做不到，不要调用不存在的工具。
+    2. 调用工具时不要向用户解释，直接调用。
+    3. 若你本意是直接回答而非调用工具，请明确说明「这是最终答案」，不要输出看起来像工具调用的 JSON。
+""".trimIndent()
+
 /** 命中重复时的提醒（每轮最多注入一次，且每个签名只提醒一次）。 */
 private const val REPEAT_REMINDER: String =
     "你的最新回复重复了先前的回复。不要重复同一份摘要或同一下车点，重新检视证据，选择一个实质不同的下一步。"
@@ -456,7 +466,7 @@ class AgentRunner(
     }
 
     private fun buildSystemInstruction(config: InferenceConfig, tools: List<ToolSpec>): String {
-        val sections = ArrayList<String>(3)
+        val sections = ArrayList<String>(4)
         if (config.systemInstruction.isNotBlank()) sections.add(config.systemInstruction)
         if (tools.isNotEmpty()) {
             sections.add(
@@ -464,6 +474,8 @@ class AgentRunner(
                     "[{\"tool\": \"工具名\", \"arguments\": {\"参数名\": 值}}]，不要输出其它文字。\n可用工具：\n" +
                     tools.joinToString("\n") { it.toPromptLine() }
             )
+            // 护栏紧跟在工具清单之后：反工具名幻觉 + 「想直接回答」的显式收尾声明。
+            sections.add(TOOL_GUARDRAILS)
         }
         // 停止条件始终下发：这是让 4B 模型「自己会停」的主要手段。
         sections.add(STOP_CONDITIONS)

@@ -133,21 +133,30 @@ fun ChatScreen(
             )
         },
         bottomBar = {
-            ChatInputBar(
-                draft = state.draftInput,
-                onDraftChange = viewModel::onInputChange,
-                attachments = state.attachments,
-                onRemoveAttachment = viewModel::onRemoveAttachment,
-                onSend = viewModel::onSend,
-                onStop = viewModel::onStop,
-                isGenerating = state.isGenerating,
-                onPickImage = pickImage,
-                onPickAudio = pickAudio,
-                supportsImages = supportsImages,
-                modifier = Modifier
-                    .navigationBarsPadding()
-                    .imePadding(),
-            )
+            // 上下文占用条紧贴输入框上方：它是「模型变傻」的解释，属于输入区的状态信息，
+            // 不占正文空间。Column 里的 imePadding/navigationBarsPadding 仍在 ChatInputBar
+            // 自己身上，键盘弹出时这一行会一起被顶到键盘上方。
+            Column(modifier = Modifier.fillMaxWidth()) {
+                ChatContextMeter(
+                    usedTokens = state.contextTokens,
+                    limitTokens = state.config.contextLength,
+                )
+                ChatInputBar(
+                    draft = state.draftInput,
+                    onDraftChange = viewModel::onInputChange,
+                    attachments = state.attachments,
+                    onRemoveAttachment = viewModel::onRemoveAttachment,
+                    onSend = viewModel::onSend,
+                    onStop = viewModel::onStop,
+                    isGenerating = state.isGenerating,
+                    onPickImage = pickImage,
+                    onPickAudio = pickAudio,
+                    supportsImages = supportsImages,
+                    modifier = Modifier
+                        .navigationBarsPadding()
+                        .imePadding(),
+                )
+            }
         },
         snackbarHost = {
             val error = state.error
