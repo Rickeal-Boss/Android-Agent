@@ -28,7 +28,7 @@ private const val DOWNLOAD_FAST_POLL_WINDOW_MILLIS = 3_000L
 private const val DOWNLOAD_RATE_EMA_ALPHA = 0.3
 
 /**
- * **只作用于「查不到预设」那一支**的 KV 缺口补偿系数，别当成全局安全系数用。
+ * **只作用于「查不到预设」那一支**的尾部余量，别当成全局安全系数用。
  *
  * ## 来历
  *
@@ -36,19 +36,35 @@ private const val DOWNLOAD_RATE_EMA_ALPHA = 0.3
  * [ModelsViewModel.estimateRequiredRamBytes] 这条估算式**没有 KV 项**（层数 / kv 头数 /
  * head_dim 只有真正打开模型文件才探得到），所以它系统性偏乐观。
  *
- * 按 8 条预设反算「估算值 / 预设值」，最大缺口出现在 E2B·GPU = **1.1242**（其余 1.000~1.112），
- * 向上取整到 1.13 即可覆盖。
+ * 令两边相等 `(W·f+O)·c = (W·f+KV+O)·1.25`，得 `c = 1.25 × (1 + KV/(W·f+O))`。
+ * 按 8 条预设反算右边，最大缺口出现在 E2B·GPU（KV 0.318 GiB / 底 2.562 GiB）= **1.4052**，
+ * 向上取整即 1.41。
  *
  * ## 作用域（改之前先读这段）
  *
- * **只有 `ModelPresets.findByFileName` 返回 null 时**才乘它：`name-1.ext` 重名下载、
+ * **只有 `ModelPresets.findByFileName` 返回 null 时**才传它：`name-1.ext` 重名下载、
  * SAF 导入的自定义文件 —— 也就是我们对该模型一无所知的那条路。
  *
- * 有预设时**绝不能**乘：预设才是权威值，估算只用来兜「用户把后端从 CPU 切到 GPU/NPU」
+ * 有预设时**绝不能**传：预设才是权威值，估算只用来兜「用户把后端从 CPU 切到 GPU/NPU」
  * 那一支（`maxOf`）。多乘一次会把闸门抬到预设之上，把刚消掉的「大模型误拦」又加回来 ——
  * 例如 Phi-4-mini 会从 5.6 被抬到 6.0 GiB，而且卡片上「≥ 5.6 GB」的文案会和实际闸门对不上。
  */
-private const val NO_PRESET_KV_COMPENSATION = 1.13
+private const val NO_PRESET_KV_COMPENSATION = 1.41
+
+/**
+ * 内存估算的绝对下限（2 GiB）。
+ *
+ * 小模型的固定开销（运行时 + prefill 激活 + App 自身）不随权重线性缩放，纯按体积算会把
+ * 「0.5GB 的模型」误判成「1GB 内存就能跑」，然后在 native 层崩溃。Google 官方锚点也印证
+ * 这一点：Gemma3-1B q4 权重 0.52GB → 实测峰值 2.0GB（≈3.9×）。
+ *
+ * **下限作用在乘完尾部余量之后**：尾部余量补的是 KV(n)，而 KV 同样不适用于「固定开销」
+ * 那部分，先把下限乘大反而会让小模型被误判。已知结果：无预设的**小模型**因此仍然是
+ * 2.00 GiB，与预设 LFM2.5-VL 450M 的 2.00 持平 —— 自定义模型不会比同体积的预设模型更松，
+ * 也不会更严。（若把余量乘在下限之后，下限本身也会被放大 —— 按 1.41 算就是 2.82 GiB；
+ * 那不是本口径，别照着改。）
+ */
+private const val MIN_REQUIRED_RAM_BYTES = 2L * 1024 * 1024 * 1024
 
 /**
  * 内存闸门拦下一次加载时带出的信息，供 UI 渲染「仍要加载」确认框。
@@ -495,9 +511,6 @@ class ModelsViewModel(
             if (model.sizeBytes > 0L && !ignoreMemoryGate) {
                 val backend = _uiState.value.config.backend
                 val preset = ModelPresets.findByFileName(model.fileName)
-                // 口径与预设式一致（不含 KV 项）。**不要在这里叠 KV 补偿**：补偿只属于
-                // 「查不到预设」那一支，理由见 NO_PRESET_KV_COMPENSATION 的注释。
-                val estimated = estimateRequiredRamBytes(model.sizeBytes, backend)
                 // 预设值只在「与它的推导后端一致」时才是权威的，所以要跟估算取较大值：
                 //
                 //  8 条预设里 6 条是按 **CPU 口径**（BASIS_CPU）推的，只有 E2B/E4B 的 GPU 变体是
@@ -511,11 +524,20 @@ class ModelsViewModel(
                 //  估算不含，这个差额足以覆盖），我按 8 条逐个回算验证过。所以 maxOf 只在
                 //  「后端比预设口径更贵」时才生效，正好补缺口。
                 //
-                // 无预设那一支才补 KV 缺口，且补偿写在调用点 —— 让「它只作用于这一支」一眼可见。
-                val required = preset
-                    ?.requiredRamBytes
-                    ?.let { maxOf(it, estimated) }
-                    ?: (estimated * NO_PRESET_KV_COMPENSATION).toLong()
+                // 尾部余量按支路分开，**补偿只落在无预设那一支**（作用域理由见
+                // NO_PRESET_KV_COMPENSATION 的注释）：
+                //  - 有预设：预设已是权威值，估算保持默认 1.25，只兜后端切换；
+                //    多乘一次 1.41 会把闸门抬到预设之上（Phi-4-mini 5.6 → 6.0 GiB）。
+                //  - 无预设：估算式没有 KV 项，用 1.41 把这块缺口补上。
+                val required = if (preset != null) {
+                    maxOf(preset.requiredRamBytes, estimateRequiredRamBytes(model.sizeBytes, backend))
+                } else {
+                    estimateRequiredRamBytes(
+                        weights = model.sizeBytes,
+                        backend = backend,
+                        tail = NO_PRESET_KV_COMPENSATION,
+                    )
+                }
                 val available = container.availableMemoryBytes()
                 if (available < required) {
                     val riskText = "加载这个模型大约需要 ${formatBytes(required)} 可用内存，" +
@@ -709,24 +731,29 @@ class ModelsViewModel(
     }
 
     /**
-     * 内存需求估算，**口径与预设式一致**：`(W × f_backend + O) × 1.25`，其中
+     * 内存需求估算：`max((W × f_backend + O) × [tail], MIN_REQUIRED_RAM_BYTES)`，其中
      * `f_backend` = CPU 1.05 / GPU 1.25 / NPU **未实测**（理由见下面 `when` 里的注释），
-     * `O = max(200MB, 0.12 × W)`，`1.25` = Android 安全余量（无 swap + LMK + App 自身 150~300MB）。
+     * `O = max(200MB, 0.12 × W)`。
      *
-     * 这个返回值有两处用途，语义不同，别混：
-     *  1. **有预设**（`loadModel` 里的 `maxOf`）：只用来兜「用户把后端从 CPU 切到 GPU/NPU」
-     *     那一支。预设已经显式算了 KV(n)，所以这里**不能**再叠 KV 补偿，否则闸门会高于预设值。
-     *  2. **无预设**：调用方乘 [NO_PRESET_KV_COMPENSATION] 补上缺掉的 KV 项。补偿放在
-     *     调用点而不是这里，就是为了让「它只作用于哪一支」一眼可见。
+     * [tail] 是尾部余量，**按支路分开传**，两处用途语义不同，别混：
+     *  1. **有预设**：用默认 `1.25`（= Android 安全余量：无 swap + LMK + App 自身 150~300MB），
+     *     调用方再和预设取 `maxOf`。返回值只用来兜「用户把后端从 CPU 切到 GPU/NPU」那一支 ——
+     *     预设已经显式算了 KV(n)，所以这里**不能**传 [NO_PRESET_KV_COMPENSATION]，
+     *     否则闸门会高于预设值（Phi-4-mini 5.6 → 6.0 GiB，卡片文案与实际闸门对不上）。
+     *  2. **无预设**：传 [NO_PRESET_KV_COMPENSATION]（1.41），补上这条式子缺掉的 KV 项。
+     *     缺口存在的理由与反算过程见该常量的注释。
      *
-     * **2GB 下限是必须的，不是保险丝**：小模型的固定开销（运行时 + prefill 激活 + App 自身）
-     * 不随权重线性缩放，纯按体积算会把「0.5GB 的模型」误判成「1GB 内存就能跑」，然后在 native
-     * 层崩溃。这正是预设里 LFM2.5-VL 450M 的 `requiredRamBytes` 取 2.0GB 而不是按体积算的原因。
+     * 余量作用在 [MIN_REQUIRED_RAM_BYTES] **之前**：下限代表的是不随权重缩放的固定开销，
+     * 而余量补的是 KV(n)，两者不该相乘（否则小模型的下限会被抬成 2.82 GiB 而不是 2.00）。
      *
      * 已知偏乐观之处：**不含 KV cache**（需要层数 / kv 头数 / head_dim，只有真正打开模型文件
-     * 才探得到），所以长上下文场景下这个值是偏低的 —— 缺口由上面第 2 条补偿。
+     * 才探得到），所以长上下文场景下这个值是偏低的 —— 缺口由上面第 2 条补。
      */
-    private fun estimateRequiredRamBytes(weights: Long, backend: InferenceBackend): Long {
+    private fun estimateRequiredRamBytes(
+        weights: Long,
+        backend: InferenceBackend,
+        tail: Double = 1.25,
+    ): Long {
         val factor = when (backend) {
             InferenceBackend.CPU -> 1.05
             InferenceBackend.GPU -> 1.25
@@ -743,7 +770,7 @@ class ModelsViewModel(
             InferenceBackend.NPU -> 1.25
         }
         val overhead = maxOf(200L * 1024 * 1024, (weights * 0.12).toLong())
-        val raw = ((weights * factor + overhead) * 1.25).toLong()
-        return maxOf(raw, 2L * 1024 * 1024 * 1024)
+        val raw = ((weights * factor + overhead) * tail).toLong()
+        return maxOf(raw, MIN_REQUIRED_RAM_BYTES)
     }
 }
