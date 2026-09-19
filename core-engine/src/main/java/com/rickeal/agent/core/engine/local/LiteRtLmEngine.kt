@@ -88,6 +88,8 @@ class LiteRtLmEngine(
     // ---------------------------------------------------------------- load
 
     override suspend fun load(config: EngineLoadConfig) {
+        // 换模型时若上一轮解码还在跑，直接换引擎会踩空 —— 先等它结束
+        waitForGenerationsToFinish()
         withContext(engineDispatcher) {
             mutex.withLock {
                 val modelPath = config.model?.path
@@ -392,7 +394,9 @@ class LiteRtLmEngine(
     }
 
     override fun close() {
-        // close() 不是 suspend，无法优雅等待；这里只做尽力而为的清理
+        // close() 不是 suspend，无法优雅等待；但必须先把在途解码停掉，
+        // 否则会在 native 解码仍在跑时释放 Engine —— 表现为 SIGSEGV。
+        runCatching { conversation?.cancelProcess() }
         runCatching { conversation?.close() }
         runCatching { engine?.close() }
         conversation = null

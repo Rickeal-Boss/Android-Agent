@@ -1,5 +1,9 @@
 package com.rickeal.agent.core.data
 
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import android.os.Process
+
 import com.rickeal.agent.core.model.AgentJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -40,11 +44,23 @@ class JsonFileStore(
     ) = withContext(Dispatchers.IO) {
         if (!baseDir.exists()) baseDir.mkdirs()
         val target = File(baseDir, fileName)
-        val tmp = File(baseDir, "$fileName.tmp")
+        // 临时文件必须**唯一**：固定名会与并发/上一次崩溃残留的 tmp 相互覆盖。
+        // 也不能用「读全文再整写」兜底 —— 那正是会把会话文件写坏的路径。
+        val tmp = File(baseDir, "$fileName.${System.nanoTime()}.${Process.myPid()}.tmp")
         tmp.writeText(json.encodeToString(strategy, value))
-        if (!tmp.renameTo(target)) {
-            target.writeText(tmp.readText())
-            tmp.delete()
+        try {
+            Files.move(
+                tmp.toPath(),
+                target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        } catch (t: Throwable) {
+            // 某些文件系统不支持 ATOMIC_MOVE，退化为普通 rename（仍是元数据操作，非逐字节重写）
+            runCatching {
+                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            runCatching { tmp.delete() }
         }
     }
 
