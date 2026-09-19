@@ -201,6 +201,22 @@ class ModelsViewModel(
                 _uiState.update { it.copy(loadingModelId = null, error = "模型不存在") }
                 return@launch
             }
+            // 内存闸门：本地推理的内存不足会在 native 层表现为崩溃（用户看到的是闪退），
+            // 提前拦下比加载几十秒后崩溃体验好得多。阈值口径见 ModelPresets 顶部注释。
+            if (model.sizeBytes > 0L) {
+                val required = (model.sizeBytes.toDouble() * 2.0).toLong()
+                val available = container.availableMemoryBytes()
+                if (available < required) {
+                    _uiState.update {
+                        it.copy(
+                            loadingModelId = null,
+                            error = "可用内存不足：需要约 ${formatBytes(required)}，" +
+                                "当前可用 ${formatBytes(available)}。请在模型库改用更小/量化更狠的模型，或先释放后台应用。",
+                        )
+                    }
+                    return@launch
+                }
+            }
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     val config = _uiState.value.config
@@ -309,3 +325,9 @@ class ModelsViewModel(
         return "能力：${caps.joinToString("·")}　后端：$backendText"
     }
 }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
+        bytes >= 1_048_576L -> "%.0f MB".format(bytes / 1_048_576.0)
+        else -> "%.0f KB".format(bytes / 1024.0)
+    }

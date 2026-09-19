@@ -68,7 +68,11 @@ class AgentRunner(
             working.add(ChatMessage(role = Role.SYSTEM, text = buildSystemInstruction(config, availableTools)))
         }
         working.addAll(request.history)
-        working.add(request.userInput)
+        // history 可能已经把本轮用户输入拼在末尾（调用方常见写法：messages + userInput），
+        // 无条件再 add 一次会让用户消息在上下文里出现两遍，既浪费 token 也会干扰模型。
+        if (request.history.none { it.id == request.userInput.id }) {
+            working.add(request.userInput)
+        }
 
         var round = 0
         var finalText = ""

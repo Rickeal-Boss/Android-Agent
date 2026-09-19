@@ -352,18 +352,47 @@ class OpenAiCompatibleEngine(
         return JsonArray(parts)
     }
 
+    /**
+     * 图片转 data URI。
+     *
+     * 必须先降采样：手机原图动辄 4000×3000，直接 base64 后是 **十几 MB 的字符串**，
+     * 会打爆请求体（HTTP 413）并极易 OOM。这里统一缩到最长边 1024px 再压 JPEG。
+     */
     private fun imageToDataUri(uri: String): String? {
         return try {
-            val file = java.io.File(if (uri.startsWith("file://")) uri.removePrefix("file://") else uri)
+            val path = if (uri.startsWith("file://")) uri.removePrefix("file://") else uri
+            val file = java.io.File(path)
             if (!file.exists()) return null
-            val bytes = file.readBytes()
-            val base64 = Base64.getEncoder().encodeToString(bytes)
-            val mime = when {
-                uri.endsWith(".jpg", true) || uri.endsWith(".jpeg", true) -> "image/jpeg"
-                uri.endsWith(".webp", true) -> "image/webp"
-                else -> "image/png"
+
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(path, bounds)
+            val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+            val sample = if (maxDim > 1024) {
+                var s = 1
+                while (maxDim / (s * 2) >= 1024) s *= 2
+                s
+            } else {
+                1
             }
-            "data:$mime;base64,$base64"
+            val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            val bitmap = android.graphics.BitmapFactory.decodeFile(path, options) ?: return null
+            val scaled = if (maxOf(bitmap.width, bitmap.height) > 1024) {
+                val ratio = 1024f / maxOf(bitmap.width, bitmap.height)
+                android.graphics.Bitmap.createScaledBitmap(
+                    bitmap,
+                    (bitmap.width * ratio).toInt().coerceAtLeast(1),
+                    (bitmap.height * ratio).toInt().coerceAtLeast(1),
+                    true,
+                )
+            } else {
+                bitmap
+            }
+            val out = java.io.ByteArrayOutputStream()
+            scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+            if (scaled !== bitmap) scaled.recycle()
+            bitmap.recycle()
+            val base64 = Base64.getEncoder().encodeToString(out.toByteArray())
+            "data:image/jpeg;base64,$base64"
         } catch (t: Throwable) {
             null
         }

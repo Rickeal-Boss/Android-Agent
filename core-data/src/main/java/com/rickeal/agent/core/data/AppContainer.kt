@@ -1,5 +1,7 @@
 package com.rickeal.agent.core.data
 
+import android.app.ActivityManager
+import android.content.Context
 import android.net.Uri
 
 import android.content.ClipboardManager
@@ -91,6 +93,21 @@ class AppContainer(private val context: Context) {
             if (target.length() <= 0L) return null
             target.absolutePath
         }.getOrNull()
+    }
+
+    /**
+     * 当前可用内存（字节）。用于「加载模型前的内存闸门」：
+     * 4B 模型加载失败在 native 层表现为 SIGSEGV / OOM，用户感知是「闪退」，
+     * 与其等几十秒后崩溃，不如提前拦下并给出可执行的建议。
+     */
+    fun availableMemoryBytes(): Long {
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return Long.MAX_VALUE
+        val info = ActivityManager.MemoryInfo()
+        return runCatching {
+            manager.getMemoryInfo(info)
+            info.availMem
+        }.getOrDefault(Long.MAX_VALUE)
     }
 
     fun close() {

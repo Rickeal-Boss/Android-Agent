@@ -60,6 +60,10 @@ class LiteRtLmEngine(
 
     override val kind: EngineKind = EngineKind.LOCAL
 
+    /** 上一条流是否被「非正常结束」（用户停止 / 取消 / onError）。 */
+    @Volatile
+    private var conversationDirty = false
+
     /** 已发送消息的 id 水印（见 buildContents 注释）。会话重建时必须清空。 */
     private val sentMessageIds: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
 
@@ -157,6 +161,14 @@ class LiteRtLmEngine(
             runCatching { conversation?.close() }
             conversation = null
         }
+        // 关键：上一条流若被取消或出错（cancelProcess / onError），Conversation 可能停留在
+        // 半截状态（prefill 完成一半、KV cache 状态不完整）。带着这种状态继续 sendMessageAsync
+        // 不会报错，只会让后续每轮「静默变傻」—— 必须强制重建。
+        if (conversationDirty) {
+            runCatching { conversation?.close() }
+            conversation = null
+            conversationDirty = false
+        }
         val existing = conversation
         if (existing != null) return existing
 
@@ -169,7 +181,9 @@ class LiteRtLmEngine(
             SamplerConfig(
                 topK = cfg.sampling.topK,
                 topP = cfg.sampling.topP.toDouble(),
-                temperature = cfg.sampling.temperature.toDouble(),
+                // 与 OpenAI 语义一致用 temperature=0 表示贪心；LiteRT SamplerConfig 底层会做除法，
+                // 0 可能触发除零/NaN，这里钳到一个极小值（等价于贪心）。
+                temperature = cfg.sampling.temperature.toDouble().coerceAtLeast(0.01),
             )
         }
         val created = currentEngine.createConversation(
@@ -202,6 +216,7 @@ class LiteRtLmEngine(
         val textTracker = DeltaTracker()
         val thoughtTracker = DeltaTracker()
         val startNs = System.nanoTime()
+        var finished = false
         var firstTokenNs = 0L
         var chunkCount = 0
 
@@ -218,6 +233,7 @@ class LiteRtLmEngine(
             }
 
             override fun onDone() {
+                finished = true
                 val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
                 val tps = if (elapsedMs > 0) chunkCount * 1000f / elapsedMs else 0f
                 channel.trySend(
@@ -251,6 +267,8 @@ class LiteRtLmEngine(
         try {
             channel.consumeAsFlow().collect { chunk -> emit(chunk) }
         } finally {
+            // 只有 onDone 正常收尾才算“健康”；被取消 / 出错 / 被外部 stop 都要重建会话
+            if (!finished) conversationDirty = true
             // 流结束（正常 / 取消 / 异常）都确保底层停止，避免 GPU 继续烧电
             runCatching { conv.cancelProcess() }
             runCatching { channel.cancel() }
@@ -339,6 +357,8 @@ class LiteRtLmEngine(
     override suspend fun stop() {
         withContext(engineDispatcher) {
             runCatching { conversation?.cancelProcess() }
+            // cancelProcess 之后会话状态不可信，下一次生成必须重建
+            conversationDirty = true
         }
     }
 
