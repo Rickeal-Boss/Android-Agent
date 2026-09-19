@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.engine.local
 
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Capabilities
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation as LiteRtConversation
@@ -66,6 +67,14 @@ class LiteRtLmEngine(
     /** 上一条流是否被「非正常结束」（用户停止 / 取消 / onError）。 */
     @Volatile
     private var conversationDirty = false
+
+    /**
+     * 投机解码能力的**真实探测结果**（null = 未探测/探测失败）。
+     * 来源：官方 `Capabilities(modelPath).hasSpeculativeDecodingSupport()`。
+     * 以此替代按文件名猜测，避免「能力位猜错」导致开了不支持的加速反而出错。
+     */
+    @Volatile
+    private var probedSpeculativeDecoding: Boolean? = null
 
     /** 已发送消息的 id 水印（见 buildContents 注释）。会话重建时必须清空。 */
     private val sentMessageIds: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
@@ -142,6 +151,11 @@ class LiteRtLmEngine(
 
                 engine = created
                 loadedModelPath = modelPath
+                // 真实能力探测：官方 API 直接读模型文件，比按文件名猜可靠得多。
+                // 失败不影响加载（getOrNull 回退到启发式）。
+                probedSpeculativeDecoding = runCatching {
+                    Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
+                }.getOrNull()
                 loadedMaxTokens = config.config.maxTokens
                 loadedBackend = config.config.backend
                 loadConfig = config
@@ -356,6 +370,9 @@ class LiteRtLmEngine(
                 maxContextTokens = model?.contextLength ?: 4096,
                 nativeToolChannel = false,
                 nativeThinkingChannel = caps?.thinking ?: false,
+                supportsSpeculativeDecoding = probedSpeculativeDecoding
+                    ?: caps?.speculativeDecoding
+                    ?: false,
                 engineLabel = "LiteRT-LM ${model?.displayName.orEmpty()}",
             )
         }

@@ -50,6 +50,12 @@ data class EngineCapabilities(
     /** 是否支持「模型原生 tool 通道」。false 时 Agent 必须走文本协议。 */
     val nativeToolChannel: Boolean = false,
     val nativeThinkingChannel: Boolean = false,
+    /**
+     * 是否支持投机解码（speculative decoding）。
+     * 真值来自官方 `Capabilities(modelPath).hasSpeculativeDecodingSupport()` 的**真实探测**，
+     * 探测不可用时回退到按文件名猜测的 `ModelCapabilities.speculativeDecoding`。
+     */
+    val supportsSpeculativeDecoding: Boolean = false,
     val engineLabel: String = "",
 )
 
