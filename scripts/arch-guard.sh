@@ -34,8 +34,14 @@ check "core-design 不依赖领域/功能模块" \
   bash -c 'grep -rn "com.rickeal.agent.core.model\|com.rickeal.agent.feature\|com.rickeal.agent.core.data" --include="*.kt" core-design/ || true'
 
 # 3) :core-model 必须保持无框架（纯 Kotlin，便于将来做 JVM 单测）
+#
+# 匹配所有 "android." / "androidx." 出现，**不只是 import 行**：Kotlin 允许全限定名直接引用
+# （如 `val s = android.os.Build.SOC_MODEL`），那样写不需要 import，只查 import 会漏过去。
+# 但注释里提到 android 是允许的（例如解释某字段对应 Android 平台的什么），所以排除
+# 以 `*` / `//` / `/*` 开头的行，避免误伤——真正要拦的是**代码里的引用**。
 check "core-model 无 android/androidx 依赖" \
-  bash -c 'grep -rn "^import androidx\.\|^import android\." --include="*.kt" core-model/ || true'
+  bash -c 'grep -rn "android\.\|androidx\." --include="*.kt" core-model/ \
+    | grep -vE "^[^:]+:[0-9]+:[[:space:]]*(\*|//|/\*)" || true'
 
 # 4) 禁止被明令禁止的依赖
 check "禁止的依赖（KSP/Room/Hilt/Koin/Retrofit/Coil）" \

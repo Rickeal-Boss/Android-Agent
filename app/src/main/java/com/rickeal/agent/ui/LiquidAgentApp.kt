@@ -1,5 +1,6 @@
 package com.rickeal.agent.ui
 
+import android.app.Activity
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +53,7 @@ import com.rickeal.agent.feature.models.ModelsRoute
 import com.rickeal.agent.feature.models.modelsGraph
 import com.rickeal.agent.feature.settings.SettingsRoute
 import com.rickeal.agent.feature.settings.settingsGraph
+import com.rickeal.agent.onboarding.FirstRunGate
 
 private enum class TopDestination(val route: String, val label: String) {
     CHAT(ChatRoute.ROUTE, "对话"),
@@ -66,12 +68,11 @@ private fun iconOf(destination: TopDestination): ImageVector = when (destination
 }
 
 /**
- * 应用根：主题 → DI → 导航 → 自适应外壳。
+ * 应用根：主题 → DI → 首启闸门 → 主界面外壳。
  *
- * 自适应策略（架构 §7.5）：
- *  - COMPACT（手机竖屏）  单栏 + 底部玻璃导航栏
- *  - MEDIUM / EXPANDED    左侧玻璃导航栏（Rail）+ 内容区
- * 每个 feature 屏幕内部再按 `WindowSizeClass` 决定是否多开一栏（Chat 的参数面板）。
+ * 首启闸门（[FirstRunGate]）包住整个外壳，而不是塞进某条路由里：
+ * 「未接受应用条款就不进主界面」必须是结构性保证，不能依赖导航规则是否写对。
+ * 闸门放行后才渲染 [MainShell]。
  */
 @Composable
 fun LiquidAgentApp() {
@@ -100,60 +101,85 @@ fun LiquidAgentApp() {
 
     LiquidAgentTheme(darkTheme = darkTheme, glassConfig = glassConfig) {
         CompositionLocalProvider(LocalAppContainer provides container) {
-            val windowSize = rememberWindowSizeClass()
-            val navController = rememberNavController()
-            val backStackEntry by navController.currentBackStackEntryAsState()
-            val currentRoute = backStackEntry?.destination?.route
-            val selected = when {
-                currentRoute == null -> TopDestination.CHAT
-                currentRoute.startsWith("settings") -> TopDestination.SETTINGS
-                currentRoute.startsWith("models") -> TopDestination.MODELS
-                else -> TopDestination.CHAT
+            // 首启闸门必须在主题之内：引导页 / 条款页要用玻璃组件与主题下发的配色。
+            // 放在导航之外，是为了「未接受条款就进不了主界面」这件事不依赖任何路由规则。
+            val activity = context as? Activity
+            FirstRunGate(
+                container = container,
+                onExitApp = { activity?.finish() },
+            ) {
+                MainShell()
             }
+        }
+    }
+}
 
-            Row(modifier = Modifier.fillMaxSize()) {
-                if (windowSize.useTwoPane) {
-                    GlassNavRail(
-                        selected = selected,
-                        onSelect = { destination ->
-                            if (destination != selected) navController.navigateTop(destination.route)
-                        },
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .statusBarsPadding(),
-                    )
-                }
-                Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    NavHost(
-                        navController = navController,
-                        startDestination = ChatRoute.ROUTE,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                    ) {
-                        chatGraph(
-                            navController = navController,
-                            onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
-                            onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
-                        )
-                        modelsGraph(navController = navController)
-                        settingsGraph(
-                            navController = navController,
-                            onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
-                        )
-                    }
-                    if (!windowSize.useTwoPane) {
-                        GlassNavBar(
-                            selected = selected,
-                            onSelect = { destination ->
-                                if (destination != selected) navController.navigateTop(destination.route)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .navigationBarsPadding(),
-                        )
-                    }
-                }
+/**
+ * 主界面外壳：自适应导航 + NavHost。
+ *
+ * 自适应策略（架构 §7.5）：
+ *  - COMPACT（手机竖屏）  单栏 + 底部玻璃导航栏
+ *  - MEDIUM / EXPANDED    左侧玻璃导航栏（Rail）+ 内容区
+ * 每个 feature 屏幕内部再按 `WindowSizeClass` 决定是否多开一栏（Chat 的参数面板）。
+ *
+ * **这里刻意不做 Gemma 授权的拦截**：授权闸门放在 `:feature-models` 的下载 / 加载动作上。
+ * 早先的实现在这里拦整个「模型」页，等于让只想下载 Qwen / Phi 的用户也被迫接受
+ * Google 的 Gemma 条款 —— 那是**捆绑**：条款的适用边界必须与模型的归属一致。
+ */
+@Composable
+private fun MainShell() {
+    val windowSize = rememberWindowSizeClass()
+    val navController = rememberNavController()
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = backStackEntry?.destination?.route
+    val selected = when {
+        currentRoute == null -> TopDestination.CHAT
+        currentRoute.startsWith("settings") -> TopDestination.SETTINGS
+        currentRoute.startsWith("models") -> TopDestination.MODELS
+        else -> TopDestination.CHAT
+    }
+
+    Row(modifier = Modifier.fillMaxSize()) {
+        if (windowSize.useTwoPane) {
+            GlassNavRail(
+                selected = selected,
+                onSelect = { destination ->
+                    if (destination != selected) navController.navigateTop(destination.route)
+                },
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .statusBarsPadding(),
+            )
+        }
+        Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            NavHost(
+                navController = navController,
+                startDestination = ChatRoute.ROUTE,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                chatGraph(
+                    navController = navController,
+                    onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
+                    onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
+                )
+                modelsGraph(navController = navController)
+                settingsGraph(
+                    navController = navController,
+                    onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
+                )
+            }
+            if (!windowSize.useTwoPane) {
+                GlassNavBar(
+                    selected = selected,
+                    onSelect = { destination ->
+                        if (destination != selected) navController.navigateTop(destination.route)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding(),
+                )
             }
         }
     }

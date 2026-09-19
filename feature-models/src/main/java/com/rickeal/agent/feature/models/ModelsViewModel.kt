@@ -135,6 +135,51 @@ data class MemoryGateBlock(
     val riskText: String,
 )
 
+/** Gemma 授权闸门拦下的待办动作。用户接受条款后按这里的内容**原样重放**。 */
+@Immutable
+sealed interface PendingModelAction {
+    /**
+     * 待重放的下载。
+     *
+     * 存 URL 而不是让 UI 再传一次：用户确认的一定是他刚才点的那一个模型，
+     * 中途也不会因为输入框被改而变成下载别的东西（与 [StorageGateBlock.url] 同一考虑）。
+     */
+    @Immutable
+    data class Download(val url: String) : PendingModelAction
+
+    /** 待重放的加载。 */
+    @Immutable
+    data class Load(val modelId: String) : PendingModelAction
+}
+
+/**
+ * Gemma 授权闸门拦下一次「下载 / 加载 Gemma 模型」时带出的信息。
+ *
+ * ## 与存储 / 内存闸门的区别（别照抄那两个的文案）
+ *
+ * | | 存储 / 内存闸门 | 本 block |
+ * |---|---|---|
+ * | 拦的是什么 | **风险**（估算值可能不够） | **授权**（条款还没接受） |
+ * | 能不能绕过 | 能，用户看完风险可「仍要…」 | **不能**，只能去接受条款 |
+ *
+ * 前两个的哲学是「估算值不足以下不可逆的判决，所以讲清代价、把决定权交回用户」；
+ * 授权不一样 —— 用户没有「不接受的自由但还是要用」这个选项，所以这里**没有**「忽略闸门」
+ * 的入口，只有「同意并继续 / 暂不」。把两者做成同一套「仍要继续」的按钮，
+ * 会把一份法律文件的接受降级成一句风险确认。
+ *
+ * ## 只拦 Gemma 系模型
+ *
+ * 判据在 [ModelLicenses]。8 条预设里另外 5 条与 Gemma Terms 无关，让下载它们的用户
+ * 去接受 Google 的条款是捆绑 —— 条款的适用边界必须与模型的归属一致。
+ */
+@Immutable
+data class GemmaTermsBlock(
+    /** 被拦下的动作；用户接受授权后原样重放。 */
+    val pending: PendingModelAction,
+    /** 展示用：用户是在为哪个模型同意条款。没有它，用户不知道自己同意的边界在哪。 */
+    val modelLabel: String,
+)
+
 @Immutable
 data class ModelsUiState(
     val models: List<ModelDescriptor> = emptyList(),
@@ -164,6 +209,8 @@ data class ModelsUiState(
     val storageGateBlock: StorageGateBlock? = null,
     /** 非空表示：内存闸门拦下了一次加载，等用户决定是否「仍要加载」 */
     val memoryGateBlock: MemoryGateBlock? = null,
+    /** 非空表示：Gemma 授权闸门拦下了一次下载/加载，等用户接受条款 */
+    val gemmaTermsBlock: GemmaTermsBlock? = null,
     val capabilitiesText: String? = null,
 )
 
@@ -187,6 +234,16 @@ class ModelsViewModel(
 
     /** 来自设置的持久开关：允许用移动数据下载（开启后不再弹确认） */
     private var allowMeteredSetting: Boolean = false
+
+    /**
+     * Gemma 授权是否已接受。镜像 DataStore 的 `is_gemma_terms_accepted`。
+     *
+     * 初值是 false 且判据写成 `!= true`（fail-closed）：读不到时按「未接受」处理。
+     * 授权闸门宁可多问一次也不能在状态未知时放行 —— 多问一次用户点一下就好，
+     * 漏拦则是在没有授权的情况下使用了别人的模型。
+     * （与「首启闸门用 null 避免闪现」是相反的取舍，因为那里的代价是体验，这里是合规。）
+     */
+    private var gemmaTermsAccepted: Boolean = false
 
     private val _uiState = MutableStateFlow(ModelsUiState())
     val uiState: StateFlow<ModelsUiState> = _uiState.asStateFlow()
@@ -216,6 +273,12 @@ class ModelsViewModel(
             container.settingsRepository.allowMeteredDownload.collect { allow ->
                 allowMeteredSetting = allow
                 _uiState.update { it.copy(allowMeteredDownload = allow) }
+            }
+        }
+
+        viewModelScope.launch {
+            container.settingsRepository.isGemmaTermsAccepted.collect { accepted ->
+                gemmaTermsAccepted = accepted
             }
         }
     }
@@ -272,6 +335,27 @@ class ModelsViewModel(
             // 每次下载尝试都从「没有任何确认」开始，避免上一次的 block 残留在界面上
             _uiState.update { it.copy(storageGateBlock = null) }
             val fileName = trimmed.substringBefore('?').substringAfterLast('/').ifBlank { "model.litertlm" }
+
+            // Gemma 授权闸门：**放在所有「代价类」闸门之前**。
+            // 流量/存储问的是「这次下载要花多少」，授权问的是「你凭什么能用这个模型」——
+            // 后者是前置条件，先问代价再问资格是本末倒置（用户可能压根没资格下载，
+            // 那一堆流量确认就白问了）。
+            //
+            // 只拦 Gemma 系模型（判据见 ModelLicenses）：另外 5 条预设与 Gemma Terms 无关，
+            // 拦它们就是捆绑。
+            if (ModelLicenses.requiresGemmaTerms(trimmed) && !gemmaTermsAccepted) {
+                _uiState.update {
+                    it.copy(
+                        gemmaTermsBlock = GemmaTermsBlock(
+                            pending = PendingModelAction.Download(trimmed),
+                            modelLabel = ModelPresets.findByUrl(trimmed)?.label ?: fileName,
+                        ),
+                        error = null,
+                        message = null,
+                    )
+                }
+                return@launch
+            }
 
             // 计量网络（通常是移动数据）保护：GB 级文件用流量下的代价太高。
             // UI 上的「建议连 Wi-Fi」只是一句文案，不实际检查等于没有。
@@ -583,6 +667,34 @@ class ModelsViewModel(
         _uiState.update { it.copy(memoryGateBlock = null, message = null) }
     }
 
+    /**
+     * 用户在 Gemma 授权提示里点了「同意并继续」。
+     *
+     * 只有从 [GemmaTermsBlock] 走过来的请求才会被重放 —— 也就是说用户确实看过条款并
+     * 作出了接受的意思表示。没有待办动作时直接忽略，避免被误调用成「无条件放行」。
+     *
+     * 这里**没有**「忽略闸门」的出口（对比 [onLoadIgnoringMemoryGate]）：内存闸门可以绕过，
+     * 因为它的判据是估算值；授权不能绕过，因为它的判据是「有没有拿到许可」。
+     */
+    fun onGemmaTermsAccepted() {
+        val block = _uiState.value.gemmaTermsBlock ?: return
+        // 先本地置位、再重放：DataStore 的写入与回读都是异步的，等它回来会把刚重放的
+        // 动作又拦一次 —— 用户就会看到同一个对话框连弹两遍。
+        gemmaTermsAccepted = true
+        viewModelScope.launch { container.settingsRepository.setGemmaTermsAccepted(true) }
+        _uiState.update { it.copy(gemmaTermsBlock = null) }
+        when (val pending = block.pending) {
+            is PendingModelAction.Download -> onDownloadFromUrl(pending.url)
+            // 内存闸门重新按未确认走：用户还没看过那一步的说明。
+            is PendingModelAction.Load -> loadModel(pending.modelId, ignoreMemoryGate = false)
+        }
+    }
+
+    /** 用户在 Gemma 授权提示里点了「暂不」。只是放弃这一次动作，不改变授权状态。 */
+    fun dismissGemmaTerms() {
+        _uiState.update { it.copy(gemmaTermsBlock = null, message = null) }
+    }
+
     private fun loadModel(id: String, ignoreMemoryGate: Boolean) {
         viewModelScope.launch {
             _uiState.update {
@@ -591,6 +703,26 @@ class ModelsViewModel(
             val model = container.modelRepository.find(id)
             if (model == null) {
                 _uiState.update { it.copy(loadingModelId = null, error = "模型不存在") }
+                return@launch
+            }
+            // Gemma 授权闸门：**加载是「使用」Gemma 模型的实际动作**，所以这里同样要拦。
+            // 只拦下载是不够的 —— 用户完全可能通过 SAF 导入、或从旧版本遗留的文件拿到
+            // Gemma 权重，那时下载闸门根本没机会触发。
+            //
+            // 同样排在内存闸门之前：先确认「能用」，再讨论「跑不跑得动」。
+            if (ModelLicenses.requiresGemmaTerms(model) && !gemmaTermsAccepted) {
+                _uiState.update {
+                    it.copy(
+                        // 必须复位：loadModel 入口已经把它置成 id，不复位卡片会一直转圈。
+                        loadingModelId = null,
+                        gemmaTermsBlock = GemmaTermsBlock(
+                            pending = PendingModelAction.Load(id),
+                            modelLabel = model.displayName.ifBlank { model.fileName },
+                        ),
+                        error = null,
+                        message = null,
+                    )
+                }
                 return@launch
             }
             // 内存闸门：本地推理的内存不足会在 native 层表现为崩溃（用户看到的是闪退），

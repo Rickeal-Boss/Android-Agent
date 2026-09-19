@@ -32,6 +32,13 @@ class SettingsRepository(private val context: Context) {
         val GLASS_INTENSITY = floatPreferencesKey("glass_intensity")
         val ENABLE_NOISE = booleanPreferencesKey("enable_noise")
         val ALLOW_METERED_DOWNLOAD = booleanPreferencesKey("allow_metered_download")
+
+        // ---- 首启合规：引导与条款接受 ----
+        // 三项刻意**分开**存：应用服务条款与 Gemma 授权条款的法律主体不同
+        // （前者是我们自己，后者是 Google），必须能独立表达「接受其一、未接受其二」。
+        val HAS_SEEN_ONBOARDING = booleanPreferencesKey("has_seen_onboarding")
+        val IS_TOS_ACCEPTED = booleanPreferencesKey("is_tos_accepted")
+        val IS_GEMMA_TERMS_ACCEPTED = booleanPreferencesKey("is_gemma_terms_accepted")
     }
 
     val inferenceConfig: Flow<InferenceConfig> = context.settingsDataStore.data
@@ -63,6 +70,34 @@ class SettingsRepository(private val context: Context) {
     val allowMeteredDownload: Flow<Boolean> = context.settingsDataStore.data
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
         .map { it[Keys.ALLOW_METERED_DOWNLOAD] ?: false }
+
+    /**
+     * 首启引导是否已看过。默认 false —— 首次安装（或清除数据后）会走一遍引导。
+     * 引导页可跳过，跳过同样置 true（否则每次冷启动都会重放）。
+     */
+    val hasSeenOnboarding: Flow<Boolean> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { it[Keys.HAS_SEEN_ONBOARDING] ?: false }
+
+    /**
+     * 应用服务条款（TOS）是否已被接受。默认 false。
+     *
+     * 这一项是**进入主界面的硬闸门**：上架合规要求用户能访问条款并作出接受的意思表示，
+     * 所以「未接受」时不能放行到主界面。
+     */
+    val isTosAccepted: Flow<Boolean> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { it[Keys.IS_TOS_ACCEPTED] ?: false }
+
+    /**
+     * Gemma 授权条款（Gemma Terms of Use）是否已被接受。默认 false。
+     *
+     * **必须与 [isTosAccepted] 分开**：Gemma 的授权主体是 Google，不是本应用作者。
+     * 未接受时不应下载/使用 Gemma 系列模型，但应用其余功能仍可用。
+     */
+    val isGemmaTermsAccepted: Flow<Boolean> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { it[Keys.IS_GEMMA_TERMS_ACCEPTED] ?: false }
 
     val activeModelId: Flow<String?> = context.settingsDataStore.data
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
@@ -105,6 +140,18 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setAllowMeteredDownload(allow: Boolean) {
         context.settingsDataStore.edit { it[Keys.ALLOW_METERED_DOWNLOAD] = allow }
+    }
+
+    suspend fun setHasSeenOnboarding(seen: Boolean) {
+        context.settingsDataStore.edit { it[Keys.HAS_SEEN_ONBOARDING] = seen }
+    }
+
+    suspend fun setTosAccepted(accepted: Boolean) {
+        context.settingsDataStore.edit { it[Keys.IS_TOS_ACCEPTED] = accepted }
+    }
+
+    suspend fun setGemmaTermsAccepted(accepted: Boolean) {
+        context.settingsDataStore.edit { it[Keys.IS_GEMMA_TERMS_ACCEPTED] = accepted }
     }
 
     suspend fun setActiveEndpoint(id: String?) {

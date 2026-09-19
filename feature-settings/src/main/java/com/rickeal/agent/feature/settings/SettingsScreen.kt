@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +47,7 @@ fun SettingsScreen(
     onOpenEndpoints: () -> Unit,
     onOpenTools: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenLegal: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -280,6 +282,19 @@ fun SettingsScreen(
                         trailing = {
                             Icon(
                                 imageVector = Icons.Filled.Info,
+                                contentDescription = null,
+                                tint = colors.accent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                    )
+                    GlassSettingRow(
+                        title = "条款与授权",
+                        subtitle = "回看应用服务条款与 Gemma 授权，含官方原文入口",
+                        onClick = onOpenLegal,
+                        trailing = {
+                            Icon(
+                                imageVector = Icons.Filled.Description,
                                 contentDescription = null,
                                 tint = colors.accent,
                                 modifier = Modifier.size(18.dp),

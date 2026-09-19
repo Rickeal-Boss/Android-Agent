@@ -1,6 +1,7 @@
 package com.rickeal.agent.feature.models
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import com.rickeal.agent.core.design.GlassChip
 import androidx.compose.foundation.lazy.items
 
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -27,6 +29,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassDialog
@@ -49,6 +53,7 @@ import com.rickeal.agent.core.design.GlassSettingRow
 import com.rickeal.agent.core.design.GlassSwitch
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassTopBar
+import com.rickeal.agent.core.data.LegalDocuments
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassTokens
@@ -184,6 +189,21 @@ fun ModelsScreen(
         }
     }
 
+    // Gemma 授权闸门：与下面两个闸门是**同一套「拦下 → 讲清 → 用户决定」结构，
+    // 但拦的东西不同** —— 它们拦的是「估算值可能不够」的风险，这个拦的是「授权还没接受」。
+    // 所以按钮只能是「同意并继续 / 暂不」，**没有**「仍要继续」那种绕过入口：
+    // 用户没有「不接受但还是要用」这个选项。
+    //
+    // 只对 Gemma 系模型触发（判据在 ModelLicenses），Qwen / Phi 等完全不受影响。
+    val gemmaTermsBlock = state.gemmaTermsBlock
+    if (gemmaTermsBlock != null) {
+        GemmaTermsGateDialog(
+            block = gemmaTermsBlock,
+            onAccept = viewModel::onGemmaTermsAccepted,
+            onDismiss = viewModel::dismissGemmaTerms,
+        )
+    }
+
     // 内存闸门：估算值不足时不再硬拦，而是讲清风险、把决定权交回用户。
     // 文案放在数据层（MemoryGateBlock.riskText），就是为了防止 UI 侧把它简化成
     // 一句没有信息量的「内存不足」——用户需要知道继续的代价是闪退和可能的会话丢失。
@@ -283,6 +303,82 @@ fun ModelsScreen(
             },
         )
     }
+}
+
+/**
+ * Gemma 授权闸门的确认框：讲清「为哪个模型同意哪份条款」，并给出官方原文入口。
+ *
+ * 用 [GlassDialog] 而不是整屏页面，是为了和本页已有的三个闸门（内存 / 存储 / 流量）
+ * 保持同一种交互形态 —— 用户在这里已经习惯了「被拦下 → 看清代价 → 决定」。
+ *
+ * 正文来自 [LegalDocuments]（`:core-data`），与首启引导、设置页回看用的是**同一份文本**；
+ * 这里不复制任何条款措辞，避免三处各改各的。
+ */
+@Composable
+private fun GemmaTermsGateDialog(
+    block: GemmaTermsBlock,
+    onAccept: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
+    val uriHandler = LocalUriHandler.current
+
+    GlassDialog(
+        onDismissRequest = onDismiss,
+        title = LegalDocuments.GEMMA_TERMS_TITLE,
+        confirmLabel = "同意并继续",
+        onConfirm = onAccept,
+        dismissLabel = "暂不",
+        content = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "「${block.modelLabel}」属于 Gemma 系列模型，由 Google 提供，" +
+                        "需要先接受 Gemma Terms of Use 才能下载或加载。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onGlass,
+                )
+                // 条款正文较长：限高 + 独立滚动，别把按钮挤出屏幕
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = tokens.gapSm)
+                        .heightIn(max = 220.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        text = LegalDocuments.GEMMA_TERMS_BODY,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onGlassMuted,
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = tokens.gapSm)
+                        .clickable {
+                            // 没有浏览器时 openUri 会抛异常，条款入口不该让应用崩溃
+                            runCatching { uriHandler.openUri(LegalDocuments.GEMMA_TERMS_URL) }
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = LegalDocuments.VIEW_FULL_TERMS_LABEL,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = colors.accent,
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.OpenInNew,
+                        contentDescription = null,
+                        tint = colors.accent,
+                        modifier = Modifier
+                            .padding(start = 4.dp)
+                            .size(15.dp),
+                    )
+                }
+            }
+        },
+    )
 }
 
 /** 导入前按文件名粗猜能力位（真正的启发式在 :core-model 的 ModelHeuristics）。 */
