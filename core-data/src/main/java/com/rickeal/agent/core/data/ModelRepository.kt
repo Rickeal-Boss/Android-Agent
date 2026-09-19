@@ -2,6 +2,7 @@ package com.rickeal.agent.core.data
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.provider.OpenableColumns
 import com.rickeal.agent.core.engine.local.ModelCapabilityProbe
 import com.rickeal.agent.core.model.ModelCapabilities
@@ -142,7 +143,8 @@ class ModelRepository(
                 val target = uniqueFile(modelsDir, safe)
                 val stream = context.contentResolver.openInputStream(uri)
                     ?: return@withContext null
-                stream.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+                // 1MB 缓冲：默认 8KB 拷 3.6GB 要走几十万次循环，明显拖慢导入
+                stream.use { input -> target.outputStream().use { output -> input.copyTo(output, 1024 * 1024) } }
                 val descriptor = ModelHeuristics.applyTo(
                     ModelDescriptor(
                         path = target.absolutePath,
@@ -174,7 +176,11 @@ class ModelRepository(
 
     private fun scanDirectories(): List<ModelDescriptor> {
         val out = ArrayList<ModelDescriptor>()
-        val dirs = listOfNotNull(modelsDir, externalDir)
+        // DownloadManager 的落盘目录（可能为 null，交给 listOfNotNull 过滤）：
+        // 下载完成但还没来得及登记就被中断（进程被杀 / 导入失败）时，用户点「扫描」
+        // 还能把这 2~4GB 找回来，不至于白下载一次。是**追加**，不替换上面的目录。
+        val downloadDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        val dirs = listOfNotNull(modelsDir, externalDir, downloadDir)
         for (dir in dirs) {
             if (!dir.exists()) continue
             val files = dir.listFiles() ?: continue
