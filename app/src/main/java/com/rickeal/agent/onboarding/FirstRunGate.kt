@@ -37,6 +37,21 @@ private enum class FirstRunStep { ONBOARDING, TOS, GEMMA }
  *  - Gemma 授权：可「稍后再说」放行 —— 此刻用户还没决定要用哪个模型，硬拦不合理；
  *    不接受只是拿不到 Gemma 模型，应用其余部分照常可用。
  *
+ * ## 断点续跑（每一步各记各的，别合并成一个标记）
+ *
+ * 首启流程有 3 步、中间还夹着两次要读条款的停顿，而端侧设备在冷启动期间被 LMK 杀掉
+ * 进程很常见。所以**每一步完成时立刻落盘自己的标记**，重启后从第一个未完成的步骤继续：
+ *
+ * | 落盘时机 | 标记 | 重启后的续跑点 |
+ * |---|---|---|
+ * | 引导页走完 / 跳过 | `hasSeenIntro` | `tosAccepted` 也为真 → GEMMA，否则 → TOS |
+ * | 接受 TOS | `isTosAccepted` | GEMMA |
+ * | Gemma 步（同意或稍后） | `hasSeenOnboarding` | 流程结束，直接进主界面 |
+ *
+ * 反例（曾经的实现）：只用流程末尾那一个 `hasSeenOnboarding`，中间步骤就全都不可续 ——
+ * 「看完引导 → 停在 TOS → 被杀 → 重启」会把引导重看一遍。引导可跳过，所以是体验问题
+ * 不是正确性问题，但首启是用户对 App 的第一印象，这个序列在低端机上并不罕见。
+ *
  * 调用方需保证本组件位于 `LiquidAgentTheme` 之内（壁纸与玻璃配色依赖主题下发的 CompositionLocal）。
  */
 @Composable
@@ -53,8 +68,11 @@ fun FirstRunGate(
     val tosAccepted by settings.isTosAccepted.collectAsState(initial = null)
     val gemmaAccepted by settings.isGemmaTermsAccepted.collectAsState(initial = null)
     val hasSeenOnboarding by settings.hasSeenOnboarding.collectAsState(initial = null)
+    val hasSeenIntro by settings.hasSeenIntro.collectAsState(initial = null)
 
-    if (tosAccepted == null || gemmaAccepted == null || hasSeenOnboarding == null) {
+    if (tosAccepted == null || gemmaAccepted == null ||
+        hasSeenOnboarding == null || hasSeenIntro == null
+    ) {
         Box(modifier = Modifier.fillMaxSize()) {
             GlassWallpaper(modifier = Modifier.fillMaxSize())
         }
@@ -66,16 +84,36 @@ fun FirstRunGate(
         return
     }
 
-    // 中途被杀进程后重启：已经接受过应用 TOS 的，不该再看一遍引导。
+    // 被杀进程后重启的续跑点：**每一步各查各的标记**，从第一个还没完成的步骤继续。
+    //
+    // 这里必须是两级（而不是只看 tosAccepted）：端侧 LMK 杀进程很常见，而首启流程有 3 步、
+    // 中间还夹着两次读条款的停顿。若只看 tosAccepted，就会出现
+    // 「看完引导 → 停在 TOS → 被杀 → 重启 → 引导重看一遍」。
+    //
+    // 判定顺序即流程顺序：GEMMA 是最后一步，所以它最先判（前面都完成了才会走到它）。
     var step by remember {
-        mutableStateOf(if (tosAccepted == true) FirstRunStep.GEMMA else FirstRunStep.ONBOARDING)
+        mutableStateOf(
+            when {
+                tosAccepted == true -> FirstRunStep.GEMMA
+                hasSeenIntro == true -> FirstRunStep.TOS
+                else -> FirstRunStep.ONBOARDING
+            },
+        )
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         GlassWallpaper(modifier = Modifier.fillMaxSize())
         when (step) {
             FirstRunStep.ONBOARDING -> OnboardingScreen(
-                onFinished = { step = FirstRunStep.TOS },
+                onFinished = {
+                    // 走完和「跳过」是同一个回调，两者都算「看过了」——否则跳过的人
+                    // 每次冷启动都会被重放一遍引导。
+                    //
+                    // 立刻落盘（而不是等整段流程结束）：这样在下一步（TOS）被杀进程，
+                    // 重启后会直接进 TOS，不会把引导重看一遍。
+                    scope.launch { settings.setHasSeenIntro(true) }
+                    step = FirstRunStep.TOS
+                },
             )
 
             FirstRunStep.TOS -> AppTosScreen(

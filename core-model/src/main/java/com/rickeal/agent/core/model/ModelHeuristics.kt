@@ -139,8 +139,19 @@ object ModelHeuristics {
     /**
      * 上下文长度：完全无法从文件名可靠推断，只能给一个「保守的家族默认值」。
      * 宁可给小不给大 —— 给大了会让上层不做压缩，直接把模型跑崩。
+     *
+     * **注意优先级**：下面的「显式 k 匹配」优先于家族默认值，详见函数体内注释。
      */
     private fun inferContextLength(family: ModelFamily, lower: String, sizeBytes: Long): Int {
+        // 【优先级陷阱】显式 k 匹配（文件名含 "32k" 之类）**先于**家族默认值生效，且命中即 return。
+        //
+        // 为什么这个优先级危险：本工程预设的 memBasis 全部按 `KV@4096` 估算内存，而家族默认值
+        // （尤其下面 GEMMA_4 的 8192）正是照这份预算「宁可给小」取的。一旦文件名带上 "32k"，
+        // 这里会静默返回 32768，把家族默认值的保守权衡整个作废 —— 内存仍按 4096 算、上下文却
+        // 按 32k 跑，恰好落进上面说的「给大了会把模型跑崩」。
+        //
+        // 加新预设时请先确认：文件名的显式 k 与预设 memBasis 的内存预算一致；对 Gemma 3 / 4
+        // 这类已按 KV@4096 估内存的模型，不要在文件名里塞比家族默认值更大的 k。
         val explicit = Regex("(\\d+)\\s*k").find(lower)?.groupValues?.getOrNull(1)?.toIntOrNull()
         if (explicit != null && explicit in 1..1024) return explicit * 1024
         return when (family) {

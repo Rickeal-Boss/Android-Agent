@@ -99,6 +99,11 @@ class AgentRunner(
                 engine = rebuildEngine(kind, loadConfig)
             } catch (retry: Throwable) {
                 if (retry is CancellationException) throw retry
+                // ERROR：重建（最后一次机会）也失败了 —— 这就是终态，用户会看到「引擎加载失败」。
+                // 与上面那条 warn 的分界：warn = 我们兜住了/还在重试，error = 兜不住了。
+                AgentLogStore.error(
+                    "引擎加载失败：$kind 重建后仍失败（${retry.javaClass.simpleName}: ${retry.message}），已放弃"
+                )
                 emit(AgentEvent.Failed("引擎加载失败：${retry.message}", retry))
                 return@flow
             }
@@ -211,6 +216,11 @@ class AgentRunner(
                         throw t
                     }
                     if (generationAttempt >= 1) {
+                        // ERROR：唯一的一次重试也用完了 —— 终态，用户会看到「生成失败」。
+                        // 流式连接被截断（引擎已补 LENGTH 终帧）后重试仍失败的情况也收敛到这里。
+                        AgentLogStore.error(
+                            "生成失败：$kind 重试后仍失败（${t.javaClass.simpleName}: ${t.message}），已放弃本轮"
+                        )
                         emit(AgentEvent.Failed("生成失败：${t.message}", t))
                         return@flow
                     }
@@ -221,6 +231,10 @@ class AgentRunner(
                         engine = rebuildEngine(kind, loadConfig)
                     } catch (retry: Throwable) {
                         if (retry is CancellationException) throw retry
+                        // ERROR：生成失败之后连重建都失败，本轮已经没有恢复手段了。
+                        AgentLogStore.error(
+                            "引擎重载失败：$kind 生成失败后重建也失败（${retry.javaClass.simpleName}: ${retry.message}），已放弃本轮"
+                        )
                         emit(AgentEvent.Failed("引擎重载失败：${retry.message}", retry))
                         return@flow
                     }

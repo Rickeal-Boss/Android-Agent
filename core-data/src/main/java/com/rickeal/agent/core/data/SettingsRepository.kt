@@ -39,6 +39,10 @@ class SettingsRepository(private val context: Context) {
         val HAS_SEEN_ONBOARDING = booleanPreferencesKey("has_seen_onboarding")
         val IS_TOS_ACCEPTED = booleanPreferencesKey("is_tos_accepted")
         val IS_GEMMA_TERMS_ACCEPTED = booleanPreferencesKey("is_gemma_terms_accepted")
+
+        // 引导页**单独**一个标记，与 HAS_SEEN_ONBOARDING（整段首启流程走完）不是一回事。
+        // 理由见 hasSeenIntro 的注释：端侧设备 LMK 杀进程很常见，中间步骤必须各自可续。
+        val HAS_SEEN_INTRO = booleanPreferencesKey("has_seen_intro")
     }
 
     val inferenceConfig: Flow<InferenceConfig> = context.settingsDataStore.data
@@ -72,12 +76,32 @@ class SettingsRepository(private val context: Context) {
         .map { it[Keys.ALLOW_METERED_DOWNLOAD] ?: false }
 
     /**
-     * 首启引导是否已看过。默认 false —— 首次安装（或清除数据后）会走一遍引导。
-     * 引导页可跳过，跳过同样置 true（否则每次冷启动都会重放）。
+     * **整段首启流程**是否已走完（引导 → TOS → Gemma 全部过完）。默认 false。
+     *
+     * 注意与 [hasSeenIntro] 的区别：这个标记在流程**末尾**才写，代表「首启结束了」；
+     * 中间每一步各自有自己的标记，用于被杀进程后续跑。别用这一个去推断单步进度 ——
+     * 那样中间步骤就全都不可续，重启必然重放。
      */
     val hasSeenOnboarding: Flow<Boolean> = context.settingsDataStore.data
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
         .map { it[Keys.HAS_SEEN_ONBOARDING] ?: false }
+
+    /**
+     * 引导页（那 3 屏介绍）是否已经看过。默认 false。走完与「跳过」都置 true。
+     *
+     * ## 为什么要单独一个标记
+     *
+     * 端侧设备上 LMK（低内存杀手）在冷启动期间杀进程很常见，而首启流程有 3 步、
+     * 中间还夹着两次要读条款的停顿，被杀的概率不低。如果只用「流程末尾」那一个标记，
+     * 就会出现：看完引导 → 停在 TOS → 被杀 → 重启 → **把引导重看一遍**。
+     * 引导虽然可跳过（所以是体验问题不是正确性问题），但首启是用户对 App 的第一印象，
+     * 这个序列在低端机上并不罕见。
+     *
+     * 每一步各记各的，重启后就能从**已完成的下一步**继续，而不是从头来。
+     */
+    val hasSeenIntro: Flow<Boolean> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { it[Keys.HAS_SEEN_INTRO] ?: false }
 
     /**
      * 应用服务条款（TOS）是否已被接受。默认 false。
@@ -144,6 +168,11 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setHasSeenOnboarding(seen: Boolean) {
         context.settingsDataStore.edit { it[Keys.HAS_SEEN_ONBOARDING] = seen }
+    }
+
+    /** 引导页看完（或跳过）时立刻落盘，供被杀进程重启后续跑。见 [hasSeenIntro]。 */
+    suspend fun setHasSeenIntro(seen: Boolean) {
+        context.settingsDataStore.edit { it[Keys.HAS_SEEN_INTRO] = seen }
     }
 
     suspend fun setTosAccepted(accepted: Boolean) {

@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.engine.EngineLoadConfig
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.InferenceBackend
@@ -824,6 +825,20 @@ class ModelsViewModel(
                     )
                 }
             }.onFailure { throwable ->
+                // ERROR：这是**用户可见的终态**（下面 error 就是给用户看的），而且这条路径
+                // 完全不经 AgentRunner —— 它是诊断页能查到「模型加载失败」的**唯一**来源，
+                // 缺了这行，用户来诊断页查「为什么加载不了」时黑匣子里是空的。
+                // 级别分界：被内存/存储闸门拦下是 warn（我们兜住了，用户只是被问了一次），
+                // 这里已经没有任何恢复手段，才记 error。
+                //
+                // 只记「文件名 + 后端 + 异常类型/消息」三样定位信息：
+                //  - 不记完整路径（可能含用户目录名），端点名 / URL / API Key 一律不记；
+                //  - throwable.message 是自由文本，可能很长，而 AgentLogStore 单条上限 400 字符，
+                //    所以先把它截断在尾部 —— 保证「哪个文件、哪个后端」不会被挤掉。
+                AgentLogStore.error(
+                    "模型加载失败：${model.fileName}（后端 ${_uiState.value.config.backend}，" +
+                        "${throwable.javaClass.simpleName}: ${throwable.message?.take(120) ?: "无"}）",
+                )
                 _uiState.update {
                     it.copy(
                         loadingModelId = null,

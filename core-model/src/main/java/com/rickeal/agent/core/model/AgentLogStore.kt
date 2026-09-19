@@ -34,12 +34,29 @@ object AgentLogStore {
     private val buffer = ArrayDeque<AgentLog>()
 
     /**
-     * 兜底脱敏：即便将来有人写错调用点，也不让形如 `Bearer xxx` / `sk-xxxx` 的凭据落进日志。
+     * 兜底脱敏：即便将来有人写错调用点，也不让凭据落进日志。三类模式：
      *
+     *  1. `Authorization: Bearer xxx` —— 请求头形态（整体替换，不保留原值）。
+     *  2. `sk-xxxxxxxx` —— OpenAI 风格的裸 key（常见于异常消息里）。
+     *  3. `?key=xxx` / `&api_key=xxx` / `token: xxx` —— **query 参数形态**。
+     *     这类最容易漏：本仓库的 `RemoteEndpoint.name` 在为空时会回退成 `baseUrl`
+     *     （见 SettingsViewModel.onSaveEndpoint），而 baseUrl 完全可能带 `?key=` 查询串；
+     *     引擎文案 `"${remote.name} 需要填写 API Key"` 又会把这个 name 带进异常消息，
+     *     于是 `t.message` 被日志记录时就成了一条凭据泄露路径。
+     *     第 3 类**只替换参数值、保留参数名与分隔符**，脱敏后仍能看出「是哪个参数」。
+     *
+     * 大小写不敏感（`Bearer` / `bearer`、`API_KEY` / `api_key` 都覆盖）。
      * 这只是**最后一道保险**，不是主要手段 —— 正确做法是调用点根本不传入密钥、
-     * 请求头或带凭据的 URL（见各处埋点的注释）。
+     * 请求头或带凭据的 URL（见各处埋点的注释）；也**不应该**为了日志安全让业务侧少说话
+     * （例如删掉 `${remote.name}` 那句引擎文案），防护应该在出口。
      */
-    private val secretPattern = Regex("Bearer\\s+\\S+|sk-[A-Za-z0-9_-]{8,}")
+    private val secretPattern = Regex(
+        "Bearer\\s+\\S+" +
+            "|sk-[A-Za-z0-9_-]{8,}" +
+            "|(\\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token" +
+            "|secret|password|passwd|pwd|credential|key)\\b[\"']?\\s*[=:]\\s*[\"']?)([^\\s\"',;&}\\]]+)",
+        RegexOption.IGNORE_CASE,
+    )
 
     fun info(message: String) = record(AgentLogLevel.INFO, message)
 
@@ -86,7 +103,14 @@ object AgentLogStore {
     /** 脱敏 + 截断。两条都是为了「日志本身不能变成新的内存/安全风险」。 */
     private fun sanitize(raw: String): String {
         val redacted = secretPattern.replace(raw) { match ->
-            if (match.value.startsWith("sk-")) "sk-***" else "Bearer ***"
+            // group 1 只有 query 参数形态参与匹配：它保存了「参数名 + 分隔符 + 可能的引号」，
+            // 把它原样保留、只把值换成 ***，脱敏后依然能看出是哪个参数漏了。
+            val prefix = match.groupValues[1]
+            when {
+                prefix.isNotEmpty() -> prefix + "***"
+                match.value.startsWith("sk-", ignoreCase = true) -> "sk-***"
+                else -> "Bearer ***"
+            }
         }
         return if (redacted.length > MAX_MESSAGE_CHARS) {
             redacted.take(MAX_MESSAGE_CHARS) + "…"
