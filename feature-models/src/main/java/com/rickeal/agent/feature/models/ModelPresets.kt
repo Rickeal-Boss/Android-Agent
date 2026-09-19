@@ -147,7 +147,6 @@ object ModelPresets {
         ),
     )
 
-    /** 推荐项置顶，供「一键获取模型」对话框使用。 */
     /** 推荐项的展示顺序（数字小的在前）。别依赖 sortedByDescending 的稳定性。 */
     private val recommendedOrder = listOf(
         "MiniCPM5 2B · int4",
