@@ -402,8 +402,6 @@ class ModelsViewModel(
         val backendText = backends.joinToString("/") { it.name }
         return "能力：${caps.joinToString("·")}　后端：$backendText"
     }
-}
-
     /**
      * 校验下载结果是否完整：与预设体积偏差超过 2% 即判定为不完整。
      *
@@ -439,6 +437,9 @@ class ModelsViewModel(
         val dlDir = container.downloadDirPath ?: return
         if (source.exists() && source.absolutePath.startsWith(dlDir)) {
             runCatching { source.delete() }
+
+}
+
         }
     }
 
