@@ -97,7 +97,9 @@ object ModelPresets {
             memBasis = BASIS_CPU,
             note = "中文好、体积小，6GB 内存的手机也能流畅跑",
             sizeBytes = 1599875317,
-            recommended = true,
+            // 注意：recommended 只允许两项（MiniCPM5 主推 + Gemma 4 E2B·GPU 备选），
+            // 标多了就失去「替用户做决定」的意义。
+            recommended = false,
         ),
         ModelPreset(
             label = "DeepSeek-R1 蒸馏 Qwen 1.5B",

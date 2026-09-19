@@ -42,7 +42,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
-import com.rickeal.agent.core.design.GlassEmptyState
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassFab
 import com.rickeal.agent.core.design.GlassScaffold
@@ -130,6 +129,7 @@ fun ModelsScreen(
                     downloadPercent = state.downloadPercent,
                     onDownload = viewModel::onDownloadFromUrl,
                     onCancel = viewModel::onCancelDownload,
+                    onPickRecommended = { showPresetDialog = true },
                 )
             }
             if (state.models.isEmpty()) {
@@ -223,6 +223,7 @@ private fun ModelDownloadCard(
     downloadPercent: Int?,
     onDownload: (String) -> Unit,
     onCancel: () -> Unit,
+    onPickRecommended: () -> Unit,
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
@@ -231,12 +232,13 @@ private fun ModelDownloadCard(
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Text(
-                text = "从链接下载模型",
+                text = "用链接下载模型（进阶）",
                 style = MaterialTheme.typography.titleSmall,
                 color = colors.onGlass,
             )
             Text(
-                text = "填写 .litertlm / .task 直链，由系统下载管理器后台下载，完成后自动登记到模型库。4B 模型约 2~4GB，建议 Wi-Fi。",
+                text = "已经知道下载地址就填在这里，系统会在后台下载，下好自动加到模型库。" +
+                    "文件约 1~4GB，建议连 Wi-Fi。不知道选哪个，用下面的「一键获取模型」。",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onGlassMuted,
                 modifier = Modifier.padding(top = tokens.gapSm),

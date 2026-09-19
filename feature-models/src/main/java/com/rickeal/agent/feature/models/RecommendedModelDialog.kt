@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.width
@@ -22,6 +23,17 @@ import com.rickeal.agent.core.design.GlassDialog
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+
+/**
+ * 列表区最大高度。
+ *
+ * 必须限定：`GlassDialog` 底层是 `androidx.compose.ui.window.Dialog`，它给 content 的是
+ * **无界高度约束**，此时再叠 `verticalScroll` 会被 foundation 拦下来抛
+ * `IllegalStateException: Vertically scrollable component was measured with an infinity
+ * maximum height constraints` —— 编译期看不出来，只有真机点开对话框才崩。
+ * `GlassTokens` 没有「对话框内容最大高度」这一档，就地定义（不改 :core-design）。
+ */
+private val ModelListMaxHeight = 420.dp
 
 /**
  * 「一键获取模型」对话框 —— 面向完全不懂技术的小白用户。
@@ -58,33 +70,31 @@ fun RecommendedModelDialog(
 
                 if (downloadingName != null) {
                     // 下载中：给进度与取消，禁止重复点击
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "正在下载：$downloadingName",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = colors.onGlass,
-                            )
-                            Text(
-                                text = "已完成 ${downloadPercent ?: 0}%",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.onGlassMuted,
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(tokens.gapSm))
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "正在下载：$downloadingName",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onGlass,
+                        )
+                        Text(
+                            text = "已完成 ${downloadPercent ?: 0}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onGlassMuted,
+                            modifier = Modifier.padding(top = tokens.gapSm),
+                        )
+                        Spacer(modifier = Modifier.height(tokens.gapMd))
                         GlassButton(
-                            text = "取消",
+                            text = "取消下载",
                             onClick = onCancelDownload,
                             material = GlassMaterial.THIN,
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 } else {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .heightIn(max = ModelListMaxHeight)
                             .verticalScroll(rememberScrollState()),
                     ) {
                         for (preset in ModelPresets.recommendedFirst) {
