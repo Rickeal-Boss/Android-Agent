@@ -79,3 +79,30 @@ HEAD 提交 `d6e6d02` 的 `:app:assembleDebug` 构建**成功**，产物为 `liq
 2. 真实背景模糊（`GlassConfig.enableBackdropBlur`）暂被摘除，恢复方式见 `LiquidGlassModifier.kt` 注释
 3. 内置 Hugging Face 模型目录（当前需用户自己粘贴直链，未做仓库内模型索引）
 4. 端到端真机验证：本地 4B 模型加载、多模态输入、工具调用循环尚未在真机跑过（云端只保证可编译可打包）
+
+## 代码审查后的运行时修复（CI 绿 ≠ 能用）
+
+质量审查（`docs/04-code-review.md`）指出 4 个 **P0 运行时缺陷**——它们不抛异常、不崩溃，
+而是「静默给出错误结果」，因此 CI 永远抓不到。现均已修复：
+
+| 编号 | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| P0-1 | 远端工具调用无意义 | `buildContent()` 只读 `text`，而 TOOL 消息的载荷在 `toolResults` 里 → 发出 `content:""` | TOOL 角色特判，取 `output ?: errorMessage` |
+| P0-2 | 本地 Agent 循环退化为单轮瞎猜 | `buildContents()` 只取最后一条 USER 消息，系统提示词与工具结果全丢 | 改为按 message.id 做**发送水印**，增量装配 system/user/model/tool 全量上下文 |
+| P0-3 | 每条回答出现两个气泡、会话文件写两份 | `MessageCommitted` 与 `Finished` 两条路径都落库 | `MessageCommitted` 只渲染（去重），落库统一交给 `Finished` |
+| P0-4 | 多模态附件 100% 丢失（用户看得见图，模型看不到） | SAF 返回 `content://`，引擎侧按文件路径 `File(uri)` 读取必然失败 | 附件**选中即落盘**到 `filesDir/attachments`，领域模型里存真实路径 |
+
+另修 P1-2：Agent 轮次耗尽时原本会把「上一轮带工具 JSON 的原始输出」当答案，
+现改为回退到最后一轮可见文本并剥离工具协议片段。
+
+## 借鉴 Edge0（https://github.com/Edge0-AI/Edge0）
+
+Edge0 是 Python/MLX 的端侧流式 MoE 推理框架（Apple Silicon），**推理内核不可直接迁移**，
+但两处工程实践已吸收：
+
+1. **用 CI grep 强制依赖方向**（它用这招保证 MLX 不外溢）→ 我们新增
+   `scripts/arch-guard.sh` + 工作流里的 `Architecture guard` 步骤，强制：
+   `litertlm` 只出现在 `:core-engine`、`:core-design` 零业务依赖、`:core-model` 无框架依赖、禁依赖为零。
+2. **量化披露每个模型档位的资源占用**（它给出 35b ≈2.9GB / 8b ≈1.0GB 峰值）→
+   我们的 `ModelPresets` 增加「建议可用内存」估算（1.5× 权重体积），
+   让用户在下载 GB 级文件**之前**就能判断自己的机器跑不跑得动。
