@@ -42,7 +42,13 @@ class FileReadTool(context: ToolContext) : SandboxedFileTool(context) {
             val file = resolveSafe(path)
             if (!file.exists()) return ToolResult(name = spec.name, ok = false, errorMessage = "文件不存在：$path")
             if (!file.isFile) return ToolResult(name = spec.name, ok = false, errorMessage = "不是文件：$path")
-            val text = file.readText().take(200_000)
+            // 必须流式只读前 N 个字符：`readText().take()` 会先把整个文件读成 String。
+            // 100MB 的文件 → UTF-16 下约 200MB 字符数组 → 直接 OOM（端侧可用内存本就被 4B 模型吃掉大半）。
+            val text = file.bufferedReader().use { reader ->
+                val buffer = CharArray(200_000)
+                val read = reader.read(buffer)
+                if (read <= 0) "" else String(buffer, 0, read)
+            }
             ToolResult(name = spec.name, ok = true, output = text)
         } catch (t: Throwable) {
             ToolResult(name = spec.name, ok = false, errorMessage = t.message ?: "读取失败")

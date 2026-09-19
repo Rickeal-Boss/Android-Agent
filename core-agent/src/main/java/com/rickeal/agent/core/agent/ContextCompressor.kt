@@ -37,10 +37,14 @@ class WindowContextCompressor(
         if (rest.isEmpty()) return messages
 
         // 1) 从最新往回贪心，求「不超预算的最长后缀」的起点下标。
+        // 先把每条的 cost 预算一次存起来：原来在贪心循环里逐条 estimate，等于把整段历史
+        // 全量字符遍历两遍（O(n²)）。maxRounds=32 + 关掉压缩 + 长会话时，每轮「思考停顿」
+        // 会明显变长，用户感知为「卡住」。
+        val costs = IntArray(rest.size) { TokenEstimator.estimate(rest[it]) }
         var used = TokenEstimator.estimate(system)
         var candidate = rest.size
         for (index in rest.indices.reversed()) {
-            val cost = TokenEstimator.estimate(rest[index])
+            val cost = costs[index]
             if (used + cost > budgetTokens) break
             used += cost
             candidate = index

@@ -5,6 +5,7 @@ import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import java.util.Locale
 
 class CalculatorTool : Tool {
     override val spec: ToolSpec = ToolSpec(
@@ -33,7 +34,9 @@ class CalculatorTool : Tool {
         if (value == kotlin.math.floor(value) && kotlin.math.abs(value) < 1e15) {
             value.toLong().toString()
         } else {
-            "%.10f".format(value).trimEnd('0').trimEnd('.')
+            // 必须钉死 Locale.US：默认 Locale 在德语/法语区把小数点输出成逗号（3,3333333333），
+            // 模型很可能把逗号读成千分位 —— 后续推理出错且全程无报错。
+            "%.10f".format(Locale.US, value).trimEnd('0').trimEnd('.')
         }
 }
 
