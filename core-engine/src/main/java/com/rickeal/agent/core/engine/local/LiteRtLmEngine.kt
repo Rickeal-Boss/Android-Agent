@@ -23,12 +23,14 @@ import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.GenerationChunk
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.Role
+import com.rickeal.agent.core.model.SamplingParams
 import com.rickeal.agent.core.model.ThinkingMode
 import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.TokenUsage
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.consumeAsFlow
@@ -85,6 +87,17 @@ class LiteRtLmEngine(
     private var loadedModelPath: String? = null
     private var loadedMaxTokens: Int = -1
     private var loadedBackend: InferenceBackend? = null
+    /**
+     * 加载时锁定的采样参数。
+     *
+     * `SamplerConfig` 是在 `ensureConversation()` 里按「会话创建那一刻」的
+     * `request.config.sampling` 构造并随 Conversation 缓存的 —— 会话不重建，
+     * 新的 temperature / topP / topK 永远进不了引擎。所以 load() 的复用判据必须带上它，
+     * 否则用户反复调参、输出毫无变化且无任何报错。
+     */
+    private var loadedSampling: SamplingParams? = null
+    private var loadedVisionBackend: InferenceBackend? = null
+    private var loadedAudioBackend: InferenceBackend? = null
     private var currentConversationId: String? = null
     private var loadConfig: EngineLoadConfig? = null
 
@@ -97,8 +110,12 @@ class LiteRtLmEngine(
     // ---------------------------------------------------------------- load
 
     override suspend fun load(config: EngineLoadConfig) {
-        // 换模型时若上一轮解码还在跑，直接换引擎会踩空 —— 先等它结束
-        waitForGenerationsToFinish()
+        // 换模型时若上一轮解码还在跑，直接换引擎会踩空 —— 先等它结束。
+        // 等不到就**放弃本次 load**：往下走就是 native use-after-free，
+        // 那是 SIGSEGV，runCatching 抓不住、日志也记不下来，整个进程直接没。
+        if (!waitForGenerationsToFinish()) {
+            throw EngineException("LiteRT-LM：上一次生成仍在继续，请稍候重试")
+        }
         withContext(engineDispatcher) {
             mutex.withLock {
                 val modelPath = config.model?.path
@@ -116,6 +133,22 @@ class LiteRtLmEngine(
                     loadedBackend == config.config.backend
                 if (sameEngine) {
                     loadConfig = config
+                    // 采样参数是随 Conversation 一起固化的，只改这些参数**不必**重建引擎
+                    // （重建 4B 引擎要几十秒），但必须重建会话，否则新参数永远不生效。
+                    val samplingChanged = loadedSampling != config.config.sampling ||
+                        loadedVisionBackend != config.config.visionBackend ||
+                        loadedAudioBackend != config.config.audioBackend
+                    if (samplingChanged) {
+                        runCatching { conversation?.close() }
+                        conversation = null
+                        currentConversationId = null
+                        // 会话重建 = 上下文从零开始，水印必须一起清：
+                        // 留着的话新会话会把整段历史当成「已发送」而不再重发 —— 模型直接失忆。
+                        sentMessageIds.clear()
+                    }
+                    loadedSampling = config.config.sampling
+                    loadedVisionBackend = config.config.visionBackend
+                    loadedAudioBackend = config.config.audioBackend
                     return@withLock
                 }
                 releaseInternal()
@@ -159,6 +192,9 @@ class LiteRtLmEngine(
                     }.getOrNull()
                     loadedMaxTokens = config.config.maxTokens
                     loadedBackend = config.config.backend
+                    loadedSampling = config.config.sampling
+                    loadedVisionBackend = config.config.visionBackend
+                    loadedAudioBackend = config.config.audioBackend
                     loadConfig = config
                     loaded = true
                 } catch (t: Throwable) {
@@ -362,11 +398,15 @@ class LiteRtLmEngine(
                 }
 
                 Role.TOOL -> {
-                    val result = message.toolResults.firstOrNull()
-                    val payload = result?.output?.takeIf { it.isNotBlank() }
-                        ?: result?.errorMessage
-                        ?: ""
-                    if (payload.isNotBlank()) out.add(Content.Text(payload))
+                    // 必须遍历**全部**结果：`ContextCompressor.sanitizeForProvider()` 会把一批
+                    // 工具结果合成**一条**含 N 个结果的 TOOL 消息。只取 firstOrNull() 的话，
+                    // 压缩切掉一半后模型只看到第一个工具的输出，以为其余没执行 → 反复重试。
+                    for (result in message.toolResults) {
+                        val payload = result.output.takeIf { it.isNotBlank() }
+                            ?: result.errorMessage
+                            ?: ""
+                        if (payload.isNotBlank()) out.add(Content.Text(payload))
+                    }
                 }
             }
         }
@@ -398,14 +438,33 @@ class LiteRtLmEngine(
         }
     }
 
-    /** 等待在途生成结束（最多约 5 秒），避免在生成过程中卸载 native 引擎导致崩溃。 */
-    private suspend fun waitForGenerationsToFinish() {
+    /**
+     * 等待在途生成结束。
+     *
+     * 返回 `false` = 仍有在途生成，**调用方必须放弃本次操作**。绝不能带着未收敛的生成往下走
+     * releaseInternal()：那是 native use-after-free，表现为 SIGSEGV，
+     * `runCatching` 抓不住、崩溃日志也记不下来（进程直接被内核杀掉）。
+     *
+     * 时长口径：4B 模型 1024 token 的生成约 50 秒，原先的 5 秒窗口几乎必然超时。
+     * 这里放宽到 10 秒，超时后主动 `cancelProcess()` 再给 3 秒让回调线程收敛。
+     */
+    private suspend fun waitForGenerationsToFinish(): Boolean {
         withContext(Dispatchers.IO) {
-            repeat(50) {
+            repeat(100) {
                 if (activeGenerations.get() <= 0) return@withContext
-                kotlinx.coroutines.delay(100)
+                delay(100)
             }
         }
+        if (activeGenerations.get() > 0) {
+            withContext(engineDispatcher) { runCatching { conversation?.cancelProcess() } }
+            withContext(Dispatchers.IO) {
+                repeat(30) {
+                    if (activeGenerations.get() <= 0) return@withContext
+                    delay(100)
+                }
+            }
+        }
+        return activeGenerations.get() <= 0
     }
 
     override suspend fun stop() {
@@ -419,7 +478,9 @@ class LiteRtLmEngine(
     override suspend fun tokenCount(text: String): Int = TokenEstimator.estimate(text)
 
     override suspend fun unload() {
-        waitForGenerationsToFinish()
+        // 同上：等不到就放弃释放。宁可让引擎继续占着内存，
+        // 也不能在 native 解码还在跑的时候把 Conversation 从脚底下抽走。
+        if (!waitForGenerationsToFinish()) return
         withContext(engineDispatcher) {
             mutex.withLock {
                 runCatching { conversation?.close() }
@@ -434,12 +495,14 @@ class LiteRtLmEngine(
         // close() 不是 suspend，无法优雅等待；但必须先把在途解码停掉，
         // 否则会在 native 解码仍在跑时释放 Engine —— 表现为 SIGSEGV。
         runCatching { conversation?.cancelProcess() }
-        runCatching { conversation?.close() }
-        runCatching { engine?.close() }
-        conversation = null
-        engine = null
-        loadedModelPath = null
-        loaded = false
+        // 复位必须复用 releaseInternal()，不要在这里再抄一遍字段清单。
+        // 抄一遍迟早会漏：漏掉 sentMessageIds 一个，就足以让 evict() 后重建的引擎
+        // 把整段历史当成「已发送」而不再重发 —— 用户看到的是「模型失忆」，且无任何报错。
+        releaseInternal()
+        // 这三个不随引擎/会话资源一起走，单独复位
+        conversationDirty = false
+        loadConfig = null
+        probedSpeculativeDecoding = null
     }
 
     private fun releaseInternal() {
@@ -449,11 +512,14 @@ class LiteRtLmEngine(
         engine = null
         currentConversationId = null
         loaded = false
-        // 「复用判据」的记忆必须和 engine 一起清掉：只清 engine 而留着这三个参数，
+        // 「复用判据」的记忆必须和 engine 一起清掉：只清 engine 而留着这几个参数，
         // 会让下一次 load() 拿着残留参数误判成「同一个引擎」而跳过重建。
         loadedModelPath = null
         loadedMaxTokens = -1
         loadedBackend = null
+        loadedSampling = null
+        loadedVisionBackend = null
+        loadedAudioBackend = null
         // 水印代表「已经送进 Conversation 的历史」。引擎重建 = 上下文从零开始，
         // 水印若残留，重建后的第一轮会把整段历史当成「已发送」而不再重发 —— 模型直接失忆。
         sentMessageIds.clear()

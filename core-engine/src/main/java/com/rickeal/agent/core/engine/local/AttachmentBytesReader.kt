@@ -13,12 +13,33 @@ import java.io.File
  */
 object AttachmentBytesReader {
 
+    /** 降采样目标最长边。与远程引擎 `OpenAiCompatibleEngine.imageToDataUri()` 保持同一口径。 */
+    private const val MAX_EDGE = 1024
+
     fun imagePngBytes(uri: String): ByteArray? {
         if (uri.isBlank()) return null
         return try {
-            val file = File(stripScheme(uri))
+            val path = stripScheme(uri)
+            val file = File(path)
             if (!file.exists()) return null
-            val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return null
+            // 必须先解边界算采样率再解码，绝不能先全量解码再缩。
+            // 手机原图 4000x3000 全量解码就是 48MB 的 Bitmap 分配，叠加 4B 模型已经占掉的
+            // 2~3GB，峰值再乘上下面 compress() 的 ByteArrayOutputStream 翻倍扩容 —— 直接 OOM。
+            // 远程引擎做了这一步，本地引擎没做（两条路径不对称），所以一直没被发现。
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+            val sample = if (maxDim > MAX_EDGE) {
+                var s = 1
+                while (maxDim / (s * 2) >= MAX_EDGE) s *= 2
+                s
+            } else {
+                1
+            }
+            val bitmap = BitmapFactory.decodeFile(
+                path,
+                BitmapFactory.Options().apply { inSampleSize = sample },
+            ) ?: return null
             val scaled = downscale(bitmap, 1024L * 1024L)
             val out = ByteArrayOutputStream()
             scaled.compress(Bitmap.CompressFormat.PNG, 90, out)

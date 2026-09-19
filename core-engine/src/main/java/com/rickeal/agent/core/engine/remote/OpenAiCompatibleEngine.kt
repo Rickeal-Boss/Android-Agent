@@ -16,6 +16,7 @@ import com.rickeal.agent.core.model.RemoteEndpoint
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.ThinkingMode
 import com.rickeal.agent.core.model.ThinkingParamStyle
+import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.ToolCallDelta
 import com.rickeal.agent.core.model.ToolSpec
 import com.rickeal.agent.core.model.TokenUsage
@@ -302,7 +303,9 @@ class OpenAiCompatibleEngine(
                 // 用户主动 stop()（call.cancel() 抛 IOException("Canceled")）或协程被取消。
                 // 不能当成错误上报，否则「用户停止」会显示成「出错了」。
                 if (!sentTerminal) {
-                    emit(GenerationChunk(finishReason = FinishReason.CANCELLED))
+                    // collect 侧协程可能已经先被取消了，此时 emit 自身会再抛 CancellationException，
+                    // 把终帧一起吞掉。用 runCatching 包住，保证「要么发出终帧、要么明确放弃」。
+                    runCatching { emit(GenerationChunk(finishReason = FinishReason.CANCELLED)) }
                     sentTerminal = true
                 }
                 // 真正的协程取消必须原样上抛，让结构化并发正常收敛；
@@ -337,12 +340,15 @@ class OpenAiCompatibleEngine(
         activeCall?.cancel()
     }
 
-    override suspend fun tokenCount(text: String): Int {
-        val remote = endpoint ?: return 0
-        return (text.length * 1000 / remote.contextLength.coerceAtLeast(1)).coerceAtLeast(1)
-    }
+    // 原来的 (length * 1000 / contextLength) 量纲是错的：32768 上下文下 "hello" 恒返回 1，
+    // 任何短文本都是 1 —— 属于埋雷。统一走与本地引擎一致的启发式估算。
+    override suspend fun tokenCount(text: String): Int = TokenEstimator.estimate(text)
 
     override fun close() {
+        // 必须主动掐断在途 HTTP：只置 loaded=false 的话，连接最长要挂到 60 秒 readTimeout
+        // 才断，而这期间服务端仍在继续生成、继续计费。
+        runCatching { activeCall?.cancel() }
+        activeCall = null
         loaded = false
         endpoint = null
     }
