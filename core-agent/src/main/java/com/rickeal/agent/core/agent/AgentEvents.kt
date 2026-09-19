@@ -8,6 +8,17 @@ import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.TokenUsage
 
+/**
+ * 本轮为什么结束。让 UI / 日志能区分「模型自己停了」和「被轮次上限硬截断」。
+ */
+enum class TerminationReason {
+    /** 模型给出了最终答案 —— 正常停止。 */
+    ModelStopped,
+
+    /** 达到 maxRounds 兜底截断（正常情况应该由模型自己停，走到这里说明它没停住）。 */
+    MaxRounds,
+}
+
 sealed interface AgentEvent {
     data class RoundStarted(val round: Int, val maxRounds: Int) : AgentEvent
     data class TextDelta(val text: String) : AgentEvent
@@ -17,7 +28,13 @@ sealed interface AgentEvent {
     data class ToolSkipped(val call: ToolCall, val reason: String) : AgentEvent
     /** 一条完整消息落库（UI 用它把 streaming 气泡转成正式气泡） */
     data class MessageCommitted(val message: ChatMessage) : AgentEvent
-    data class Finished(val text: String, val rounds: Int, val usage: TokenUsage?) : AgentEvent
+    data class Finished(
+        val text: String,
+        val rounds: Int,
+        val usage: TokenUsage?,
+        /** 终止原因。带默认值，兼容既有调用方。 */
+        val terminatedBy: TerminationReason = TerminationReason.ModelStopped,
+    ) : AgentEvent
     data class Failed(val message: String, val cause: Throwable? = null) : AgentEvent
     data class Cancelled(val partialText: String) : AgentEvent
 }
