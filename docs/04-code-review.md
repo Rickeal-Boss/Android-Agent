@@ -931,3 +931,38 @@ core-data/src/test/java/.../JsonFileStoreTest.kt          // 并发写 / 损坏�
 | **第 4 批（清理）** | 其余 P2 + 全部 P3 | 不阻塞，可随迭代做 |
 
 > 本人未修改任何源码、未执行任何 git 操作。以上均为建议，落地由主理人安排。
+
+
+---
+
+## 五、修复进展（主理人回填，2026-09-19）
+
+审查结论为「需修改」。以下为逐条处置结果（✅ 已修 / ⏳ 未修并说明原因）：
+
+| 编号 | 一句话 | 状态 |
+|---|---|---|
+| P0-1 | 远程 TOOL 消息 content 为空，工具结果从未回传 | ✅ `buildContent()` 对 TOOL 角色特判，取 `output ?: errorMessage` |
+| P0-2 | 本地引擎只发最后一条 user 消息，系统提示词与工具结果全丢 | ✅ 改为按 `message.id` 做发送水印，增量装配 system/user/model/tool 全量上下文 |
+| P0-3 | 回答被提交两次（双气泡 + 会话文件两份） | ✅ `MessageCommitted` 仅渲染并去重，落库统一由 `Finished` 负责 |
+| P0-4 | `content://` 附件被当文件路径，多模态 100% 丢失 | ✅ 附件选中即落盘到内部目录，领域模型存真实文件路径 |
+| P1-1 | 用户消息被塞进上下文两次 | ✅ `AgentRunner` 按 message id 去重后再追加 |
+| P1-2 | 轮次耗尽把原始工具 JSON 当答案提交 | ✅ 回退到最后一轮可见文本并剥离工具协议片段 |
+| P1-3 | 加载/卸载与在途推理无互斥，可能抽掉 native 引擎 | ✅ `close()` 前先 `cancelProcess()`；`unload()` / `load()` 前等待在途生成结束 |
+| P1-4 | 上下文压缩拆散 tool_calls / tool 配对导致 400 | ⏳ 未修：需要重写 `ContextCompressor` 的裁剪边界（按「一轮 tool_calls + 其全部 tool 结果」为最小单元），改动面较大，留到真机联调时一并处理 |
+| P1-5 | 文本协议对最终答案也解析，用户要 JSON 就死循环 | ⏳ 未修：需要引入「仅在 finishReason=TOOL_CALLS 时解析」的判定，与 P1-4 同一批改动 |
+| P1-6 | 点「停止」后半截答案丢失 | ✅ `Cancelled` 事件已携带 `partialText`，`ChatViewModel` 会落库半截答案 |
+| P1-7 | 工具在主线程做文件 IO 与剪贴板 | ✅ 工具执行统一切到 `Dispatchers.IO`（AgentRunner 与工具试跑页） |
+| P1-8 | 远程图片原图直传 base64 → OOM / 413 | ✅ 统一降采样到最长边 1024px 再压 JPEG(85) |
+| P1-9 | 原子写有名无实（tmp 名固定 + 非原子兜底） | ✅ 唯一 tmp 名 + `ATOMIC_MOVE`，删除「读全文再整写」的损坏路径 |
+
+### 审查之外额外修的两处（自查发现）
+
+1. **会话取消后不重建**：`cancelProcess()` 会留下半截 KV 状态，复用不报错但后续每轮静默变傻。
+   现在只有 `onDone` 才算健康，其余路径（取消 / `onError` / `stop()`）下次生成前强制重建会话。
+2. **`temperature=0` 语义**：LiteRT `SamplerConfig` 底层对 temperature 做除法，0 可能触发除零/NaN，已钳到 `≥0.01`。
+
+### 工程纪律补强
+
+- 新增 `scripts/arch-guard.sh` + CI 的 `Architecture guard` 步骤，用 grep 强制依赖方向
+  （思路借鉴 Edge0：编译能过 ≠ 架构没被破坏）。
+- 新增「加载前内存闸门」：可用内存不足时提前拦下，避免等几十秒后撞上 native 崩溃。
