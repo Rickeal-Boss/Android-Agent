@@ -113,11 +113,19 @@ class ModelsViewModel(
             if (descriptor == null) {
                 _uiState.update { it.copy(message = null, error = "导入失败：无法读取该文件或格式不支持") }
             } else {
-                _uiState.update {
-                    it.copy(
-                        message = "已导入 ${descriptor.fileName}",
+                _uiState.update { current ->
+                    val active = current.activeModelId ?: descriptor.id
+                    current.copy(
+                        // SAF 导入会把文件**复制**一份进 filesDir/models：手机上因此同时存在
+                        // 「用户原来那份」和「我们的副本」（2.5GB 的模型就是约 5GB）。
+                        // 不提示的话，用户会以为我们凭空吃掉了几 GB，所以必须说清可以删原件。
+                        message = if (active == descriptor.id) {
+                            "已导入 ${descriptor.fileName}，已设为当前模型，现在可以去对话页聊天了（原来的文件可以删掉了）"
+                        } else {
+                            "已导入 ${descriptor.fileName}（原来的文件可以删掉了）"
+                        },
                         error = null,
-                        activeModelId = it.activeModelId ?: descriptor.id,
+                        activeModelId = active,
                     )
                 }
                 if (_uiState.value.activeModelId == descriptor.id) {
@@ -229,7 +237,7 @@ class ModelsViewModel(
                     DownloadManager.STATUS_SUCCESSFUL -> {
                         // 就地登记：直接用下载目录里那个文件的绝对路径登记，**不再复制**。
                         // 2~4GB 的模型因此省掉一次完整拷贝（I/O、耗时、以及复制瞬间的 2 倍峰值占用）。
-                        val descriptor = registerDownloaded(progress.localUri, fileName)
+                        val descriptor = registerDownloaded(progress.localUri, fileName, progress.fromCursor)
                         activeDownloadId = null
                         // 完整性校验：半成品模型会在 native 层崩溃（用户只看到闪退），必须在这里拦下
                         val mismatch = descriptor?.let { verifySize(it, preset) }
@@ -322,9 +330,31 @@ class ModelsViewModel(
      *
      * 只有确实解析不出真实路径（DownloadManager 在个别版本只给 `content://`）时，才退回
      * `ModelRepository.importFromUri` 复制一份；那是保底路径，正常流程不会走到。
+     *
+     * [allowPromote] 直接来自 `progress.fromCursor`，**必须透传、不能省**：`.part` 转正是
+     * 一次提交动作，只有 cursor 真实读到 `STATUS_SUCCESSFUL` 时才允许。
+     *
+     * 为什么不能只依赖 `ModelDownloader` 内部的兜底：那道闸门是
+     * `localUri != null || 文件名 ∈ confirmedNames`，而 `confirmedNames` 只能表达「**这个名字**
+     * 曾经成功过」，区分不了「上一次的成功」与「本次的半截文件」——**同名，但不是同一次下载**。
+     * 历史上一度因此把用户中途删掉任务后残留的半截 `.part` 转正并登记，用户一点加载就
+     * native 崩溃（表现为闪退）。
+     *
+     * 那边现在已经补了两层：`enqueue()` 里 `confirmedNames.remove(safeName)`（同名重新入队时
+     * 清掉陈旧条目）与 `allowPromote` 默认值 `false`（fail-safe）。所以本参数在当前实现下是
+     * 第三层，但它才是**唯一语义精确**的那一层——别删，也别改成位置参数，以免将来形参顺序
+     * 变动时静默错位。
      */
-    private suspend fun registerDownloaded(localUri: String?, fileName: String): ModelDescriptor? {
-        val path = container.modelDownloader.downloadedPath(localUri, fileName)
+    private suspend fun registerDownloaded(
+        localUri: String?,
+        fileName: String,
+        allowPromote: Boolean,
+    ): ModelDescriptor? {
+        val path = container.modelDownloader.downloadedPath(
+            localUri,
+            fileName,
+            allowPromote = allowPromote,
+        )
         if (path != null) return container.modelRepository.importFromPath(path)
         val raw = localUri ?: return null
         return container.modelRepository.importFromUri(Uri.parse(raw), fileName)
@@ -496,8 +526,10 @@ class ModelsViewModel(
         val expected = preset?.sizeBytes ?: return null
         val actual = descriptor.sizeBytes
         if (expected <= 0L || actual <= 0L) return null
-        val diff = kotlin.math.abs(actual - expected)
-        if (diff > expected * 0.02) {
+        // 只判「明显小于」，不判「明显大于」：
+        // sizeBytes 是我们硬编码的估算值，若预设填小了（实测 > 预期），文件其实很可能是完整的，
+        // 绝不能因为预设不准就把用户下完的 2~4GB 删掉。双向判定 = 拿估算值当真相。
+        if (actual < expected * 0.98) {
             runCatching { java.io.File(descriptor.path).delete() }
             return "下载的文件不完整（预期 " + formatBytes(expected) + "，实际 " +
                 formatBytes(actual) + "），已删除，请重新下载"

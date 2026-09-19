@@ -25,6 +25,15 @@ typealias ModelsRepository = ModelRepository
 private val MODEL_EXTENSIONS = setOf("litertlm", "task", "bin", "tflite")
 
 /**
+ * 扫描时认作模型文件的最小体积（1MB）。
+ *
+ * 只用于挡掉「刚创建还没写入的空文件 / 占位文件」这类边缘情况，
+ * **挡不住下到一半的大文件** —— 那种靠 ModelDownloader 的 ".part" 命名规避
+ * （半截文件叫 `<name>.part`，扩展名不在这里，根本扫不到）。
+ */
+private const val MIN_MODEL_FILE_BYTES = 1024L * 1024L
+
+/**
  * 本地模型清单。
  *
  * 目录约定：
@@ -208,6 +217,8 @@ class ModelRepository(
             for (file in files) {
                 if (!file.isFile) continue
                 if (file.extension.lowercase() !in MODEL_EXTENSIONS) continue
+                // 廉价防御：只挡空文件/占位文件，挡不住半截的大文件（那种靠 .part 命名规避）
+                if (file.length() < MIN_MODEL_FILE_BYTES) continue
                 out.add(
                     ModelHeuristics.applyTo(
                         ModelDescriptor(

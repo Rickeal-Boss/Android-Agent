@@ -18,6 +18,7 @@ import com.rickeal.agent.core.model.ThinkingParamStyle
 import com.rickeal.agent.core.model.ToolCallDelta
 import com.rickeal.agent.core.model.ToolSpec
 import com.rickeal.agent.core.model.TokenUsage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -34,10 +35,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 
@@ -63,6 +66,16 @@ class OpenAiCompatibleEngine(
 
     @Volatile
     private var loaded: Boolean = false
+
+    /**
+     * 当前正在进行的流式请求句柄。
+     *
+     * `stop()` 需要主动中断阻塞中的 `readLine()`：SSE 冷流只有在**协程被取消**时才会断开，
+     * 而 `stop()` 是显式挂起方法，若拿不到句柄，用户点「停止」在 readTimeout 触发前不会生效。
+     * 用 `@Volatile` 保证跨线程可见（请求跑在 ioDispatcher，`stop()` 可能来自主线程）。
+     */
+    @Volatile
+    private var activeCall: Call? = null
 
     override val isLoaded: Boolean
         get() = loaded
@@ -151,18 +164,31 @@ class OpenAiCompatibleEngine(
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
             .build()
 
-        // 流式读取不能设 readTimeout
+        // 必须设一个**有限**的 readTimeout，不能设 0（永不超时）。
+        // 理由：正常 SSE 流会持续有数据到达（内容 chunk / 心跳 / 空白行），60 秒一个字节都没有
+        // 基本可判定连接已死；而首 token 前的等待通常远小于此。若设 0，一旦服务端接受连接后
+        // 不再返回任何字节（弱网、服务端卡死、代理挂起、进程被切后台冻结），readLine() 会
+        // 永久阻塞，UI 表现为「一直转圈、不报错、点停止也没用」。
+        // connectTimeout 沿用 baseClient 的 15s；callTimeout 保持 0（一次长回答本身可能很久）。
         val client = baseClient.newBuilder()
-            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .build()
         val call = client.newCall(httpRequest)
+        activeCall = call
         val startNs = System.nanoTime()
         var firstTokenNs = 0L
         var chunkCount = 0
+        // 是否已发出过带 finishReason 的终帧。用于「连接中途断开」时补发终帧，
+        // 避免上层把「有内容但 finishReason 为空」当成正常结束、把半截回答落库。
+        var sentTerminal = false
+        // 是否收到了服务端显式的结束标记 [DONE]。
+        var sawDone = false
 
         val response = try {
             call.execute()
         } catch (t: Throwable) {
+            if (activeCall === call) activeCall = null
+            if (isCancellation(t)) throw CancellationException("远程引擎：请求已取消")
             throw EngineException("远程引擎：请求失败 (${t.message})", t)
         }
 
@@ -181,7 +207,10 @@ class OpenAiCompatibleEngine(
                 if (!line.startsWith("data:")) continue
                 val data = line.removePrefix("data:").trim()
                 if (data.isEmpty()) continue
-                if (data == "[DONE]") break
+                if (data == "[DONE]") {
+                    sawDone = true
+                    break
+                }
 
                 val dto = try {
                     json.decodeFromString<StreamChunkDto>(data)
@@ -219,6 +248,7 @@ class OpenAiCompatibleEngine(
                 val reason = choice?.finishReason
                 if (reason != null) {
                     emit(GenerationChunk(finishReason = mapFinishReason(reason)))
+                    sentTerminal = true
                 }
                 if (dto.usage != null) {
                     val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
@@ -245,10 +275,43 @@ class OpenAiCompatibleEngine(
                 }
             }
 
-            if (chunkCount == 0) {
-                emit(GenerationChunk(finishReason = FinishReason.STOP))
+            // 循环正常退出（EOF / [DONE]）后补终帧，避免「有内容但 finishReason 为空」被上层当成正常结束：
+            //  - 一个内容 chunk 都没收到 → STOP（服务端根本没给内容，保持原语义）
+            //  - 收到了 [DONE] → STOP（服务端显式宣告结束，视为正常完成）
+            //  - 有内容但既没有 finish_reason 也没有 [DONE] → 连接被中途掐断，用 LENGTH 标记「被截断」
+            if (!sentTerminal) {
+                val reason = when {
+                    chunkCount == 0 -> FinishReason.STOP
+                    sawDone -> FinishReason.STOP
+                    else -> FinishReason.LENGTH
+                }
+                emit(GenerationChunk(finishReason = reason))
+                sentTerminal = true
+            }
+        } catch (t: Throwable) {
+            // 连接中断 / 用户停止 / 读取超时都会走到这里（阻塞中的 readLine() 抛 IOException）。
+            if (isCancellation(t)) {
+                // 用户主动 stop()（call.cancel() 抛 IOException("Canceled")）或协程被取消。
+                // 不能当成错误上报，否则「用户停止」会显示成「出错了」。
+                if (!sentTerminal) {
+                    emit(GenerationChunk(finishReason = FinishReason.CANCELLED))
+                    sentTerminal = true
+                }
+                // 真正的协程取消必须原样上抛，让结构化并发正常收敛；
+                // 仅由 stop() 触发的 OkHttp cancel 则正常结束，上层据 finishReason == CANCELLED 判定。
+                if (t is CancellationException) throw t
+            } else {
+                // 真实网络错误（socket 重置 / readTimeout 触发的 SocketTimeoutException 等）：
+                // 已产出的内容属于「被截断」，补一个 LENGTH 终帧再上抛，由 AgentRunner 决定重试或报错。
+                if (!sentTerminal && chunkCount > 0) {
+                    emit(GenerationChunk(finishReason = FinishReason.LENGTH))
+                    sentTerminal = true
+                }
+                throw EngineException("远程引擎：流式读取中断 (${t.message})", t)
             }
         } finally {
+            // 只清理自己这一个句柄：避免极端情况下（同一实例并发两条流）误清新流的句柄。
+            if (activeCall === call) activeCall = null
             runCatching { response.close() }
             runCatching { call.cancel() }
         }
@@ -257,7 +320,10 @@ class OpenAiCompatibleEngine(
         .cancellable()
 
     override suspend fun stop() {
-        // SSE 是冷流：取消 collect 即断开连接，没有额外句柄。这里只做状态复位。
+        // SSE 是冷流：取消 collect 也会断开连接。但 collect 的取消依赖协程被取消，
+        // 而 stop() 是显式调用，必须主动 cancel 当前请求句柄，
+        // 否则在 readTimeout 触发前 readLine() 会一直阻塞，用户点「停止」毫无反应。
+        activeCall?.cancel()
     }
 
     override suspend fun tokenCount(text: String): Int {
@@ -282,6 +348,17 @@ class OpenAiCompatibleEngine(
         "tool_calls", "function_call" -> FinishReason.TOOL_CALLS
         "content_filter" -> FinishReason.FILTER
         else -> FinishReason.STOP
+    }
+
+    /**
+     * 判断异常是「取消」还是真实错误。
+     *  - 协程取消 → [CancellationException]
+     *  - OkHttp 的 `Call.cancel()` 会让阻塞中的读取抛 `IOException("Canceled")`
+     * 其余（socket 重置、readTimeout 的 SocketTimeoutException 等）都算真实错误。
+     */
+    private fun isCancellation(t: Throwable): Boolean {
+        if (t is CancellationException) return true
+        return t is IOException && t.message?.contains("Canceled", ignoreCase = true) == true
     }
 
     private fun buildMessages(messages: List<ChatMessage>): List<MessageDto> = messages.map { message ->
@@ -441,5 +518,8 @@ class OpenAiCompatibleEngine(
 
     private companion object {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+        /** SSE 流两次字节到达之间的最大间隔；超过即判定连接已死（详见 readTimeout 处注释）。 */
+        const val READ_TIMEOUT_SECONDS = 60L
     }
 }

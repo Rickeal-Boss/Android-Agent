@@ -2,7 +2,9 @@ package com.rickeal.agent.core.agent
 
 import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
+import com.rickeal.agent.core.engine.EngineLoadConfig
 import com.rickeal.agent.core.engine.GenerationRequest
+import com.rickeal.agent.core.engine.LlmEngine
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.FinishReason
@@ -72,13 +74,24 @@ class AgentRunner(
         val policy = request.policy
         val config: InferenceConfig = request.config.coerce()
         val kind: EngineKind = if (request.endpoint != null) EngineKind.REMOTE else EngineKind.LOCAL
-        val engine = engineFactory.create(kind)
+        var engine = engineFactory.create(kind)
+        val loadConfig = environment.loadConfig(request.model, request.endpoint, config)
 
         try {
-            engine.load(environment.loadConfig(request.model, request.endpoint, config))
+            engine.load(loadConfig)
         } catch (t: Throwable) {
-            emit(AgentEvent.Failed("引擎加载失败：${t.message}", t))
-            return@flow
+            if (t is CancellationException) throw t
+            // 加载失败 → 丢弃缓存里的坏实例，换一个全新实例重试**一次**。
+            // 不这么做的话，EngineFactory 会把坏实例永久缓存下来，用户只能杀掉 App 才能重试。
+            try {
+                engine = rebuildEngine(kind, loadConfig)
+            } catch (retry: Throwable) {
+                if (retry is CancellationException) throw retry
+                emit(AgentEvent.Failed("引擎加载失败：${retry.message}", retry))
+                return@flow
+            }
+            // 重建成功、即将重新 load：发一次重试信号，避免 UI 在重建期间静默卡在旧状态。
+            emit(AgentEvent.Retrying("引擎加载失败，已重建引擎并重试"))
         }
 
         val capabilities = try {
@@ -116,6 +129,10 @@ class AgentRunner(
         var finalText = ""
         var lastUsage = request.history.firstOrNull()?.usage
         var lastModelText = ""
+        // 循环是「模型自己给出最终答案而 break」还是「轮次耗尽」必须显式记下来。
+        // 旧实现用 `finalText.isBlank()` 反推：模型整段回答被 strip() 剥成空串时，
+        // 明明只跑了 1 轮也会被报成「达到轮次上限」，同时提交一个空气泡。
+        var modelStopped = false
 
         // ── 「不会停」的防线 ───────────────────────────────────────────────
         // 端侧 4B 最常见的失败不是不会做，而是不会停：重复同一段摘要、反复回到同一个
@@ -136,7 +153,7 @@ class AgentRunner(
                 working
             }
 
-            val accumulator = StreamAccumulator()
+            var accumulator = StreamAccumulator()
             val generationRequest = GenerationRequest(
                 // 发出去之前做一次配对清洗：压缩可能切掉工具组的一半，这里补上最后一道保险，
                 // 避免 provider 收到「有 tool 结果没 tool_call」而报 400。
@@ -148,19 +165,44 @@ class AgentRunner(
                 conversationId = request.conversationId,
             )
 
-            try {
-                engine.generateStream(generationRequest).collect { chunk ->
-                    accumulator.append(chunk)
-                    if (chunk.textDelta.isNotEmpty()) emit(AgentEvent.TextDelta(chunk.textDelta))
-                    if (chunk.thinkingDelta.isNotEmpty()) emit(AgentEvent.ThinkingDelta(chunk.thinkingDelta))
+            // 生成失败同样「清理 + 重试一次」：本地引擎的 native 句柄一旦失效，
+            // 缓存里的实例不会自愈，只有换新实例重新 load 才能恢复（对齐官方 gallery 的
+            // cleanUpAndReinitialize）。严格只重试一次 —— 坏模型/坏配置重试多少次都一样，
+            // 无限重试只会把失败拖成「永远在转圈」。
+            var generationAttempt = 0
+            while (true) {
+                try {
+                    engine.generateStream(generationRequest).collect { chunk ->
+                        accumulator.append(chunk)
+                        if (chunk.textDelta.isNotEmpty()) emit(AgentEvent.TextDelta(chunk.textDelta))
+                        if (chunk.thinkingDelta.isNotEmpty()) emit(AgentEvent.ThinkingDelta(chunk.thinkingDelta))
+                    }
+                    break
+                } catch (t: Throwable) {
+                    if (t is CancellationException) {
+                        emit(AgentEvent.Cancelled(accumulator.text))
+                        throw t
+                    }
+                    if (generationAttempt >= 1) {
+                        emit(AgentEvent.Failed("生成失败：${t.message}", t))
+                        return@flow
+                    }
+                    generationAttempt++
+                    // 重试前必须换一个干净的累加器：否则会把两次尝试的半截输出拼成一条错误答案。
+                    accumulator = StreamAccumulator()
+                    try {
+                        engine = rebuildEngine(kind, loadConfig)
+                    } catch (retry: Throwable) {
+                        if (retry is CancellationException) throw retry
+                        emit(AgentEvent.Failed("引擎重载失败：${retry.message}", retry))
+                        return@flow
+                    }
+                    // 重建成功、即将重新生成本轮。位置很关键：必须在 rebuildEngine 之后
+                    // （重建失败就直接 Failed 返回，不该先清 UI）、在下一圈 generateStream 之前。
+                    // 重试是在同一个 round 内重跑，不会经过 RoundStarted，UI 若不在此清空流式缓冲，
+                    // 上一轮已经流出的半截文本会和重试的输出叠在一起。
+                    emit(AgentEvent.Retrying("生成失败，已重建引擎并重试本轮"))
                 }
-            } catch (t: Throwable) {
-                if (t is CancellationException) {
-                    emit(AgentEvent.Cancelled(accumulator.text))
-                    throw t
-                }
-                emit(AgentEvent.Failed("生成失败：${t.message}", t))
-                return@flow
             }
 
             if (accumulator.finishReason == FinishReason.CANCELLED) {
@@ -228,10 +270,19 @@ class AgentRunner(
                     round++
                     continue
                 }
-                finalText = cleanText
+                // 剥掉协议片段后可能什么都不剩（模型整段回答就是一个代码块）。
+                // 这时退回未剥离的原文：宁可让用户看到一段 JSON，也不能交付一个空气泡。
+                val answer = cleanText.ifBlank { accumulator.text }
+                if (answer.isBlank()) {
+                    // 本轮既没有文本也没有工具调用（模型真的什么都没产出）：
+                    // 不提交空消息，也不把它当最终答案，交给下一轮（最多到 maxRounds）重试。
+                    round++
+                    continue
+                }
+                finalText = answer
                 val committed = ChatMessage(
                     role = Role.MODEL,
-                    text = cleanText,
+                    text = answer,
                     thinking = accumulator.thinking.takeIf { it.isNotBlank() },
                     usage = accumulator.usage,
                     finishReason = accumulator.finishReason ?: FinishReason.STOP,
@@ -239,6 +290,7 @@ class AgentRunner(
                 )
                 working.add(committed)
                 emit(AgentEvent.MessageCommitted(committed))
+                modelStopped = true
                 break
             }
 
@@ -255,34 +307,40 @@ class AgentRunner(
             for (call in calls) {
                 val tool = toolRegistry.get(call.name)
                 if (tool == null) {
-                    val result = ToolResult(
-                        callId = call.id,
-                        name = call.name,
-                        ok = false,
-                        output = "",
-                        errorMessage = "未注册的工具：${call.name}",
+                    val result = commitToolMessage(
+                        working,
+                        call,
+                        ToolResult(
+                            callId = call.id,
+                            name = call.name,
+                            ok = false,
+                            output = "",
+                            errorMessage = "未注册的工具：${call.name}",
+                        ),
                     )
                     emit(AgentEvent.ToolResultReceived(result))
-                    working.add(ChatMessage(role = Role.TOOL, toolResults = listOf(result)))
                     continue
                 }
                 if (tool.spec.dangerous && !policy.autoApproveDangerous) {
                     emit(AgentEvent.ToolSkipped(call, "危险工具需用户授权"))
-                    val result = ToolResult(
-                        callId = call.id,
-                        name = call.name,
-                        ok = false,
-                        output = "",
-                        errorMessage = "该工具需要用户授权后才会执行",
+                    commitToolMessage(
+                        working,
+                        call,
+                        ToolResult(
+                            callId = call.id,
+                            name = call.name,
+                            ok = false,
+                            output = "",
+                            errorMessage = "该工具需要用户授权后才会执行",
+                        ),
                     )
-                    working.add(ChatMessage(role = Role.TOOL, toolResults = listOf(result)))
                     continue
                 }
 
                 emit(AgentEvent.ToolCallStarted(call))
                 val result = executeWithGuard(call, tool, policy)
                 emit(AgentEvent.ToolResultReceived(result))
-                working.add(ChatMessage(role = Role.TOOL, toolResults = listOf(result)))
+                commitToolMessage(working, call, result)
             }
 
             // 提醒作为下一轮 messages 里的合成 user 消息（槽位是单值，所以每轮最多注入一次）。
@@ -295,10 +353,13 @@ class AgentRunner(
             round++
         }
 
-        // 循环退出只有两种可能：① 模型自己给出最终答案（finalText 非空）；② 轮次耗尽兜底。
+        // 循环唯一的正常出口是「模型自己给出最终答案」（modelStopped = true，见上面的 break）；
+        // 其余情况都是 while 条件（round < maxRounds）不再成立，即真的耗尽轮次。
+        // 这里用**显式标记**而不是 `finalText.isBlank()` 反推：后者会把「答案被 strip 剥成空串」
+        // 误判成轮次耗尽，于是只跑 1 轮也报「达到轮次上限」。
         // 注意：这里**绝不**注入「请现在直接回答」之类的收尾提示再进循环 —— 那句话会被模型
         // 回显成工具调用形状的 JSON，又被文本协议解析成工具调用，正是我们要避免的死循环。
-        val exhausted = finalText.isBlank()
+        val exhausted = !modelStopped
         val outgoing = if (!exhausted) {
             finalText
         } else {
@@ -321,6 +382,41 @@ class AgentRunner(
         .flowOn(dispatcher)
         .cancellable()
 
+    /**
+     * 丢弃当前 kind 的缓存实例，换一个全新实例重新 load() 并返回它。
+     *
+     * 为什么必须「先丢弃再重建」：EngineFactory 按 kind 缓存实例（加载 4B 模型很贵，
+     * 不能每次请求都重建）。但本地引擎一旦在 load()/initialize()/生成过程中失败，
+     * 缓存里那个对象可能停在半死状态且不会自愈 —— 直接再调一次 load() 也没用。
+     * 只有 evict 掉旧对象、拿一个全新的重新加载，用户才不必杀掉 App 才能重试。
+     *
+     * 重试仍失败时直接把异常抛出，由调用方决定如何上报（绝不吞掉）。
+     */
+    private suspend fun rebuildEngine(kind: EngineKind, config: EngineLoadConfig): LlmEngine {
+        engineFactory.evict(kind)
+        val fresh = engineFactory.create(kind)
+        fresh.load(config)
+        return fresh
+    }
+
+    /**
+     * 把一次工具结果落成上下文里的 TOOL 消息，并返回**补好 callId 之后**的结果。
+     *
+     * 为什么要收口到这一个函数：`ToolResult.callId` 的默认值是空串，内置工具只填 name/output，
+     * 于是「成功路径忘记填 callId」这种不对称（失败路径手写了、成功路径漏了）会直接导致
+     * `sanitizeForProvider` 把真实结果当孤儿丢弃、远端端点因空 tool_call_id 报 400。
+     * 成功 / 未注册 / 未授权三条路径都从这里出，保证不会再漏。
+     */
+    private fun commitToolMessage(
+        working: MutableList<ChatMessage>,
+        call: ToolCall,
+        result: ToolResult,
+    ): ToolResult {
+        val committed = if (result.callId.isBlank()) result.copy(callId = call.id) else result
+        working.add(ChatMessage(role = Role.TOOL, toolResults = listOf(committed)))
+        return committed
+    }
+
     private suspend fun executeWithGuard(call: ToolCall, tool: Tool, policy: AgentPolicy): ToolResult {
         val started = System.currentTimeMillis()
         return try {
@@ -331,6 +427,13 @@ class AgentRunner(
             val output = raw.output
             val truncated = output.length > policy.maxToolOutputChars
             raw.copy(
+                // 内置工具（Calculator / File / System / DateTime）只填 name/output，
+                // ToolResult.callId 的默认值是空串，从不填。这里必须补上真实 callId：
+                //   - 空 callId 的 TOOL 消息会被 sanitizeForProvider 当「孤儿结果」整条丢弃，
+                //     模型永远收到「工具结果缺失」而不是真实结果；
+                //   - OpenAI 兼容端点的 tool_call_id 也会是空串，直接 400。
+                // 失败路径本来就填了 callId，成功路径漏了 —— 这种不对称正是 bug 温床。
+                callId = raw.callId.ifBlank { call.id },
                 output = if (truncated) output.take(policy.maxToolOutputChars) + "\n…(已截断)" else output,
                 elapsedMillis = System.currentTimeMillis() - started,
                 truncated = truncated,

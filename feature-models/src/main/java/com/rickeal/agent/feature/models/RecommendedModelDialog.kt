@@ -26,10 +26,11 @@ import com.rickeal.agent.core.design.LocalGlassTokens
 /**
  * 列表区最大高度。
  *
- * 必须限定：`GlassDialog` 底层是 `androidx.compose.ui.window.Dialog`，它给 content 的是
- * **无界高度约束**，此时再叠 `verticalScroll` 会被 foundation 拦下来抛
- * `IllegalStateException: Vertically scrollable component was measured with an infinity
- * maximum height constraints` —— 编译期看不出来，只有真机点开对话框才崩。
+ * 限高是**防御性**的：`GlassDialog` 底层是 `androidx.compose.ui.window.Dialog`，
+ * 它给 content 的高度约束是否无界取决于平台实现，而 foundation 的滚动容器在
+ * `maxHeight == Infinity` 时会抛 `IllegalStateException: Vertically scrollable component
+ * was measured with an infinity maximum height constraints` —— 编译期看不出来。
+ * 这里统一限高规避：约束有界时它无副作用，无界时避免崩溃（8 条预设本来就要滚动）。
  * `GlassTokens` 没有「对话框内容最大高度」这一档，就地定义（不改 :core-design）。
  */
 private val ModelListMaxHeight = 420.dp

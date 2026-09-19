@@ -37,6 +37,15 @@ sealed interface AgentEvent {
     ) : AgentEvent
     data class Failed(val message: String, val cause: Throwable? = null) : AgentEvent
     data class Cancelled(val partialText: String) : AgentEvent
+
+    /**
+     * 引擎重建成功、即将重试。
+     *
+     * 为什么需要这个事件：重试是在**同一个 round 内部**重跑 `generateStream`，不会重新经过
+     * `RoundStarted`，UI 因此收不到任何「新一轮开始」的信号，会一直显示上一轮已经流出的半截文本，
+     * 两轮输出叠在一起。UI 收到本事件应清空流式缓冲（streamingText / streamingThinking）。
+     */
+    data class Retrying(val reason: String) : AgentEvent
 }
 
 data class AgentRequest(

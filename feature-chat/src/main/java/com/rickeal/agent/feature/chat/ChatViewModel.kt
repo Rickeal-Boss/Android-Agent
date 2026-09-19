@@ -14,6 +14,8 @@ import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.RemoteEndpoint
 import com.rickeal.agent.core.model.Role
+import com.rickeal.agent.core.model.TokenUsage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -221,10 +223,34 @@ class ChatViewModel(
         )
     }
 
+    /**
+     * 用户点「停止」。
+     *
+     * 顺序很关键：**先取快照，再取消**。`runJob.cancel()` 之后协程进入取消态，流不会再吐
+     * 事件、`streamingText` 也不会再更新；先取消再读，用户等了半天的半截回答就凭空消失了。
+     *
+     * 落库统一走 [commitAssistant]：取消与 `AgentEvent.Cancelled` 谁先到是不确定的竞态，
+     * 两条路径都会提交同样的文本，靠它按「最后一条 MODEL 且文本相同」去重，不会写两份。
+     * 只提交文本、不带 thinking，与 `Cancelled` 分支保持一致 —— 否则同一个操作会因为竞态
+     * 胜负不同而存出不同的东西。
+     */
     fun onStop() {
+        val partial = _uiState.value.streamingText
         runJob?.cancel()
         runJob = null
-        _uiState.update { it.copy(isStreaming = false, isGenerating = false) }
+        _uiState.update {
+            it.copy(
+                streamingText = "",
+                streamingThinking = "",
+                isStreaming = false,
+                isGenerating = false,
+            )
+        }
+        if (partial.isNotBlank()) {
+            // conversationId 为空说明首轮的用户消息都还没落库（极窄窗口），此时没有可写入的
+            // 会话，不提交，避免出现「界面有气泡但历史里没有」的假象。
+            conversationId?.let { commitAssistant(partial, null, null, it) }
+        }
     }
 
     fun onSend() {
@@ -277,6 +303,10 @@ class ChatViewModel(
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
             }.onFailure { throwable ->
+                // 取消不是错误：onStop() / onNewConversation() 会 cancel 这个协程，而 runCatching
+                // 把 CancellationException 也一起捕获了。不挡掉的话，用户点「停止」或「新对话」
+                // 之后会莫名其妙弹出一条「生成失败」—— 明明是他自己主动取消的。
+                if (throwable is CancellationException) return@onFailure
                 _uiState.update {
                     it.copy(
                         isStreaming = false,
@@ -342,6 +372,10 @@ class ChatViewModel(
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
             }.onFailure { throwable ->
+                // 取消不是错误：onStop() / onNewConversation() 会 cancel 这个协程，而 runCatching
+                // 把 CancellationException 也一起捕获了。不挡掉的话，用户点「停止」或「新对话」
+                // 之后会莫名其妙弹出一条「生成失败」—— 明明是他自己主动取消的。
+                if (throwable is CancellationException) return@onFailure
                 _uiState.update {
                     it.copy(
                         isStreaming = false,
@@ -359,6 +393,12 @@ class ChatViewModel(
         when (event) {
             is AgentEvent.RoundStarted -> _uiState.update {
                 it.copy(agentRound = event.round, agentMaxRounds = event.maxRounds)
+            }
+
+            // 引擎损坏后重建并重试本轮：必须清空流式文本。
+            // 否则第二轮的 delta 会追加到第一轮的半截输出之后，用户看到两段拼在一起。
+            is AgentEvent.Retrying -> _uiState.update {
+                it.copy(streamingText = "", streamingThinking = "")
             }
 
             is AgentEvent.TextDelta -> _uiState.update {
@@ -424,14 +464,10 @@ class ChatViewModel(
             }
 
             is AgentEvent.Finished -> {
-                val assistant = ChatMessage(
-                    role = Role.MODEL,
-                    text = event.text.ifBlank { _uiState.value.streamingText },
-                    thinking = _uiState.value.streamingThinking.ifBlank { null },
-                    usage = event.usage,
-                )
-                if (assistant.text.isNotBlank() || assistant.thinking != null) {
-                    commit(assistant, conversationId)
+                val text = event.text.ifBlank { _uiState.value.streamingText }
+                val thinking = _uiState.value.streamingThinking.ifBlank { null }
+                if (text.isNotBlank() || thinking != null) {
+                    commitAssistant(text, thinking, event.usage, conversationId)
                 }
                 _uiState.update {
                     it.copy(
@@ -451,10 +487,7 @@ class ChatViewModel(
             is AgentEvent.Cancelled -> {
                 val partial = event.partialText.ifBlank { _uiState.value.streamingText }
                 if (partial.isNotBlank()) {
-                    commit(
-                        ChatMessage(role = Role.MODEL, text = partial),
-                        conversationId,
-                    )
+                    commitAssistant(partial, null, null, conversationId)
                 }
                 _uiState.update {
                     it.copy(
@@ -473,6 +506,54 @@ class ChatViewModel(
         viewModelScope.launch {
             container.conversationRepository.appendMessage(conversationId, message)
         }
+    }
+
+    /**
+     * 提交一条助手回答，并**保证同一条回答不会被提交两次**。
+     *
+     * 为什么要去重：`AgentRunner` 在终态先 emit `MessageCommitted`（那条消息带着它自己生成的
+     * id），紧接着再 emit `Finished`；而 `Finished` 只给文本，UI 只能新建 `ChatMessage`——它的
+     * id 是 `newId()` 随机生成的，所以「按 id 去重」永远命中不了，结果是**两个一模一样的助手
+     * 气泡**，会话文件里也写了两条。
+     *
+     * 判据用「最后一条消息 role == MODEL 且 text 相同」，而不是 id（id 每次都变）。
+     * 只看**最后一条**而不是全表：用户完全可能连着两轮拿到同样的回答，全局去重会吞掉第二条。
+     *
+     * 命中时**不重新落库**：`ConversationRepository.appendMessage` 是无条件追加（不按 id 覆盖），
+     * 再 append 一次等于把重复记录写进历史，正好是要修的那个问题。正常路径上也没有需要回填的
+     * 字段 —— `MessageCommitted` 那条已经带着 usage 与 finishReason。
+     *
+     * 同样的判据也服务「点停止」与 `Cancelled` 事件的竞态：两条路径提交的文本相同，先到的那条
+     * 生效，后到的那条被挡下。
+     *
+     * ## ⚠️ 这个判据成立的前提（改动 `AgentRunner` 之前务必先读这段）
+     *
+     * 「最后一条 MODEL 且 text 相同」之所以够用，是因为**一次 `run()` 内 `MessageCommitted`
+     * 只会 emit 一次** —— 只有「模型给出最终答案」那条分支会发（`AgentRunner` 里
+     * `working.add(committed)` 之后那一处），所以 `messages.lastOrNull()` 若已是 MODEL 消息，
+     * 它必然就是刚被提交的那条，不可能是一条无关的历史回答。
+     *
+     * **如果将来有人在中间轮也 emit `MessageCommitted`（例如每轮落一条中间消息），这个前提就
+     * 没了**：那时「最后一条 MODEL 且 text 相同」有可能撞上一条**合法的、独立的**回答，把它误吞掉
+     * —— 表现为「模型答了但界面/历史里没有」，而且不会有任何报错。
+     *
+     * 届时的正确做法是换一个判据：在 ViewModel 里记住最近一次 `MessageCommitted` 的
+     * `event.message.id`（例如 `private var lastCommittedId: String?`），在 `Finished` 里用
+     * 「`messages.lastOrNull()?.id == lastCommittedId`」判断是否已经提交过。id 是精确的，
+     * 不依赖任何关于「谁排在最后」的假设。
+     */
+    private fun commitAssistant(
+        text: String,
+        thinking: String?,
+        usage: TokenUsage?,
+        conversationId: String,
+    ) {
+        val last = _uiState.value.messages.lastOrNull()
+        if (last != null && last.role == Role.MODEL && last.text == text) return
+        commit(
+            ChatMessage(role = Role.MODEL, text = text, thinking = thinking, usage = usage),
+            conversationId,
+        )
     }
 
     private suspend fun ensureConversation(firstUserText: String): String {

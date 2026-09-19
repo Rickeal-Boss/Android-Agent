@@ -42,6 +42,12 @@ object TextToolProtocol {
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** 一个完整的 ``` 围栏块；group 1 是块内内容（语言标记已被吃掉）。 */
+    private val fenceRegex = Regex("```[A-Za-z0-9_+.-]*\\r?\\n?([\\s\\S]*?)```")
+
+    /** Qwen 系的 <tool_call>…</tool_call> 标签。 */
+    private val toolCallTagRegex = Regex("<tool_call>[\\s\\S]*?</tool_call>")
+
     /**
      * 解析文本协议。
      *
@@ -81,16 +87,34 @@ object TextToolProtocol {
         }
     }
 
-    /** 把工具 JSON 从展示文本里剥掉，避免用户看到一堆代码。 */
+    /**
+     * 把工具协议片段从展示文本里剥掉，避免用户看到一堆工具 JSON。
+     *
+     * 只剥离**确认是协议块**的围栏（块内 JSON 带 tool / name / function 字符串键，
+     * 判据与 [toolNameOf] 一致）；普通代码块（用户真正想要的 Python / Java / JSON 片段）
+     * 原样保留。
+     *
+     * 为什么不能无条件删：旧实现把所有 ``` 块一律删掉，模型回「说明 + 代码」时用户拿到的
+     * 答案会缺一大块；若整段回答就是一个代码块，剥完直接是空串 —— 上层因此提交过空气泡，
+     * 还把「只跑了 1 轮」误报成「达到轮次上限」。
+     */
     fun strip(text: String): String {
-        var result = text
-        for (block in extractBlocks(text)) {
-            result = result.replace("```json", "", ignoreCase = true)
-            result = result.replace(block, "")
+        if (text.isEmpty()) return text
+        val withoutFences = fenceRegex.replace(text) { match ->
+            if (isProtocolBlock(match.groupValues[1])) "" else match.value
         }
-        result = result.replace("```", "")
-        result = Regex("<tool_call>[\\s\\S]*?</tool_call>").replace(result, "")
-        return result.trim()
+        return toolCallTagRegex.replace(withoutFences, "").trim()
+    }
+
+    /** 块内 JSON 是否带「工具名」键 —— 与 [parse] 判定协议形状用的是同一个 [toolNameOf]。 */
+    private fun isProtocolBlock(block: String): Boolean {
+        val element = tryParseJson(block.trim()) ?: return false
+        val objects = when (element) {
+            is JsonArray -> element.mapNotNull { it as? JsonObject }
+            is JsonObject -> listOf(element)
+            else -> emptyList()
+        }
+        return objects.any { toolNameOf(it) != null }
     }
 
     private fun extractBlocks(text: String): List<String> {

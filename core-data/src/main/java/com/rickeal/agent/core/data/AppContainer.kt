@@ -111,7 +111,14 @@ class AppContainer(private val context: Context) {
         val info = ActivityManager.MemoryInfo()
         return runCatching {
             manager.getMemoryInfo(info)
-            info.availMem
+            // Android 14（API 34）起 availMem 在大内存机型上会比真实可用内存低 1.5~3GB，
+            // 会让内存闸门误报「内存不足」，把本可运行的模型拦下来。advertisedMem 是修正值。
+            // 用全限定名，避免与既有 import 冲突（本项目踩过重复导入导致 ambiguous 的坑）。
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                info.advertisedMem
+            } else {
+                info.availMem
+            }
         }.getOrDefault(Long.MAX_VALUE)
     }
 
@@ -119,8 +126,10 @@ class AppContainer(private val context: Context) {
      * 可用存储空间（字节）。用于「下载模型前」的检查：
      * 4B 模型 1~4GB，下到一半空间不足会浪费用户大量时间和流量，必须提前拦下。
      *
-     * 口径：模型先落到 `externalFilesDir/Download`（DownloadManager 的落盘位置），
-     * 完成后再复制进内部 models 目录 —— 两处都得有余量，所以取两者的**较小值**；
+     * 口径：两种导入方式落盘位置不同，所以取两者的**较小值**：
+     *  - 直链下载的模型落在 `externalFilesDir/Download`（DownloadManager 的落盘位置），
+     *    完成后就地登记、不复制，占的是外置分区；
+     *  - SAF 选文件导入的模型会被复制进内部 `filesDir/models`，占的是内部数据分区。
      * 只查内部目录会在「外置分区更小」的机型上低估风险。
      *
      * 一个目录都读不到时返回 [Long.MAX_VALUE]（视为不限制）：宁可放行，

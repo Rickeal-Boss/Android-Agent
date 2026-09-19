@@ -2,10 +2,13 @@ package com.rickeal.agent.feature.chat
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -30,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.GlassScaffold
@@ -39,6 +43,7 @@ import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.core.model.EngineKind
+import com.rickeal.agent.core.model.Role
 
 @Composable
 fun ChatScreen(
@@ -147,31 +152,50 @@ fun ChatScreen(
         snackbarHost = {
             val error = state.error
             if (error != null) {
+                // 失败后必须给用户一条出路。只显示错误文本 + 一个「关闭」的话，用户除了把问题
+                // 重打一遍别无选择 —— 而重打会在历史里留下「连续两条 USER 消息」（见
+                // ChatViewModel.onRetry 的注释），对 4B 模型是实打实的质量隐患。
+                // 这里**复用** ViewModel 里已有的 onRetry()：它会先把历史剪到最后一条用户消息
+                // 为止再重发，同时顺手把这条错误清掉。不要在这里另写一套重试。
+                // 没有任何用户消息时（理论上进不来）不显示按钮，避免点了没反应。
+                val canRetry = state.messages.any { it.role == Role.USER }
                 GlassCard(
                     material = GlassMaterial.THICK,
                     cornerRadius = tokens.radiusMd,
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier.padding(horizontal = 24.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = error,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = colors.danger,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Icon(
-                            imageVector = Icons.Filled.Close,
-                            contentDescription = "关闭",
-                            tint = colors.onGlassSubtle,
-                            modifier = Modifier
-                                .padding(start = 8.dp)
-                                .size(16.dp)
-                                .clickable(onClick = viewModel::onDismissError),
-                        )
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // 不设 maxLines：引擎侧的失败原因可能很长（含原始异常），
+                            // 截断成一行会让用户彻底看不懂。
+                            Text(
+                                text = error,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.danger,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "关闭",
+                                tint = colors.onGlassSubtle,
+                                modifier = Modifier
+                                    .padding(start = 8.dp)
+                                    .size(16.dp)
+                                    .clickable(onClick = viewModel::onDismissError),
+                            )
+                        }
+                        if (canRetry) {
+                            Spacer(modifier = Modifier.height(tokens.gapSm))
+                            GlassButton(
+                                text = "重试",
+                                onClick = viewModel::onRetry,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
                     }
                 }
             }

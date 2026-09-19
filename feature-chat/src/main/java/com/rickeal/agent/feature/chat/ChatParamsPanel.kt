@@ -20,6 +20,7 @@ import com.rickeal.agent.core.design.GlassSlider
 import com.rickeal.agent.core.design.GlassSwitch
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.data.DeviceCapability
 import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.InferenceConfig
@@ -116,6 +117,16 @@ fun ChatParamsContent(
                             color = colors.warning,
                             modifier = Modifier.padding(top = 8.dp),
                         )
+                        // 设备能力门控：NPU 在不支持的设备上是在 native 层崩（用户只看到闪退）。
+                        // 只警告不禁用 —— 8650 这个门槛是估计值，硬拦会误伤能跑的设备。
+                        if (!DeviceCapability.supportsNpu()) {
+                            Text(
+                                text = "此设备可能不支持 NPU（建议骁龙 8 Gen 3 及以上）；若加载失败，请改用 GPU 或 CPU",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.warning,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        }
                     }
                 }
             }

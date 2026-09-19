@@ -105,13 +105,17 @@ class LiteRtLmEngine(
                 if (modelPath.isNullOrBlank()) {
                     throw EngineException("LiteRT-LM: modelPath 为空")
                 }
-                val sameEngine = engine != null &&
+                // 复用条件必须带 loaded：只有「已经成功加载过、且参数没变」才允许短路复用。
+                // 少了 loaded，一次失败的加载会留下 engine != null 的半死状态，下次 load()
+                // 直接短路并把 loaded 置 true，上层就以为引擎可用 —— 实际底层是坏的，
+                // 用户只能杀掉 App 才能重试。
+                val sameEngine = loaded &&
+                    engine != null &&
                     loadedModelPath == modelPath &&
                     loadedMaxTokens == config.config.maxTokens &&
                     loadedBackend == config.config.backend
                 if (sameEngine) {
                     loadConfig = config
-                    loaded = true
                     return@withLock
                 }
                 releaseInternal()
@@ -137,29 +141,33 @@ class LiteRtLmEngine(
                     cacheDir = config.externalFilesDir ?: config.cacheDir,
                 )
 
-                val created = try {
-                    Engine(engineConfig)
+                try {
+                    val created = Engine(engineConfig)
+                    try {
+                        created.initialize()
+                    } catch (t: Throwable) {
+                        runCatching { created.close() }
+                        throw EngineException("LiteRT-LM: initialize 失败 (${t.message})", t)
+                    }
+
+                    engine = created
+                    loadedModelPath = modelPath
+                    // 真实能力探测：官方 API 直接读模型文件，比按文件名猜可靠得多。
+                    // 失败不影响加载（getOrNull 回退到启发式）。
+                    probedSpeculativeDecoding = runCatching {
+                        Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
+                    }.getOrNull()
+                    loadedMaxTokens = config.config.maxTokens
+                    loadedBackend = config.config.backend
+                    loadConfig = config
+                    loaded = true
                 } catch (t: Throwable) {
+                    // 任何失败路径都必须彻底复位（engine 置空 / loaded 置 false / 参数记忆与水印清空）。
+                    // 否则下一次 load() 会拿残留状态误判为「可复用」，引擎就永久卡在坏状态里。
+                    releaseInternal()
+                    if (t is EngineException) throw t
                     throw EngineException("LiteRT-LM: 创建 Engine 失败 (${t.message})", t)
                 }
-                try {
-                    created.initialize()
-                } catch (t: Throwable) {
-                    runCatching { created.close() }
-                    throw EngineException("LiteRT-LM: initialize 失败 (${t.message})", t)
-                }
-
-                engine = created
-                loadedModelPath = modelPath
-                // 真实能力探测：官方 API 直接读模型文件，比按文件名猜可靠得多。
-                // 失败不影响加载（getOrNull 回退到启发式）。
-                probedSpeculativeDecoding = runCatching {
-                    Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
-                }.getOrNull()
-                loadedMaxTokens = config.config.maxTokens
-                loadedBackend = config.config.backend
-                loadConfig = config
-                loaded = true
             }
         }
     }
@@ -259,7 +267,18 @@ class LiteRtLmEngine(
             override fun onDone() {
                 finished = true
                 val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
-                val tps = if (elapsedMs > 0) chunkCount * 1000f / elapsedMs else 0f
+                // 首 token 延迟 = prefill 耗时（把 prompt 喂进 KV cache 的那一段）。
+                val firstTokenLatencyMs = if (firstTokenNs == 0L) {
+                    0L
+                } else {
+                    (firstTokenNs - startNs) / 1_000_000L
+                }
+                // tok/s 口径对齐官方 gallery：分母是**纯 decode 时间**（总耗时 − prefill），
+                // 分子是 decode 阶段产出的 chunk 数。若拿总耗时当分母，prefill 会被算进 decode，
+                // 首 token 延迟越长指标越难看，与官方数字也不可比（长 prompt 下差距可达数倍）。
+                // decodeMs <= 0（首 token 与结束同一毫秒、或时间戳异常）时不做除法，直接给 0。
+                val decodeMs = (elapsedMs - firstTokenLatencyMs).coerceAtLeast(0L)
+                val tps = if (decodeMs > 0L) chunkCount * 1000f / decodeMs else 0f
                 channel.trySend(
                     GenerationChunk(
                         finishReason = FinishReason.STOP,
@@ -268,12 +287,9 @@ class LiteRtLmEngine(
                             completionTokens = chunkCount,
                             totalTokens = TokenEstimator.estimate(request.messages) + chunkCount,
                             tokensPerSecond = tps,
-                            firstTokenLatencyMillis = if (firstTokenNs == 0L) {
-                                0L
-                            } else {
-                                (firstTokenNs - startNs) / 1_000_000L
-                            },
-                            decodeMillis = elapsedMs,
+                            firstTokenLatencyMillis = firstTokenLatencyMs,
+                            // 与 tokensPerSecond 的分母保持同一口径：都是纯 decode 时长。
+                            decodeMillis = decodeMs,
                         ),
                     )
                 )
@@ -433,5 +449,13 @@ class LiteRtLmEngine(
         engine = null
         currentConversationId = null
         loaded = false
+        // 「复用判据」的记忆必须和 engine 一起清掉：只清 engine 而留着这三个参数，
+        // 会让下一次 load() 拿着残留参数误判成「同一个引擎」而跳过重建。
+        loadedModelPath = null
+        loadedMaxTokens = -1
+        loadedBackend = null
+        // 水印代表「已经送进 Conversation 的历史」。引擎重建 = 上下文从零开始，
+        // 水印若残留，重建后的第一轮会把整段历史当成「已发送」而不再重发 —— 模型直接失忆。
+        sentMessageIds.clear()
     }
 }

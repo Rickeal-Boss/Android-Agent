@@ -30,6 +30,18 @@ class DefaultEngineFactory(
         }
     }
 
+    /**
+     * 丢弃某个 kind 的缓存实例，让下一次 create() 拿到全新实例。
+     *
+     * 线程安全：ConcurrentHashMap.remove 是原子的，因此并发 evict 同一 kind 时
+     * 只有一个调用方能拿到旧实例去 close()，不会出现「同一个实例被关两次」或
+     * 「关了别人正在用的实例」。remove 与 create 之间仍可能竞态（极端情况下多创建一个
+     * 实例），但多出来的那个会被正常 close()，不会泄漏，也不影响正确性。
+     */
+    override fun evict(kind: EngineKind) {
+        engines.remove(kind)?.let { stale -> runCatching { stale.close() } }
+    }
+
     override fun closeAll() {
         for (engine in engines.values) runCatching { engine.close() }
         engines.clear()

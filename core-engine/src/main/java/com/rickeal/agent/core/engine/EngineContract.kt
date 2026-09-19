@@ -90,5 +90,16 @@ interface LlmEngine {
 
 interface EngineFactory {
     fun create(kind: EngineKind): LlmEngine
+
+    /**
+     * 丢弃并关闭某个 kind 的缓存实例，使下一次 create() 返回一个**全新**实例。
+     *
+     * 为什么必须有这个入口：引擎（尤其本地 LiteRT-LM）一旦在 load()/initialize()/生成
+     * 过程中失败，缓存里那个对象可能停在「半死」状态且无法自愈 —— 再调一次 load() 也不会
+     * 恢复。上层唯一的恢复手段就是「换一个新对象重新加载」。没有 evict 时，用户遇到一次
+     * 加载失败后必须杀掉 App 重启才能重试，等同于「这个功能坏了」。
+     */
+    fun evict(kind: EngineKind)
+
     fun closeAll()
 }
