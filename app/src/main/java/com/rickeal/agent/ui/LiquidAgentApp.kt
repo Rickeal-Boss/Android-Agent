@@ -39,7 +39,6 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.findStartDestination
 import com.rickeal.agent.LiquidAgentApplication
 import com.rickeal.agent.core.data.DarkMode
 import com.rickeal.agent.core.data.LocalAppContainer
@@ -210,7 +209,7 @@ private fun MainShell() {
  */
 private fun NavHostController.navigateTop(route: String) {
     navigate(route) {
-        popUpTo(graph.findStartDestination().id) {
+        popUpTo(graph.startDestinationId) {
             saveState = true
             inclusive = false
         }

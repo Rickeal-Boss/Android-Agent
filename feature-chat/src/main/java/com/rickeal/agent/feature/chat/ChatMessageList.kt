@@ -22,6 +22,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -38,6 +41,17 @@ import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.TokenUsage
+
+/**
+ * 传给 `animateScrollToItem` 的 scrollOffset：一个「足够大」的值，把列表顶到最底部。
+ *
+ * 默认 0 会把目标 item 的**顶部**对齐视口顶部 —— 流式气泡不断变高后，
+ * 最新那几个 token 正好被顶出屏幕外，等于没跟随。
+ *
+ * 这里不给 `Int.MAX_VALUE`：target 是整数相加算出来的，极端情况下会溢出成负数，
+ * 反而可能跳到列表顶部。1e6 px 远超任何真实会话的内容高度，且不会溢出。
+ */
+private const val SCROLL_TO_TAIL_SLACK = 1_000_000
 
 /** 领域附件 → 设计层 DTO（:core-design 不依赖 :core-model，映射放在 feature 层）。 */
 fun Attachment.toGlassAttachment(): GlassBubbleAttachment = when (this) {
@@ -76,12 +90,33 @@ fun ChatMessageList(
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
 ) {
+    // 「用户是否贴着底部」必须用 derivedStateOf 包住：layoutInfo 每次滚动都会更新，
+    // 直接在组合里读会让整个列表跟着每一帧滚动重组。
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()
+            lastVisible == null || lastVisible.index >= info.totalItemsCount - 2
+        }
+    }
+
+    // 新消息必滚到底（messages.size 变化 = 有消息增删）。
     LaunchedEffect(messages.size) {
         val index = messages.lastIndex
-        if (index >= 0) listState.animateScrollToItem(index)
+        if (index >= 0) listState.animateScrollToItem(index, scrollOffset = SCROLL_TO_TAIL_SLACK)
     }
-    LaunchedEffect(isStreaming) {
-        if (isStreaming) listState.animateScrollToItem(messages.size)
+
+    // 流式期间 messages.size 与 isStreaming **都不变**，只 key 在这两者上的话
+    // 整个生成过程一次都不会滚动（用户看不到最新 token）。
+    // 改成 key 在真正逐帧变化的 streamingText / toolTraces.size 上，
+    // 并且只在用户本来就贴着底部时才跟随 —— 否则会把正在往上翻历史的用户硬拽回去。
+    LaunchedEffect(streamingText, toolTraces.size) {
+        if (isStreaming && atBottom) {
+            val lastIndex = listState.layoutInfo.totalItemsCount - 1
+            if (lastIndex >= 0) {
+                listState.animateScrollToItem(lastIndex, scrollOffset = SCROLL_TO_TAIL_SLACK)
+            }
+        }
     }
 
     LazyColumn(

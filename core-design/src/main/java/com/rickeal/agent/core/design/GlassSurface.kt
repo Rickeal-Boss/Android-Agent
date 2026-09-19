@@ -35,6 +35,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +49,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /* ------------------------------------------------------------------ 表面 */
 
@@ -380,7 +384,14 @@ private fun AttachmentItem(attachment: GlassBubbleAttachment) {
 @Composable
 private fun AttachmentThumb(uri: String) {
     val context = LocalContext.current
-    val bitmap: ImageBitmap? = remember(uri) { decodeThumbnail(context, uri) }
+    // content:// 不一定是本地文件：它可能是网盘 Provider（Google Drive / 各家云盘），
+    // openInputStream 会同步走网络。原来这里是 `remember(uri) { decodeThumbnail(...) }`，
+    // 在组合期同步执行 —— 主线程阻塞直到 ANR。
+    // 改成 produceState + Dispatchers.IO：先出占位图标，解码完成后再替换。
+    // 刻意不引 Coil（架构约定：不引入图片库）。
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = uri) {
+        value = withContext(Dispatchers.IO) { decodeThumbnail(context, uri) }
+    }
     if (bitmap != null) {
         Image(
             bitmap = bitmap,
@@ -406,9 +417,15 @@ private fun AttachmentThumb(uri: String) {
     }
 }
 
+/** 缩略图长边的目标上限（px）。缩略图实际显示尺寸只有 96×72 dp，320px 足够。 */
+private const val THUMBNAIL_MAX_DIM = 320
+
 /**
  * 缩略图解码：先读 bounds 算 inSampleSize，再按需缩放解码。
  * 刻意不使用 Coil（简报 §6：不引入图片库）。RGB_565 省一半内存。
+ *
+ * **必须在后台线程调用**：`content://` 可能是网盘 Provider，`openInputStream`
+ * 会同步走网络（调用点 [AttachmentThumb] 已切到 Dispatchers.IO）。
  */
 private fun decodeThumbnail(context: android.content.Context, uri: String): ImageBitmap? = runCatching {
     if (uri.isBlank()) return null
@@ -417,10 +434,14 @@ private fun decodeThumbnail(context: android.content.Context, uri: String): Imag
     val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
     resolver.openInputStream(parsed)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
     val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+    // inJustDecodeBounds 失败（流不可读 / 非图片 / Provider 报错）时 outWidth/outHeight
+    // 会是 -1 或 0：不挡掉的话 maxOf(-1, -1) = -1 ⇒ 下面的 while 一次都不执行 ⇒
+    // sample 保持 1 ⇒ 整图解码，4000×3000 的照片就是 24~36MB ⇒ OOM。
+    if (maxDim <= 0) return null
     var sample = 1
-    while (maxDim / sample > 320) sample *= 2
+    while (maxDim / sample > THUMBNAIL_MAX_DIM) sample *= 2
     val options = android.graphics.BitmapFactory.Options().apply {
-        inSampleSize = sample
+        inSampleSize = sample.coerceAtLeast(1)
         inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
     }
     val decoded = resolver.openInputStream(parsed)?.use {

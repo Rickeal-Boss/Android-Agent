@@ -94,7 +94,10 @@ fun SettingsScreen(
                     )
                     GlassSlider(
                         value = state.theme.glassIntensity,
-                        onValueChange = { viewModel.onThemeChange(state.theme.copy(glassIntensity = it)) },
+                        // 拖动期间只改内存（onThemePreview）—— 这条会触发全 App 重组 +
+                        // 每个玻璃节点重画，再叠加写盘必然掉帧；松手才落盘一次。
+                        onValueChange = { viewModel.onThemePreview(state.theme.copy(glassIntensity = it)) },
+                        onValueChangeFinished = { viewModel.onThemeCommit() },
                         label = "玻璃质感强度",
                         valueText = "%.2f".format(state.theme.glassIntensity),
                         valueRange = 0.5f..1.5f,
@@ -159,11 +162,14 @@ fun SettingsScreen(
                     GroupTitle("默认推理参数")
                     GlassSlider(
                         value = state.config.sampling.temperature,
+                        // 与 ChatParamsPanel 同约定：拖动只 preview，松手才 commit，
+                        // 否则 onValueChange 每帧一次 DataStore 事务（约 60 次/秒）。
                         onValueChange = { v ->
-                            viewModel.onConfigChange {
+                            viewModel.onConfigPreview {
                                 it.copy(sampling = it.sampling.copy(temperature = v))
                             }
                         },
+                        onValueChangeFinished = { viewModel.onConfigCommit() },
                         label = "Temperature",
                         valueText = "%.2f".format(state.config.sampling.temperature),
                         valueRange = 0f..2f,
@@ -171,10 +177,11 @@ fun SettingsScreen(
                     GlassSlider(
                         value = state.config.sampling.topP,
                         onValueChange = { v ->
-                            viewModel.onConfigChange {
+                            viewModel.onConfigPreview {
                                 it.copy(sampling = it.sampling.copy(topP = v))
                             }
                         },
+                        onValueChangeFinished = { viewModel.onConfigCommit() },
                         label = "Top-P",
                         valueText = "%.2f".format(state.config.sampling.topP),
                         valueRange = 0f..1f,
@@ -183,8 +190,9 @@ fun SettingsScreen(
                     GlassSlider(
                         value = state.config.maxTokens.toFloat(),
                         onValueChange = { v ->
-                            viewModel.onConfigChange { it.copy(maxTokens = v.toInt()) }
+                            viewModel.onConfigPreview { it.copy(maxTokens = v.toInt()) }
                         },
+                        onValueChangeFinished = { viewModel.onConfigCommit() },
                         label = "最大输出 Token",
                         valueText = "${state.config.maxTokens}",
                         valueRange = 64f..8192f,
@@ -193,8 +201,9 @@ fun SettingsScreen(
                     GlassSlider(
                         value = state.config.contextLength.toFloat(),
                         onValueChange = { v ->
-                            viewModel.onConfigChange { it.copy(contextLength = v.toInt()) }
+                            viewModel.onConfigPreview { it.copy(contextLength = v.toInt()) }
                         },
+                        onValueChangeFinished = { viewModel.onConfigCommit() },
                         label = "上下文长度",
                         valueText = "${state.config.contextLength}",
                         valueRange = 512f..32768f,
