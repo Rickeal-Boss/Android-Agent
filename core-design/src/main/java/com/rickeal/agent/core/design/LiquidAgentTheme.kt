@@ -1,9 +1,7 @@
 package com.rickeal.agent.core.design
 
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.MaterialExpressiveTheme
-import androidx.compose.material3.MotionScheme
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -15,10 +13,30 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
+ * M3 Expressive 形状档位。
+ *
+ * 与标准 M3 的关键差异：**圆角整体更大，且层级跨度更夸张**
+ * （标准 M3 是 4/8/12/16/28，M3E 抬到 8/12/16/28/48）。
+ * 大圆角 + 液态玻璃的折射边缘是绝配 —— 折射带在圆角处最明显。
+ *
+ * 这也是我们在 M3E 公开 API 仍为 internal 的情况下，
+ * 自己实现 M3E 设计语言的一环（详见 [LiquidAgentTheme] 的 M3E 结论）。
+ */
+val LiquidShapes = androidx.compose.material3.Shapes(
+    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+    small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+    medium = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+    large = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
+    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(48.dp),
+)
+
+/**
  * SF 风格排版层级：
  *  - 大标题负字距（-0.6sp ~ -0.3sp）
  *  - 正文 +0.1sp
  *  - 次级文字降低对比（颜色）而非降低字号
+ *
+ * 负字距 + 大号标题也是 M3E 的排版主张（层级差异更明显、更有个性）。
  */
 val LiquidTypography = Typography(
     displayLarge = TextStyle(fontSize = 34.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.6).sp),
@@ -40,26 +58,32 @@ val LiquidTypography = Typography(
 /**
  * 应用主题。
  *
- * ## Material 3 Expressive
+ * ## 关于 Material 3 Expressive（重要结论，已实测）
  *
- * 走 [MaterialExpressiveTheme] 而非普通 [androidx.compose.material3.MaterialTheme]，
- * 并显式指定 [MotionScheme.expressive] —— 这就是 M3E 的核心差异：
- *  - **标准 M3**：动效用缓动曲线（tween），克制、中性；
- *  - **M3E**：动效用**弹簧**（spring），有过冲与回弹，UI"有生命"；
- *    同时形状更圆润大胆、字号层级差异更明显。
+ * M3E 的公开 API **暂时用不了**，两条路都堵死，原因如下（都是 CI 实测，不是推测）：
  *
- * 版本依据（已实测核验，非推测）：
- *  BOM 2026.02.00 锁 material3 = **1.4.0**，而 M3E 在 1.4.0 已稳定 ——
- *  解压 material3-android-1.4.0.aar 的 classes.jar 可确认存在
- *  `MaterialExpressiveTheme` / `MotionScheme` / `ExpressiveMotionSchemeImpl` /
- *  `ExperimentalMaterial3ExpressiveApi`。
- *  因此**不需要**升级到 1.5.0-alpha（那会违反 libs.versions.toml 的版本锁定铁律）。
+ *  1. **1.4.0（当前 BOM 锁定版本）**：`MaterialExpressiveTheme` / `MotionScheme` /
+ *     `ExperimentalMaterial3ExpressiveApi` 三个类**确实存在**
+ *     （解压 material3-android-1.4.0.aar → classes.jar 可 grep 到），
+ *     但全部标记为 **`internal`** —— 编译器直接拒绝：
+ *     "Cannot access 'fun MaterialExpressiveTheme(...)': it is internal in file"。
+ *     错误里还顺带给出了它的完整签名：
+ *     `MaterialExpressiveTheme(colorScheme?, motionScheme?, shapes?, typography?, content)`。
  *
- * [MaterialExpressiveTheme] 与 [androidx.compose.material3.MaterialTheme] 提供同一套
- * CompositionLocal（colorScheme / typography / shapes），所以全项目既有的
- * `MaterialTheme.typography.xxx` 调用点无需任何改动。
+ *  2. **1.5.0-alphaXX**：M3E 已作为 `ExperimentalMaterial3ExpressiveApi` 公开，
+ *     但至今（2026-09）仍是 alpha，且升级会违反
+ *     `libs.versions.toml` 顶部的「版本矩阵锁死、任何人不得升降级」铁律。
+ *
+ * **因此本项目的取法**：不引 M3E 的 alpha API，而是**用 M3E 的设计语言自己实现** ——
+ * M3E 相对标准 M3 的核心差异就三处，我们都能自控：
+ *  - **动效**：用弹簧（有过冲回弹）而非缓动曲线 → [LiquidMotion]（本来就是 spring）
+ *  - **形状**：更圆润大胆、圆角层级跨度更大 → [GlassTokens] 的 radiusXs…radiusFull
+ *  - **字体**：大标题负字距、层级差异更明显 → [LiquidTypography]
+ *
+ * 若将来 BOM 升到 M3E 稳定版，只需把下面的 `MaterialTheme(...)` 换成
+ * `MaterialExpressiveTheme(colorScheme, motionScheme = MotionScheme.expressive(), ...)`，
+ * 其余代码零改动（两者提供同一套 CompositionLocal）。
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LiquidAgentTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -93,12 +117,10 @@ fun LiquidAgentTheme(
         LocalGlassTokens provides tokens,
         LocalLiquidMotion provides if (glassConfig.reduceMotion) LiquidMotion.Gentle else LiquidMotion.Default,
     ) {
-        MaterialExpressiveTheme(
+        MaterialTheme(
             colorScheme = materialColors,
             typography = LiquidTypography,
-            // M3E 的灵魂：弹簧动效。不传则用 M3E 默认的 expressive scheme，
-            // 显式写出是为了让"我们用的是 M3E"这件事在代码里可读。
-            motionScheme = MotionScheme.expressive(),
+            shapes = LiquidShapes,
             content = content,
         )
     }
