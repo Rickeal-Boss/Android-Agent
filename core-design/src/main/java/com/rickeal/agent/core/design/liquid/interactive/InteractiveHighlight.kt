@@ -147,7 +147,10 @@ class InteractiveHighlight(
                         // 越过 slop 才消费，两条路径就干净分开了：
                         // 点击（含抖动）不消费 → clickable 正常触发；真拖动消费 → 父级滚动抢不走。
                         accumulated += dragAmount.getDistance()
-                        if (accumulated >= viewConfiguration.pointerSlop(change.type)) {
+                        // ⚠️ 用公开的 `touchSlop`。foundation 内部那个
+                        // `viewConfiguration.pointerSlop(pointerType)` 是 internal 扩展，
+                        // 外部调不到（CI 实测 Unresolved reference）。
+                        if (accumulated >= viewConfiguration.touchSlop) {
                             change.consume()
                         }
                         // 跟手位移与是否消费无关，照常累加 —— 手感不受影响。
