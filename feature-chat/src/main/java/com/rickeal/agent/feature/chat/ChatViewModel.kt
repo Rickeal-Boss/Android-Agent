@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.agent.AgentEvent
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.AgentRequest
 import com.rickeal.agent.core.data.AppContainer
@@ -332,7 +333,10 @@ class ChatViewModel(
                     it.copy(
                         isStreaming = false,
                         isGenerating = false,
-                        error = throwable.message ?: "生成失败",
+                        // 异常消息是自由文本，可能整段带上请求头 / 带凭据的 URL
+                        // （远程引擎失败时尤其常见），上屏前必须过一遍脱敏。
+                        error = throwable.message?.let { AgentLogStore.sanitizeUserFacing(it) }
+                            ?: "生成失败",
                     )
                 }
             }
@@ -407,7 +411,10 @@ class ChatViewModel(
                     it.copy(
                         isStreaming = false,
                         isGenerating = false,
-                        error = throwable.message ?: "生成失败",
+                        // 异常消息是自由文本，可能整段带上请求头 / 带凭据的 URL
+                        // （远程引擎失败时尤其常见），上屏前必须过一遍脱敏。
+                        error = throwable.message?.let { AgentLogStore.sanitizeUserFacing(it) }
+                            ?: "生成失败",
                     )
                 }
             }
@@ -513,7 +520,12 @@ class ChatViewModel(
             }
 
             is AgentEvent.Failed -> _uiState.update {
-                it.copy(isStreaming = false, isGenerating = false, error = event.message)
+                // 同上：AgentEvent.Failed 的 message 可能带着远程端点的 URL / 请求头。
+                it.copy(
+                    isStreaming = false,
+                    isGenerating = false,
+                    error = AgentLogStore.sanitizeUserFacing(event.message),
+                )
             }
 
             is AgentEvent.Cancelled -> {

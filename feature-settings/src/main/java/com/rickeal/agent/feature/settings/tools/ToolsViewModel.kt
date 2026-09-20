@@ -7,6 +7,7 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.data.AppContainer
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolResult
@@ -115,7 +116,12 @@ class ToolsViewModel(
                 _uiState.update {
                     it.copy(
                         running = false,
-                        error = outcome.exceptionOrNull()?.message ?: "执行异常",
+                        // 工具实现里抛的异常消息可能含它自己拼的请求头 / URL，
+                        // 上屏前必须脱敏（这里是要展示给用户看的，所以过 sanitizeUserFacing，
+                        // 不走 AgentLogStore.error —— 那条是给诊断页的，规则不同）。
+                        error = outcome.exceptionOrNull()?.message
+                            ?.let { AgentLogStore.sanitizeUserFacing(it) }
+                            ?: "执行异常",
                     )
                 }
             } else {

@@ -882,7 +882,10 @@ class ModelsViewModel(
                 _uiState.update {
                     it.copy(
                         loadingModelId = null,
-                        error = "加载失败：${throwable.message ?: "未知错误"}（GPU 不支持时可切到 CPU 重试）",
+                        // 注意：上面那条 AgentLogStore.error(...) 是给诊断页的、已单独做过
+                        // take(120) 且刻意不记端点/Key，**不要动**；这里是要上屏给用户看的，
+                        // 异常消息可能带端点 URL / Bearer，必须过一遍脱敏。
+                        error = "加载失败：${throwable.message?.let { AgentLogStore.sanitizeUserFacing(it) } ?: "未知错误"}（GPU 不支持时可切到 CPU 重试）",
                     )
                 }
             }
