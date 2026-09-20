@@ -10,10 +10,11 @@ name: Release
 #   3. GitHub Release 仅在「push tag v*」且签名可用时创建。
 #
 # 需要的 secrets（全部可选，缺任何一个都走降级路径）：
-#   SIGNING_KEYSTORE_BASE64   keystore 文件的 base64（openssl base64 -A -in xxx.jks）
+#   SIGNING_KEYSTORE_BASE64   keystore 文件的 base64（openssl base64 -A -in xxx.p12）
 #   SIGNING_KEYSTORE_PASSWORD
-#   SIGNING_KEY_ALIAS
-#   SIGNING_KEY_PASSWORD
+#   SIGNING_KEY_ALIAS         （本项目为 liquidagent）
+#   SIGNING_KEY_PASSWORD      ⚠️ PKCS12 必须等于 SIGNING_KEYSTORE_PASSWORD
+#                                 （PKCS12 不支持独立的 key 口令，见「Decode keystore」）
 #
 # 这些值通过 -P 传给 Gradle，app/build.gradle.kts 侧约定见 docs/02-ci.md。
 # ---------------------------------------------------------------------------
@@ -181,7 +182,14 @@ jobs:
         env:
           KS_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
-          ks_path="${RUNNER_TEMP}/liquidagent-release.jks"
+          # 【格式约定】密钥库是 PKCS12（不是 JKS），文件名用 .p12 以免误导。
+          # ⚠️ PKCS12 不支持「store 口令 ≠ key 口令」：keytool 生成时会忽略 -keypass，
+          #    因此 SIGNING_KEY_PASSWORD 必须与 SIGNING_KEYSTORE_PASSWORD 相同，
+          #    否则 Java 取 key 时抛 UnrecoverableKeyException（已实测确认）。
+          #    实测另一点：该 .p12 文件在 KeyStore.getInstance("pkcs12") 与 ("jks")
+          #    两种 storeType 下都能正常 load + getKey —— 所以无论 AGP 用哪种默认
+          #    keystore type，都能签成功，不存在格式歧义风险。
+          ks_path="${RUNNER_TEMP}/liquidagent-release.p12"
           printf '%s' "$KS_B64" | base64 -d > "$ks_path"
           if [ ! -s "$ks_path" ]; then
             echo "::error::Decoded keystore is empty; check SIGNING_KEYSTORE_BASE64"
