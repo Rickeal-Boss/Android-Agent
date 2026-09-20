@@ -30,6 +30,12 @@ private const val DOWNLOAD_FAST_POLL_WINDOW_MILLIS = 3_000L
 private const val DOWNLOAD_RATE_EMA_ALPHA = 0.3
 
 /**
+ * UI-08：对话页正在生成时，模型页的「加载 / 卸载」被拦下时给用户的提示。
+ * 必须说清**为什么**和**怎么办**，否则用户只会以为按钮坏了。
+ */
+private const val BUSY_GENERATING_MESSAGE = "对话正在生成中，请先停止或等待完成"
+
+/**
  * **只作用于「查不到预设」那一支**的尾部余量，别当成全局安全系数用。
  *
  * ## 来历
@@ -837,6 +843,24 @@ class ModelsViewModel(
                     return@launch
                 }
             }
+            // UI-08 闸门：对话页正在流式生成时**不能**加载。
+            // DefaultEngineFactory 按 kind 缓存引擎实例 —— 这里拿到的就是对话页正在用的
+            // 那一个 LiteRtLmEngine，load() 会 conversation?.close() 并清 sentMessageIds，
+            // 等于 native use-after-free（表现为 SIGSEGV 闪退，runCatching 抓不到）。
+            //
+            // 引擎侧 `waitForGenerationsToFinish()` 是硬闸门；这层只是 UI 侧的第一道：
+            // isBusy 是普通 Boolean，「读到 false」与「真正 load()」之间有窗口，
+            // 所以它只能减少误触 + 给用户一句明确的话，不能替代引擎那道。
+            if (isEngineBusy()) {
+                _uiState.update {
+                    it.copy(
+                        // 必须复位：入口已把 loadingModelId 置成 id，不复位卡片会一直转圈。
+                        loadingModelId = null,
+                        message = BUSY_GENERATING_MESSAGE,
+                    )
+                }
+                return@launch
+            }
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     val config = _uiState.value.config
@@ -894,6 +918,11 @@ class ModelsViewModel(
 
     fun onUnload() {
         viewModelScope.launch {
+            // 同 loadModel() 的 UI-08 闸门：卸载同样会动到对话页正在用的那个引擎实例。
+            if (isEngineBusy()) {
+                _uiState.update { it.copy(message = BUSY_GENERATING_MESSAGE) }
+                return@launch
+            }
             runCatching {
                 withContext(Dispatchers.IO) {
                     container.engineFactory.create(EngineKind.LOCAL).unload()
@@ -901,6 +930,16 @@ class ModelsViewModel(
             }
             _uiState.update { it.copy(loadedModelId = null, capabilitiesText = null, message = "已卸载") }
         }
+    }
+
+    /**
+     * 本地引擎当前是否有在途生成。
+     *
+     * 切到 IO 读：`LlmEngine.isBusy` 的实现读的是引擎内部的可变状态，
+     * 且这里紧接着就要调 load()/unload()，顺手把线程也换对。
+     */
+    private suspend fun isEngineBusy(): Boolean = withContext(Dispatchers.IO) {
+        runCatching { container.engineFactory.create(EngineKind.LOCAL).isBusy }.getOrDefault(false)
     }
 
     fun onDelete(id: String, deleteFile: Boolean) {
