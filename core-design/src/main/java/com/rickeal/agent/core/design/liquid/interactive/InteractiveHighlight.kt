@@ -121,6 +121,8 @@ class InteractiveHighlight(
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             var previous = down.position
+            // 累积位移：是否 consume 按**累积量**判定，不按单帧 delta。
+            var accumulated = 0f
             touchOffset = down.position
             setPressed(true)
             try {
@@ -133,8 +135,22 @@ class InteractiveHighlight(
                     previous = current
                     touchOffset = current
                     if (dragAmount != Offset.Zero) {
-                        // 只在真的拖动时消费，保证外层 clickable 仍能收到纯点击。
-                        change.consume()
+                        // ⚠️ 只有**累积**位移越过 touch slop 才 consume，抖 1px 就消费会毁掉点击。
+                        //
+                        // 本项目所有玻璃控件都是 `clickable` 在外、本手势在内（Kyant0 原序），
+                        // 而 Compose 的 ClickableNode 只要看到事件被消费就会取消按压：
+                        //   Clickable.kt:940-948  Main  pass —— `it.isConsumed` → Canceled
+                        //   Clickable.kt:950-957  Final pass —— 复查一次 → Canceled
+                        // 真机点击不可能绝对静止，抖 1px 就消费 → 按压被取消 → onClick 不来
+                        // → **所有玻璃按钮 / 分段项 / 页签点了都没反应**。
+                        //
+                        // 越过 slop 才消费，两条路径就干净分开了：
+                        // 点击（含抖动）不消费 → clickable 正常触发；真拖动消费 → 父级滚动抢不走。
+                        accumulated += dragAmount.getDistance()
+                        if (accumulated >= viewConfiguration.pointerSlop(change.type)) {
+                            change.consume()
+                        }
+                        // 跟手位移与是否消费无关，照常累加 —— 手感不受影响。
                         rawOffsetX += dragAmount.x
                         rawOffsetY += dragAmount.y
                         animationScope.launch {
