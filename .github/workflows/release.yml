@@ -207,7 +207,70 @@ jobs:
             -Psigning.keyPassword="${KS_KEY_PASSWORD}" \
             :app:assembleRelease
 
-      - name: Upload release APK / AAB
+      - name: Assemble release AAB
+        # 【修复：旧版 path 写了 bundle/release/*.aab，但全流程从未跑过 bundleRelease，
+        #   那个 glob 永远匹配不到文件，又被 if-no-files-found: warn 掩盖 —— AAB 是空话。】
+        #   这里真正跑一次 :app:bundleRelease，让 AAB 成为实际产物（Play 上架所需）。
+        id: assemble_bundle
+        if: steps.signing.outputs.available == 'true'
+        env:
+          KS_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          KS_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          "$GRADLE_CMD" \
+            --no-daemon \
+            --stacktrace \
+            "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
+            -Psigning.storeFile="${{ steps.keystore.outputs.path }}" \
+            -Psigning.storePassword="${KS_PASSWORD}" \
+            -Psigning.keyAlias="${KS_ALIAS}" \
+            -Psigning.keyPassword="${KS_KEY_PASSWORD}" \
+            :app:bundleRelease
+
+      - name: Verify release APK signature
+        # 【修复配套】光「产出一个 APK」不等于「签对了」。
+        #   1) 用 apksigner 断言 v2 + v3 签名方案都命中（minSdk 31 >= 28，v3 可用）
+        #   2) 断言证书 DN 不是 "CN=Android Debug" —— 否则说明 signing.* 没传到 Gradle，
+        #      构建悄悄退回 debug 签名（app/build.gradle.kts 的兜底分支），
+        #      这正是「有密钥却仍出 debug 包」最容易被漏掉的失败模式。
+        id: verify_signature
+        if: steps.assemble_release.outcome == 'success'
+        run: |
+          apk_path="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          if [ -z "$apk_path" ]; then
+            echo "::error::assembleRelease reported success but no release APK found"
+            exit 1
+          fi
+          echo "::notice::Verifying: $apk_path"
+
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/android-sdk}}"
+          apksigner_bin="$(ls -d "$sdk_root"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -z "$apksigner_bin" ] || [ ! -x "$apksigner_bin" ]; then
+            echo "::warning::apksigner not found under $sdk_root/build-tools/*/ — skipping signature verification (environment issue, not a build failure)."
+            exit 0
+          fi
+          echo "::notice::apksigner: $apksigner_bin"
+
+          log_file="${RUNNER_TEMP}/apksigner-verify.log"
+          "$apksigner_bin" verify --verbose --print-certs "$apk_path" > "$log_file" 2>&1 || true
+          cat "$log_file"
+
+          if grep -q "CN=Android Debug" "$log_file"; then
+            echo "::error::Release APK is signed with the DEBUG key. signing.* properties did not reach Gradle."
+            exit 1
+          fi
+          if ! grep -qE "Verified using v2 scheme .*: true" "$log_file"; then
+            echo "::error::APK Signature Scheme v2 not verified."
+            exit 1
+          fi
+          if ! grep -qE "Verified using v3 scheme .*: true" "$log_file"; then
+            echo "::error::APK Signature Scheme v3 not verified."
+            exit 1
+          fi
+          echo "::notice::Release APK verified: v2 + v3 schemes OK, signed with the release key (not debug)."
+
+      - name: Upload release APK / AAB / R8 mapping
         if: steps.assemble_release.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
@@ -215,8 +278,12 @@ jobs:
           path: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/*.aab
+            app/build/outputs/mapping/release/mapping.txt
+            app/build/outputs/mapping/release/configuration.txt
           retention-days: 90
-          if-no-files-found: warn
+          # 【修复：原来是 warn —— 正是它把「AAB 从未生成」掩盖成了静默成功。
+          #  现在 APK/AAB/mapping 都是真实产物，缺任何一个都应该红。】
+          if-no-files-found: error
 
       # -------------------------------------------------------------------
       # 发布：仅在 tag 推送 + 签名可用 时创建 GitHub Release
@@ -235,6 +302,7 @@ jobs:
           files: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/*.aab
+            app/build/outputs/mapping/release/mapping.txt
 
       - name: Upload failure reports
         if: failure()
@@ -259,6 +327,10 @@ jobs:
             echo "| Debug APK | ${{ steps.assemble_debug.outcome || 'n/a' }} |"
             echo "| Signing secrets | ${{ steps.signing.outputs.available }} |"
             echo "| Signed release APK | ${{ steps.assemble_release.outcome || 'skipped' }} |"
+            echo "| Signed release AAB | ${{ steps.assemble_bundle.outcome || 'skipped' }} |"
+            echo "| Signature verified (v2+v3, non-debug) | ${{ steps.verify_signature.outcome || 'skipped' }} |"
+            echo ""
+            echo "R8 还原栈所需：artifact \`liquidagent-release-${GITHUB_REF_NAME}\` 内含 \`mapping.txt\` / \`configuration.txt\`。"
             echo ""
             if [ "${{ steps.signing.outputs.available }}" != "true" ]; then
               echo "> Signing secrets not configured — only the debug APK was produced. "
