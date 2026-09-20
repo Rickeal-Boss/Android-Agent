@@ -1,7 +1,9 @@
 package com.rickeal.agent.core.design
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -22,8 +24,6 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.liquid.EmptyBackdrop
@@ -58,6 +58,14 @@ import kotlin.math.abs
  *  - thumb 透过玻璃看得到**轨道的颜色**（`rememberCombinedBackdrop`，
  *    和 Kyant0 一致），这是"一块有厚度的玻璃"的关键；
  *  - 支持拖动切换（不只是点击），拖动时 thumb 沿拖动方向拉长。
+ *
+ * ## 无障碍 / 触摸目标（自绘最容易丢的东西）
+ *
+ * 换成自绘后，M3 `Switch` 自带的 TalkBack 支持全没了，这里补齐（与 `GlassSlider` 同构）：
+ *  - 48dp 触摸目标：`minimumInteractiveComponentSize()` 挂在外层，手势也挂外层，
+ *    28dp 的玻璃条**不是**唯一触摸区；
+ *  - `Modifier.toggleable(role = Role.Switch)`：TalkBack 能念"开/关"，双击能切换。
+ *    纯点击由 toggleable 提交、真拖动由 `onDragStopped` 提交，**不会提交两次**。
  *
  * ⚠️ 本文件**不得**再出现 `androidx.compose.material3.Switch` / `SwitchDefaults`。
  */
@@ -105,13 +113,14 @@ fun GlassSwitch(
             onDragStarted = {},
             onDragStopped = {
                 if (abs(draggedX) > touchSlopPx) {
-                    // 真的拖过了：按松手时的位置决定最终态
+                    // 真的拖过了：按松手时的位置决定最终态，并在这里提交。
                     fraction = if (targetValue >= 0.5f) 1f else 0f
-                } else {
-                    // 位移没越过 touch slop → 就是纯点击，直接翻转
-                    fraction = if (currentChecked) 0f else 1f
+                    currentOnCheckedChange?.invoke(fraction == 1f)
                 }
-                currentOnCheckedChange?.invoke(fraction == 1f)
+                // 纯点击**不在这里提交**：交给外层的 toggleable 统一走 onValueChange，
+                // 否则同一次点击会回调 onCheckedChange 两次。
+                // 值回来后由下面的 LaunchedEffect(checked) 把 fraction 动画过去 ——
+                // 保持"checked 是唯一事实来源"，被外部驳回时视觉也不会先翻过去。
                 draggedX = 0f
             },
             onDrag = { _, dragAmount ->
@@ -141,7 +150,40 @@ fun GlassSwitch(
     val interactive = enabled && onCheckedChange != null
     val trackBackdrop = rememberLayerBackdrop()
 
-    Box(modifier, contentAlignment = Alignment.CenterStart) {
+    Box(
+        modifier = modifier
+            // 48dp 触摸目标。玻璃条只有 28dp 高，光看玻璃很难点准。
+            // ⚠️ 手势必须挂在这一层，不能挂 thumb：否则上下各 10dp 的留白
+            // "看得见点不到"，48dp 等于白给。
+            .minimumInteractiveComponentSize()
+            .then(
+                if (onCheckedChange != null) {
+                    Modifier
+                        // 无障碍：role 从 thumb 挪到整体，并补真正的 toggleable。
+                        // 原来 thumb 上只有一个孤立的 `semantics { role = Role.Switch }`：
+                        // TalkBack 能念出"开关"，但双击**切不动**（没有可点击的语义动作）——
+                        // 这不是降级，是完全不可用。
+                        // enabled 单独传：关闭态下也要能被念出来，toggleable 会自己挂 disabled()。
+                        .toggleable(
+                            value = checked,
+                            enabled = enabled,
+                            role = Role.Switch,
+                            // 玻璃自带按压高光 / 内阴影反馈，再叠一层 M3 ripple
+                            // 就成了"原生按钮贴玻璃纸"。
+                            interactionSource = null,
+                            indication = null,
+                            onValueChange = { onCheckedChange?.invoke(it) },
+                        )
+                } else {
+                    Modifier
+                }
+            )
+            // 拖动手势放在 toggleable **之后**（内侧）：真拖动时它 consume() 掉事件，
+            // 会让外层 toggleable 的按压取消，不会和点击撞车；纯点击时没人消费，
+            // toggleable 正常触发。这条顺序不能反。
+            .then(if (interactive) dampedDragAnimation.modifier else Modifier),
+        contentAlignment = Alignment.CenterStart,
+    ) {
         Box(
             Modifier
                 .layerBackdrop(trackBackdrop)
@@ -162,10 +204,6 @@ fun GlassSwitch(
                         if (isLtr) padding + dragWidth * f
                         else -(padding + dragWidth * f)
                 }
-                .semantics {
-                    role = Role.Switch
-                }
-                .then(if (interactive) dampedDragAnimation.modifier else Modifier)
                 .drawBackdrop(
                     backdrop = rememberCombinedBackdrop(
                         backdrop,
