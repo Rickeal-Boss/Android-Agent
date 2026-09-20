@@ -6,12 +6,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.design.GlassWallpaper
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 
 /** 首启流程的三个步骤。顺序固定：引导 → 应用条款 → Gemma 授权。 */
@@ -91,7 +92,10 @@ fun FirstRunGate(
     // 「看完引导 → 停在 TOS → 被杀 → 重启 → 引导重看一遍」。
     //
     // 判定顺序即流程顺序：GEMMA 是最后一步，所以它最先判（前面都完成了才会走到它）。
-    var step by remember {
+    //
+    // 必须是 rememberSaveable：旋转 / 折叠展开会重建 Activity，用 remember 的话 step
+    // 会被重置回流程起点 —— 用户刚点完「同意并继续」，转个屏幕又被要求再同意一遍。
+    var step by rememberSaveable {
         mutableStateOf(
             when {
                 tosAccepted == true -> FirstRunStep.GEMMA
@@ -111,14 +115,20 @@ fun FirstRunGate(
                     //
                     // 立刻落盘（而不是等整段流程结束）：这样在下一步（TOS）被杀进程，
                     // 重启后会直接进 TOS，不会把引导重看一遍。
-                    scope.launch { settings.setHasSeenIntro(true) }
+                    //
+                    // NonCancellable：rememberCoroutineScope() 的 scope 随 Activity 重建被取消，
+                    // 而 DataStore 的 edit 是 suspend —— 旋转刚好卡在写入前就会把「已看过」
+                    // 丢掉，重启后引导重放一遍。落盘类写入一律不该被配置变更取消。
+                    scope.launch(NonCancellable) { settings.setHasSeenIntro(true) }
                     step = FirstRunStep.TOS
                 },
             )
 
             FirstRunStep.TOS -> AppTosScreen(
                 onAccept = {
-                    scope.launch { settings.setTosAccepted(true) }
+                    // NonCancellable 同上：这是**硬闸门**的唯一落盘点，写丢了用户就要
+                    // 重新同意一遍服务条款（甚至可能因为旋转卡在写入前而反复被拦）。
+                    scope.launch(NonCancellable) { settings.setTosAccepted(true) }
                     step = FirstRunStep.GEMMA
                 },
                 onDecline = onExitApp,
@@ -126,7 +136,7 @@ fun FirstRunGate(
 
             FirstRunStep.GEMMA -> GemmaTermsScreen(
                 onAccept = {
-                    scope.launch {
+                    scope.launch(NonCancellable) {
                         settings.setGemmaTermsAccepted(true)
                         settings.setHasSeenOnboarding(true)
                     }
@@ -134,7 +144,7 @@ fun FirstRunGate(
                 onLater = {
                     // 不接受也要收尾：把「首启流程已走完」落盘，否则每次冷启动都会重放整段流程。
                     // Gemma 的未接受状态仍然保留在 isGemmaTermsAccepted=false，由使用侧继续把关。
-                    scope.launch { settings.setHasSeenOnboarding(true) }
+                    scope.launch(NonCancellable) { settings.setHasSeenOnboarding(true) }
                 },
             )
         }

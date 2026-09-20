@@ -39,6 +39,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,16 +70,25 @@ fun ModelsScreen(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
 
-    var pendingUri by remember { mutableStateOf<Uri?>(null) }
-    var pendingName by remember { mutableStateOf("") }
+    // 旋转 / 折叠展开会重建 Activity，这几项丢了用户就得重走一遍 SAF 文件选择器，
+    // 所以都改用 rememberSaveable。
+    //
+    // Uri 存 String 而不是直接存 Uri：Uri 虽然是 Parcelable，但走 Bundle 恢复的路径
+    // 不如字符串稳，且 nullable 的 autoSaver 更脆；toString()/parse 往返是零风险的。
+    var pendingUriText by rememberSaveable { mutableStateOf("") }
+    var pendingName by rememberSaveable { mutableStateOf("") }
+    // 刻意**仍是 remember**：ModelCapabilities 既不是 Parcelable 也不是
+    // java.io.Serializable，rememberSaveable 的 autoSaver 存不了它，硬上会在旋转时抛
+    // IllegalArgumentException。真要存得单独给它写 listSaver —— 收益（能力位复选框
+    // 不重置）小于引入一个自定义 Saver 的风险，本轮先留着，已在回报里标注。
     var pendingCaps by remember { mutableStateOf(ModelCapabilities()) }
-    var showPresetDialog by remember { mutableStateOf(false) }
+    var showPresetDialog by rememberSaveable { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
-            pendingUri = uri
+            pendingUriText = uri.toString()
             pendingName = uri.lastPathSegment?.substringAfterLast('/').orEmpty()
             pendingCaps = guessCapabilities(pendingName)
         }
@@ -291,15 +301,17 @@ fun ModelsScreen(
         )
     }
 
-    val uri = pendingUri
+    val uri = pendingUriText
+        .takeIf { it.isNotBlank() }
+        ?.let { runCatching { Uri.parse(it) }.getOrNull() }
     if (uri != null) {
         ModelImportDialog(
             fileName = pendingName,
             capabilities = pendingCaps,
             onCapabilitiesChange = { pendingCaps = it },
-            onDismiss = { pendingUri = null },
+            onDismiss = { pendingUriText = "" },
             onConfirm = {
-                pendingUri = null
+                pendingUriText = ""
                 viewModel.onImportUri(uri)
             },
         )
@@ -408,7 +420,9 @@ private fun ModelDownloadCard(
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
-    var url by remember { mutableStateOf("") }
+    // 这张卡在 LazyColumn 里：用 remember 的话滑出屏幕被回收后，用户填了一半的
+    // 下载 URL 就清空了。rememberSaveable 在 Lazy 布局里按 item key 保住状态。
+    var url by rememberSaveable { mutableStateOf("") }
 
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {

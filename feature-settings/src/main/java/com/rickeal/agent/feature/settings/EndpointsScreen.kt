@@ -246,6 +246,10 @@ private fun EndpointEditDialog(
     onConfirm: (RemoteEndpoint) -> Unit,
 ) {
     val colors = LocalGlassColors.current
+    // 刻意**仍是 remember**：RemoteEndpoint 是 kotlinx.serialization 的 @Serializable，
+    // 但不是 Parcelable / java.io.Serializable —— rememberSaveable 的 autoSaver 存不了它，
+    // 硬改会在旋转时抛 IllegalArgumentException。真要保住编辑草稿，得单独写一个
+    // mapSaver 把 id/baseUrl/modelId… 逐个字段存下来，本轮先留着并标注（见回报）。
     var draft by remember(endpoint.id) { mutableStateOf(endpoint) }
 
     GlassDialog(

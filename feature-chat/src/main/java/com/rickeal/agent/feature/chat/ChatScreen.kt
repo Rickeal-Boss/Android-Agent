@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
@@ -28,7 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,8 +56,12 @@ fun ChatScreen(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val windowSize = rememberWindowSizeClass()
-    val listState = rememberLazyListState()
-    var paramsOpen by remember { mutableStateOf(false) }
+    // 两者都要能扛住配置变更（旋转 / 折叠展开）：
+    //  - paramsOpen：抽屉开着时转屏就自己关掉，用户输入一半的参数面板凭空消失；
+    //  - listState：滚动位置丢失会直接跳回列表底部/顶部，用户正在看的那条就没了。
+    // LazyListState 必须用 LazyListState.Saver（它内部是普通可变状态，不能用 autoSaver）。
+    val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    var paramsOpen by rememberSaveable { mutableStateOf(false) }
 
     val pickImage = rememberImagePicker { uri, name -> viewModel.onAttachImage(uri, name) }
     val pickAudio = rememberAudioPicker { uri, name -> viewModel.onAttachAudio(uri, name) }

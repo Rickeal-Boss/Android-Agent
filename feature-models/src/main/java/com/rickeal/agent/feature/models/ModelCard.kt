@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +54,9 @@ fun ModelCard(
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
-    var confirmDelete by remember { mutableStateOf(false) }
+    // 同 ModelsScreen：卡片在 Lazy 布局里会被回收，且旋转会重建 Activity ——
+    // 用 remember 的话确认框会凭空消失。
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
 
     GlassCard(
         modifier = modifier.fillMaxWidth(),
