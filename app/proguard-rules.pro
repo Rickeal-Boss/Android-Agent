@@ -97,18 +97,36 @@
 }
 
 # -----------------------------------------------------------------------------
-# 7. 日志清理
+# 7. 日志裁剪策略
 # -----------------------------------------------------------------------------
-# 移除 release 包中的日志调用（assumenosideeffects 会连同字符串拼接一起删掉）。
-# 注意：只在 -optimizations 生效（proguard-android-optimize.txt）时才会真正去除。
+# 【策略】只裁 v / d / i，**有意保留 w / e / wtf**。这不是遗漏，别"补"回来。
+#
+# 为什么保留 warning 及以上：
+#   release 包才是真实用户场景 —— 崩溃、异常、兜底失败全都发生在那里。
+#   若把 w/e 一并裁掉，所有靠 Log.w/e 做的「可观测化」在 release 里全是空的：
+#   等于把「静默失效」换成了「debug 有日志、release 仍然静默」，并没有真正解决
+#   它想解决的场景。典型例子：返回键兜底收敛失败的 Log.w，其价值恰恰只在
+#   release 包上（用户反馈"要按三次"的现场就是 release）。
+#   本轮被静默失效坑了四次（popUpTo、Capsule 相等比较、pressLayerBlock 副本、
+#   返回键兜底），让 warning/error 在 release 可见是系统性收益，不是单点修补。
+#
+# 为什么仍然裁 v / d / i：
+#   这三项是日志体积大头，诊断价值集中在 debug 期，release 无需保留。
+#   （例：Lens.kt 的 Log.d「lens 跳过折射：shape=...」在 release 里不可见是
+#    既定行为、符合预期 —— 别为它改成 Log.w。若将来确实需要它在 release 可见，
+#    那才应该走 Log.w，这正是本次放开 w 的附加收益。）
+#
+# 体积影响：已确认全仓没有热路径上的 Log.w/e（仅兜底/异常分支），可忽略。
+#
+# 注：assumenosideeffects 会连同字符串拼接一起删掉，且只在 -optimizations 生效
+#     （即 proguard-android-optimize.txt）时才真正去除。
+# 注：isLoggable(String, int) 保留在列表内 —— 它是无副作用的判断方法，
+#     删掉它会影响依赖其返回值的逻辑分支，不要动。
 -assumenosideeffects class android.util.Log {
     public static boolean isLoggable(java.lang.String, int);
     public static int v(...);
     public static int d(...);
     public static int i(...);
-    public static int w(...);
-    public static int e(...);
-    public static int wtf(...);
 }
 # 打印到 stdout 的调试输出也一并去掉
 -assumenosideeffects class java.io.PrintStream {
