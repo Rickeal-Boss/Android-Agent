@@ -44,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -59,18 +60,30 @@ import java.util.Locale
 
 /**
  * 一切玻璃容器的基座。onClick 非空时自动带按压弹簧反馈。
+ *
+ * @param capsule 用胶囊（[Capsule]）代替圆角矩形。交互控件（按钮 / Chip / FAB /
+ *   分段项）都应该用胶囊 —— 这是 iOS Liquid Glass 的标志性轮廓。
+ * @param layerBlock **跟手形变**：直接透传给 `liquidGlass`，见
+ *   `liquid/interactive/InteractiveHighlight`。静态截图看不出差别，真机一按就露馅。
+ * @param dispersion 色散（RGB 分离 → 边缘彩虹）。大面积容器（Card / Dialog）必须**关**：
+ *   色散要 7 次采样，开销约 7 倍。
  */
 @Composable
 fun LiquidGlassSurface(
     modifier: Modifier = Modifier,
     material: GlassMaterial = GlassMaterial.REGULAR,
     cornerRadius: Dp = GlassDefaults.RadiusLg,
+    capsule: Boolean = false,
     enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
     contentPadding: PaddingValues = PaddingValues(GlassDefaults.ContentPadding),
     contentAlignment: Alignment = Alignment.TopStart,
     propagateMinConstraints: Boolean = false,
+    dispersion: Boolean = true,
+    refractionHeight: Dp? = null,
+    refractionAmount: Dp? = null,
+    layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     // 按压进度 → 传给玻璃，让它在按下时"变实"（模糊减弱 + 折射增强 + 高光变亮）。
@@ -101,7 +114,12 @@ fun LiquidGlassSurface(
         .liquidGlass(
             material = material,
             cornerRadius = cornerRadius,
+            capsule = capsule,
+            dispersion = dispersion,
+            refractionHeight = refractionHeight,
+            refractionAmount = refractionAmount,
             pressProgress = pressProgress,
+            layerBlock = layerBlock,
         )
     Box(
         modifier = glassModifier,

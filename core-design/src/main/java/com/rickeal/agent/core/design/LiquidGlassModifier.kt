@@ -9,11 +9,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
@@ -29,19 +31,9 @@ import com.rickeal.agent.core.design.liquid.highlight.HighlightStyle
 import com.rickeal.agent.core.design.liquid.platform.LiquidGlassCapabilities
 import com.rickeal.agent.core.design.liquid.shadow.InnerShadow
 import com.rickeal.agent.core.design.liquid.shadow.Shadow
+import com.rickeal.agent.core.design.liquid.shapes.Capsule
 import kotlin.random.Random
 
-/**
- * 折射带高度（dp）：从边缘向内算，玻璃"厚度渐变"的范围。
- * 取 12 —— 对齐 Kyant0 LiquidButton 的 `lens(12f.dp, 24f.dp)`。
- */
-private val RefractionHeightDp = 12.dp
-/**
- * 折射强度（dp）：背景被弯折的像素位移量。越大越"鼓"。
- * 取 24 —— 对齐 Kyant0。注意 Kyant0 各组件的 amount 通常 ≥ height（12→24、24→24、10→14、5→10），
- * 比例约 1.4~2x；amount < height 会让折射带又窄又弱，看起来没效果。
- */
-private val RefractionAmountDp = 24.dp
 /**
  * vibrancy 的饱和度系数。
  * Kyant0 默认 1.5，但我们的壁纸是浅色渐变 + 光斑（不是照片），
@@ -74,18 +66,33 @@ private const val VibrancySaturation = 1.22f
  *   传 0 表示无按压（默认）。
  * @param shapeOverride 形状覆盖。默认按 [cornerRadius] 生成对称圆角矩形；
  *   需要非对称圆角（如底部 sheet 只有上方两角圆）时显式传入。
+ * @param capsule 用**胶囊**（[Capsule]）代替圆角矩形。
+ *   Kyant0 的所有交互组件都是胶囊，这是 iOS Liquid Glass 的标志性轮廓。
+ * @param blurRadius 覆盖材质的背景模糊半径。传 null 用材质自带值。
+ * @param refractionHeight / [refractionAmount] 覆盖材质的折射参数。传 null 用材质自带值。
+ *   Kyant0 是**逐组件**调的（Button 12/24、Slider 10/14、Toggle 5/10、Tabs 24/24），
+ *   全局固定一个值是"看着不像"的原因之一。
+ * @param layerBlock **跟手形变**。iOS Liquid Glass 的标志性观感是"胶囊 + 按下去会跟着手指
+ *   位移/拉伸"。它直接透传给 `drawBackdrop`，在玻璃节点的最外层 `graphicsLayer` 上生效，
+ *   所以位移/缩放会连内容一起动（文本不会被单独拉扯）。
+ *   见 `liquid/interactive/DampedDragAnimation` 与 `InteractiveHighlight`。
  */
 @Composable
 fun Modifier.liquidGlass(
     material: GlassMaterial = GlassMaterial.REGULAR,
     cornerRadius: Dp = GlassDefaults.RadiusLg,
+    capsule: Boolean = false,
     intensity: Float = 1f,
     noise: Boolean = true,
     specular: Boolean = true,
     refraction: Boolean = true,
     dispersion: Boolean = true,
+    blurRadius: Dp? = null,
+    refractionHeight: Dp? = null,
+    refractionAmount: Dp? = null,
     pressProgress: Float = 0f,
     shapeOverride: Shape? = null,
+    layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
 ): Modifier {
     val tokens = LocalGlassTokens.current
     val colors = LocalGlassColors.current
@@ -96,8 +103,14 @@ fun Modifier.liquidGlass(
     // 注意：remember 必须无条件调用（条件性 remember 会让重组时的缓存行为不确定），
     // 所以先无条件算出默认形状，再用 ?: 选择覆盖值。
     val defaultShape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
-    val shape = shapeOverride ?: defaultShape
+    val shape = shapeOverride ?: if (capsule) Capsule else defaultShape
     val press = pressProgress.coerceIn(0f, 1f)
+    // 逐组件覆盖优先，其次用材质自带值。
+    // 折射参数全局固定一个值是"看着不像"的原因之一：Kyant0 是 Button 12/24、
+    // Slider 10/14、Toggle 5/10、Tabs 24/24，各不一样。
+    val effectiveBlur = blurRadius ?: spec.blurRadius
+    val effectiveRefractionHeight = refractionHeight ?: spec.refractionHeight
+    val effectiveRefractionAmount = refractionAmount ?: spec.refractionAmount
     val safeIntensity = (intensity * config.intensity).coerceIn(0f, 1.5f)
     val enableBackdrop = config.enableBackdropBlur
     // 折射依赖 AGSL（API 33+）；API 31~32 自动退回纯模糊，绝不硬上。
@@ -120,13 +133,13 @@ fun Modifier.liquidGlass(
                 vibrancy(saturation = VibrancySaturation)
                 // 按压时**减弱**模糊：玻璃被按"实"了，对应 Kyant0 的
                 // `blur(8f.dp * (1f - progress))`。物理直觉：越实的东西越不需要磨砂。
-                blur(spec.blurRadius.toPx() * (1f - press * 0.7f))
+                blur(effectiveBlur.toPx() * (1f - press * 0.7f))
                 if (enableRefraction) {
                     // 按压时**增强**折射：对应 Kyant0 的 `lens(... * progress)`。
                     // 越用力按，玻璃形变越明显 —— 这是"液态"手感的核心。
                     lens(
-                        refractionHeight = RefractionHeightDp.toPx() * (1f + press * 0.4f),
-                        refractionAmount = RefractionAmountDp.toPx() * (1f + press * 0.25f),
+                        refractionHeight = effectiveRefractionHeight.toPx() * (1f + press * 0.4f),
+                        refractionAmount = effectiveRefractionAmount.toPx() * (1f + press * 0.25f),
                         chromaticAberration = enableDispersion
                     )
                 }
@@ -173,9 +186,7 @@ fun Modifier.liquidGlass(
                 startY = 0f,
                 endY = size.height,
             )
-            val radiusPx = cornerRadius.toPx()
-                .coerceAtMost(minOf(size.width, size.height) / 2f)
-                .coerceAtLeast(0f)
+            val radiusPx = glassCornerRadiusPx(size, cornerRadius.toPx(), capsule)
             val corner = CornerRadius(radiusPx, radiusPx)
             drawRoundRect(brush = fillBrush, cornerRadius = corner)
 
@@ -205,9 +216,7 @@ fun Modifier.liquidGlass(
             )
             val strokeWidthPx = tokens.highlightStrokeWidth.toPx().coerceAtLeast(0.5f)
             val halfStroke = strokeWidthPx * 0.5f
-            val radiusPx = cornerRadius.toPx()
-                .coerceAtMost(minOf(size.width, size.height) / 2f)
-                .coerceAtLeast(0f)
+            val radiusPx = glassCornerRadiusPx(size, cornerRadius.toPx(), capsule)
             drawRoundRect(
                 brush = borderBrush,
                 topLeft = androidx.compose.ui.geometry.Offset(halfStroke, halfStroke),
@@ -221,8 +230,24 @@ fun Modifier.liquidGlass(
                 ),
                 style = Stroke(width = strokeWidthPx),
             )
-        }
+        },
+        layerBlock = layerBlock
     )
+}
+
+/**
+ * 玻璃本体（底色 / 描边）绘制用的圆角半径（px）。
+ *
+ * 胶囊形状必须走 `min(w, h) / 2` 分支 —— 用 [cornerRadius] 画的话，
+ * 玻璃底色会是一个圆角矩形，而外层的 clip 是胶囊，四角就会露出没被填满的空隙。
+ */
+private fun glassCornerRadiusPx(size: Size, cornerRadiusPx: Float, capsule: Boolean): Float {
+    val maxRadius = minOf(size.width, size.height) / 2f
+    return if (capsule) {
+        maxRadius.coerceAtLeast(0f)
+    } else {
+        cornerRadiusPx.coerceAtMost(maxRadius).coerceAtLeast(0f)
+    }
 }
 
 /**

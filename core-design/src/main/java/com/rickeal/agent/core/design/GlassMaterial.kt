@@ -52,6 +52,17 @@ data class GlassMaterialSpec(
     val noiseAlpha: Float,
     /** 外阴影高度 */
     val shadowElevation: Dp,
+    /**
+     * 折射带高度（dp）：从边缘向内算，玻璃"厚度渐变"的范围。
+     * 逐材质给默认值；具体组件可用 `liquidGlass(refractionHeight = ...)` 覆盖。
+     */
+    val refractionHeight: Dp = 12.dp,
+    /**
+     * 折射强度（dp）：背景被弯折的像素位移量。越大越"鼓"。
+     * Kyant0 各组件的 amount 通常 ≥ height（12→24、24→24、10→14、5→10），比例约 1.4~2x；
+     * amount < height 会让折射带又窄又弱，看起来没效果。
+     */
+    val refractionAmount: Dp = 24.dp,
 )
 
 object GlassMaterials {
@@ -67,6 +78,8 @@ object GlassMaterials {
         specularAlpha = 0.22f,
         noiseAlpha = 0.016f,
         shadowElevation = 2.dp,
+        refractionHeight = 8.dp,
+        refractionAmount = 14.dp,
     )
     val Thin = GlassMaterialSpec(
         backgroundAlpha = 0.11f,
@@ -75,7 +88,10 @@ object GlassMaterials {
         specularAlpha = 0.28f,
         noiseAlpha = 0.020f,
         shadowElevation = 4.dp,
+        refractionHeight = 10.dp,
+        refractionAmount = 18.dp,
     )
+    // 12/24 就是 Kyant0 LiquidButton 的 lens(12f.dp, 24f.dp)，作为全局默认档。
     val Regular = GlassMaterialSpec(
         backgroundAlpha = 0.16f,
         blurRadius = 7.dp,
@@ -83,6 +99,8 @@ object GlassMaterials {
         specularAlpha = 0.36f,
         noiseAlpha = 0.026f,
         shadowElevation = 8.dp,
+        refractionHeight = 12.dp,
+        refractionAmount = 24.dp,
     )
     val Thick = GlassMaterialSpec(
         backgroundAlpha = 0.26f,
@@ -91,6 +109,8 @@ object GlassMaterials {
         specularAlpha = 0.44f,
         noiseAlpha = 0.030f,
         shadowElevation = 16.dp,
+        refractionHeight = 16.dp,
+        refractionAmount = 28.dp,
     )
     val Opaque = GlassMaterialSpec(
         backgroundAlpha = 0.72f,
@@ -99,6 +119,8 @@ object GlassMaterials {
         specularAlpha = 0.14f,
         noiseAlpha = 0.014f,
         shadowElevation = 24.dp,
+        refractionHeight = 20.dp,
+        refractionAmount = 32.dp,
     )
 
     fun of(material: GlassMaterial): GlassMaterialSpec = when (material) {
