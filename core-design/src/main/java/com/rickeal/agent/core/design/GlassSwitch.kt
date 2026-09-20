@@ -41,6 +41,7 @@ import com.rickeal.agent.core.design.liquid.shadow.InnerShadow
 import com.rickeal.agent.core.design.liquid.shadow.Shadow
 import com.rickeal.agent.core.design.liquid.shapes.Capsule
 import kotlinx.coroutines.flow.collectLatest
+import kotlin.math.abs
 
 /**
  * 玻璃开关 —— 整体对齐 Kyant0 `LiquidToggle`。
@@ -79,8 +80,15 @@ fun GlassSwitch(
     val density = LocalDensity.current
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
     val dragWidth = with(density) { 20f.dp.toPx() }
+    // 判定"拖过 / 纯点击"的阈值。Kyant0 原实现没有这个，真机上任何亚像素抖动都会被
+    // 判成拖动 —— 8dp 与系统 ViewConfiguration.touchSlop 同量级。
+    val touchSlopPx = with(density) { 8.dp.toPx() }
     val animationScope = rememberCoroutineScope()
-    var didDrag by remember { mutableStateOf(false) }
+    // 累积横向位移（关键：记"位移了多少"，不是记"有没有位移过"）。
+    // 真机没有绝对静止的点击，手指抖 1px 也会产生 dragAmount；旧代码只要横向分量
+    // 非零就置"已拖动" → fraction 只漂移一点点 → 松手吸附回**原状态**
+    // → 点了开关不切换，只抖一下弹回去。这就是本条要修的 bug。
+    var draggedX by remember { mutableStateOf(0f) }
     var fraction by remember { mutableStateOf(if (checked) 1f else 0f) }
     // 回调里要读最新值，不能闭包住第一次组合时的旧引用。
     val currentChecked by rememberUpdatedState(checked)
@@ -96,21 +104,18 @@ fun GlassSwitch(
             pressedScale = 1.5f,
             onDragStarted = {},
             onDragStopped = {
-                if (didDrag) {
-                    // 拖过：按松手时的位置决定最终态
+                if (abs(draggedX) > touchSlopPx) {
+                    // 真的拖过了：按松手时的位置决定最终态
                     fraction = if (targetValue >= 0.5f) 1f else 0f
-                    currentOnCheckedChange?.invoke(fraction == 1f)
-                    didDrag = false
                 } else {
-                    // 纯点击：直接翻转
+                    // 位移没越过 touch slop → 就是纯点击，直接翻转
                     fraction = if (currentChecked) 0f else 1f
-                    currentOnCheckedChange?.invoke(fraction == 1f)
                 }
+                currentOnCheckedChange?.invoke(fraction == 1f)
+                draggedX = 0f
             },
             onDrag = { _, dragAmount ->
-                if (!didDrag) {
-                    didDrag = dragAmount.x != 0f
-                }
+                draggedX += dragAmount.x
                 val delta = dragAmount.x / dragWidth
                 fraction =
                     if (isLtr) (fraction + delta).coerceIn(0f, 1f)
