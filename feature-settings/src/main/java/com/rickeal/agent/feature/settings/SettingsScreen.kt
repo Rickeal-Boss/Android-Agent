@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.GlassBackdropBlurOverride
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassSegmented
@@ -109,6 +110,31 @@ fun SettingsScreen(
                         valueRange = 0.5f..1.5f,
                         modifier = Modifier.padding(top = 8.dp),
                     )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "背景模糊",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.onGlass,
+                            )
+                            Text(
+                                text = "关掉后玻璃只保留底色与描边，中低端机明显更流畅",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                            )
+                        }
+                        // 一次性事件（不是滑块），直接写，不需要 preview/commit 拆分。
+                        // 关掉后观感会降一档（没有折射光斑的柔化），所以文案里说清代价。
+                        GlassSwitch(
+                            checked = GlassBackdropBlurOverride.enabled,
+                            onCheckedChange = { GlassBackdropBlurOverride.setEnabled(it) },
+                        )
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

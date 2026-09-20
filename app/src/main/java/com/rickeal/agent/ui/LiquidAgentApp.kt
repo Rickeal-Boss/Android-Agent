@@ -46,6 +46,7 @@ import com.rickeal.agent.LiquidAgentApplication
 import com.rickeal.agent.core.data.DarkMode
 import com.rickeal.agent.core.data.LocalAppContainer
 import com.rickeal.agent.core.data.ThemeState
+import com.rickeal.agent.core.design.GlassBackdropBlurOverride
 import com.rickeal.agent.core.design.GlassConfig
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LiquidAgentTheme
@@ -112,7 +113,12 @@ fun LiquidAgentApp() {
         // 真实背景模糊：minSdk 31 = Android 12，RenderEffect 官方保证可用，默认打开。
         // 之前这里写死 false 是为了绕过「无法本地验证」时期的编译风险，现已用正确的
         // BlurEffect 落地，保持开启才能看到液态玻璃的真实观感。
-        enableBackdropBlur = true,
+        //
+        // UI-07：不能再写死 true —— 它是最贵的一项渲染开销（每个玻璃节点每帧一次
+        // 离屏录制 + 高斯模糊），而用户此前**没有任何入口**关掉它。现在由设置页的
+        // 「背景模糊」开关驱动，关闭后玻璃退化为底色渐变 + 内描边 + 边缘光。
+        // 默认仍为 true，老用户观感不变。
+        enableBackdropBlur = GlassBackdropBlurOverride.enabled,
         enableNoise = themeState.enableNoise,
         enableSpecular = true,
         reduceMotion = themeState.reduceMotion,
