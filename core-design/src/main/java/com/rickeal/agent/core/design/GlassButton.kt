@@ -1,21 +1,61 @@
 package com.rickeal.agent.core.design
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.tanh
 
-/** 玻璃按钮。loading 时用指示器替换文本，宽度不跳变由调用方给定 modifier 决定。 */
+/**
+ * 玻璃按钮 —— 整体对齐 Kyant0 `LiquidButton`。
+ *
+ * ## 为什么必须整体重写（而不是继续用 LiquidGlassSurface）
+ *
+ * 用户真机反馈的"原生按钮"就出在这里：原来它是**圆角矩形 + 等比缩放**，
+ * 而 Kyant0 / iOS Liquid Glass 的按钮是：
+ *
+ *  1. **胶囊**轮廓（`Capsule`，两端正半圆）—— 不是 28dp 圆角矩形；
+ *  2. **极轻模糊 + 强折射**（`blur(2dp)` + `lens(12, 24)`）—— 模糊只做柔化，
+ *     折射才是主角；两者反过来就是"磨砂塑料"；
+ *  3. **跟手形变**（`layerBlock`）：按下时整体放大一点点，拖动时按
+ *     **各向异性**拉伸（x/y 比例不同）+ tanh 阻尼位移。
+ *
+ * 第 3 条静态截图完全看不出来，真机一按就露馅 —— 这也是前两轮只调参数没解决的原因。
+ *
+ * @param cornerRadius 保留参数但**被胶囊覆盖**（Kyant0 的按钮恒为胶囊）。
+ *   保留是为了不破坏既有调用点；要圆角矩形请改用 `LiquidGlassSurface`。
+ */
 @Composable
 fun GlassButton(
     text: String,
@@ -30,39 +70,136 @@ fun GlassButton(
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
-    LiquidGlassSurface(
-        // 默认 12dp 内边距 + labelLarge ≈ 44dp，差一点点；补到 48dp 达标。
-        modifier = modifier.heightIn(min = tokens.minTouchTarget),
-        material = material,
-        cornerRadius = cornerRadius,
-        enabled = enabled,
-        onClick = if (enabled && !loading) onClick else null,
-        contentPadding = contentPadding,
-        contentAlignment = Alignment.Center,
+    val animationScope = rememberCoroutineScope()
+    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
+    val interactive = enabled && !loading
+
+    Row(
+        modifier = modifier
+            .then(
+                if (interactive) {
+                    // indication = null：液态玻璃自己有高光/内阴影反馈，
+                    // 再叠一层 M3 ripple 就变成"原生按钮贴玻璃纸"了。
+                    Modifier.clickable(
+                        interactionSource = null,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier
+                },
+            )
+            .liquidGlass(
+                material = material,
+                capsule = true,
+                cornerRadius = cornerRadius,
+                // 对齐 Kyant0 LiquidButton：blur(2.dp) + lens(12.dp, 24.dp)。
+                // 模糊必须轻到能看见折射把背景像素"掰弯"，否则就是磨砂。
+                blurRadius = 2.dp,
+                refractionHeight = 12.dp,
+                refractionAmount = 24.dp,
+                // Kyant0 的 Button 没开色散：色散 7 次采样，按钮是小面积高频件，
+                // 省下来的开销留给真正的大面积容器。
+                dispersion = false,
+                intensity = if (enabled) 1f else 0.6f,
+                // 按下时玻璃"变实"（模糊减弱 / 折射增强 / 高光变亮）。
+                pressProgress = interactiveHighlight.pressProgress,
+                layerBlock = if (interactive) {
+                    {
+                        val width = size.width.coerceAtLeast(1f)
+                        val height = size.height.coerceAtLeast(1f)
+                        val progress = interactiveHighlight.pressProgress
+                        val scale = 1f + (4f.dp.toPx() / height) * progress
+
+                        // 跟手位移：tanh 阻尼 —— 拖多远都不会飞出去，松手回弹。
+                        val maxOffset = size.minDimension.coerceAtLeast(1f)
+                        val offset = interactiveHighlight.offset
+                        translationX = maxOffset * tanh(0.05f * offset.x / maxOffset)
+                        translationY = maxOffset * tanh(0.05f * offset.y / maxOffset)
+
+                        // 各向异性拉伸：沿拖动方向拉长、垂直方向压扁。
+                        // scaleX 与 scaleY **故意不相等** —— 等比缩放是"原生按钮"的手感。
+                        val maxDragScale = 4f.dp.toPx() / height
+                        val offsetAngle = atan2(offset.y, offset.x)
+                        scaleX = scale +
+                            maxDragScale * abs(cos(offsetAngle) * offset.x / size.maxDimension) *
+                            (width / height).coerceAtMost(1f)
+                        scaleY = scale +
+                            maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
+                            (height / width).coerceAtMost(1f)
+                    }
+                } else {
+                    null
+                },
+            )
+            .then(
+                if (interactive) {
+                    // 顺序不能交换：clickable 在前、gestureModifier 在后（Kyant0 原序）。
+                    // 交换后 clickable 会先吃掉手势，跟手位移就没了。
+                    Modifier
+                        .then(interactiveHighlight.modifier)
+                        .then(interactiveHighlight.gestureModifier)
+                } else {
+                    Modifier
+                },
+            )
+            .heightIn(min = tokens.minTouchTarget)
+            .padding(contentPadding),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (loading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    color = colors.onGlassMuted,
-                    strokeWidth = 2.dp,
-                )
-                Text(
-                    text = "处理中",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = colors.onGlassMuted,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            } else {
-                if (icon != null) {
-                    Box(modifier = Modifier.padding(end = 8.dp)) { icon() }
-                }
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (enabled) colors.onGlass else colors.onGlassSubtle,
-                )
+        if (loading) {
+            LiquidSpinner(color = colors.onGlassMuted)
+            Text(
+                text = "处理中",
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.onGlassMuted,
+            )
+        } else {
+            if (icon != null) {
+                Box { icon() }
             }
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (enabled) colors.onGlass else colors.onGlassSubtle,
+            )
+        }
+    }
+}
+
+/**
+ * 自绘的加载指示器。
+ *
+ * 刻意不用 Material3 的 `CircularProgressIndicator`：它是 M3 主题色的原生控件，
+ * 放在玻璃上就是用户说的"原生按钮"观感。这里用 Canvas 画一段旋转的圆弧，
+ * 颜色直接取玻璃配色，只有 16dp、2dp 描边，和胶囊按钮同一套视觉语言。
+ */
+@Composable
+private fun LiquidSpinner(
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val transition = rememberInfiniteTransition(label = "liquidSpinner")
+    val angle by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "liquidSpinnerAngle",
+    )
+    Canvas(modifier = modifier.size(16.dp)) {
+        rotate(angle) {
+            drawArc(
+                color = color,
+                startAngle = 0f,
+                sweepAngle = 300f,
+                useCenter = false,
+                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+            )
         }
     }
 }
