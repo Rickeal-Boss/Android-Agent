@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,11 +33,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.navigation.NavHostController
@@ -54,6 +59,8 @@ import com.rickeal.agent.core.design.LiquidAgentTheme
 import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
+import com.rickeal.agent.core.design.liquidGlass
 import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.feature.chat.ChatRoute
 import com.rickeal.agent.feature.chat.chatGraph
@@ -62,6 +69,11 @@ import com.rickeal.agent.feature.models.modelsGraph
 import com.rickeal.agent.feature.settings.SettingsRoute
 import com.rickeal.agent.feature.settings.settingsGraph
 import com.rickeal.agent.onboarding.FirstRunGate
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.tanh
 
 private enum class TopDestination(val route: String, val label: String) {
     CHAT(ChatRoute.ROUTE, "对话"),
@@ -294,48 +306,55 @@ private fun NavHostController.navigateTop(route: String) {
 /** 顶层页签切换的过渡时长（ms）。默认 700ms 太慢，160ms 既顺滑又不拖沓。 */
 private const val TOP_NAV_TRANSITION_MS = 160
 
+/**
+ * 底部导航栏（COMPACT）。
+ *
+ * 结构照 `core-design` 的 `GlassSegmented` —— 它就是"多分项 + 玻璃容器"的现成答案：
+ * **容器走门面 `LiquidGlassSurface`，每个页签项走裸 `Modifier.liquidGlass`**。
+ * 之所以不能整块都用门面：门面的 `modifier` 在最外层，跟手手势挂不进
+ * `drawBackdrop` 之后（Kyant0 原序），页签就只剩静态玻璃，验收过不了。
+ *
+ * 折射参数取 Kyant0 `LiquidBottomTabs` 的 `lens(24, 24)`（与 `GlassSegmented` 一致）：
+ * 导航栏比按钮大，折射带要给足才看得出厚度。
+ */
 @Composable
 private fun GlassNavBar(
     selected: TopDestination,
     onSelect: (TopDestination) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     LiquidGlassSurface(
         modifier = modifier.padding(horizontal = 14.dp, vertical = 10.dp),
         material = GlassMaterial.THICK,
+        // 胶囊（两端正半圆）取代原来的 radiusFull 圆角矩形 —— iOS Liquid Glass 的标志性轮廓。
+        capsule = true,
+        // cornerRadius 保留但被胶囊覆盖（与 GlassButton 的 cornerRadius 同一处理）：
+        // 留着是为了不丢掉"这里原本想做全圆角"的意图；capsule=true 时它被忽略。
         cornerRadius = tokens.radiusFull,
+        // 色散要 7 次采样（约 7 倍开销）。导航栏常驻屏幕、3 个页签同时渲染，必须关。
+        dispersion = false,
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             for (destination in TopDestination.entries) {
-                val isSelected = destination == selected
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { onSelect(destination) }
-                        .padding(vertical = 4.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Icon(
-                        imageVector = iconOf(destination),
-                        contentDescription = destination.label,
-                        tint = if (isSelected) colors.accent else colors.onGlassSubtle,
-                        modifier = Modifier.size(22.dp),
-                    )
-                    Text(
-                        text = destination.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isSelected) colors.onGlass else colors.onGlassSubtle,
-                    )
-                }
+                NavDestinationItem(
+                    destination = destination,
+                    selected = destination == selected,
+                    onClick = { onSelect(destination) },
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
 }
 
+/**
+ * 左侧导航栏（MEDIUM / EXPANDED）。
+ *
+ * 与 [GlassNavBar] 同一套：容器走门面（胶囊 + 关色散），页签项走裸 `liquidGlass` + 跟手形变。
+ * 竖排时胶囊就是竖向药丸，两端正半圆 —— 与底部栏同一视觉语言。
+ */
 @Composable
 private fun GlassNavRail(
     selected: TopDestination,
@@ -349,7 +368,10 @@ private fun GlassNavRail(
             .padding(horizontal = 10.dp, vertical = 12.dp)
             .width(88.dp),
         material = GlassMaterial.THIN,
+        capsule = true,
+        // 同 [GlassNavBar]：保留但被胶囊覆盖。
         cornerRadius = tokens.radiusLg,
+        dispersion = false,
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
     ) {
         Column(
@@ -363,28 +385,123 @@ private fun GlassNavRail(
                 modifier = Modifier.padding(start = 6.dp, bottom = 8.dp),
             )
             for (destination in TopDestination.entries) {
-                val isSelected = destination == selected
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelect(destination) }
-                        .padding(vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Icon(
-                        imageVector = iconOf(destination),
-                        contentDescription = destination.label,
-                        tint = if (isSelected) colors.accent else colors.onGlassSubtle,
-                        modifier = Modifier.size(22.dp),
-                    )
-                    Text(
-                        text = destination.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isSelected) colors.onGlass else colors.onGlassSubtle,
-                    )
-                }
+                NavDestinationItem(
+                    destination = destination,
+                    selected = destination == selected,
+                    onClick = { onSelect(destination) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }
+}
+
+/**
+ * 单个页签项：胶囊玻璃 + 跟手形变。底部栏与侧边栏共用。
+ *
+ * 三件事缺一就不是"液态"（对齐 `GlassSegmented.SegmentItem`）：
+ *  1. 按下时玻璃"变实"（`pressProgress` → 模糊减弱 / 折射增强 / 高光变亮）
+ *  2. **tanh 阻尼**的跟手位移（[navPressLayerBlock]）—— 拖多远都不会飞出去，松手回弹
+ *  3. **各向异性**拉伸 —— 沿拖动方向拉长、垂直方向压扁；等比缩放就是"原生按钮"手感
+ *
+ * 每个页签项各自持有 [InteractiveHighlight]，**不能共用**：
+ * 共用一个对象会导致按 A 时 B 也跟着形变。
+ */
+@Composable
+private fun NavDestinationItem(
+    destination: TopDestination,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
+    val animationScope = rememberCoroutineScope()
+    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
+
+    Column(
+        modifier = modifier
+            // indication = null：液态玻璃自己有高光 / 内阴影反馈，
+            // 再叠一层 M3 ripple 就变成"原生按钮贴玻璃纸"了。
+            .clickable(
+                interactionSource = null,
+                indication = null,
+                role = Role.Tab,
+                onClick = onClick,
+            )
+            .liquidGlass(
+                // 选中项给到 REGULAR 才有"浮起来"的厚度差；未选中压到最薄，让位给容器。
+                material = if (selected) GlassMaterial.REGULAR else GlassMaterial.ULTRA_THIN,
+                capsule = true,
+                // 对齐 Kyant0 LiquidBottomTabs 的分段项：blur(8) + lens(24, 24)。
+                // 模糊必须轻到能看见折射把背景像素"掰弯"，否则就是磨砂塑料。
+                blurRadius = 8.dp,
+                refractionHeight = 24.dp,
+                refractionAmount = 24.dp,
+                // 色散 7 次采样，常驻组件必须关。
+                dispersion = false,
+                pressProgress = interactiveHighlight.pressProgress,
+                layerBlock = navPressLayerBlock(interactiveHighlight),
+            )
+            .then(
+                // 顺序不能交换：clickable 在前、gestureModifier 在后（Kyant0 原序）。
+                // 交换后 clickable 会先吃掉手势，跟手位移就没了。
+                Modifier
+                    .then(interactiveHighlight.modifier)
+                    .then(interactiveHighlight.gestureModifier),
+            )
+            // 触摸目标必须是完整 48dp（项目自己在 GlassTokens.minTouchTarget 定的标准）。
+            .heightIn(min = tokens.minTouchTarget)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Icon(
+            imageVector = iconOf(destination),
+            contentDescription = destination.label,
+            tint = if (selected) colors.accent else colors.onGlassSubtle,
+            modifier = Modifier.size(22.dp),
+        )
+        Text(
+            text = destination.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) colors.onGlass else colors.onGlassSubtle,
+        )
+    }
+}
+
+/**
+ * 页签项的**跟手形变**：按下放大 + tanh 阻尼位移 + 各向异性拉伸。
+ *
+ * ⚠️ 这是 `core-design` 里 `GlassPressLayer.kt` 的 `pressLayerBlock` 的**副本**。
+ * 原函数是 `internal`，app 模块调不到；已请 dev-glass 把它导出为 public，
+ * **导出后请删掉本函数**，改用 `pressLayerBlock(interactiveHighlight, maxScale = 16.dp)`。
+ * 两处逻辑必须保持一致：一旦分叉，页签与按钮的手感会不一样，而且**没有任何报错**。
+ *
+ * @param maxScale 形变量级。Kyant0 的 BottomTabs / 分段项取 16dp（面板比按钮大），
+ *   按钮取 4dp。
+ */
+private fun navPressLayerBlock(
+    interactiveHighlight: InteractiveHighlight,
+    maxScale: Dp = 16.dp,
+): GraphicsLayerScope.() -> Unit = {
+    val width = size.width.coerceAtLeast(1f)
+    val height = size.height.coerceAtLeast(1f)
+    val progress = interactiveHighlight.pressProgress
+    val scale = 1f + (maxScale.toPx() / height) * progress
+
+    val maxOffset = size.minDimension.coerceAtLeast(1f)
+    val offset = interactiveHighlight.offset
+    translationX = maxOffset * tanh(0.05f * offset.x / maxOffset)
+    translationY = maxOffset * tanh(0.05f * offset.y / maxOffset)
+
+    // scaleX 与 scaleY 故意不相等：等比缩放（两者相等）就是"原生按钮"的手感。
+    val maxDragScale = maxScale.toPx() / height
+    val offsetAngle = atan2(offset.y, offset.x)
+    scaleX = scale +
+        maxDragScale * abs(cos(offsetAngle) * offset.x / size.maxDimension) *
+        (width / height).coerceAtMost(1f)
+    scaleY = scale +
+        maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
+        (height / width).coerceAtMost(1f)
 }
