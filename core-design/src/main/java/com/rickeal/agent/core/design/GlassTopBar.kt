@@ -11,13 +11,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
 
 /**
- * 悬浮胶囊式玻璃顶栏（iOS 27 风格：栏是"浮"在内容上的一块玻璃，不是一条实色横条）。
+ * 悬浮玻璃顶栏（iOS 27 风格：栏是"浮"在内容上的一块玻璃，不是一条实色横条）。
+ *
+ * **刻意保持全宽、不改成胶囊**：顶栏横跨整个屏幕宽度，做成胶囊（两端半圆）会把
+ * 标题和 actions 挤到圆角里。这里用 `radiusFull`（999dp）让上下边缘圆到半高，
+ * 观感上已经是"浮起来的一条玻璃"，不需要胶囊。
  *
  * @param scrollFraction 0f=完全展开（超薄材质），1f=完全折叠（加厚材质 + 分隔线）
  */
@@ -34,13 +41,32 @@ fun GlassTopBar(
     val tokens = LocalGlassTokens.current
     val collapsed = scrollFraction.coerceIn(0f, 1f) > 0.5f
     val material = if (collapsed) GlassMaterial.THIN else GlassMaterial.ULTRA_THIN
+    val animationScope = rememberCoroutineScope()
+    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .padding(horizontal = 12.dp, vertical = 6.dp)
                 .heightIn(min = tokens.topBarHeight)
-                .liquidGlass(material = material, cornerRadius = tokens.radiusFull)
+                .liquidGlass(
+                    material = material,
+                    cornerRadius = tokens.radiusFull,
+                    // 逐组件折射：顶栏比按钮大得多，折射带要给足才有厚度感
+                    // （对齐 Kyant0 LiquidBottomTabs 的 lens(24, 24)）。
+                    refractionHeight = 24.dp,
+                    refractionAmount = 24.dp,
+                    // 全宽大面积容器：色散 7 次采样扛不住，必须关。折射仍开。
+                    dispersion = false,
+                    // 触摸/拖动顶栏时玻璃"变实"（模糊减弱 + 折射增强 + 高光变亮）。
+                    pressProgress = interactiveHighlight.pressProgress,
+                    layerBlock = pressLayerBlock(
+                        interactiveHighlight = interactiveHighlight,
+                        maxScale = 4.dp
+                    ),
+                )
+                .then(interactiveHighlight.modifier)
+                .then(interactiveHighlight.gestureModifier)
                 .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -83,7 +109,13 @@ fun GlassTopBar(
     }
 }
 
-/** 底部玻璃栏（导航 / 输入栏容器）。 */
+/**
+ * 底部玻璃栏（导航 / 输入栏容器）。
+ *
+ * 刻意**不接跟手手势**：底栏里通常是输入框 / 导航按钮 / 语音键，再挂一层拖拽
+ * 手势会跟文本选择拖动、按钮点击抢事件。它也不该跟着手指晃 —— iOS 的底栏
+ * 在有输入焦点时是稳的。折射与色散策略照大面积容器处理（关色散）。
+ */
 @Composable
 fun GlassBottomBar(
     modifier: Modifier = Modifier,
@@ -94,7 +126,12 @@ fun GlassBottomBar(
         modifier = modifier
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .heightIn(min = tokens.bottomBarHeight)
-            .liquidGlass(material = GlassMaterial.THICK, cornerRadius = tokens.radiusXl)
+            .liquidGlass(
+                material = GlassMaterial.THICK,
+                cornerRadius = tokens.radiusXl,
+                // 全宽大面积：关色散（7 次采样）。折射仍开，用 THICK 材质自带的 16/28。
+                dispersion = false,
+            )
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         content = content,
