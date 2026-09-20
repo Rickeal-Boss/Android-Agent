@@ -187,15 +187,20 @@ fun ChatScreen(
                                 color = colors.danger,
                                 modifier = Modifier.weight(1f),
                             )
-                            Icon(
-                                imageVector = Icons.Filled.Close,
-                                contentDescription = "关闭",
-                                tint = colors.onGlassSubtle,
+                            // 图标 16dp，点击区 48dp（外层 Box 撑开，图标尺寸不变）。
+                            Box(
                                 modifier = Modifier
-                                    .padding(start = 8.dp)
-                                    .size(16.dp)
+                                    .size(tokens.minTouchTarget)
                                     .clickable(onClick = viewModel::onDismissError),
-                            )
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Close,
+                                    contentDescription = "关闭",
+                                    tint = colors.onGlassSubtle,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
                         }
                         if (canRetry) {
                             Spacer(modifier = Modifier.height(tokens.gapSm))

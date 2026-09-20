@@ -91,14 +91,20 @@ fun ChatParamsSheet(
                             color = colors.onGlass,
                             modifier = Modifier.weight(1f),
                         )
-                        Icon(
-                            imageVector = Icons.Filled.Close,
-                            contentDescription = "关闭",
-                            tint = colors.onGlassMuted,
+                        // 图标 22dp，点击区 48dp（外层 Box 撑开）。
+                        Box(
                             modifier = Modifier
-                                .padding(4.dp)
+                                .size(tokens.minTouchTarget)
                                 .clickable(onClick = onDismiss),
-                        )
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "关闭",
+                                tint = colors.onGlassMuted,
+                                modifier = Modifier.padding(4.dp),
+                            )
+                        }
                     }
                     ChatParamsContent(
                         config = config,

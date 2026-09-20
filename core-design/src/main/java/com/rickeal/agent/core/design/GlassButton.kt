@@ -3,6 +3,7 @@ package com.rickeal.agent.core.design
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
@@ -28,8 +29,10 @@ fun GlassButton(
     contentPadding: PaddingValues = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
 ) {
     val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
     LiquidGlassSurface(
-        modifier = modifier,
+        // 默认 12dp 内边距 + labelLarge ≈ 44dp，差一点点；补到 48dp 达标。
+        modifier = modifier.heightIn(min = tokens.minTouchTarget),
         material = material,
         cornerRadius = cornerRadius,
         enabled = enabled,

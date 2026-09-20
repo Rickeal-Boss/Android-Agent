@@ -65,15 +65,22 @@ fun ChatInputBar(
                 for (attachment in attachments) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         GlassChip(text = attachment.label())
-                        Icon(
-                            imageVector = Icons.Filled.Close,
-                            contentDescription = "移除附件",
-                            tint = colors.onGlassSubtle,
+                        // 图标只有 16dp，但**点击区**必须 48dp：外面套一层 Box 撑开，
+                        // 图标本身尺寸不变（直接给 Icon 加 sizeIn 会因为外层 size(16)
+                        // 把 min 又压回 16，撑不开）。
+                        Box(
                             modifier = Modifier
-                                .padding(start = 2.dp)
-                                .size(16.dp)
+                                .size(tokens.minTouchTarget)
                                 .clickable { onRemoveAttachment(attachment.key()) },
-                        )
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = "移除附件",
+                                tint = colors.onGlassSubtle,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -147,11 +154,14 @@ private fun SendButton(
     onStop: () -> Unit,
 ) {
     val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
     val active = if (isGenerating) true else enabled
     Box(
         modifier = Modifier
-            .size(44.dp)
-            .clip(RoundedCornerShape(22.dp))
+            // 发送/停止是最高频操作，44dp 差 4dp —— 补到 minTouchTarget，
+            // 圆角半径同步取一半（保持正圆）。
+            .size(tokens.minTouchTarget)
+            .clip(RoundedCornerShape(tokens.minTouchTarget / 2))
             .background(if (active) colors.accent else colors.accentMuted)
             .then(
                 if (active) {

@@ -57,7 +57,9 @@ fun GlassSegmented(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .heightIn(min = tokens.minTouchTarget - 12.dp)
+                        // 触摸目标必须是完整 48dp（原来是 minTouchTarget - 12.dp = 36dp）。
+                        // 分段控件是主要操作入口，36dp 在高 DPI 屏上误触率明显。
+                        .heightIn(min = tokens.minTouchTarget)
                         .graphicsLayer {
                             scaleX = scale
                             scaleY = scale

@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -30,7 +31,10 @@ fun GlassSettingRow(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     LiquidGlassSurface(
-        modifier = modifier.fillMaxWidth(),
+        // 无副标题时整行只有 ≈44dp；整行都是点击区，补到 48dp。
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = tokens.minTouchTarget),
         material = GlassMaterial.THIN,
         cornerRadius = tokens.radiusMd,
         enabled = enabled,
