@@ -131,16 +131,37 @@
 
 ## 五、D 类：UI / Compose 与配置变更
 
-### D1. 导航返回栈无限增长（APP-2 / UI-01，P1）
+### D1. 导航返回栈无限增长 + 返回键在页签间倒着走（APP-2 / UI-01，P1）
+
+> **完整证据链与可复制的修复模板见 [`docs/09-back-navigation.md`](09-back-navigation.md)。**
+> 本节只留结论。注意本条**被修过一次但没修对**：第一版只加了 `popUpTo`，
+> 而那条 `popUpTo` 从写下起就是失效的——这是它挂这么久的直接原因。
+
 - **依据 ②（平台行为变更）**：Android 14 起引入、Android 15/16 强化的**预测返回（Predictive Back）**。
   `OnBackPressedCallback` 具有向后兼容性，平台始终会调用它。
-- **依据 ④（源码实证）**：已下载 `navigation-compose 2.8.9` 的 sources jar 核实——
-  `NavHost` 内部有 `PredictiveBackHandler(currentBackStack.size > 1)`。
+- **依据 ④（源码实证）**：已下载 `navigation 2.8.9` 的 sources jar 核实——
+  `NavHost.kt:514` 有 `PredictiveBackHandler(currentBackStack.size > 1)`。
   因此只要返回栈有多条，返回键就会被**导航层**消费，变成"在上个页签间倒着走"，退出需按 N 次。
+- **真正的根因（第一版漏掉的，也是这个坑最阴的地方）**：`startDestination` 与 composable
+  注册的 route **不同源**。`NavDestination.kt:240` 与 `NavGraph.kt:522` 都用
+  `createRoute(route).hashCode()` 生成 id，所以 `"chat"` 与 `"chat?conversationId={conversationId}"`
+  是**两个不同的 id**；`popUpTo(graph.startDestinationId)` 因而永远匹配不到，而
+  `NavController.kt:611-621` 对"栈里没有这个 id"的处理是**打一行 `Log.i` 然后 `return false`，
+  一条都不 pop** —— 不抛异常、不崩溃。
+  **即：`popUpTo` 写对了也照样失效，且没有任何报错。**
+  首启却是正常的，因为 `NavGraphNavigator.kt:74-79` 找起始目的地走的是 **route 字符串匹配**
+  而非 id —— "能启动"和"能正确 pop"是两件事，只验首启发现不了它。
 - **另一半危害（依据 ①）**：每个 `chat` backstack entry 拥有独立的 `ViewModelStore`，
   所以每次切回对话页都是**全新 `ChatViewModel`** —— 草稿、滚动位置丢失，
   **正在流式生成的回答也从界面消失**（旧 VM 仍在后台运行）。这是 ViewModel 作用域的直接推论。
-- **改动**：`popUpTo(graph.startDestinationId) { saveState = true }` + `launchSingleTop` + `restoreState`。
+- **改动（两层，缺一不可）**：
+  1. `startDestination` 改用 `ChatRoute.PATTERN`，与 composable 注册的 route **同源** → `popUpTo` 恢复生效。
+     首启不崩的论证见 09 文档（`NavGraphNavigator.kt:90` 跳过参数合并；`conversationId` 为
+     `nullable = true` + `defaultValue = null`，`NavArgument.kt:234` 的 `missingRequiredArguments` 为空）。
+  2. 在 `NavHost` **之后**加显式两段式 `BackHandler`：非对话页或栈里还有别的条目时先回对话页，
+     已在对话页且栈里只剩它则 `finish()` 退出。
+  3. 兜底：`navigateTop` 之后强制 pop 到只剩栈底的对话页，让"再按一次退出"**不依赖 `popUpTo` 是否生效**
+     —— 否则规则 1 一旦被破坏，退化结果是"按返回键毫无反应且无报错"。
 
 ### D2. 键盘遮挡（UI-09，P1）
 - **依据 ②（官方行为变更）**：Android 15（targetSdk 35）起 **edge-to-edge 强制**，
