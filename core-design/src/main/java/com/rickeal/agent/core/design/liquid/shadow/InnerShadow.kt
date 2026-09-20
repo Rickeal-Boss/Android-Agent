@@ -40,7 +40,9 @@ fun lerp(start: InnerShadow, stop: InnerShadow, fraction: Float): InnerShadow {
         radius = lerp(start.radius, stop.radius, fraction),
         offset = lerp(start.offset, stop.offset, fraction),
         color = lerp(start.color, stop.color, fraction),
-        alpha = lerp(start.alpha, stop.alpha, fraction),
+        // Float 的 lerp 在 androidx.compose.ui.util（不是 unit/graphics），
+        // 这里直接手算，避免引入第三个同名 lerp 造成解析歧义。
+        alpha = start.alpha + (stop.alpha - start.alpha) * fraction,
         blendMode = if (fraction < 0.5f) start.blendMode else stop.blendMode
     )
 }

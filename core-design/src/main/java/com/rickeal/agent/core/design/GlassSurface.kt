@@ -393,9 +393,12 @@ private fun AttachmentThumb(uri: String) {
     val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = uri) {
         value = withContext(Dispatchers.IO) { decodeThumbnail(context, uri) }
     }
-    if (bitmap != null) {
+    // 委托属性（by produceState）在 null 检查与使用之间可能被其他帧改写，
+    // Kotlin 不会为它做 smart cast —— 必须先取到局部 val 再判空。
+    val decoded = bitmap
+    if (decoded != null) {
         Image(
-            bitmap = bitmap,
+            bitmap = decoded,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier

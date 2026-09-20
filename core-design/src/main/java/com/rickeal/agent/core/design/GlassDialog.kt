@@ -14,6 +14,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.rickeal.agent.core.design.liquid.EmptyBackdrop
+import com.rickeal.agent.core.design.liquid.LocalBackdrop
 
 /**
  * 玻璃对话框。THICK 材质 + radiusXl，浮在壁纸之上。
@@ -34,7 +36,13 @@ fun GlassDialog(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     Dialog(onDismissRequest = onDismissRequest) {
-        CompositionLocalProvider(LocalGlassBackdropState provides null) {
+        // Dialog 在独立窗口，主窗口的 LayerBackdrop 在这里既对不齐也用不上，
+        // 显式降级为 EmptyBackdrop（纯玻璃：只有底色 + 高光，不采样背景）。
+        // 旧的 LocalGlassBackdropState 一并置 null，保持两代引擎行为一致。
+        CompositionLocalProvider(
+            LocalGlassBackdropState provides null,
+            LocalBackdrop provides EmptyBackdrop,
+        ) {
             LiquidGlassSurface(
                 modifier = modifier
                     .fillMaxWidth()

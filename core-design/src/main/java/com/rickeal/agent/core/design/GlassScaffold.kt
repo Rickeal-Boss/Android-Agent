@@ -19,6 +19,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.liquid.LocalBackdrop
+import com.rickeal.agent.core.design.liquid.backdrops.layerBackdrop
+import com.rickeal.agent.core.design.liquid.backdrops.rememberLayerBackdrop
 import kotlin.math.max
 
 /**
@@ -40,13 +43,21 @@ fun GlassScaffold(
     content: @Composable (PaddingValues) -> Unit,
 ) {
     val backdropState = rememberGlassBackdropState()
-    CompositionLocalProvider(LocalGlassBackdropState provides backdropState) {
+    // 新液态玻璃引擎的背景源：壁纸被录进 LayerBackdrop 的 GraphicsLayer，
+    // 所有 drawBackdrop 节点（即 liquidGlass）从这里取背景做模糊/折射。
+    // 必须与 LocalGlassBackdropState 一起下发，否则新引擎的玻璃拿不到壁纸，
+    // 会退化成「无背景的纯色半透明面板」。
+    val layerBackdrop = rememberLayerBackdrop()
+    CompositionLocalProvider(
+        LocalGlassBackdropState provides backdropState,
+        LocalBackdrop provides layerBackdrop,
+    ) {
         Box(modifier = modifier.fillMaxSize()) {
             // 壁纸层：内容录制进背景图层，供玻璃节点取用（本身观感不变）。
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .glassBackdropSource(backdropState),
+                    .layerBackdrop(layerBackdrop),
             ) {
                 wallpaper()
             }
