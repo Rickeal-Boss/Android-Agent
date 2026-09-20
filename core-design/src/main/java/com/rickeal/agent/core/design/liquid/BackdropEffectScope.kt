@@ -6,6 +6,9 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
+import com.rickeal.agent.core.design.liquid.platform.RuntimeShader
+import com.rickeal.agent.core.design.liquid.platform.RuntimeShaderCache
+import com.rickeal.agent.core.design.liquid.platform.RuntimeShaderCacheImpl
 
 /**
  * 液态玻璃的效果作用域：在 `effects { ... }` DSL 里取当前节点的尺寸/形状，

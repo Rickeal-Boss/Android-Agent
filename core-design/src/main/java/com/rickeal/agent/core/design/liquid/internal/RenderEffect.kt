@@ -1,51 +1,79 @@
 package com.rickeal.agent.core.design.liquid.internal
 
+import android.os.Build
+import androidx.annotation.RequiresApi
 import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
-import androidx.compose.ui.graphics.ColorMatrixColorFilter
 import androidx.compose.ui.graphics.RenderEffect
+import androidx.compose.ui.graphics.asAndroidColorFilter
+import androidx.compose.ui.graphics.asAndroidRenderEffect
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import com.rickeal.agent.core.design.liquid.platform.RuntimeShader
+import com.rickeal.agent.core.design.liquid.platform.asAndroidRuntimeShader
 
 /**
- * RenderEffect 链：把已有的 RenderEffect 与新效果链在一起。
- * Compose 的 RenderEffect 不可变，每次 chain 都返回新实例。
+ * 把两个 RenderEffect 链在一起。
+ *
+ * ⚠️ Compose 的 [RenderEffect] 只是包装类，**工厂方法全在平台侧**
+ * `android.graphics.RenderEffect` 上，必须来回转换：
+ *   - compose → platform：[asAndroidRenderEffect]
+ *   - platform → compose：[asComposeRenderEffect]
+ *
+ * 顺序：新效果 [other] 在外层，已有效果在里层（与 Kyant0 完全一致）。
  *
  * 端口自 Kyant0 backdrop 库（Apache-2.0）。
  */
+@RequiresApi(Build.VERSION_CODES.S)
 internal fun RenderEffect?.chain(other: RenderEffect): RenderEffect {
-    return if (this == null) other else RenderEffect.createChainEffect(this, other)!!
+    return if (this != null) {
+        android.graphics.RenderEffect.createChainEffect(
+            other.asAndroidRenderEffect(),
+            this.asAndroidRenderEffect()
+        ).asComposeRenderEffect()
+    } else {
+        other
+    }
 }
 
 /**
- * 把 [colorFilter] 应用到 [renderEffect] 的输出上。
+ * 在 RenderEffect 上叠一层 ColorFilter（vibrancy / opacity 都走这里）。
  */
+@RequiresApi(Build.VERSION_CODES.S)
 internal fun RenderEffect?.applyColorFilter(colorFilter: ColorFilter): RenderEffect {
-    val effect = this ?: return RenderEffect.createColorFilterEffect(colorFilter)
-    return RenderEffect.createChainEffect(
-        effect,
-        RenderEffect.createColorFilterEffect(colorFilter)
-    )!!
+    return if (this != null) {
+        android.graphics.RenderEffect.createColorFilterEffect(
+            colorFilter.asAndroidColorFilter(),
+            this.asAndroidRenderEffect()
+        ).asComposeRenderEffect()
+    } else {
+        android.graphics.RenderEffect.createColorFilterEffect(
+            colorFilter.asAndroidColorFilter()
+        ).asComposeRenderEffect()
+    }
 }
 
 /**
- * 在 RenderEffect 上叠 1 个 `RuntimeShaderEffect`（uniform shader）。
+ * 在 RenderEffect 上叠一层 AGSL RuntimeShader（lens 折射 / 色散走这里）。
  */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 internal fun RenderEffect?.applyRuntimeShader(
-    runtimeShader: com.rickeal.agent.core.design.liquid.platform.RuntimeShader,
+    runtimeShader: RuntimeShader,
     uniformShaderName: String
 ): RenderEffect {
-    // Compose 的 Shader 在 Android 上就是 android.graphics.Shader（typealias），
-    // 可直接传给 RenderEffect.createRuntimeShaderEffect，无需转换。
-    val shaderEffect = RenderEffect.createRuntimeShaderEffect(
-        runtimeShader.asComposeShader(),
-        uniformShaderName
+    return chain(
+        android.graphics.RenderEffect.createRuntimeShaderEffect(
+            runtimeShader.asAndroidRuntimeShader(),
+            uniformShaderName
+        ).asComposeRenderEffect()
     )
-    return chain(shaderEffect!!)
 }
 
 /**
- * Vibrancy：饱和度提升 + 轻微亮度提升，让玻璃里的颜色更鲜艳。
- * 这是 iOS 26 Liquid Glass 的标配效果。
+ * **Vibrancy（鲜艳度提升）** —— iOS 26 Liquid Glass 的标配。
+ *
+ * 玻璃会"吸走"背景饱和度看起来发灰，用 ColorMatrix 把饱和度拉回来，
+ * 让透过玻璃看到的颜色依然鲜活。这是"廉价磨砂"与"高级液态玻璃"的分水岭。
  */
+@RequiresApi(Build.VERSION_CODES.S)
 internal fun RenderEffect?.vibrancy(saturation: Float = 1.5f, brightness: Float = 0f): RenderEffect {
     val invSat = 1f - saturation
     val r = 0.213f * invSat
@@ -61,7 +89,7 @@ internal fun RenderEffect?.vibrancy(saturation: Float = 1.5f, brightness: Float 
     val cb = c * b
     val cs = c * s
 
-    val colorMatrix = ColorMatrix(
+    val colorMatrix = androidx.compose.ui.graphics.ColorMatrix(
         floatArrayOf(
             cr + cs, cg, cb, 0f, t,
             cr, cg + cs, cb, 0f, t,
@@ -69,14 +97,15 @@ internal fun RenderEffect?.vibrancy(saturation: Float = 1.5f, brightness: Float 
             0f, 0f, 0f, 1f, 0f
         )
     )
-    return applyColorFilter(ColorMatrixColorFilter(colorMatrix))
+    return applyColorFilter(androidx.compose.ui.graphics.ColorMatrixColorFilter(colorMatrix))
 }
 
 /**
- * 在 RenderEffect 上叠 alpha 透明度（线性）。
+ * 在 RenderEffect 上叠线性 alpha 透明度。
  */
+@RequiresApi(Build.VERSION_CODES.S)
 internal fun RenderEffect?.opacity(alpha: Float): RenderEffect {
-    val colorMatrix = ColorMatrix(
+    val colorMatrix = androidx.compose.ui.graphics.ColorMatrix(
         floatArrayOf(
             1f, 0f, 0f, 0f, 0f,
             0f, 1f, 0f, 0f, 0f,
@@ -84,5 +113,5 @@ internal fun RenderEffect?.opacity(alpha: Float): RenderEffect {
             0f, 0f, 0f, alpha, 0f
         )
     )
-    return applyColorFilter(ColorMatrixColorFilter(colorMatrix))
+    return applyColorFilter(androidx.compose.ui.graphics.ColorMatrixColorFilter(colorMatrix))
 }
