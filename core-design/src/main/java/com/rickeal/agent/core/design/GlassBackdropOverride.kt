@@ -27,7 +27,15 @@ object GlassBackdropBlurOverride {
     var enabled: Boolean by mutableStateOf(true)
         private set
 
-    fun setEnabled(value: Boolean) {
+    /**
+     * 更新开关。
+     *
+     * ⚠️ 这个方法**不能**叫 `setEnabled` —— Kotlin 的 `var enabled` 在 JVM 上
+     * 已经生成了 `setEnabled(Z)V`，同名方法会造成
+     * "Platform declaration clash: same JVM signature" 编译错误（CI 实测踩到）。
+     * 改名 `setBlurEnabled` 即可。
+     */
+    fun setBlurEnabled(value: Boolean) {
         enabled = value
     }
 }

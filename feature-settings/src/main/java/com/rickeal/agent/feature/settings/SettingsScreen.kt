@@ -132,7 +132,7 @@ fun SettingsScreen(
                         // 关掉后观感会降一档（没有折射光斑的柔化），所以文案里说清代价。
                         GlassSwitch(
                             checked = GlassBackdropBlurOverride.enabled,
-                            onCheckedChange = { GlassBackdropBlurOverride.setEnabled(it) },
+                            onCheckedChange = { GlassBackdropBlurOverride.setBlurEnabled(it) },
                         )
                     }
                     Row(
