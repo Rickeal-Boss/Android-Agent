@@ -6,7 +6,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
@@ -62,9 +62,16 @@ class DampedDragAnimation(
     private val valueAnimatable = Animatable(initialValue, visibilityThreshold)
     private val pressAnimatable = Animatable(0f)
 
+    // 刻意不用 `by mutableFloatStateOf(...)` 委托：MutableFloatState 的
+    // getValue/setValue 是 androidx.compose.runtime 的扩展运算符，必须显式 import 才生效，
+    // 漏了 import 会报 "Type 'MutableFloatState' has no method 'getValue(...)'"（CI 实测踩过）。
+    // 直接持有 state 并手写 get/set，少一个隐式依赖。
+    private val targetValueState = mutableStateOf(initialValue)
+
     /** 当前目标值（手指/外部状态想去的地方）。拖拽增量基于它计算，避免累积漂移。 */
-    var targetValue: Float by mutableFloatStateOf(initialValue)
-        private set
+    var targetValue: Float
+        get() = targetValueState.value
+        private set(value) { targetValueState.value = value }
 
     /** 当前实际值（弹簧跟随 [targetValue]，所以会"慢半拍"——这就是阻尼）。 */
     val value: Float get() = valueAnimatable.value
