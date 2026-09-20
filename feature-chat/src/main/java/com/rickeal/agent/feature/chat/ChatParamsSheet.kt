@@ -77,6 +77,12 @@ fun ChatParamsSheet(
                     .liquidGlass(
                         material = GlassMaterial.THICK,
                         cornerRadius = tokens.radiusXl,
+                        // 底部 sheet 只需上方两角圆。若只传 cornerRadius，
+                        // liquidGlass 内部会按对称圆角裁剪，底角也会被圆 —— 浮在半屏很违和。
+                        shapeOverride = RoundedCornerShape(
+                            topStart = tokens.radiusXl,
+                            topEnd = tokens.radiusXl,
+                        ),
                     ),
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {

@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -65,8 +66,14 @@ private const val VibrancySaturation = 1.22f
  *   API 31~32（无 AGSL）自动降级为纯 blur，不崩。
  * @param dispersion 是否开启**色散**（RGB 分离 → 边缘彩虹色带）。
  *   默认**开** —— 色散是"这真的是玻璃"的最强视觉信号，
- *   Kyant0 在 Slider / Toggle 上都开了。开销约 7 倍（7 次采样），
+ *   Kyant0 在 Tabs / Slider / Toggle 上都开了。开销约 7 倍（7 次采样），
  *   若真机掉帧可关（列表 item 建议关）。
+ * @param pressProgress 按压进度 0~1。这是"液态"手感的关键一半 ——
+ *   静态看是玻璃，**按下去会变实**（模糊减弱、折射增强、高光变亮），
+ *   对应 Kyant0 各组件里 `blur(8f.dp * (1f - progress))` + `lens(... * progress)` 的写法。
+ *   传 0 表示无按压（默认）。
+ * @param shapeOverride 形状覆盖。默认按 [cornerRadius] 生成对称圆角矩形；
+ *   需要非对称圆角（如底部 sheet 只有上方两角圆）时显式传入。
  */
 @Composable
 fun Modifier.liquidGlass(
@@ -77,6 +84,8 @@ fun Modifier.liquidGlass(
     specular: Boolean = true,
     refraction: Boolean = true,
     dispersion: Boolean = true,
+    pressProgress: Float = 0f,
+    shapeOverride: Shape? = null,
 ): Modifier {
     val tokens = LocalGlassTokens.current
     val colors = LocalGlassColors.current
@@ -84,7 +93,11 @@ fun Modifier.liquidGlass(
     val backdrop = LocalBackdrop.current
 
     val spec = GlassMaterials.of(material)
-    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
+    // 注意：remember 必须无条件调用（条件性 remember 会让重组时的缓存行为不确定），
+    // 所以先无条件算出默认形状，再用 ?: 选择覆盖值。
+    val defaultShape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
+    val shape = shapeOverride ?: defaultShape
+    val press = pressProgress.coerceIn(0f, 1f)
     val safeIntensity = (intensity * config.intensity).coerceIn(0f, 1.5f)
     val enableBackdrop = config.enableBackdropBlur
     // 折射依赖 AGSL（API 33+）；API 31~32 自动退回纯模糊，绝不硬上。
@@ -105,11 +118,15 @@ fun Modifier.liquidGlass(
             if (enableBackdrop) {
                 // vibrancy：把玻璃"吸走"的饱和度拉回来，iOS 26 Liquid Glass 标配
                 vibrancy(saturation = VibrancySaturation)
-                blur(spec.blurRadius.toPx())
+                // 按压时**减弱**模糊：玻璃被按"实"了，对应 Kyant0 的
+                // `blur(8f.dp * (1f - progress))`。物理直觉：越实的东西越不需要磨砂。
+                blur(spec.blurRadius.toPx() * (1f - press * 0.7f))
                 if (enableRefraction) {
+                    // 按压时**增强**折射：对应 Kyant0 的 `lens(... * progress)`。
+                    // 越用力按，玻璃形变越明显 —— 这是"液态"手感的核心。
                     lens(
-                        refractionHeight = RefractionHeightDp.toPx(),
-                        refractionAmount = RefractionAmountDp.toPx(),
+                        refractionHeight = RefractionHeightDp.toPx() * (1f + press * 0.4f),
+                        refractionAmount = RefractionAmountDp.toPx() * (1f + press * 0.25f),
                         chromaticAberration = enableDispersion
                     )
                 }
@@ -120,7 +137,8 @@ fun Modifier.liquidGlass(
                 null
             } else {
                 Highlight(
-                    width = tokens.highlightStrokeWidth,
+                    // 按压时高光带变宽变亮 —— 玻璃被压时边缘反射更强
+                    width = tokens.highlightStrokeWidth * (1f + press * 0.6f),
                     alpha = 1f,
                     style = HighlightStyle.DefaultStyle.copy(
                         color = colors.glassSpecular.copy(

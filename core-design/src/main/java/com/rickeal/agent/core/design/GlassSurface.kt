@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
@@ -11,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -71,6 +73,16 @@ fun LiquidGlassSurface(
     propagateMinConstraints: Boolean = false,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    // 按压进度 → 传给玻璃，让它在按下时"变实"（模糊减弱 + 折射增强 + 高光变亮）。
+    // 静态观感只是"像玻璃"，按下去的反馈才是"液态" —— 两者缺一不可。
+    // 可点击时才收集按压状态，纯展示的容器不引入无谓的重组。
+    val pressed by interactionSource.collectIsPressedAsState()
+    val pressProgress by animateFloatAsState(
+        targetValue = if (onClick != null && pressed && enabled) 1f else 0f,
+        animationSpec = LiquidMotion.floatSpring(LocalLiquidMotion.current),
+        label = "glassPressProgress",
+    )
+
     val glassModifier = modifier
         .then(
             if (onClick != null) {
@@ -86,7 +98,11 @@ fun LiquidGlassSurface(
                 Modifier
             },
         )
-        .liquidGlass(material = material, cornerRadius = cornerRadius)
+        .liquidGlass(
+            material = material,
+            cornerRadius = cornerRadius,
+            pressProgress = pressProgress,
+        )
     Box(
         modifier = glassModifier,
         contentAlignment = contentAlignment,
