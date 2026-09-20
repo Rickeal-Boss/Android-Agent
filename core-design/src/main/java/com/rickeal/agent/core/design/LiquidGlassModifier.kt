@@ -57,9 +57,11 @@ private const val VibrancySaturation = 1.22f
  * @param refraction 是否开启折射。这是液态玻璃的核心，默认开。
  *   API 31~32（无 AGSL）自动降级为纯 blur，不崩。
  * @param dispersion 是否开启**色散**（RGB 分离 → 边缘彩虹色带）。
- *   默认**开** —— 色散是"这真的是玻璃"的最强视觉信号，
- *   Kyant0 在 Tabs / Slider / Toggle 上都开了。开销约 7 倍（7 次采样），
- *   若真机掉帧可关（列表 item 建议关）。
+ *   默认**关**：色散是"这真的是玻璃"的最强视觉信号，Kyant0 在 Tabs / Slider /
+ *   Toggle 上都开了，但一次要 **7 次采样**（约 7 倍开销）。默认开等于"没显式传就
+ *   悄悄吃掉 7 倍"，只有**小面积**控件扛得住 —— 大面积容器与列表 item 一律关。
+ *   需要色散的极小控件显式传 `true`（Slider / Switch 的 thumb 不走本参数，它们直接
+ *   在 `effects {}` 里写 `lens(..., chromaticAberration = true)`）。
  * @param pressProgress 按压进度 0~1。这是"液态"手感的关键一半 ——
  *   静态看是玻璃，**按下去会变实**（模糊减弱、折射增强、高光变亮），
  *   对应 Kyant0 各组件里 `blur(8f.dp * (1f - progress))` + `lens(... * progress)` 的写法。
@@ -86,7 +88,7 @@ fun Modifier.liquidGlass(
     noise: Boolean = true,
     specular: Boolean = true,
     refraction: Boolean = true,
-    dispersion: Boolean = true,
+    dispersion: Boolean = false,
     blurRadius: Dp? = null,
     refractionHeight: Dp? = null,
     refractionAmount: Dp? = null,

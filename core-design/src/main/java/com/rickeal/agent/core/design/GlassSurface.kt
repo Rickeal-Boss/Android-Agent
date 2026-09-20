@@ -65,8 +65,10 @@ import java.util.Locale
  *   分段项）都应该用胶囊 —— 这是 iOS Liquid Glass 的标志性轮廓。
  * @param layerBlock **跟手形变**：直接透传给 `liquidGlass`，见
  *   `liquid/interactive/InteractiveHighlight`。静态截图看不出差别，真机一按就露馅。
- * @param dispersion 色散（RGB 分离 → 边缘彩虹）。大面积容器（Card / Dialog）必须**关**：
- *   色散要 7 次采样，开销约 7 倍。
+ * @param dispersion 色散（RGB 分离 → 边缘彩虹）。默认**关**：色散要 7 次采样（约 7 倍
+ *   开销），默认开会让"没显式传"的调用点**悄悄吃掉 7 倍** —— 对话气泡这类长列表
+ *   一屏十几条，开着必掉帧。大面积容器（Card / Dialog / 气泡）一律关；
+ *   扛得住的极小控件再显式传 `true`。
  */
 @Composable
 fun LiquidGlassSurface(
@@ -80,7 +82,7 @@ fun LiquidGlassSurface(
     contentPadding: PaddingValues = PaddingValues(GlassDefaults.ContentPadding),
     contentAlignment: Alignment = Alignment.TopStart,
     propagateMinConstraints: Boolean = false,
-    dispersion: Boolean = true,
+    dispersion: Boolean = false,
     refractionHeight: Dp? = null,
     refractionAmount: Dp? = null,
     layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
@@ -238,6 +240,9 @@ fun GlassBubble(
                 .liquidGlass(
                     material = if (isUser) GlassMaterial.REGULAR else GlassMaterial.THIN,
                     cornerRadius = tokens.radiusLg,
+                    // 全 App 最长的 LazyColumn：一屏十几条 × 7 次采样必掉帧。
+                    // 想开回来必须先拿真机 30+ 条气泡的滚动帧率数据。
+                    dispersion = false,
                 ),
         ) {
             if (isUser) {
@@ -326,6 +331,8 @@ private fun ThinkingBlock(
         material = GlassMaterial.ULTRA_THIN,
         cornerRadius = tokens.radiusSm,
         onClick = onToggle,
+        // 气泡内嵌套的容器，跟着气泡一起进 LazyColumn —— 同理关色散。
+        dispersion = false,
         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
     ) {
         Column {
@@ -400,6 +407,8 @@ private fun AttachmentItem(attachment: GlassBubbleAttachment) {
             LiquidGlassSurface(
                 material = GlassMaterial.ULTRA_THIN,
                 cornerRadius = tokens.radiusSm,
+                // 附件条在气泡里逐条展开，同样按列表 item 处理。
+                dispersion = false,
                 contentPadding = PaddingValues(0.dp),
             ) {
                 AttachmentThumb(uri = attachment.uri)
@@ -409,6 +418,8 @@ private fun AttachmentItem(attachment: GlassBubbleAttachment) {
             LiquidGlassSurface(
                 material = GlassMaterial.ULTRA_THIN,
                 cornerRadius = tokens.radiusFull,
+                // 附件条在气泡里逐条展开，同样按列表 item 处理。
+                dispersion = false,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 5.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
