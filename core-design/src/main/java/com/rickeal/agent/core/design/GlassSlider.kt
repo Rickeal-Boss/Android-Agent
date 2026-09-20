@@ -30,9 +30,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+// ⚠️ `key` / `type` 不是 KeyEvent 的成员，而是 `expect val KeyEvent.key` /
+// `expect val KeyEvent.type` **扩展属性**（commonMain 声明、androidMain 实现）。
+// 少了这两行就会报 "Unresolved reference 'key' / 'type'" —— CI 实测踩过。
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -260,7 +266,7 @@ private fun LiquidSliderTrack(
                     }
                 }
                 .focusable(enabled = enabled)
-                .onKeyEvent { event ->
+                .onKeyEvent { event: KeyEvent ->
                     if (!enabled || event.type != KeyEventType.KeyDown) return@onKeyEvent false
                     val step = stepSize()
                     if (step == 0f) return@onKeyEvent false
