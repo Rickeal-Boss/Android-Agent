@@ -1,7 +1,9 @@
 package com.rickeal.agent.core.design
 
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -35,6 +37,29 @@ val LiquidTypography = Typography(
     labelSmall = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.3.sp),
 )
 
+/**
+ * 应用主题。
+ *
+ * ## Material 3 Expressive
+ *
+ * 走 [MaterialExpressiveTheme] 而非普通 [androidx.compose.material3.MaterialTheme]，
+ * 并显式指定 [MotionScheme.expressive] —— 这就是 M3E 的核心差异：
+ *  - **标准 M3**：动效用缓动曲线（tween），克制、中性；
+ *  - **M3E**：动效用**弹簧**（spring），有过冲与回弹，UI"有生命"；
+ *    同时形状更圆润大胆、字号层级差异更明显。
+ *
+ * 版本依据（已实测核验，非推测）：
+ *  BOM 2026.02.00 锁 material3 = **1.4.0**，而 M3E 在 1.4.0 已稳定 ——
+ *  解压 material3-android-1.4.0.aar 的 classes.jar 可确认存在
+ *  `MaterialExpressiveTheme` / `MotionScheme` / `ExpressiveMotionSchemeImpl` /
+ *  `ExperimentalMaterial3ExpressiveApi`。
+ *  因此**不需要**升级到 1.5.0-alpha（那会违反 libs.versions.toml 的版本锁定铁律）。
+ *
+ * [MaterialExpressiveTheme] 与 [androidx.compose.material3.MaterialTheme] 提供同一套
+ * CompositionLocal（colorScheme / typography / shapes），所以全项目既有的
+ * `MaterialTheme.typography.xxx` 调用点无需任何改动。
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LiquidAgentTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -68,9 +93,12 @@ fun LiquidAgentTheme(
         LocalGlassTokens provides tokens,
         LocalLiquidMotion provides if (glassConfig.reduceMotion) LiquidMotion.Gentle else LiquidMotion.Default,
     ) {
-        MaterialTheme(
+        MaterialExpressiveTheme(
             colorScheme = materialColors,
             typography = LiquidTypography,
+            // M3E 的灵魂：弹簧动效。不传则用 M3E 默认的 expressive scheme，
+            // 显式写出是为了让"我们用的是 M3E"这件事在代码里可读。
+            motionScheme = MotionScheme.expressive(),
             content = content,
         )
     }
