@@ -152,6 +152,9 @@ private fun LegalStepLayout(
                         .heightIn(max = bodyMaxHeight),
                     material = GlassMaterial.ULTRA_THIN,
                     cornerRadius = tokens.radiusSm,
+                    // 同意页正文卡是大面积容器且带滚动，色散 7 次采样在这里纯属白烧。
+                    // 写死而不是依赖默认值：以后默认值被翻回去时这里不会跟着打开。
+                    dispersion = false,
                     contentPadding = PaddingValues(14.dp),
                 ) {
                     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {

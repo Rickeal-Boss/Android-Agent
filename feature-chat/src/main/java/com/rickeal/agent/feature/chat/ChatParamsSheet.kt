@@ -83,6 +83,9 @@ fun ChatParamsSheet(
                             topStart = tokens.radiusXl,
                             topEnd = tokens.radiusXl,
                         ),
+                        // 半屏级大面积容器，色散 7 次采样在这里纯属白烧 —— 显式关掉。
+                        // 写死而不是依赖默认值：以后默认值被翻回去时这里不会跟着打开。
+                        dispersion = false,
                     ),
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {

@@ -116,6 +116,9 @@ fun ChatInputBar(
                     .liquidGlass(
                         material = GlassMaterial.ULTRA_THIN,
                         cornerRadius = tokens.radiusMd,
+                        // 输入框聚焦后逐帧重绘，色散（7 次采样）在这里最贵 —— 显式关掉。
+                        // 写死而不是依赖默认值：以后默认值被翻回去时这里不会跟着打开。
+                        dispersion = false,
                     )
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 contentAlignment = Alignment.CenterStart,
