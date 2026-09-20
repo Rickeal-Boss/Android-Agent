@@ -139,3 +139,28 @@
 -dontwarn java.lang.invoke.**
 -dontwarn kotlinx.coroutines.internal.**
 -dontwarn kotlin.reflect.**
+
+# -----------------------------------------------------------------------------
+# 10. 液态玻璃引擎
+# -----------------------------------------------------------------------------
+# 原因：core-design/liquid 下全是 ModifierNodeElement / Modifier.Node 子类。
+# R8 full mode 会：a) 内联/移除 ModifierNodeElement.equals()/hashCode() → 重组时
+# 节点不 update，玻璃参数改了不重绘；b) 移除 @Stable 数据类未被直接读的字段 →
+# equals 恒真 → Compose 强跳过误判。代价是全量保留几百 KB，换正确性，值得。
+-keep class com.rickeal.agent.core.design.** { *; }
+-keep interface com.rickeal.agent.core.design.** { *; }
+
+# -----------------------------------------------------------------------------
+# 11. 业务数据模型
+# -----------------------------------------------------------------------------
+# enum 的 values()/valueOf() 一旦被删，DarkMode/GlassMaterial 反序列化直接崩
+-keep class com.rickeal.agent.core.model.** { *; }
+-keepclassmembers enum com.rickeal.agent.** {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+
+# -----------------------------------------------------------------------------
+# 12. 属性汇总
+# -----------------------------------------------------------------------------
+-keepattributes *Annotation*,InnerClasses,EnclosingMethod,Signature,Exceptions,SourceFile,LineNumberTable
