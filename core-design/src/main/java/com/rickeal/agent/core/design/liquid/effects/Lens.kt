@@ -75,6 +75,13 @@ fun BackdropEffectScope.lens(
  */
 private val BackdropEffectScope.cornerRadii: FloatArray?
     get() = when (val shape = shape) {
+        // 胶囊（Capsule）不是 CornerBasedShape，必须单独分支。
+        // 少了这一支，所有胶囊控件的 lens 会静默跳过 —— 玻璃退回纯模糊，没有任何报错。
+        com.rickeal.agent.core.design.liquid.shapes.Capsule -> {
+            val radius = com.rickeal.agent.core.design.liquid.shapes.capsuleRadius(size)
+            floatArrayOf(radius, radius, radius, radius)
+        }
+
         is androidx.compose.foundation.shape.AbsoluteRoundedCornerShape -> {
             val size = size
             val maxRadius = size.minDimension / 2f
