@@ -1,6 +1,7 @@
 package com.rickeal.agent.ui
 
 import android.app.Activity
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -156,6 +157,7 @@ fun LiquidAgentApp() {
 private fun MainShell() {
     val windowSize = rememberWindowSizeClass()
     val navController = rememberNavController()
+    val activity = LocalContext.current as? Activity
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
     val selected = when {
@@ -180,7 +182,14 @@ private fun MainShell() {
         Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
             NavHost(
                 navController = navController,
-                startDestination = ChatRoute.ROUTE,
+                // 必须与 composable 注册的 route 同源（ChatRoute.PATTERN）。
+                // 写 ROUTE("chat") 能启动（NavGraphNavigator 是拿 route 字符串去
+                // findNode 匹配的），但 destination id 由 createRoute(route).hashCode()
+                // 决定，"chat" 与 "chat?conversationId={conversationId}" 算出来是**两个 id**。
+                // 于是 navigateTop 的 popUpTo(graph.startDestinationId) 永远匹配不到 ——
+                // popBackStackInternal 对「栈里没有这个 id」是打一行日志然后 return false，
+                // 一条都不 pop，回退栈就这么随切页签无限涨起来的（UI-01 的根因）。
+                startDestination = ChatRoute.PATTERN,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
@@ -215,7 +224,48 @@ private fun MainShell() {
             }
         }
     }
+
+    // ── 系统返回键：两段式（先回对话页，再一次退出应用）─────────────────────────
+    //
+    // 用户要的语义很明确：**第一次按返回 → 回到对话页；再按一次 → 退出应用。**
+    // 修好 popUpTo 只解决了「栈无限增长」，从「设置 → 某个子页」返回仍会是逐级 pop
+    // （子页 → 设置 → 对话 → 退出），不是两段式。所以这里再加一层显式策略。
+    //
+    // **位置是这段代码能不能生效的关键**：OnBackPressedDispatcher 是后注册的先执行，
+    // 而 NavHost 内部自己注册了 PredictiveBackHandler（栈 > 1 时接管返回键）。
+    // 放在 NavHost 之前，返回键会被导航层先吃掉，本回调一次都不会执行，
+    // 而且**不报错**——是最容易踩空、又最难发现的一类错误。所以必须写在 NavHost 之后。
+    BackHandler(enabled = true) {
+        val route = navController.currentBackStackEntry?.destination?.route
+        if (route != null && isChatRoute(route) && navController.previousBackStackEntry == null) {
+            // 第二步：已经在对话页，且栈里只剩它 → 退出应用。
+            activity?.finish()
+        } else {
+            // 第一步：无论当前在哪个页签、哪个子页，一律先回到对话页。
+            navController.navigateTop(ChatRoute.ROUTE)
+            // 兜底收敛：navigateTop 依赖 graph.startDestinationId 命中对话页，
+            // 一旦将来又被人改坏（就是 UI-01 的根因），popUpTo 会静默失败、栈继续增长。
+            // 这里强制 pop 到只剩栈底的对话页，让「再按一次就退出」不依赖 popUpTo 是否生效。
+            // 对话页是起始目的地、恒在栈底，循环必然收敛；且 size == 1 时
+            // previousBackStackEntry 为 null，不会把最后一个条目也 pop 掉。
+            while (navController.previousBackStackEntry != null) {
+                if (!navController.popBackStack()) break
+            }
+        }
+    }
 }
+
+/**
+ * 当前 route 是否指向对话页。
+ *
+ * startDestination 用的是 PATTERN，所以栈底那条目的 route 是
+ * `chat?conversationId={conversationId}`；而切页签时导航用的是 ROUTE(`chat`)，
+ * 带具体会话时又会变成 `chat?conversationId=xxx`。三种形态都要认。
+ */
+private fun isChatRoute(route: String): Boolean =
+    route == ChatRoute.ROUTE ||
+        route == ChatRoute.PATTERN ||
+        route.startsWith("${ChatRoute.ROUTE}?")
 
 /**
  * 顶层页签跳转。
