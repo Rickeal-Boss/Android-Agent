@@ -43,6 +43,7 @@ import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.RemoteEndpoint
 import com.rickeal.agent.core.model.RemotePreset
 import com.rickeal.agent.core.model.ThinkingParamStyle
@@ -157,13 +158,19 @@ private fun EndpointCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
+                    // 上屏前必须过一遍脱敏：name / baseUrl 都是用户自由输入，
+                    // 自建反代把 key 塞进 query（`…/v1?key=sk-xxx`）很常见，
+                    // 原文渲染就是把凭据打到屏幕上。sanitizeUserFacing 只替换值、
+                    // 保留参数名，脱敏后仍看得出是哪个参数漏了。
                     Text(
-                        text = endpoint.name.ifBlank { endpoint.preset.name },
+                        text = AgentLogStore.sanitizeUserFacing(
+                            endpoint.name.ifBlank { endpoint.preset.name },
+                        ),
                         style = MaterialTheme.typography.titleMedium,
                         color = colors.onGlass,
                     )
                     Text(
-                        text = endpoint.chatCompletionsUrl(),
+                        text = AgentLogStore.sanitizeUserFacing(endpoint.chatCompletionsUrl()),
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onGlassSubtle,
                         maxLines = 1,

@@ -1,5 +1,6 @@
 package com.rickeal.agent.feature.settings
 
+import android.net.Uri
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -111,7 +112,9 @@ class SettingsViewModel(
 
     fun onSaveEndpoint(endpoint: RemoteEndpoint) {
         val endpointWithName = if (endpoint.name.isBlank()) {
-            endpoint.copy(name = endpoint.baseUrl.ifBlank { "自定义端点" })
+            // 兜底名只能从 URL 的 host + path 推导（见 fallbackEndpointName 的注释）：
+            // 直接用完整 baseUrl 会把凭据写进 name —— 而 name 会上屏 + 落盘 + 进日志。
+            endpoint.copy(name = fallbackEndpointName(endpoint.baseUrl))
         } else {
             endpoint
         }
@@ -125,6 +128,25 @@ class SettingsViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * 名称留空时的兜底名：**只取 host + path，绝不能直接用完整 baseUrl**。
+     *
+     * 自建反向代理把 key 塞进 query 是很常见的用法
+     * （`https://proxy.example.com/v1?key=sk-abcdef123456`）。一旦把完整 URL 当 name：
+     *  1. 端点列表上直接显示凭据原文；
+     *  2. **落盘进 `endpoints.json`**（持久化，不是一闪而过）；
+     *  3. `AgentRunner` 会把 `${remote.name}` 拼进异常文案与 `AgentLogStore`。
+     * 三条都是稳定路径，不依赖"恰好抛异常" —— 所以必须在源头就把 query/userInfo 剥掉。
+     */
+    private fun fallbackEndpointName(baseUrl: String): String {
+        if (baseUrl.isBlank()) return "自定义端点"
+        val parsed = runCatching { Uri.parse(baseUrl) }.getOrNull() ?: return "自定义端点"
+        val host = parsed.host?.takeIf { it.isNotBlank() } ?: return "自定义端点"
+        // path 保留（能区分 /v1 与 /v1beta），但 query / fragment / userInfo 一律丢弃。
+        val path = parsed.path?.trimEnd('/')?.takeIf { it.isNotBlank() }.orEmpty()
+        return host + path
     }
 
     fun onDeleteEndpoint(id: String) {
