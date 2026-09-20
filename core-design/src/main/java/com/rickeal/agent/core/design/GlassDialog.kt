@@ -48,7 +48,10 @@ fun GlassDialog(
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp),
                 material = GlassMaterial.THICK,
+                // radiusXl = 36dp：对话框是最"重"的玻璃，圆角要给足才有厚度感。
                 cornerRadius = tokens.radiusXl,
+                // 关色散：对话框是全屏级大面积，色散 7 次采样扛不住。折射仍开。
+                dispersion = false,
                 contentPadding = PaddingValues(20.dp),
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {

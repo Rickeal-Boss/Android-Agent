@@ -31,6 +31,15 @@ data class LiquidMotionSpec(
     val exitDurationMillis: Int = 240,
 )
 
+/**
+ * M3E expressive 档的阻尼比。
+ *
+ * Material 3 Expressive 的 `MotionScheme.expressive()` 用 **spatial spring**，
+ * dampingRatio 明显 < 1（约 0.55）—— 切换时有一点点过冲，这是"有生命"的来源。
+ * 普通档（0.82）已经接近临界阻尼，看起来是"稳"但没有个性。
+ */
+private const val ExpressiveDampingRatio = 0.55f
+
 object LiquidMotion {
     val Default = LiquidMotionSpec()
 
@@ -39,6 +48,15 @@ object LiquidMotion {
 
     /** M3E effects 档：小反馈用，快而弹。 */
     val Snappy = LiquidMotionSpec(stiffness = Spring.StiffnessMedium, dampingRatio = 0.68f)
+
+    /**
+     * M3E expressive 档：小反馈用，快而**弹**（欠阻尼，会过冲一点）。
+     * 用于"切换"而不是"位移" —— 选中态、展开/收起这类需要被注意到的变化。
+     */
+    val Expressive = LiquidMotionSpec(
+        stiffness = Spring.StiffnessMediumLow,
+        dampingRatio = ExpressiveDampingRatio
+    )
 
     /** 通用弹簧规格（可用于 Dp/Offset/Color 等） */
     fun <T> spring(spec: LiquidMotionSpec = Default): SpringSpec<T> = spring(
@@ -50,4 +68,20 @@ object LiquidMotion {
         dampingRatio = spec.dampingRatio,
         stiffness = spec.stiffness,
     )
+
+    /**
+     * M3E expressive 弹簧（通用）。
+     *
+     * 这是 M3E 的**自控等价实现**：material3 1.4.0 里 `MaterialExpressiveTheme` /
+     * `MotionScheme` / `ExperimentalMaterial3ExpressiveApi` 全是 internal，
+     * 编译器拒绝访问；1.5.0 至今是 alpha，升级会违反 libs.versions.toml 的版本锁定铁律。
+     * 所以这里用纯 Compose 的 `spring()` 复刻 M3E expressive 的手感（阻尼比 0.55）。
+     */
+    fun <T> expressiveSpring(): SpringSpec<T> = spring(
+        dampingRatio = ExpressiveDampingRatio,
+        stiffness = Spring.StiffnessMediumLow,
+    )
+
+    /** [expressiveSpring] 的 Float 特化，省掉调用点的类型推断歧义。 */
+    fun floatExpressiveSpring(): SpringSpec<Float> = expressiveSpring()
 }

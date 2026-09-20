@@ -31,11 +31,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
-import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.tanh
 
 /**
  * 玻璃按钮 —— 整体对齐 Kyant0 `LiquidButton`。
@@ -106,29 +101,7 @@ fun GlassButton(
                 // 按下时玻璃"变实"（模糊减弱 / 折射增强 / 高光变亮）。
                 pressProgress = interactiveHighlight.pressProgress,
                 layerBlock = if (interactive) {
-                    {
-                        val width = size.width.coerceAtLeast(1f)
-                        val height = size.height.coerceAtLeast(1f)
-                        val progress = interactiveHighlight.pressProgress
-                        val scale = 1f + (4f.dp.toPx() / height) * progress
-
-                        // 跟手位移：tanh 阻尼 —— 拖多远都不会飞出去，松手回弹。
-                        val maxOffset = size.minDimension.coerceAtLeast(1f)
-                        val offset = interactiveHighlight.offset
-                        translationX = maxOffset * tanh(0.05f * offset.x / maxOffset)
-                        translationY = maxOffset * tanh(0.05f * offset.y / maxOffset)
-
-                        // 各向异性拉伸：沿拖动方向拉长、垂直方向压扁。
-                        // scaleX 与 scaleY **故意不相等** —— 等比缩放是"原生按钮"的手感。
-                        val maxDragScale = 4f.dp.toPx() / height
-                        val offsetAngle = atan2(offset.y, offset.x)
-                        scaleX = scale +
-                            maxDragScale * abs(cos(offsetAngle) * offset.x / size.maxDimension) *
-                            (width / height).coerceAtMost(1f)
-                        scaleY = scale +
-                            maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
-                            (height / width).coerceAtMost(1f)
-                    }
+                    pressLayerBlock(interactiveHighlight = interactiveHighlight, maxScale = 4.dp)
                 } else {
                     null
                 },

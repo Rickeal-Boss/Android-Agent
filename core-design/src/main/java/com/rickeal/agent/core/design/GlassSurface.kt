@@ -132,13 +132,19 @@ fun LiquidGlassSurface(
     }
 }
 
-/** 语义化别名：卡片。默认 REGULAR 材质 + radiusLg + 16dp 内边距。 */
+/**
+ * 语义化别名：卡片。默认 REGULAR 材质 + 28dp 圆角 + 16dp 内边距。
+ *
+ * ⚠️ 默认**关色散**：色散要 7 次采样（约 7 倍开销），卡片是全屏级大面积容器，
+ * 列表里一屏能有五六张，开着必掉帧。折射（lens）仍然开 —— 厚度感靠它。
+ */
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
     material: GlassMaterial = GlassMaterial.REGULAR,
-    cornerRadius: Dp = 24.dp,
+    cornerRadius: Dp = 28.dp,
     onClick: (() -> Unit)? = null,
+    dispersion: Boolean = false,
     contentPadding: PaddingValues = PaddingValues(GlassDefaults.ContentPadding),
     content: @Composable BoxScope.() -> Unit,
 ) {
@@ -147,6 +153,7 @@ fun GlassCard(
         material = material,
         cornerRadius = cornerRadius,
         onClick = onClick,
+        dispersion = dispersion,
         contentPadding = contentPadding,
         content = content,
     )
