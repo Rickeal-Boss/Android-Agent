@@ -172,12 +172,19 @@ NavHost(
 BackHandler(enabled = true) {
     val route = navController.currentBackStackEntry?.destination?.route
     if (route != null && isChatRoute(route) && navController.previousBackStackEntry == null) {
-        activity?.finish()                       // 第二步：已在对话页且栈里只剩它 → 退出
+        // 第二步：已在对话页且栈里只剩它 → 退出
+        if (activity != null) activity.finish()
+        else Log.w(TAG, "返回键退出失败：LocalActivity 为 null")
     } else {
         navController.navigateTop(ChatRoute.ROUTE)   // 第一步：一律先回对话页
-        // 兜底：让「再按一次退出」不依赖 popUpTo 是否生效
-        while (navController.previousBackStackEntry != null) {
+        // 兜底：让「再按一次退出」不依赖 popUpTo 是否生效。
+        // 用固定次数上限，不用 while(true) —— 理由见下。
+        for (i in 0 until MAX_BACK_STACK_DRAIN) {
+            if (navController.previousBackStackEntry == null) break
             if (!navController.popBackStack()) break
+        }
+        if (navController.previousBackStackEntry != null) {
+            Log.w(TAG, "返回键兜底收敛失败：优先检查 startDestination 与 route 是否同源")
         }
     }
 }
@@ -188,12 +195,33 @@ private fun isChatRoute(route: String): Boolean =
     route.startsWith("${ChatRoute.ROUTE}?")   // "chat?conversationId=xxx"
 ```
 
-兜底循环的安全性（都核对过源码）：
+### 5.4 兜底为什么用「固定次数上限」而不是 `while (true)`
 
-- `previousBackStackEntry`（`NavController.kt:2803`）与 `currentBackStackEntry`（`2782`）
-  **直接读 `backQueue`**，`popBackStack()`（`450`）同步移除 → 循环必然收敛，不存在读到旧值的问题。
-- 栈 size == 1 时 `previousBackStackEntry == null`，**循环不会把最后一条也 pop 掉**（不会空栈）。
-- `popBackStack()` 返回 false 即 break，无死循环。
+这里走过一次弯路：最初写的是 `while (previousBackStackEntry != null) { if (!popBackStack()) break }`，
+并把收敛性押在「`popBackStack()` 同步移除 `backQueue`」上。qa-review 指出这条属于 Navigation
+**内部实现**，不该作为正确性前提。核对源码后的结论（两条都成立，但结论是**仍然改用上限**）：
+
+**同步性这条成立**（可以证明）：
+`popBackStack()`(`NavController.kt:450`) → `popBackStackInternal`(588) → `executePopOperations`
+→ `navigator.popBackStackInternal`(283，设置 `popFromBackStackHandler`) → `Navigator.popBackStack`
+→ `ComposeNavigator`(63) → `state.popWithTransition`(119) → **`pop()`(139，同步)**
+→ `NavControllerNavigatorState.pop`(328) `handler(popUpTo)` → `popEntryFromBackStack`(792)
+→ **`backQueue.removeLastKt()`(802，同步)**。
+所以 `previousBackStackEntry`（读 `backQueue`）确实同步递减，不会死循环。
+
+**但仍然改用上限**，两个理由：
+1. `NavigatorState.popWithTransition:122-127` 有一条**早退分支**——
+   目标条目已在 `transitionsInProgress` 中时直接 `return`，`pop()` 根本不会被调用
+   → handler 不触发 → `receivedPop = false` → `popBackStack()` 返回 false。
+   结果是「兜底实际 pop 0 条、静默退化成三段式」。虽然不会 ANR，但**正是本文通篇在防的静默失效**。
+2. 正确性不该依赖 Navigation 内部实现细节；升级 Navigation 时这类前提最容易悄悄失效。
+
+**收敛失败的代价从「静默」变成「有 Log」**，这才是关键改动：
+出问题时 logcat 会直接指向「startDestination 与 route 是否同源」，而不是让人看着"返回键要按三次"发呆。
+
+另：`activity` 用 `LocalActivity.current`（activity-compose 1.10.1，非新依赖）而不是
+`LocalContext.current as? Activity` —— 后者解析失败时 `activity?.finish()` 会**静默什么都不做**，
+用户按返回没反应且无迹可寻。显式判空 + `Log.w` 让这件事有线索。
 
 ---
 

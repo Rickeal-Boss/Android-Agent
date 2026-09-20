@@ -1,7 +1,9 @@
 package com.rickeal.agent.ui
 
 import android.app.Activity
+import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -75,6 +77,8 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.tanh
 
+private const val TAG = "LiquidAgentApp"
+
 private enum class TopDestination(val route: String, val label: String) {
     CHAT(ChatRoute.ROUTE, "对话"),
     MODELS(ModelsRoute.ROUTE, "模型"),
@@ -142,10 +146,18 @@ fun LiquidAgentApp() {
         CompositionLocalProvider(LocalAppContainer provides container) {
             // 首启闸门必须在主题之内：引导页 / 条款页要用玻璃组件与主题下发的配色。
             // 放在导航之外，是为了「未接受条款就进不了主界面」这件事不依赖任何路由规则。
-            val activity = context as? Activity
+            // 同 MainShell：用 LocalActivity 而非 `context as? Activity`。
+            // 拒绝条款后点退出却什么都没发生，是最难排查的一类"没反应"。
+            val activity: Activity? = LocalActivity.current
             FirstRunGate(
                 container = container,
-                onExitApp = { activity?.finish() },
+                onExitApp = {
+                    if (activity != null) {
+                        activity.finish()
+                    } else {
+                        Log.w(TAG, "首启闸门退出失败：LocalActivity 为 null，无法调用 finish()")
+                    }
+                },
             ) {
                 MainShell()
             }
@@ -169,7 +181,10 @@ fun LiquidAgentApp() {
 private fun MainShell() {
     val windowSize = rememberWindowSizeClass()
     val navController = rememberNavController()
-    val activity = LocalContext.current as? Activity
+    // 用 LocalActivity 而不是 `LocalContext.current as? Activity`：
+    // 后者一旦解析失败，activity 为 null，`finish()` 就变成静默什么都不做 ——
+    // 用户按返回没反应，且没有任何报错。activity-compose 1.10.1 已提供，不是新依赖。
+    val activity: Activity? = LocalActivity.current
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
     val selected = when {
@@ -251,17 +266,35 @@ private fun MainShell() {
         val route = navController.currentBackStackEntry?.destination?.route
         if (route != null && isChatRoute(route) && navController.previousBackStackEntry == null) {
             // 第二步：已经在对话页，且栈里只剩它 → 退出应用。
-            activity?.finish()
+            // 显式判空而不是 `activity?.finish()`：解析不到 Activity 时什么都不做
+            // 会让用户「按返回没反应」且无迹可寻，这条日志就是唯一的线索。
+            if (activity != null) {
+                activity.finish()
+            } else {
+                Log.w(TAG, "返回键退出失败：LocalActivity 为 null，无法调用 finish()")
+            }
         } else {
             // 第一步：无论当前在哪个页签、哪个子页，一律先回到对话页。
             navController.navigateTop(ChatRoute.ROUTE)
             // 兜底收敛：navigateTop 依赖 graph.startDestinationId 命中对话页，
             // 一旦将来又被人改坏（就是 UI-01 的根因），popUpTo 会静默失败、栈继续增长。
             // 这里强制 pop 到只剩栈底的对话页，让「再按一次就退出」不依赖 popUpTo 是否生效。
-            // 对话页是起始目的地、恒在栈底，循环必然收敛；且 size == 1 时
-            // previousBackStackEntry 为 null，不会把最后一个条目也 pop 掉。
-            while (navController.previousBackStackEntry != null) {
+            //
+            // 用**固定次数上限**而不是 while(true)：收敛性不该押在「popBackStack 是否
+            // 同步移除 backQueue」这类 Navigation 内部实现上（2.8 起走 popWithTransition，
+            // 条目在过渡中时 pop 会被忽略 —— 见 NavigatorState.popWithTransition 的早退分支）。
+            // 收敛失败也必须留下 Log，而不是静默退化成「多按几次才退出」。
+            for (i in 0 until MAX_BACK_STACK_DRAIN) {
+                if (navController.previousBackStackEntry == null) break
                 if (!navController.popBackStack()) break
+            }
+            if (navController.previousBackStackEntry != null) {
+                Log.w(
+                    TAG,
+                    "返回键兜底收敛失败：$MAX_BACK_STACK_DRAIN 次 pop 后回退栈仍不止一条。" +
+                        "优先检查 startDestination 与 composable 注册的 route 是否同源" +
+                        "（UI-01 的根因，见 docs/09-back-navigation.md）。",
+                )
             }
         }
     }
@@ -305,6 +338,16 @@ private fun NavHostController.navigateTop(route: String) {
 
 /** 顶层页签切换的过渡时长（ms）。默认 700ms 太慢，160ms 既顺滑又不拖沓。 */
 private const val TOP_NAV_TRANSITION_MS = 160
+
+/**
+ * 返回键兜底收敛的 pop 次数上限。
+ *
+ * 正常路径下 [NavHostController.navigateTop] 一次就把栈收敛成 `[chat]`，这里跑 0 次。
+ * 只有 startDestination 与 composable route 失配（UI-01）导致 popUpTo 静默失效时才会真跑，
+ * 而回退栈深度受页签数 + 子页深度约束，8 次足够兜住现实的栈深度。
+ * 设上限是为了不让正确性依赖 Navigation 内部是否同步移除 backQueue。
+ */
+private const val MAX_BACK_STACK_DRAIN = 8
 
 /**
  * 底部导航栏（COMPACT）。
