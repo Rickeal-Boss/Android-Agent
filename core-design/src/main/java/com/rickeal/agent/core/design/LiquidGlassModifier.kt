@@ -36,88 +36,6 @@ private val RefractionHeightDp = 10.dp
 private val RefractionAmountDp = 26.dp
 
 /**
- * 纯函数版 `liquidGlass`：所有视觉输入显式传入。
- *
- * ⚠️ 这是**旧引擎**（仅 Compose `BlurEffect` + 多遍描边模拟高光），保留只为兼容
- * 可能存在的直接调用方。UI 代码请一律用下面的 @Composable 版本 —— 它走
- * `core-design/liquid` 新引擎（真实折射 + 色散 + AGSL 方向性高光），
- * 这才是"液态玻璃"而非"磨砂玻璃"。
- */
-fun Modifier.liquidGlassRaw(
-    tokens: GlassTokens,
-    colors: GlassColorScheme,
-    material: GlassMaterial = GlassMaterial.REGULAR,
-    cornerRadius: Dp = GlassDefaults.RadiusLg,
-    intensity: Float = 1f,
-    noise: Boolean = true,
-    specular: Boolean = true,
-    backdropBlur: Modifier = Modifier,
-): Modifier = this
-    .then(backdropBlur)
-    .drawWithCacheCompat(tokens, colors, material, cornerRadius, intensity, noise, specular)
-
-private fun Modifier.drawWithCacheCompat(
-    tokens: GlassTokens,
-    colors: GlassColorScheme,
-    material: GlassMaterial,
-    cornerRadius: Dp,
-    intensity: Float,
-    noise: Boolean,
-    specular: Boolean,
-): Modifier = androidx.compose.ui.draw.drawWithCache {
-    val spec = GlassMaterials.of(material)
-    val height = size.height.coerceAtLeast(1f)
-    val width = size.width.coerceAtLeast(1f)
-    val radiusPx = cornerRadius.toPx()
-        .coerceAtMost(minOf(size.width, size.height) / 2f)
-        .coerceAtLeast(0f)
-    val corner = CornerRadius(radiusPx, radiusPx)
-    val safeIntensity = intensity.coerceIn(0f, 1.5f)
-
-    val baseAlpha = (spec.backgroundAlpha * safeIntensity).coerceIn(0f, 1f)
-    val fillBrush = Brush.verticalGradient(
-        colors = listOf(
-            colors.glassTint.copy(alpha = baseAlpha),
-            colors.glassTintElevated.copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
-        ),
-        startY = 0f,
-        endY = height,
-    )
-
-    val borderAlpha = (spec.borderAlpha * safeIntensity).coerceIn(0f, 1f)
-    val borderBrush = Brush.verticalGradient(
-        colors = listOf(
-            colors.glassBorderTop.copy(alpha = borderAlpha),
-            Color.Transparent,
-            colors.glassBorderBottom.copy(alpha = (borderAlpha * 0.8f).coerceIn(0f, 1f)),
-        ),
-        startY = 0f,
-        endY = height,
-    )
-
-    val strokeWidthPx = tokens.highlightStrokeWidth.toPx().coerceAtLeast(0.5f)
-    val halfStroke = strokeWidthPx * 0.5f
-
-    onDrawWithContent {
-        drawContent()
-        drawRoundRect(brush = fillBrush, cornerRadius = corner)
-        drawRoundRect(
-            brush = borderBrush,
-            topLeft = androidx.compose.ui.geometry.Offset(halfStroke, halfStroke),
-            size = androidx.compose.ui.geometry.Size(
-                width = (width - strokeWidthPx).coerceAtLeast(0f),
-                height = (height - strokeWidthPx).coerceAtLeast(0f),
-            ),
-            cornerRadius = CornerRadius(
-                x = (radiusPx - halfStroke).coerceAtLeast(0f),
-                y = (radiusPx - halfStroke).coerceAtLeast(0f),
-            ),
-            style = Stroke(width = strokeWidthPx),
-        )
-    }
-}
-
-/**
  * **液态玻璃主入口**（新引擎）。
  *
  * 四层绘制顺序（这是"像液态玻璃"的必要条件，缺一层就退回磨砂塑料观感）：
@@ -189,7 +107,7 @@ fun Modifier.liquidGlass(
                 Highlight(
                     width = tokens.highlightStrokeWidth,
                     alpha = 1f,
-                    style = HighlightStyle.Default.copy(
+                    style = HighlightStyle.DefaultStyle.copy(
                         color = colors.glassSpecular.copy(
                             alpha = (spec.specularAlpha * safeIntensity).coerceIn(0f, 1f)
                         ),

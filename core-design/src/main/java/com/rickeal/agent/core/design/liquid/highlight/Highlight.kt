@@ -20,7 +20,7 @@ data class Highlight(
     val width: Dp = 0.5f.dp,
     val blurRadius: Dp = width / 2f,
     val alpha: Float = 1f,
-    val style: HighlightStyle = HighlightStyle.Default
+    val style: HighlightStyle = HighlightStyle.DefaultStyle
 ) {
 
     companion object {
@@ -28,10 +28,10 @@ data class Highlight(
         val Default: Highlight = Highlight()
 
         @Stable
-        val Ambient: Highlight = Highlight(style = HighlightStyle.Ambient)
+        val Ambient: Highlight = Highlight(style = HighlightStyle.AmbientStyle)
 
         /** API 31~32 降级：纯色描边，不用 AGSL。 */
         @Stable
-        val Plain: Highlight = Highlight(style = HighlightStyle.Plain)
+        val Plain: Highlight = Highlight(style = HighlightStyle.PlainStyle)
     }
 }

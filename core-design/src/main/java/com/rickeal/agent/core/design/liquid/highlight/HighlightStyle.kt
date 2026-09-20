@@ -109,14 +109,18 @@ interface HighlightStyle {
     }
 
     companion object {
+        // ⚠️ 这三个预设的名字**不能**与嵌套数据类同名（Default / Ambient / Plain）。
+        // 如果叫 `val Default: Default`，那么 `HighlightStyle.Default.copy(...)` 会被
+        // Kotlin 解析成嵌套类的伴生对象而不是伴生属性 → `copy` unresolved（CI 实测踩到）。
+        // 因此统一加 Style 后缀，从命名上根除歧义。
         @Stable
-        val Default: Default = Default()
+        val DefaultStyle: Default = Default()
 
         @Stable
-        val Ambient: Ambient = Ambient()
+        val AmbientStyle: Ambient = Ambient()
 
         @Stable
-        val Plain: Plain = Plain()
+        val PlainStyle: Plain = Plain()
     }
 }
 
