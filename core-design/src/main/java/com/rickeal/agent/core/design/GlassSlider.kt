@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.design
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -28,8 +30,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.liquid.Backdrop
@@ -64,6 +76,14 @@ import kotlin.math.roundToInt
  *  - 拖动时 thumb 沿拖动方向**拉长**、垂直方向**压扁**（各向异性），松手回弹；
  *  - 点轨道任意位置会跳过去（带弹簧），不是只在 thumb 上能拖。
  *
+ * ## 无障碍（自绘最容易丢的东西）
+ *
+ * 换成自绘后，M3 `Slider` 自带的 TalkBack / 键盘支持全没了，这里补齐：
+ *  - `semantics`：`label` 作 `contentDescription` + `ProgressBarRangeInfo` + `setProgress`
+ *    （Compose 的 `Role` **没有** Slider，foundation 的 `sliderSemantics` 是 internal，只能手写）；
+ *  - 键盘：`.focusable()` + 左右/上下/Home/End 按 step 增减；
+ *  - 48dp 触摸目标：手势挂在 48dp 的外层 Box 上，6dp 的轨道**不是**触摸区。
+ *
  * ⚠️ 本文件**不得**再出现 `androidx.compose.material3.Slider` / `SliderDefaults`。
  */
 @Composable
@@ -95,7 +115,8 @@ fun GlassSlider(
                         text = label,
                         style = MaterialTheme.typography.labelLarge,
                         color = if (enabled) colors.onGlass else colors.onGlassSubtle,
-                        modifier = Modifier.weight(1f),
+                        // 文案已经作为滑轨的 contentDescription 播报，这里清掉语义避免被读两遍。
+                        modifier = Modifier.weight(1f).clearAndSetSemantics {},
                     )
                 }
                 if (valueText != null) {
@@ -103,6 +124,8 @@ fun GlassSlider(
                         text = valueText,
                         style = MaterialTheme.typography.labelMedium,
                         color = if (enabled) colors.onGlassMuted else colors.onGlassSubtle,
+                        // 当前值由 ProgressBarRangeInfo 播报，同理清掉。
+                        modifier = Modifier.clearAndSetSemantics {},
                     )
                 }
             }
@@ -114,6 +137,7 @@ fun GlassSlider(
             valueRange = valueRange,
             steps = steps,
             enabled = enabled,
+            label = label,
             backdrop = backdrop,
             accentColor = if (enabled) colors.accent else colors.onGlassSubtle,
             trackColor = colors.accentMuted,
@@ -129,11 +153,13 @@ private fun LiquidSliderTrack(
     valueRange: ClosedFloatingPointRange<Float>,
     steps: Int,
     enabled: Boolean,
+    label: String?,
     backdrop: Backdrop,
     accentColor: Color,
     trackColor: Color,
 ) {
     val trackBackdrop = rememberLayerBackdrop()
+    val tokens = LocalGlassTokens.current
 
     BoxWithConstraints(
         Modifier.fillMaxWidth(),
@@ -186,42 +212,107 @@ private fun LiquidSliderTrack(
                 }
         }
 
-        // 轨道本体：录进 trackBackdrop，供 thumb 做"透过玻璃看轨道"的折射。
-        Box(Modifier.layerBackdrop(trackBackdrop)) {
-            Box(
-                Modifier
-                    .clip(Capsule)
-                    .background(trackColor)
-                    .pointerInput(animationScope) {
-                        detectTapGestures { position ->
-                            if (!enabled) return@detectTapGestures
-                            val range = currentRange
-                            val delta = (range.endInclusive - range.start) * (position.x / trackWidth)
-                            val target =
-                                if (isLtr) range.start + delta
-                                else range.endInclusive - delta
-                            val snapped = snapToStep(target.coerceIn(range), range, currentSteps)
-                            dampedDragAnimation.animateToValue(snapped)
-                            currentOnChange(snapped)
-                            currentOnFinished?.invoke()
-                        }
+        // 键盘步进量：有档位走档距；连续模式按区间的 5%（肉眼可感知，又不至于一步到底）。
+        fun stepSize(): Float {
+            val range = currentRange
+            val span = range.endInclusive - range.start
+            if (span <= 0f) return 0f
+            return if (currentSteps > 0) span / (currentSteps + 1) else span / 20f
+        }
+
+        /**
+         * 统一的值提交口（点轨道 / 键盘 / 无障碍 SetProgress 都走这里）。
+         * 返回是否真的发生了变化 —— 无障碍 action 靠它决定"这步算不算被执行了"。
+         */
+        fun commitValue(next: Float): Boolean {
+            if (!enabled) return false
+            val range = currentRange
+            val snapped = snapToStep(next.coerceIn(range), range, currentSteps)
+            if (snapped == currentValue) return false
+            dampedDragAnimation.animateToValue(snapped)
+            currentOnChange(snapped)
+            currentOnFinished?.invoke()
+            return true
+        }
+
+        // 触摸目标 / 语义 / 键盘 / 点轨道跳转 **全部挂在这一层**：
+        // 轨道本体只有 6dp 高，手势若挂在它上面，48dp 上下留白就是"看得见点不到"，
+        // 触摸目标等于白给。所以外层包一个 48dp 的 Box，轨道居中放进里面。
+        Box(
+            modifier = Modifier
+                .semantics(mergeDescendants = true) {
+                    contentDescription = label.orEmpty()
+                    // Compose 的 Role 里**没有** Slider（只有 Button/Checkbox/Switch/
+                    // RadioButton/Tab/Image），且 foundation 的 progressSemantics /
+                    // sliderSemantics 都是 internal，所以这里手写语义：
+                    // TalkBack 的「增加 / 减少」正是从 ProgressBarRangeInfo + SetProgress
+                    // 推导出来的，不需要额外的自定义 action。
+                    progressBarRangeInfo = ProgressBarRangeInfo(
+                        current = currentValue.coerceIn(currentRange),
+                        range = currentRange.start..currentRange.endInclusive,
+                        steps = currentSteps
+                    )
+                    // 禁用态必须如实表达：打上 disabled()，并且 SetProgress 直接失败。
+                    if (!enabled) disabled()
+                    setProgress { target ->
+                        if (!enabled) return@setProgress false
+                        commitValue(target)
                     }
-                    .height(6f.dp)
-                    .fillMaxWidth(),
-            )
-            Box(
-                Modifier
-                    .clip(Capsule)
-                    .background(accentColor)
-                    .height(6f.dp)
-                    .layout { measurable, constraints ->
-                        val placeable = measurable.measure(constraints)
-                        val width = (constraints.maxWidth * dampedDragAnimation.progress).roundToInt()
-                        layout(width, placeable.height) {
-                            placeable.place(0, 0)
-                        }
-                    },
-            )
+                }
+                .focusable(enabled = enabled)
+                .onKeyEvent { event ->
+                    if (!enabled || event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                    val step = stepSize()
+                    if (step == 0f) return@onKeyEvent false
+                    when (event.key) {
+                        // 左右键跟随布局方向（RTL 下语义反过来），上下键固定"下减上增"。
+                        Key.DirectionLeft -> commitValue(currentValue - step * if (isLtr) 1f else -1f)
+                        Key.DirectionRight -> commitValue(currentValue + step * if (isLtr) 1f else -1f)
+                        Key.DirectionDown -> commitValue(currentValue - step)
+                        Key.DirectionUp -> commitValue(currentValue + step)
+                        Key.MoveHome -> commitValue(currentRange.start)
+                        Key.MoveEnd -> commitValue(currentRange.endInclusive)
+                        else -> false
+                    }
+                }
+                .heightIn(min = tokens.minTouchTarget)
+                .fillMaxWidth()
+                .pointerInput(animationScope) {
+                    detectTapGestures { position ->
+                        val range = currentRange
+                        val delta = (range.endInclusive - range.start) * (position.x / trackWidth)
+                        val target =
+                            if (isLtr) range.start + delta
+                            else range.endInclusive - delta
+                        commitValue(target)
+                    }
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            // 轨道本体：录进 trackBackdrop，供 thumb 做"透过玻璃看轨道"的折射。
+            Box(Modifier.layerBackdrop(trackBackdrop)) {
+                Box(
+                    Modifier
+                        .clip(Capsule)
+                        .background(trackColor)
+                        .height(6f.dp)
+                        .fillMaxWidth(),
+                )
+                Box(
+                    Modifier
+                        .clip(Capsule)
+                        .background(accentColor)
+                        .height(6f.dp)
+                        .layout { measurable, constraints ->
+                            val placeable = measurable.measure(constraints)
+                            val width =
+                                (constraints.maxWidth * dampedDragAnimation.progress).roundToInt()
+                            layout(width, placeable.height) {
+                                placeable.place(0, 0)
+                            }
+                        },
+                )
+            }
         }
 
         // Thumb：真玻璃 + 跟手各向异性拉伸。
