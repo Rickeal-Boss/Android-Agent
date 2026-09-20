@@ -100,7 +100,19 @@ fun LiquidGlassSurface(
         .then(
             if (onClick != null) {
                 Modifier
-                    .liquidPress(interactionSource = interactionSource, enabled = enabled)
+                    .then(
+                        // 传了 layerBlock 就**不再**叠 liquidPress：
+                        // liquidPress 是等比缩放（scaleX == scaleY），正是本轮要替掉的
+                        // "原生按钮"手感；而且两个缩放会叠乘，形变过头。
+                        if (layerBlock == null) {
+                            Modifier.liquidPress(
+                                interactionSource = interactionSource,
+                                enabled = enabled
+                            )
+                        } else {
+                            Modifier
+                        },
+                    )
                     .clickable(
                         interactionSource = interactionSource,
                         indication = null,
