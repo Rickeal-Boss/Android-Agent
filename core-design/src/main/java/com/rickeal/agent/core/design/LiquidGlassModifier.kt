@@ -30,10 +30,23 @@ import com.rickeal.agent.core.design.liquid.shadow.InnerShadow
 import com.rickeal.agent.core.design.liquid.shadow.Shadow
 import kotlin.random.Random
 
-/** 折射带高度（dp）：从边缘向内算，玻璃"厚度渐变"的范围。 */
-private val RefractionHeightDp = 10.dp
-/** 折射强度（dp）：背景被弯折的像素位移量。越大越"鼓"。 */
-private val RefractionAmountDp = 26.dp
+/**
+ * 折射带高度（dp）：从边缘向内算，玻璃"厚度渐变"的范围。
+ * 取 12 —— 对齐 Kyant0 LiquidButton 的 `lens(12f.dp, 24f.dp)`。
+ */
+private val RefractionHeightDp = 12.dp
+/**
+ * 折射强度（dp）：背景被弯折的像素位移量。越大越"鼓"。
+ * 取 24 —— 对齐 Kyant0。注意 Kyant0 各组件的 amount 通常 ≥ height（12→24、24→24、10→14、5→10），
+ * 比例约 1.4~2x；amount < height 会让折射带又窄又弱，看起来没效果。
+ */
+private val RefractionAmountDp = 24.dp
+/**
+ * vibrancy 的饱和度系数。
+ * Kyant0 默认 1.5，但我们的壁纸是浅色渐变 + 光斑（不是照片），
+ * 1.5 会把浅色推成荧光色。降到 1.22 —— 提鲜但不失真。
+ */
+private const val VibrancySaturation = 1.22f
 
 /**
  * **液态玻璃主入口**（新引擎）。
@@ -51,7 +64,9 @@ private val RefractionAmountDp = 26.dp
  * @param refraction 是否开启折射。这是液态玻璃的核心，默认开。
  *   API 31~32（无 AGSL）自动降级为纯 blur，不崩。
  * @param dispersion 是否开启**色散**（RGB 分离 → 边缘彩虹色带）。
- *   开销约为纯折射的 7 倍，建议只在大面积容器（Dialog / 大卡片）开。
+ *   默认**开** —— 色散是"这真的是玻璃"的最强视觉信号，
+ *   Kyant0 在 Slider / Toggle 上都开了。开销约 7 倍（7 次采样），
+ *   若真机掉帧可关（列表 item 建议关）。
  */
 @Composable
 fun Modifier.liquidGlass(
@@ -61,7 +76,7 @@ fun Modifier.liquidGlass(
     noise: Boolean = true,
     specular: Boolean = true,
     refraction: Boolean = true,
-    dispersion: Boolean = false,
+    dispersion: Boolean = true,
 ): Modifier {
     val tokens = LocalGlassTokens.current
     val colors = LocalGlassColors.current
@@ -89,7 +104,7 @@ fun Modifier.liquidGlass(
         effects = {
             if (enableBackdrop) {
                 // vibrancy：把玻璃"吸走"的饱和度拉回来，iOS 26 Liquid Glass 标配
-                vibrancy()
+                vibrancy(saturation = VibrancySaturation)
                 blur(spec.blurRadius.toPx())
                 if (enableRefraction) {
                     lens(

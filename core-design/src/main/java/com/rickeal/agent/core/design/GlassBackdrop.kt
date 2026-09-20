@@ -48,11 +48,24 @@ data class GlassBackdrop(
 )
 
 object GlassWallpaperDefaults {
+    /**
+     * 光斑场。
+     *
+     * 原为 4 个低饱和马卡龙色、半径很大（0.44~0.62）→ 整屏糊成一片柔和浅色，
+     * 折射"移动像素"在上面**完全看不出来**。
+     *
+     * 改为 7 个、更饱和、半径更小（0.26~0.44）：让背景有明确的色彩块与边界，
+     * 玻璃边缘压过去时折射与色散才有东西可"弯折"。
+     * 这是让液态玻璃看起来像液态玻璃的**前提条件**，不是锦上添花。
+     */
     val blobs: List<GlassBlob> = listOf(
-        GlassBlob(0.18f, 0.12f, 0.55f, Color(0xFF6E8BFF)),
-        GlassBlob(0.82f, 0.28f, 0.48f, Color(0xFFB87BFF)),
-        GlassBlob(0.32f, 0.78f, 0.62f, Color(0xFF5AD6C8)),
-        GlassBlob(0.72f, 0.86f, 0.44f, Color(0xFFFF9BC2)),
+        GlassBlob(0.14f, 0.10f, 0.42f, Color(0xFF5B7BFF)),
+        GlassBlob(0.86f, 0.22f, 0.36f, Color(0xFFB45CFF)),
+        GlassBlob(0.30f, 0.44f, 0.30f, Color(0xFF4FE3C8)),
+        GlassBlob(0.72f, 0.62f, 0.34f, Color(0xFFFF6FA8)),
+        GlassBlob(0.08f, 0.72f, 0.38f, Color(0xFFFFB04F)),
+        GlassBlob(0.92f, 0.90f, 0.26f, Color(0xFF4FD0FF)),
+        GlassBlob(0.48f, 0.92f, 0.44f, Color(0xFF8A6BFF)),
     )
 }
 

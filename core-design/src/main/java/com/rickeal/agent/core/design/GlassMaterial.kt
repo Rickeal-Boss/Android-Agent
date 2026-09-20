@@ -7,6 +7,23 @@ import androidx.compose.ui.unit.dp
 /**
  * 玻璃材质分层。差异体现在「底色 alpha + 真实背景模糊半径 + 高光强度」，不是简单的深浅。
  * 使用规范见 docs/01-architecture.md §8.10。
+ *
+ * ## ⚠️ 参数已按「液态玻璃」而非「磨砂玻璃」重新标定（真机反馈后修正）
+ *
+ * 原值是按传统 frosted glass 给的：**重模糊（14~40dp）+ 厚底色（0.34~0.52）**。
+ * 这套参数下背景被磨成一坨糊、又被厚底色盖住，折射"移动像素"这件事**根本看不见** ——
+ * 这正是「看起来和液态玻璃不一样」的根因。
+ *
+ * 对照 Kyant0 各组件的实测参数（dp）：
+ * | 组件 | blur | lens(高, 强度) | 色散 |
+ * |---|---|---|---|
+ * | LiquidButton | **2** | 12, 24 | false |
+ * | LiquidSlider | **8** | 10, 14 | **true** |
+ * | LiquidBottomTabs | **8** | 24, 24 | — |
+ * | LiquidToggle | **8** | 5, 10 | **true** |
+ *
+ * 规律很清楚：**液态玻璃 = 极轻模糊 + 强折射 + 薄底色**。
+ * 模糊只是"柔化"，折射才是主角；底色要薄到能让折射透出来。
  */
 @Immutable
 enum class GlassMaterial {
@@ -38,44 +55,49 @@ data class GlassMaterialSpec(
 )
 
 object GlassMaterials {
+    // blurRadius：从 14~40 降到 3~12，对齐 Kyant0 的 2~8。
+    // 模糊只是柔化，必须轻到让折射的"像素位移"看得见。
+    // backgroundAlpha：从 0.14~0.92 降到 0.07~0.72。
+    // 底色要薄 —— 它每厚一分，折射就被盖掉一分。
+    // specularAlpha / borderAlpha 略提：底色变薄后，边缘高光与描边成为"玻璃存在感"的主要来源。
     val UltraThin = GlassMaterialSpec(
-        backgroundAlpha = 0.14f,
-        blurRadius = 14.dp,
-        borderAlpha = 0.30f,
-        specularAlpha = 0.16f,
-        noiseAlpha = 0.020f,
+        backgroundAlpha = 0.07f,
+        blurRadius = 3.dp,
+        borderAlpha = 0.34f,
+        specularAlpha = 0.22f,
+        noiseAlpha = 0.016f,
         shadowElevation = 2.dp,
     )
     val Thin = GlassMaterialSpec(
-        backgroundAlpha = 0.22f,
-        blurRadius = 20.dp,
-        borderAlpha = 0.38f,
-        specularAlpha = 0.20f,
-        noiseAlpha = 0.026f,
+        backgroundAlpha = 0.11f,
+        blurRadius = 5.dp,
+        borderAlpha = 0.44f,
+        specularAlpha = 0.28f,
+        noiseAlpha = 0.020f,
         shadowElevation = 4.dp,
     )
     val Regular = GlassMaterialSpec(
-        backgroundAlpha = 0.34f,
-        blurRadius = 28.dp,
-        borderAlpha = 0.50f,
-        specularAlpha = 0.28f,
-        noiseAlpha = 0.032f,
+        backgroundAlpha = 0.16f,
+        blurRadius = 7.dp,
+        borderAlpha = 0.58f,
+        specularAlpha = 0.36f,
+        noiseAlpha = 0.026f,
         shadowElevation = 8.dp,
     )
     val Thick = GlassMaterialSpec(
-        backgroundAlpha = 0.52f,
-        blurRadius = 36.dp,
-        borderAlpha = 0.62f,
-        specularAlpha = 0.34f,
-        noiseAlpha = 0.038f,
+        backgroundAlpha = 0.26f,
+        blurRadius = 9.dp,
+        borderAlpha = 0.72f,
+        specularAlpha = 0.44f,
+        noiseAlpha = 0.030f,
         shadowElevation = 16.dp,
     )
     val Opaque = GlassMaterialSpec(
-        backgroundAlpha = 0.92f,
-        blurRadius = 40.dp,
-        borderAlpha = 0.18f,
-        specularAlpha = 0.10f,
-        noiseAlpha = 0.016f,
+        backgroundAlpha = 0.72f,
+        blurRadius = 12.dp,
+        borderAlpha = 0.24f,
+        specularAlpha = 0.14f,
+        noiseAlpha = 0.014f,
         shadowElevation = 24.dp,
     )
 

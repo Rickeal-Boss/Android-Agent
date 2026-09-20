@@ -107,7 +107,11 @@ fun GlassWallpaper(
     backdrop: GlassBackdrop = LocalGlassBackdrop.current,
     intensity: Float = LocalGlassConfig.current.intensity,
 ) {
-    val blobAlpha = if (colors.isDark) 0.52f else 0.40f
+    // 光斑 alpha 从 0.40/0.52 提到 0.62/0.78。
+    // 原因：折射与色散是"移动/分离背景像素"，背景本身若是一片柔和浅色渐变，
+    // 移动了也看不出来 —— 这是液态玻璃效果出不来最容易被忽略的前提。
+    // 提高光斑浓度与饱和度，让背景真的有"内容"可供折射。
+    val blobAlpha = if (colors.isDark) 0.78f else 0.62f
     Box(
         modifier = modifier
             .background(
@@ -119,7 +123,9 @@ fun GlassWallpaper(
                 val blobs = backdrop.blobs.map { blob ->
                     WallpaperBlob(
                         center = Offset(blob.x * size.width, blob.y * size.height),
-                        radius = blob.radiusFraction * max(size.width, size.height) * 0.62f,
+                        // 半径系数 0.62 → 0.46：光斑收紧、边界更清晰，
+                        // 于是玻璃边缘压过去的折射/色散能吃到明显的色相变化。
+                        radius = blob.radiusFraction * max(size.width, size.height) * 0.46f,
                         brush = Brush.radialGradient(
                             colors = listOf(
                                 blob.color.copy(alpha = (blobAlpha * intensity).coerceIn(0f, 1f)),
