@@ -252,11 +252,23 @@ jobs:
           fi
           echo "::notice::Verifying: $apk_path"
 
+          # 【为什么这里用 error 而不是 warning】
+          #   守卫「悄悄跳过」= 守卫不存在：一旦 apksigner 找不到就 exit 0，
+          #   这条断言会永远显示 success，而它本来要防的 debug 签名问题照样溜过去
+          #   —— 正是本轮反复出现的「静默失效」。所以找不到就直接红，逼人修环境。
+          #   可行性：assembleRelease 必然已经拉起 build-tools（aapt2/d8 都在里面），
+          #   而 apksigner CLI 与它们同目录，只要 release 包能产出，它就一定在。
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/android-sdk}}"
           apksigner_bin="$(ls -d "$sdk_root"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1 || true)"
           if [ -z "$apksigner_bin" ] || [ ! -x "$apksigner_bin" ]; then
-            echo "::warning::apksigner not found under $sdk_root/build-tools/*/ — skipping signature verification (environment issue, not a build failure)."
-            exit 0
+            # 再全 SDK 目录兜底找一次，避免 build-tools 被装到别的根下
+            apksigner_bin="$(find /usr/local/lib/android/sdk "$HOME" -maxdepth 4 -type f -name apksigner -path '*build-tools*' 2>/dev/null | sort -V | tail -n 1 || true)"
+          fi
+          if [ -z "$apksigner_bin" ] || [ ! -x "$apksigner_bin" ]; then
+            echo "::error::apksigner not found under $sdk_root/build-tools/*/ — cannot verify the release signature. Listing what IS there:"
+            ls -la "$sdk_root" 2>/dev/null || true
+            ls -la "$sdk_root/build-tools" 2>/dev/null || true
+            exit 1
           fi
           echo "::notice::apksigner: $apksigner_bin"
 
