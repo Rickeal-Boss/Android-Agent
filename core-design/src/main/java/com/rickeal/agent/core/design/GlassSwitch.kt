@@ -1,7 +1,7 @@
 package com.rickeal.agent.core.design
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.minimumInteractiveComponentSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.runtime.Composable
@@ -62,7 +62,7 @@ import kotlin.math.abs
  * ## 无障碍 / 触摸目标（自绘最容易丢的东西）
  *
  * 换成自绘后，M3 `Switch` 自带的 TalkBack 支持全没了，这里补齐（与 `GlassSlider` 同构）：
- *  - 48dp 触摸目标：`minimumInteractiveComponentSize()` 挂在外层，手势也挂外层，
+ *  - 48dp 触摸目标：`heightIn(min = tokens.minTouchTarget)` 挂在外层，手势也挂外层，
  *    28dp 的玻璃条**不是**唯一触摸区；
  *  - `Modifier.toggleable(role = Role.Switch)`：TalkBack 能念"开/关"，双击能切换。
  *    纯点击由 toggleable 提交、真拖动由 `onDragStopped` 提交，**不会提交两次**。
@@ -148,6 +148,7 @@ fun GlassSwitch(
     }
 
     val interactive = enabled && onCheckedChange != null
+    val tokens = LocalGlassTokens.current
     val trackBackdrop = rememberLayerBackdrop()
 
     Box(
@@ -155,7 +156,12 @@ fun GlassSwitch(
             // 48dp 触摸目标。玻璃条只有 28dp 高，光看玻璃很难点准。
             // ⚠️ 手势必须挂在这一层，不能挂 thumb：否则上下各 10dp 的留白
             // "看得见点不到"，48dp 等于白给。
-            .minimumInteractiveComponentSize()
+            //
+            // 用 `heightIn(min = tokens.minTouchTarget)` 而不是 foundation 的
+            // `minimumInteractiveComponentSize()`：后者在 Compose BOM 2026.02.00 里
+            // 已经不存在（CI 实测 `Unresolved reference`）。而且项目里 GlassSlider /
+            // NavBar 都用 `tokens.minTouchTarget`，48dp 只有这一个来源。
+            .heightIn(min = tokens.minTouchTarget)
             .then(
                 if (onCheckedChange != null) {
                     Modifier
