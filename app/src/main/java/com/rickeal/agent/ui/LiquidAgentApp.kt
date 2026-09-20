@@ -38,12 +38,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.navigation.NavHostController
@@ -63,6 +61,7 @@ import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
 import com.rickeal.agent.core.design.liquidGlass
+import com.rickeal.agent.core.design.pressLayerBlock
 import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.feature.chat.ChatRoute
 import com.rickeal.agent.feature.chat.chatGraph
@@ -71,11 +70,6 @@ import com.rickeal.agent.feature.models.modelsGraph
 import com.rickeal.agent.feature.settings.SettingsRoute
 import com.rickeal.agent.feature.settings.settingsGraph
 import com.rickeal.agent.onboarding.FirstRunGate
-import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.tanh
 
 private const val TAG = "LiquidAgentApp"
 
@@ -444,7 +438,7 @@ private fun GlassNavRail(
  *
  * 三件事缺一就不是"液态"（对齐 `GlassSegmented.SegmentItem`）：
  *  1. 按下时玻璃"变实"（`pressProgress` → 模糊减弱 / 折射增强 / 高光变亮）
- *  2. **tanh 阻尼**的跟手位移（[navPressLayerBlock]）—— 拖多远都不会飞出去，松手回弹
+ *  2. **tanh 阻尼**的跟手位移（[pressLayerBlock]）—— 拖多远都不会飞出去，松手回弹
  *  3. **各向异性**拉伸 —— 沿拖动方向拉长、垂直方向压扁；等比缩放就是"原生按钮"手感
  *
  * 每个页签项各自持有 [InteractiveHighlight]，**不能共用**：
@@ -484,7 +478,9 @@ private fun NavDestinationItem(
                 // 色散 7 次采样，常驻组件必须关。
                 dispersion = false,
                 pressProgress = interactiveHighlight.pressProgress,
-                layerBlock = navPressLayerBlock(interactiveHighlight),
+                // 复用 core-design 的正式实现，不在 app 侧留副本：
+                // 两份实现一旦分叉就是"页签和按钮手感不一样"，而且没有任何报错。
+                layerBlock = pressLayerBlock(interactiveHighlight, maxScale = 16.dp),
             )
             .then(
                 // 顺序不能交换：clickable 在前、gestureModifier 在后（Kyant0 原序）。
@@ -511,40 +507,4 @@ private fun NavDestinationItem(
             color = if (selected) colors.onGlass else colors.onGlassSubtle,
         )
     }
-}
-
-/**
- * 页签项的**跟手形变**：按下放大 + tanh 阻尼位移 + 各向异性拉伸。
- *
- * ⚠️ 这是 `core-design` 里 `GlassPressLayer.kt` 的 `pressLayerBlock` 的**副本**。
- * 原函数是 `internal`，app 模块调不到；已请 dev-glass 把它导出为 public，
- * **导出后请删掉本函数**，改用 `pressLayerBlock(interactiveHighlight, maxScale = 16.dp)`。
- * 两处逻辑必须保持一致：一旦分叉，页签与按钮的手感会不一样，而且**没有任何报错**。
- *
- * @param maxScale 形变量级。Kyant0 的 BottomTabs / 分段项取 16dp（面板比按钮大），
- *   按钮取 4dp。
- */
-private fun navPressLayerBlock(
-    interactiveHighlight: InteractiveHighlight,
-    maxScale: Dp = 16.dp,
-): GraphicsLayerScope.() -> Unit = {
-    val width = size.width.coerceAtLeast(1f)
-    val height = size.height.coerceAtLeast(1f)
-    val progress = interactiveHighlight.pressProgress
-    val scale = 1f + (maxScale.toPx() / height) * progress
-
-    val maxOffset = size.minDimension.coerceAtLeast(1f)
-    val offset = interactiveHighlight.offset
-    translationX = maxOffset * tanh(0.05f * offset.x / maxOffset)
-    translationY = maxOffset * tanh(0.05f * offset.y / maxOffset)
-
-    // scaleX 与 scaleY 故意不相等：等比缩放（两者相等）就是"原生按钮"的手感。
-    val maxDragScale = maxScale.toPx() / height
-    val offsetAngle = atan2(offset.y, offset.x)
-    scaleX = scale +
-        maxDragScale * abs(cos(offsetAngle) * offset.x / size.maxDimension) *
-        (width / height).coerceAtMost(1f)
-    scaleY = scale +
-        maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
-        (height / width).coerceAtMost(1f)
 }
