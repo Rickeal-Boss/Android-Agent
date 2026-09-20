@@ -118,5 +118,23 @@ private val BackdropEffectScope.cornerRadii: FloatArray?
             )
         }
 
-        else -> null
+        else -> {
+            // 静默失败是本项目已经付出过代价的 bug 类型（返回键 popUpTo 静默失败就是一例）：
+            // 这里如果什么都不说，后人只会看到"玻璃没有折射"，然后花几小时从参数开始排查。
+            // 把实际 shape 的类名打出来，一眼就能看出传了什么。
+            //
+            // 级别用 Log.d 而不是 w：传别的 Shape 本身是合法的，只是拿不到折射优化。
+            // 而且 proguard-rules.pro 的 -assumenosideeffects 会在 release 包里把这行调用
+            // 整个删掉 —— 诊断只在 debug 存在，零发布开销。
+            android.util.Log.d(
+                TAG,
+                "lens 跳过折射：shape=${shape::class.java.simpleName} 不是 " +
+                    "CornerBasedShape 也不是 Capsule，取不到角半径，退化为纯模糊。" +
+                    "要给自定义 Shape 开折射，必须在 Lens.kt 的 cornerRadii 加分支。"
+            )
+            null
+        }
     }
+
+/** 液态玻璃的诊断日志 tag。release 包里 Log.d 会被 R8 整条删掉（见 proguard-rules.pro）。 */
+private const val TAG = "LiquidGlass"
