@@ -97,6 +97,9 @@
   - **"一次点击回调了两次"** → 纯点击的提交被重复走了。正确做法是纯点击交给外层 `toggleable` 统一提交，
     拖动的提交在 `onDragStopped` 里，两者互斥
   - **"手指带位移就不切换"** → 阈值被调得过大，或又退化成"位移非零即拖动"
+  - **"轻点有反应，但位移一小点就完全没反应"** → 拖动手势**一动就消费事件**了，会把外层
+    `toggleable` 的点击一起取消。正确做法是给手势传 `consumeSlopPx = touchSlopPx`——
+    **只有真拖动才消费**，抖动 1px 时点击原样交给 `toggleable`
 
 ---
 
@@ -238,7 +241,7 @@
 | 你看到的现象 | 直接查这里 | 验收硬标准（grep 一下就知道） |
 |---|---|---|
 | 开关点了不切换 | `GlassSwitch.kt` 的 `draggedX` / `touchSlopPx` | 不应出现 `dragAmount.x != 0f` |
-| 开关 TalkBack 双击切不动 | 外层 `toggleable` + `minimumInteractiveComponentSize` | 不应只有孤立的 `role = Role.Switch` |
+| 开关 TalkBack 双击切不动 | 外层 `toggleable` + `heightIn(min = tokens.minTouchTarget)` | 不应只有孤立的 `role = Role.Switch` |
 | 滑块点不中 / 值不保存 | 48dp 外层 + `onValueChangeFinished` 落盘 | 手势不能挂在 6dp 轨道上 |
 | 气泡滚动掉帧 | 大面积容器的 `dispersion` | `dispersion: Boolean = true` 应零命中 |
 | 返回键按 N+ 次 / 毫无反应 | [`docs/09`](09-back-navigation.md) | `startDestination` 与 route 是否同源 |
