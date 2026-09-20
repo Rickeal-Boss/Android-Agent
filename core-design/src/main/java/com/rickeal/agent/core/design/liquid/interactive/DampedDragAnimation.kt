@@ -56,7 +56,16 @@ class DampedDragAnimation(
     private val pressedScale: Float,
     private val onDragStarted: () -> Unit,
     private val onDragStopped: DampedDragAnimation.() -> Unit,
-    private val onDrag: DampedDragAnimation.(value: Float, dragAmount: Offset) -> Unit
+    private val onDrag: DampedDragAnimation.(value: Float, dragAmount: Offset) -> Unit,
+    /**
+     * 只有**累积**位移超过它才 `consume()` 事件。默认 0f —— 即"动一点就消费"，
+     * 与历史行为完全一致（Slider / 分段项都走这条，行为不变）。
+     *
+     * 开关必须传一个正的值（8dp）：它外层挂了 `toggleable`，而真机点击不可能绝对
+     * 静止，只要抖 1px 就消费 → `toggleable` 的点击被取消 → **点了没反应**。
+     * 过了 slop 才消费，才能把"点击"和"拖动"这两条路径干净地分开。
+     */
+    private val consumeSlopPx: Float = 0f
 ) {
 
     private val valueAnimatable = Animatable(initialValue, visibilityThreshold)
@@ -107,6 +116,10 @@ class DampedDragAnimation(
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             var previous = down.position
+            // 累积位移：consume 与否按**累积量**判定，不按单帧 delta。
+            // 真机点击必然带亚像素抖动，逐帧判定会把外层的 clickable / toggleable
+            // 一并取消掉 —— 表现就是"点了没反应"。
+            var accumulated = 0f
             setPressed(true)
             onDragStarted()
             try {
@@ -118,9 +131,13 @@ class DampedDragAnimation(
                     val dragAmount = current - previous
                     previous = current
                     if (dragAmount != Offset.Zero) {
-                        // 只有真正拖动了才消费事件：这样外层的 clickable 仍能收到"纯点击"，
-                        // 而拖动会让 clickable 取消按压（不会误触发 onClick）。
-                        change.consume()
+                        accumulated += dragAmount.getDistance()
+                        // 只有**累积**位移越过 [consumeSlopPx] 才消费事件：
+                        // 抖动不算拖动，外层的 clickable / toggleable 仍能收到"纯点击"；
+                        // 真拖动才消费，让它们取消按压（不会误触发 onClick）。
+                        if (accumulated >= consumeSlopPx) {
+                            change.consume()
+                        }
                         onDrag(this@DampedDragAnimation, valueAnimatable.value, dragAmount)
                     }
                 }

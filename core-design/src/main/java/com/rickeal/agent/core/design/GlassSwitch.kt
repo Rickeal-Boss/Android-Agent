@@ -129,7 +129,12 @@ fun GlassSwitch(
                 fraction =
                     if (isLtr) (fraction + delta).coerceIn(0f, 1f)
                     else (fraction - delta).coerceIn(0f, 1f)
-            }
+            },
+            // ⚠️ 关键：只有**累积**位移越过 slop 才 consume 事件。
+            // 默认（0f）是"动一个像素就消费"，而真机点击不可能绝对静止 ——
+            // 抖 1px 就把外层 toggleable 的点击取消了，同时 onDragStopped 又因为
+            // 没过 slop 不提交 → **点了没反应**（正是 P1-1 修的那个 bug 的另一个入口）。
+            consumeSlopPx = touchSlopPx,
         )
     }
     LaunchedEffect(dampedDragAnimation) {
@@ -184,9 +189,11 @@ fun GlassSwitch(
                     Modifier
                 }
             )
-            // 拖动手势放在 toggleable **之后**（内侧）：真拖动时它 consume() 掉事件，
-            // 会让外层 toggleable 的按压取消，不会和点击撞车；纯点击时没人消费，
-            // toggleable 正常触发。这条顺序不能反。
+            // 拖动手势放在 toggleable **之后**（内侧）。
+            // 但它**不是**"一动就消费"：抖动 1px 也会消费的话，外层 toggleable 的点击
+            // 就被取消了，而 onDragStopped 此时因为没过 slop 也不提交 —— 两头都不管，
+            // 表现就是点了没反应。手势侧传了 consumeSlopPx = touchSlopPx，
+            // 只有真拖动才消费，点击则原样交给 toggleable。这条顺序不能反。
             .then(if (interactive) dampedDragAnimation.modifier else Modifier),
         contentAlignment = Alignment.CenterStart,
     ) {
