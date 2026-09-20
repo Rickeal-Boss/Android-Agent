@@ -123,31 +123,39 @@ class InteractiveHighlight(
             var previous = down.position
             touchOffset = down.position
             setPressed(true)
-            while (true) {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                if (!change.pressed) break
-                val current = change.position
-                val dragAmount = current - previous
-                previous = current
-                touchOffset = current
-                if (dragAmount != Offset.Zero) {
-                    // 只在真的拖动时消费，保证外层 clickable 仍能收到纯点击。
-                    change.consume()
-                    rawOffsetX += dragAmount.x
-                    rawOffsetY += dragAmount.y
-                    animationScope.launch {
-                        offsetXAnimatable.animateTo(rawOffsetX, DragFollowSpring)
-                        offsetYAnimatable.animateTo(rawOffsetY, DragFollowSpring)
+            try {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
+                    val current = change.position
+                    val dragAmount = current - previous
+                    previous = current
+                    touchOffset = current
+                    if (dragAmount != Offset.Zero) {
+                        // 只在真的拖动时消费，保证外层 clickable 仍能收到纯点击。
+                        change.consume()
+                        rawOffsetX += dragAmount.x
+                        rawOffsetY += dragAmount.y
+                        animationScope.launch {
+                            offsetXAnimatable.animateTo(rawOffsetX, DragFollowSpring)
+                            offsetYAnimatable.animateTo(rawOffsetY, DragFollowSpring)
+                        }
                     }
                 }
-            }
-            setPressed(false)
-            rawOffsetX = 0f
-            rawOffsetY = 0f
-            animationScope.launch {
-                offsetXAnimatable.animateTo(0f)
-                offsetYAnimatable.animateTo(0f)
+            } finally {
+                // ⚠️ 归位必须放在 finally 里，不能留在循环体之后。
+                // 父级滚动容器抢走手势、或 pointerInput 协程被取消时，
+                // awaitPointerEvent() 会抛 CancellationException，
+                // 循环体后面的语句根本执行不到 —— pressProgress 会永远卡在 1，
+                // 那一行一直显示"按下"高亮，松手也回不来。
+                setPressed(false)
+                rawOffsetX = 0f
+                rawOffsetY = 0f
+                animationScope.launch {
+                    offsetXAnimatable.animateTo(0f)
+                    offsetYAnimatable.animateTo(0f)
+                }
             }
         }
     }

@@ -109,22 +109,30 @@ class DampedDragAnimation(
             var previous = down.position
             setPressed(true)
             onDragStarted()
-            while (true) {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                if (!change.pressed) break
-                val current = change.position
-                val dragAmount = current - previous
-                previous = current
-                if (dragAmount != Offset.Zero) {
-                    // 只有真正拖动了才消费事件：这样外层的 clickable 仍能收到"纯点击"，
-                    // 而拖动会让 clickable 取消按压（不会误触发 onClick）。
-                    change.consume()
-                    onDrag(this@DampedDragAnimation, valueAnimatable.value, dragAmount)
+            try {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
+                    val current = change.position
+                    val dragAmount = current - previous
+                    previous = current
+                    if (dragAmount != Offset.Zero) {
+                        // 只有真正拖动了才消费事件：这样外层的 clickable 仍能收到"纯点击"，
+                        // 而拖动会让 clickable 取消按压（不会误触发 onClick）。
+                        change.consume()
+                        onDrag(this@DampedDragAnimation, valueAnimatable.value, dragAmount)
+                    }
                 }
+            } finally {
+                // ⚠️ 与 InteractiveHighlight 同理，这两句必须在 finally 里。
+                // 手势被父级抢走 / 协程被取消时，循环体之后的代码不会执行，
+                // 结果有两个：pressProgress 永远卡在 1（那一行一直显示按下态）；
+                // 更糟的是 onDragStopped 不触发 —— 滑块的 onValueChangeFinished
+                // 永远不来，设置页改完温度**不落盘**。
+                setPressed(false)
+                onDragStopped(this@DampedDragAnimation)
             }
-            setPressed(false)
-            onDragStopped(this@DampedDragAnimation)
         }
     }
 
