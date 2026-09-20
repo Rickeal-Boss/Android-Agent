@@ -24,9 +24,16 @@ import kotlin.math.tanh
  * 真机一按就露馅 —— 这是本轮必须补上的缺口。
  *
  * @param maxScale 按压/拖动的形变量级。Kyant0 按钮取 4dp（相对控件高度归一化），
- *   BottomTabs 取 16dp（面板更大）。
+ *   BottomTabs / 分段控件取 16dp（面板更大）。
+ *
+ * ## 为什么是 public
+ *
+ * 一开始只给 core-design 内部用（Button / Chip / Fab / 分段项），结果 app 模块的
+ * NavBar / NavRail 要同样的手感，只能**复制一份** `navPressLayerBlock()`。
+ * 两份实现一旦分叉（比如一边加了阻尼系数、另一边没加），就会出现"同一个 App 里
+ * 两处按钮手感不一样"的静默 bug —— 所以这里对外开放，app 侧直接调用、删掉副本。
  */
-internal fun pressLayerBlock(
+fun pressLayerBlock(
     interactiveHighlight: InteractiveHighlight,
     maxScale: Dp = 4.dp
 ): GraphicsLayerScope.() -> Unit = {
