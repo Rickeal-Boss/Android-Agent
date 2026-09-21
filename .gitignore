@@ -93,3 +93,6 @@ desktop.ini
 .kotlin/
 *.hprof
 jacoco.exec
+
+# deploy script build output
+dist/
