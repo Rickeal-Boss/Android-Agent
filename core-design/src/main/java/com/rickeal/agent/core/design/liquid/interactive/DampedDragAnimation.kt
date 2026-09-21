@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
+import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -58,8 +59,14 @@ class DampedDragAnimation(
     private val onDragStopped: DampedDragAnimation.() -> Unit,
     private val onDrag: DampedDragAnimation.(value: Float, dragAmount: Offset) -> Unit,
     /**
-     * 只有**累积**位移超过它才 `consume()` 事件。默认 0f —— 即"动一点就消费"，
-     * 与历史行为完全一致（Slider / 分段项都走这条，行为不变）。
+     * 只有**累积主轴位移**超过它才 `consume()` 事件。
+     *
+     * ⚠️ 累积的是 `abs(dragAmount.x)`（主轴），**不是**欧氏距离 —— 纵向滑动不会累积，
+     * 因此纵向永远不消费，父级 `verticalScroll` 才能正常接管滚动。
+     * 当前全仓只有 `GlassSlider` 与 `GlassSwitch` 两个调用点，都是横向控件，主轴即 x；
+     * **若将来新增纵向控件（如竖向 slider），这个累加必须参数化**，否则纵向拖动会失效。
+     *
+     * 默认 0f —— 即"横向一动就消费"，滑块手感与历史行为完全一致。
      *
      * 开关必须传一个正的值（8dp）：它外层挂了 `toggleable`，而真机点击不可能绝对
      * 静止，只要抖 1px 就消费 → `toggleable` 的点击被取消 → **点了没反应**。
@@ -119,7 +126,8 @@ class DampedDragAnimation(
             // 累积位移：consume 与否按**累积量**判定，不按单帧 delta。
             // 真机点击必然带亚像素抖动，逐帧判定会把外层的 clickable / toggleable
             // 一并取消掉 —— 表现就是"点了没反应"。
-            var accumulated = 0f
+            var accumulatedX = 0f
+            var accumulatedY = 0f
             setPressed(true)
             onDragStarted()
             try {
@@ -131,14 +139,26 @@ class DampedDragAnimation(
                     val dragAmount = current - previous
                     previous = current
                     if (dragAmount != Offset.Zero) {
-                        accumulated += dragAmount.getDistance()
-                        // 只有**累积**位移越过 [consumeSlopPx] 才消费事件：
-                        // 抖动不算拖动，外层的 clickable / toggleable 仍能收到"纯点击"；
-                        // 真拖动才消费，让它们取消按压（不会误触发 onClick）。
-                        if (accumulated >= consumeSlopPx) {
+                        // ⚠️ 分别累积两轴，**不要用 getDistance()（欧氏距离）**。
+                        // 纵向滑动会让 getDistance() 也变大，于是滑块在 slop 之前就把
+                        // 事件消费掉 → 父级 verticalScroll 的 awaitTouchSlopOrCancellation
+                        // 直接放弃 → **手指按在滑块上时页面滚不动**。
+                        // 13 个滑块全在可滚动容器里（设置页 5 + 参数面板 7 + 端点页 1）。
+                        accumulatedX += abs(dragAmount.x)
+                        accumulatedY += abs(dragAmount.y)
+
+                        // 轴向锁定：只有**横向累积 ≥ 纵向累积**才算"横向拖动意图"。
+                        // 纯纵向滑 accumX 恒为 0 → 永不命中 → 父级正常接管滚动。
+                        // 斜向滑（滚动时常带横向抖动）accumY 更大 → 同样不命中，
+                        // 避免"一边滚页面一边改数值"。
+                        val horizontalIntent = accumulatedX >= accumulatedY
+                        if (horizontalIntent && accumulatedX > consumeSlopPx) {
+                            // 严格大于：consumeSlopPx = 0f 时 `0 > 0` 为假，
+                            // 纵向（accumX 恒 0）不会消费 —— 主轴累加才不白做。
                             change.consume()
+                            // onDrag 一并跳过：纵向意图时调用它会让数值漂移。
+                            onDrag(this@DampedDragAnimation, valueAnimatable.value, dragAmount)
                         }
-                        onDrag(this@DampedDragAnimation, valueAnimatable.value, dragAmount)
                     }
                 }
             } finally {

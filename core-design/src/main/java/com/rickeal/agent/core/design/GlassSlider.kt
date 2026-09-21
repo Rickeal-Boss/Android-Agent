@@ -183,7 +183,15 @@ private fun LiquidSliderTrack(
         val currentOnChange by rememberUpdatedState(onValueChange)
         val currentOnFinished by rememberUpdatedState(onValueChangeFinished)
 
-        val dampedDragAnimation = remember(animationScope) {
+        // key 用区间的两个 Float 端点，不用区间对象本身：
+        // 区间对象的相等性依赖具体实现类是否重写 equals（ClosedFloatRange 重写了，是值语义），
+        // 但那种依赖是隐式的 —— 本轮已栽过 4 次"以为能用实际不能用"，不靠实现细节。
+        // Float 是值比较，零歧义；区间真变了才重建，字面量区间下永不重建。
+        val dampedDragAnimation = remember(
+            animationScope,
+            currentRange.start,
+            currentRange.endInclusive,
+        ) {
             DampedDragAnimation(
                 animationScope = animationScope,
                 initialValue = currentValue.coerceIn(currentRange),

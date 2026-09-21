@@ -67,8 +67,10 @@ android {
                 // 所以开启 v3 会取代 v2。minSdk 31 的设备全部支持 v3（Android 9/API 28 引入），
                 // v3-only 完全合法，且相对 v2 多了**密钥轮换**（key rotation）能力：
                 // 将来换签名密钥时老用户可无缝升级，而不是必须卸载重装。
-                // 下面这行保留是表达意图；release.yml 的校验已改成「v2 或 v3 命中其一」。
-                enableV2Signing = true
+                // 只写 enableV3Signing —— **不要再加 enableV2Signing**：
+                // CI 实测它会被 AGP 忽略（写了也是 v2=false），留着等于一行误导人的
+                // 无效代码：注释说它死了、代码却写着它活着。
+                // release.yml 的校验已改成「v2 或 v3 命中其一」，不再要求两者同时命中。
                 enableV3Signing = true
             }
         }
