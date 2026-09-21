@@ -53,7 +53,11 @@ fun GlassTextField(
     val interactionSource = remember { MutableInteractionSource() }
     val textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onGlass)
     val focused by interactionSource.collectIsFocusedAsState()
-    val focusProgress by animateFloatAsState(
+    // ⚠️ 刻意不用 `by` 委托：委托会在**组合期**把 State 读成 Float，于是聚焦/失焦
+    // 动画每帧重组整个输入框（里面还挂着 BasicTextField）。
+    // 持有 State，把 `.value` 的读取推迟到 liquidGlass 内部的绘制期 lambda ——
+    // 每帧只失效绘制，不重组。
+    val focusProgress = animateFloatAsState(
         targetValue = if (focused && enabled) 1f else 0f,
         animationSpec = LiquidMotion.floatSpring(LocalLiquidMotion.current),
         label = "glassTextFieldFocus",
@@ -72,7 +76,8 @@ fun GlassTextField(
             // 关色散：输入框获得焦点后会逐帧重绘（光标闪烁 + 输入），
             // 色散 7 次采样在逐帧路径上太贵；而且边缘彩虹会啃掉文字清晰度。
             dispersion = false,
-            pressProgress = focusProgress,
+            // 绘制期取值（不是组合期的 Float）：聚焦动画每帧只失效绘制。
+            pressProgress = { focusProgress.value },
         ),
     ) {
         Row(

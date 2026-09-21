@@ -110,7 +110,7 @@ private fun SegmentItem(
                 refractionHeight = 24.dp,
                 refractionAmount = 24.dp,
                 dispersion = false,
-                pressProgress = interactiveHighlight.pressProgress,
+                pressProgress = { interactiveHighlight.pressProgress },
                 layerBlock = if (enabled) {
                     pressLayerBlock(interactiveHighlight = interactiveHighlight, maxScale = 16.dp)
                 } else {

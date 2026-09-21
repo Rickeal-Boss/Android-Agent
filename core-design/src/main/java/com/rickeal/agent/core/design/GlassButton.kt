@@ -99,7 +99,7 @@ fun GlassButton(
                 dispersion = false,
                 intensity = if (enabled) 1f else 0.6f,
                 // 按下时玻璃"变实"（模糊减弱 / 折射增强 / 高光变亮）。
-                pressProgress = interactiveHighlight.pressProgress,
+                pressProgress = { interactiveHighlight.pressProgress },
                 layerBlock = if (interactive) {
                     pressLayerBlock(interactiveHighlight = interactiveHighlight, maxScale = 4.dp)
                 } else {

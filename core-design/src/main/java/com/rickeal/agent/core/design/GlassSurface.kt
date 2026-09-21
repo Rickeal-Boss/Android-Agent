@@ -99,7 +99,11 @@ fun LiquidGlassSurface(
     // 静态观感只是"像玻璃"，按下去的反馈才是"液态" —— 两者缺一不可。
     // 可点击时才收集按压状态，纯展示的容器不引入无谓的重组。
     val pressed by interactionSource.collectIsPressedAsState()
-    val pressProgress by animateFloatAsState(
+    // ⚠️ 刻意不用 `by` 委托：委托会在**组合期**把 State 读成 Float，于是按下动画
+    // 每帧重组整个 LiquidGlassSurface（里面还包着调用方的 content —— 卡片/气泡
+    // 的内容可比一个按钮重得多）。持有 State，把 `.value` 的读取推迟到
+    // liquidGlass 内部的绘制期 lambda：每帧只失效绘制，不重组。
+    val pressProgress = animateFloatAsState(
         targetValue = if (onClick != null && pressed && enabled) 1f else 0f,
         animationSpec = LiquidMotion.floatSpring(LocalLiquidMotion.current),
         label = "glassPressProgress",
@@ -139,7 +143,8 @@ fun LiquidGlassSurface(
             dispersion = dispersion,
             refractionHeight = refractionHeight,
             refractionAmount = refractionAmount,
-            pressProgress = pressProgress,
+            // 绘制期取值（不是组合期的 Float）：按下动画每帧只失效绘制。
+            pressProgress = { pressProgress.value },
             layerBlock = layerBlock,
         )
         // 手势挂在整个链的**最后**（与 GlassButton / Chip / Fab / Segmented 一致）：

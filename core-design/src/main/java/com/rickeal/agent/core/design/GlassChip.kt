@@ -62,7 +62,7 @@ fun GlassChip(
                 refractionHeight = 12.dp,
                 refractionAmount = 24.dp,
                 dispersion = false,
-                pressProgress = interactiveHighlight.pressProgress,
+                pressProgress = { interactiveHighlight.pressProgress },
                 layerBlock = if (onClick != null) {
                     pressLayerBlock(interactiveHighlight = interactiveHighlight, maxScale = 4.dp)
                 } else {

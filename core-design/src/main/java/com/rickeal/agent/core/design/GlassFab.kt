@@ -54,7 +54,7 @@ fun GlassFab(
                 refractionHeight = 12.dp,
                 refractionAmount = 24.dp,
                 dispersion = false,
-                pressProgress = interactiveHighlight.pressProgress,
+                pressProgress = { interactiveHighlight.pressProgress },
                 layerBlock = pressLayerBlock(
                     interactiveHighlight = interactiveHighlight,
                     maxScale = 4.dp

@@ -477,7 +477,7 @@ private fun NavDestinationItem(
                 refractionAmount = 24.dp,
                 // 色散 7 次采样，常驻组件必须关。
                 dispersion = false,
-                pressProgress = interactiveHighlight.pressProgress,
+                pressProgress = { interactiveHighlight.pressProgress },
                 // 复用 core-design 的正式实现，不在 app 侧留副本：
                 // 两份实现一旦分叉就是"页签和按钮手感不一样"，而且没有任何报错。
                 layerBlock = pressLayerBlock(interactiveHighlight, maxScale = 16.dp),

@@ -59,7 +59,7 @@ fun GlassTopBar(
                     // 全宽大面积容器：色散 7 次采样扛不住，必须关。折射仍开。
                     dispersion = false,
                     // 触摸/拖动顶栏时玻璃"变实"（模糊减弱 + 折射增强 + 高光变亮）。
-                    pressProgress = interactiveHighlight.pressProgress,
+                    pressProgress = { interactiveHighlight.pressProgress },
                     layerBlock = pressLayerBlock(
                         interactiveHighlight = interactiveHighlight,
                         maxScale = 4.dp

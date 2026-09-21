@@ -62,10 +62,17 @@ private const val VibrancySaturation = 1.22f
  *   悄悄吃掉 7 倍"，只有**小面积**控件扛得住 —— 大面积容器与列表 item 一律关。
  *   需要色散的极小控件显式传 `true`（Slider / Switch 的 thumb 不走本参数，它们直接
  *   在 `effects {}` 里写 `lens(..., chromaticAberration = true)`）。
- * @param pressProgress 按压进度 0~1。这是"液态"手感的关键一半 ——
+ * @param pressProgress 按压进度 0~1 的**取值函数**。这是"液态"手感的关键一半 ——
  *   静态看是玻璃，**按下去会变实**（模糊减弱、折射增强、高光变亮），
  *   对应 Kyant0 各组件里 `blur(8f.dp * (1f - progress))` + `lens(... * progress)` 的写法。
- *   传 0 表示无按压（默认）。
+ *   默认 `{ 0f }` 表示无按压。
+ *
+ *   ⚠️ **必须是 lambda，不能是 Float**：按压进度来自 `Animatable.value` /
+ *   `animateFloatAsState`，都是 snapshot state。如果在**调用点**直接读成 Float，
+ *   就是**组合期订阅** —— 按下/拖拽动画每帧会重组整个 composable（顶栏里
+ *   还有标题 + 多个 action 图标）。lambda 让我们把读取推迟到 `effects {}` /
+ *   `highlight {}` 的**绘制期**，每帧只失效绘制，不重组。
+ *   调用点写法：`pressProgress = { interactiveHighlight.pressProgress }`。
  * @param shapeOverride 形状覆盖。默认按 [cornerRadius] 生成对称圆角矩形；
  *   需要非对称圆角（如底部 sheet 只有上方两角圆）时显式传入。
  * @param capsule 用**胶囊**（[Capsule]）代替圆角矩形。
@@ -92,7 +99,7 @@ fun Modifier.liquidGlass(
     blurRadius: Dp? = null,
     refractionHeight: Dp? = null,
     refractionAmount: Dp? = null,
-    pressProgress: Float = 0f,
+    pressProgress: () -> Float = { 0f },
     shapeOverride: Shape? = null,
     layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
 ): Modifier {
@@ -106,7 +113,9 @@ fun Modifier.liquidGlass(
     // 所以先无条件算出默认形状，再用 ?: 选择覆盖值。
     val defaultShape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
     val shape = shapeOverride ?: if (capsule) Capsule else defaultShape
-    val press = pressProgress.coerceIn(0f, 1f)
+    // ⚠️ 刻意**不**在这里读 pressProgress：那会让调用点所在的 composable 在组合期
+    // 订阅动画状态，按下/拖拽时每帧重组。读取放在下面 effects / highlight 的
+    // 绘制期 lambda 里，每帧只失效绘制。
     // 逐组件覆盖优先，其次用材质自带值。
     // 折射参数全局固定一个值是"看着不像"的原因之一：Kyant0 是 Button 12/24、
     // Slider 10/14、Toggle 5/10、Tabs 24/24，各不一样。
@@ -130,6 +139,8 @@ fun Modifier.liquidGlass(
         backdrop = effectiveBackdrop,
         shape = { shape },
         effects = {
+            // 绘制期读取：每帧只失效绘制，不触发重组。
+            val press = pressProgress().coerceIn(0f, 1f)
             if (enableBackdrop) {
                 // vibrancy：把玻璃"吸走"的饱和度拉回来，iOS 26 Liquid Glass 标配
                 vibrancy(saturation = VibrancySaturation)
@@ -151,6 +162,8 @@ fun Modifier.liquidGlass(
             if (!enableSpecular) {
                 null
             } else {
+                // 同 effects：绘制期读取。
+                val press = pressProgress().coerceIn(0f, 1f)
                 Highlight(
                     // 按压时高光带变宽变亮 —— 玻璃被压时边缘反射更强
                     width = tokens.highlightStrokeWidth * (1f + press * 0.6f),
