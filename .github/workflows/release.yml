@@ -299,19 +299,53 @@ jobs:
           echo "::notice::签名方案命中：v2=$([ "$v2_ok" -gt 0 ] && echo yes || echo no) v3=$([ "$v3_ok" -gt 0 ] && echo yes || echo no)"
           echo "::notice::Release APK verified: signed with the release key (not debug), 签名方案见上一行。"
 
-      - name: Upload release APK / AAB / R8 mapping
+      # -------------------------------------------------------------------
+      # 产物大小写进 job summary：debug vs release APK / AAB / mapping 一目
+      # 了然，杜绝「release 怎么比 debug 还大」的误解（此前 63.5MB 是 zip
+      # 四件套，单 APK 实际比 debug 小 —— R8 在工作）。装包拿 apk artifact。
+      # -------------------------------------------------------------------
+      - name: Report artifact sizes to job summary
+        if: steps.assemble_release.outcome == 'success'
+        run: |
+          {
+            echo "## Artifact sizes"
+            echo ""
+            echo "| File | Size |"
+            echo "|---|---|"
+            for f in \
+              app/build/outputs/apk/debug/*.apk \
+              app/build/outputs/apk/release/*.apk \
+              app/build/outputs/bundle/release/*.aab \
+              app/build/outputs/mapping/release/mapping.txt; do
+              if [ -f "$f" ]; then
+                printf '| `%s` | %s |\n' "$f" "$(du -h "$f" | cut -f1)"
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release APK / AAB
         if: steps.assemble_release.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: liquidagent-release-${{ github.ref_name }}
+          name: liquidagent-release-apk-${{ github.ref_name }}
           path: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/*.aab
+          retention-days: 90
+          # 【修复：原来是 warn —— 正是它把「AAB 从未生成」掩盖成了静默成功。
+          #  现在 APK/AAB 都是真实产物，缺任何一个都应该红。】
+          if-no-files-found: error
+
+      - name: Upload R8 mapping
+        if: steps.assemble_release.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: liquidagent-release-mapping-${{ github.ref_name }}
+          path: |
             app/build/outputs/mapping/release/mapping.txt
             app/build/outputs/mapping/release/configuration.txt
           retention-days: 90
-          # 【修复：原来是 warn —— 正是它把「AAB 从未生成」掩盖成了静默成功。
-          #  现在 APK/AAB/mapping 都是真实产物，缺任何一个都应该红。】
+          # mapping 是崩溃还原专用，单独一个 artifact，别混进装包用的那份。
           if-no-files-found: error
 
       # -------------------------------------------------------------------
