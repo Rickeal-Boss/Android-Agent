@@ -80,11 +80,26 @@ fun GlassDivider(modifier: Modifier = Modifier, alpha: Float = 0.35f) {
     )
 }
 
+/**
+ * 空态按钮排的单个动作。由调用方把导航/业务回调映射进来
+ * （`:core-design` 不依赖导航库，见架构 §1.4）。
+ */
+data class GlassEmptyStateAction(
+    val label: String,
+    val onClick: () -> Unit,
+)
+
 @Composable
 fun GlassEmptyState(
     title: String,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
+    /**
+     * 按钮排：非空时在 subtitle 下方渲染一行 [GlassButton]。
+     * 空态不该只"告知"还得"给出口"——用户卡在空对话页时最需要的就是
+     * 三条进入模型的路径，而不是一句干巴巴的提示。
+     */
+    actions: List<GlassEmptyStateAction> = emptyList(),
     action: (@Composable () -> Unit)? = null,
 ) {
     val colors = LocalGlassColors.current
@@ -106,6 +121,16 @@ fun GlassEmptyState(
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onGlassSubtle,
             )
+        }
+        if (actions.isNotEmpty()) {
+            Row(
+                modifier = Modifier.padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                for (item in actions) {
+                    GlassButton(text = item.label, onClick = item.onClick)
+                }
+            }
         }
         if (action != null) {
             Box(modifier = Modifier.padding(top = 10.dp)) { action() }

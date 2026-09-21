@@ -50,6 +50,8 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     onOpenModels: () -> Unit,
     onOpenSettings: () -> Unit,
+    /** 空对话页「配置远程端点」按钮的出口，链路同 [onOpenModels]（chatGraph 下发）。 */
+    onOpenEndpoints: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -232,6 +234,8 @@ fun ChatScreen(
                         expandedThinkingIds = state.expandedThinkingIds,
                         onToggleMessageThinking = { id -> viewModel.toggleThinking(id) },
                         toolTraces = state.toolTraces,
+                        onOpenModels = onOpenModels,
+                        onOpenEndpoints = onOpenEndpoints,
                         listState = listState,
                     )
                 }
@@ -255,6 +259,8 @@ fun ChatScreen(
                 expandedThinkingIds = state.expandedThinkingIds,
                 onToggleMessageThinking = viewModel::toggleThinking,
                 toolTraces = state.toolTraces,
+                onOpenModels = onOpenModels,
+                onOpenEndpoints = onOpenEndpoints,
                 listState = listState,
             )
         }
