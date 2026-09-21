@@ -208,6 +208,13 @@ class InteractiveHighlight(
                         // ⚠️ 用公开的 `touchSlop`。foundation 内部那个
                         // `viewConfiguration.pointerSlop(pointerType)` 是 internal 扩展，
                         // 外部调不到（CI 实测 Unresolved reference）。
+                        // 📌 与 DampedDragAnimation 的 `abs(accumulatedX) > consumeSlopPx`
+                        // 形似但**不是一回事**，不要照抄成 `> 0f`：
+                        //   这里没有 consumeSlopPx 参数，阈值固定是 touchSlop（8dp）；
+                        //   若改成 `> 0f` 就变成"一有横向位移就消费"，
+                        //   会把 P0 那次修复（越 slop 才消费、点击不被取消）改回去。
+                        // `>=` 与 `>` 在 8dp 下的差别只是正好等于阈值的那一帧，
+                        // 不影响行为，保持现状。
                         if (abs(accumulatedX) >= slop) {
                             change.consume()
                         }

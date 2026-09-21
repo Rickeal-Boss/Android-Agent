@@ -117,7 +117,8 @@ fun GlassSwitch(
                 // 它自己还会在位移越过 touchSlop 时取消（那才是我们要的正确路径）。
                 // 若这里再提交一次，就会和 toggleable 的提交叠加 —— 状态翻两次，
                 // 表现就是"点了没反应"，正是 P0 那条从另一条路复活。
-                if (!yieldedToParent) {
+                // 同样要 finishedNormally：事件流断了的那次不算一次完整交互。
+                if (!yieldedToParent && finishedNormally) {
                     if (abs(draggedX) > touchSlopPx) {
                         // 真的拖过了：按松手时的位置决定最终态，并在这里提交。
                         fraction = if (targetValue >= 0.5f) 1f else 0f

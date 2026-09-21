@@ -65,6 +65,7 @@ import com.rickeal.agent.core.design.liquid.interactive.DampedDragAnimation
 import com.rickeal.agent.core.design.liquid.shadow.InnerShadow
 import com.rickeal.agent.core.design.liquid.shadow.Shadow
 import com.rickeal.agent.core.design.liquid.shapes.Capsule
+import kotlin.math.abs
 import kotlinx.coroutines.flow.collectLatest
 import kotlin.math.roundToInt
 
@@ -205,16 +206,25 @@ private fun LiquidSliderTrack(
                     // 判定为纵向意图之前的几帧可能有横向亚像素噪声，那时 onDrag 已被调用
                     // 过、didDrag 已置真；若照常触发 onValueChangeFinished，用户只是
                     // 想滑列表却白白落盘一次（且值其实没怎么动）。
-                    if (didDrag && !yieldedToParent) {
+                    // 三个条件缺一不可：
+                    //   didDrag           —— 确实改过值
+                    //   !yieldedToParent  —— 不是让位给父级滚动的那次
+                    //   finishedNormally  —— 手势是完整走完的（不是事件流断了）
+                    // 少了最后一条仍然会漏：横向拖过 8dp 后手滑成大角度斜向，
+                    // latch 判纵向 → break，此时这里仍会提交一次，
+                    // 而外层 toggleable 也提交一次 → 翻两次没反应。
+                    if (didDrag && !yieldedToParent && finishedNormally) {
                         currentOnFinished?.invoke()
                     }
                     didDrag = false
                 },
                 onDrag = { _, dragAmount ->
                     // didDrag 只在**确实改了值**时才置真，且让位期间不置。
-                    // 原来写成 `dragAmount.x != 0f`：纵向滚列表经过滑块时也会有
-                    // 亚像素横向噪声 → 误置真 → 抬手白白落盘一次。
-                    if (!didDrag && !yieldedToParent && dragAmount.x != 0f) {
+                    //
+                    // 判据用 `abs(dragAmount.x) > 0.5f` 而不是 `!= 0f`：
+                    // 纵向滑列表经过滑块时必然带亚像素横向噪声，`!= 0f` 会被
+                    // 噪声置真 → 抬手白白落盘一次。0.5px 远超噪声量级。
+                    if (!didDrag && !yieldedToParent && abs(dragAmount.x) > 0.5f) {
                         didDrag = true
                     }
                     val range = currentRange
