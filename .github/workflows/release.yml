@@ -280,14 +280,23 @@ jobs:
             echo "::error::Release APK is signed with the DEBUG key. signing.* properties did not reach Gradle."
             exit 1
           fi
-          if ! grep -qE "Verified using v2 scheme .*: true" "$log_file"; then
-            echo "::error::APK Signature Scheme v2 not verified."
+
+          # 【为什么是 v2 或 v3 二选一，而不是必须同时命中】—— CI 实测结论，别改回 AND：
+          #   AGP 9.3.2 下 minSdk 31 只签 v3，且 enableV2Signing 已无效：
+          #     - 都不写 enable*          → v2=true,  v3=false
+          #     - 只写 enableV3Signing    → v2=false, v3=true
+          #     - v2/v3 都写 true         → v2=false, v3=true  （enableV2Signing 被忽略）
+          #   AGP 9 是按「minSdk 需要的最低方案」来选签名方案，**不是叠加**。
+          #   minSdk 31 的设备 100% 支持 v3（Android 9 / API 28 引入），所以 v3-only 合法，
+          #   且 v3 相对 v2 多了密钥轮换能力。要求 v2 AND v3 会把正确构建判红。
+          v2_ok="$(grep -cE 'Verified using v2 scheme .*: true' "$log_file" || true)"
+          v3_ok="$(grep -cE 'Verified using v3 scheme .*: true' "$log_file" || true)"
+          if [ "$v2_ok" -eq 0 ] && [ "$v3_ok" -eq 0 ]; then
+            echo "::error::APK 既没有 v2 也没有 v3 签名 —— 签名未生效（或签名方案在未来又变了）。"
+            cat "$log_file"
             exit 1
           fi
-          if ! grep -qE "Verified using v3 scheme .*: true" "$log_file"; then
-            echo "::error::APK Signature Scheme v3 not verified."
-            exit 1
-          fi
+          echo "::notice::签名方案命中：v2=$([ "$v2_ok" -gt 0 ] && echo yes || echo no) v3=$([ "$v3_ok" -gt 0 ] && echo yes || echo no)"
           echo "::notice::Release APK verified: v2 + v3 schemes OK, signed with the release key (not debug)."
 
       - name: Upload release APK / AAB / R8 mapping

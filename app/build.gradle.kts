@@ -59,14 +59,15 @@ android {
                 storePassword = storePasswordValue
                 keyAlias = keyAliasValue
                 keyPassword = keyPasswordValue
-                // ⚠️ v2 / v3 必须**同时**显式开启，只开一个是错的（CI 实测）：
-                //   - 只写 enableV3Signing = true → apksigner 报 v2=false、v3=true
-                //     （AGP 9 是按「minSdk 需要的最低方案」来选，不是叠加）
-                //   - 两个都不写 → 只有 v2，v3=false
-                // v2 是事实上的通用基线（老工具链 / 部分应用商店只认 v2）；
-                // v3 的增量价值是**密钥轮换**（key rotation）：将来换签名密钥时
-                // 老用户可无缝升级，而不是必须卸载重装。
-                // minSdk 31 >= 28，两者都适用。
+                // ⚠️ CI 实测（AGP 9.3.2 / minSdk 31），别凭直觉改：
+                //   - 两个 enable* 都不写   → apksigner 报 v2=true,  v3=false
+                //   - 只写 enableV3Signing  → v2=false, v3=true
+                //   - v2/v3 都写 true       → v2=false, v3=true（enableV2Signing 被忽略）
+                // AGP 9 是按「minSdk 需要的最低方案」来选签名方案，**不是叠加**，
+                // 所以开启 v3 会取代 v2。minSdk 31 的设备全部支持 v3（Android 9/API 28 引入），
+                // v3-only 完全合法，且相对 v2 多了**密钥轮换**（key rotation）能力：
+                // 将来换签名密钥时老用户可无缝升级，而不是必须卸载重装。
+                // 下面这行保留是表达意图；release.yml 的校验已改成「v2 或 v3 命中其一」。
                 enableV2Signing = true
                 enableV3Signing = true
             }
