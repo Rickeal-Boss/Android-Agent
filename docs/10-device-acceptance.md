@@ -51,6 +51,19 @@
 > 早期版本不跟手，后来在 NavBar/NavRail 改造里补上了。
 > 所以 §7 的"拖动跟手"**是要求实现的**，不是取舍。若你手上的包不跟手，那是 bug，请报。
 
+### 1.1 已知问题（**是缺陷，但本轮未修** —— 可以报，但不必重复报）
+
+上面那张表是"有意为之、别报"；下面是**确实存在的问题**，只是本轮没纳入修复范围。
+报的时候请注明"已知问题"，省一轮沟通。
+
+| 现象 | 说明 | 出处 |
+|---|---|---|
+| **开关没有名字** —— TalkBack 只念「开关，开 / 关」，不会念出「背景模糊」等 | `GlassSwitch` **没有 `label` 参数**。设置页三个开关（背景模糊 / 噪点微纹理 / 减弱动效）都受影响 | `GlassSwitch.kt:73`（函数签名无 `label`） |
+
+> 上面这条**实际影响可能降级**：如果设置行外层已经有 Text 标签、且 TalkBack 能读到它，
+> 用户仍能知道这是哪个开关。**验收时请顺便确认一下 TalkBack 到底念不念得出名字**——
+> 念得出就不用管，念不出再报。
+
 ---
 
 ## 2. 装包第一眼：整体观感
@@ -166,6 +179,35 @@ CI 和静态审查都发现不了，只有真机能复现。
   - **"拖动时明显掉帧"** → 松手前的每帧写盘回来了。该项值变化会触发全 App 重组 + 每个玻璃节点重画，再叠加写盘必然卡
   - **"点轨道中间没反应 / 很难点中"** → 触摸目标没生效。正确做法是 48dp 的触摸区挂在**外层**，手势也挂外层；
     若手势挂在 6dp 的轨道本体上，上下留白就是"看得见点不到"
+
+### 4.1 从滑块上纵向滑，页面要能滚（**高频动作，别漏**）
+
+这是真机上非常常见的动作：参数面板内容多、必须滚动，用户**一定会从滑块上滑过去**。
+它和 §4 那几条测的不是一件事——那里测"滑块能不能调"，这里测"**滑块会不会把列表的滚动吃掉**"。
+
+> **为什么值得单独测**：全 App 共 **13 个滑块**，全部位于可滚动容器里
+> （`SettingsScreen:78` / `ChatParamsPanel:47` 都是 `verticalScroll`）——
+> SettingsScreen 5 个、ChatParamsPanel 7 个、EndpointsScreen 1 个。
+> 只要滑块的拖动手势在 touch slop **之前**就把事件消费掉，父级滚动就收不到手势。
+
+- **操作**：
+  1. 设置页 → 手指**按在滑块上**（不是滑块旁边的空白），**纵向**向上 / 向下滑动
+  2. 对话页 → 打开参数面板（温度 / top_p 那屏，滑块最密集）→ 同样**按在滑块上**纵向滑
+  3. 再试一次：按在滑块上纵向滑**一小段（< 1cm）**后松手
+- **预期**：
+  - 页面**正常滚动**——纵向滑动归列表，不该被滑块吃掉
+  - 滑块的值**不应明显跳变**（纵向滑的横向分量 ≈ 0）
+  - **横向**拖仍然立即响应、连续变化（这条是防"修过头"，见下）
+- **不合格时的排查指向**：
+  - **"按在滑块上滑不动页面"** → 滑块的拖动手势在 touch slop 之前就消费了事件。
+    定位 `GlassSlider` 里构造 `DampedDragAnimation` 时**有没有传 `consumeSlopPx`**——
+    **没传就是默认 `0f`，等于"动一个像素就消费"**（`DampedDragAnimation.kt:68`）。
+    对比 `GlassSwitch.kt:137` 的 `consumeSlopPx = touchSlopPx`（8dp），
+    开关传了、滑块没传，这就是两者行为不一致的原因
+  - **"现在能滚了，但横向拖动前面一小段不跟手"** → **修过头了**：直接传 touch slop
+    会让横向前 8dp 也不响应。正确做法是**只累加主轴位移**再判阈值，
+    而不是把纵向 / 横向的欧氏距离一起累加
+    （现状是 `accumulated += dragAmount.getDistance()`，见 `DampedDragAnimation.kt:134`）
 
 ---
 
@@ -290,10 +332,12 @@ CI 和静态审查都发现不了，只有真机能复现。
 | **按钮 / 页签点了没反应**（含底栏侧栏） | `InteractiveHighlight.kt` 的 `gestureModifier` | 必须按**累积**位移越过 `viewConfiguration.touchSlop` 才 `consume()` |
 | 开关 TalkBack 双击切不动 | 外层 `toggleable` + `heightIn(min = tokens.minTouchTarget)` | 不应只有孤立的 `role = Role.Switch` |
 | 滑块点不中 / 值不保存 | 48dp 外层 + `onValueChangeFinished` 落盘 | 手势不能挂在 6dp 轨道上 |
+| **按在滑块上滑不动页面** | `GlassSlider` 构造 `DampedDragAnimation` 时是否传 `consumeSlopPx` | 没传 = 默认 `0f`；对比 `GlassSwitch.kt:137` 传的是 `touchSlopPx` |
 | 气泡滚动掉帧 | 大面积容器的 `dispersion` | `dispersion: Boolean = true` 应零命中 |
 | 返回键按 N+ 次 / 毫无反应 | [`docs/09`](09-back-navigation.md) | `startDestination` 与 route 是否同源 |
 | 底栏拖动不跟手 | `LiquidAgentApp.kt` 页签项的 `pressLayerBlock` | 每个页签项各自持有 `InteractiveHighlight` |
 | 低端机崩 / 黑块 | `LiquidGlassCapabilities` 的 AGSL 门控 | 不应硬写 `SDK_INT >= 33` |
+| 开关没名字（TalkBack 只念"开关"） | **已知问题**，见 §1.1 | `GlassSwitch` 无 `label` 参数；若设置行外层 Text 能念出名字则降级 |
 | 顶栏 / 输入框不是胶囊 | **不用报**，见 §1 | 有意为之 |
 | thumb 静止是白色实心 | **不用报**，见 §1 | 对齐 Kyant0 |
 | 气泡没有色散 | **不用报**，见 §1 | 性能取舍 |
