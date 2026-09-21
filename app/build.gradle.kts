@@ -59,12 +59,15 @@ android {
                 storePassword = storePasswordValue
                 keyAlias = keyAliasValue
                 keyPassword = keyPasswordValue
-                // 显式启用 APK Signature Scheme v3。
-                // 不显式打开时 AGP 只签 v2（CI 实测 apksigner 报
-                // "Verified using v3 scheme (APK Signature Scheme v3): false"）。
-                // v3 相对 v2 的增量价值是**密钥轮换**（key rotation）：
-                // 将来换签名密钥时老用户仍能无缝升级，而不是必须卸载重装。
-                // minSdk 31 >= 28，满足 v3 的适用下限。
+                // ⚠️ v2 / v3 必须**同时**显式开启，只开一个是错的（CI 实测）：
+                //   - 只写 enableV3Signing = true → apksigner 报 v2=false、v3=true
+                //     （AGP 9 是按「minSdk 需要的最低方案」来选，不是叠加）
+                //   - 两个都不写 → 只有 v2，v3=false
+                // v2 是事实上的通用基线（老工具链 / 部分应用商店只认 v2）；
+                // v3 的增量价值是**密钥轮换**（key rotation）：将来换签名密钥时
+                // 老用户可无缝升级，而不是必须卸载重装。
+                // minSdk 31 >= 28，两者都适用。
+                enableV2Signing = true
                 enableV3Signing = true
             }
         }
