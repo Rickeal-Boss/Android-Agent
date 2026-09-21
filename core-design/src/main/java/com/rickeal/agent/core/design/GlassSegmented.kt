@@ -5,31 +5,81 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.liquid.EmptyBackdrop
+import com.rickeal.agent.core.design.liquid.LocalBackdrop
+import com.rickeal.agent.core.design.liquid.backdrops.layerBackdrop
+import com.rickeal.agent.core.design.liquid.backdrops.rememberCombinedBackdrop
+import com.rickeal.agent.core.design.liquid.backdrops.rememberLayerBackdrop
+import com.rickeal.agent.core.design.liquid.drawBackdrop
+import com.rickeal.agent.core.design.liquid.effects.lens
+import com.rickeal.agent.core.design.liquid.highlight.Highlight
+import com.rickeal.agent.core.design.liquid.interactive.DampedDragAnimation
 import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
+import com.rickeal.agent.core.design.liquid.shadow.InnerShadow
+import com.rickeal.agent.core.design.liquid.shadow.Shadow
+import com.rickeal.agent.core.design.liquid.shapes.Capsule
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
+import kotlin.math.roundToInt
 
 /**
- * 分段控件：容器与选中项都是**胶囊**，选中项是带跟手形变的玻璃。
+ * 分段控件：容器是**胶囊**玻璃条，选中项由一枚**滑动指示胶囊**表达——
+ * 单击某项或拖动胶囊，胶囊就在项与项之间滑动过渡（LiquidBottomTabs 同款机制）。
  *
- * 折射参数取 Kyant0 `LiquidBottomTabs` 的 `lens(24, 24)` —— 分段控件的容器
- * 比按钮大，折射带要给足才看得出厚度。
+ * ## 结构（与 [LiquidBottomTabs] 同一套三层骨架，缩规模复刻）
  *
- * 每个分段项是独立的 composable（[SegmentItem]），各自持有自己的
- * [InteractiveHighlight]：否则多个项共用一个对象会互相打架（按 A 时 B 也形变）。
+ *  1. **可见行** —— 各项纯文字 + `clickable`（无自身玻璃、无手势）。
+ *     "选中"不再靠 item 自带玻璃厚薄表达（旧实现 REGULAR vs ULTRA_THIN），
+ *     而是由顶层胶囊承担 —— 胶囊滑到谁身上谁就是选中项。
+ *  2. **隐形回显行** —— 同一份文字再渲染一遍，录进 [rememberLayerBackdrop]
+ *     图层并整层 tint 成强调色：胶囊折射看到的"发光文字"就是这层染色的内容。
+ *  3. **滑动指示胶囊** —— `fillMaxWidth(1f/count)` 的 Box，
+ *     `translationX = value * itemWidth`；手势全在这层
+ *     （[InteractiveHighlight.gestureModifier] + [DampedDragAnimation.modifier]），
+ *     背景折射 `combined(壁纸, 回显行)`。
+ *
+ * ## 手势分流（为什么胶囊的 consumeSlopPx 必须 8dp）
+ *
+ * 胶囊叠在**选中项**正上方：一次点击同时命中胶囊手势与下层 clickable。
+ * 8dp 内不 consume → 抬手时事件未被消费 → 下层 clickable 正常触发（"点了没反应"
+ * 的保险丝，与 [GlassSwitch] / [LiquidBottomTabs] 同一口井）；超 8dp 才消费、
+ * 进入拖动换页。点**未选中**项不经过胶囊（胶囊不在那），直达 clickable。
+ *
+ * 折射参数沿用 LiquidBottomTabs 指示胶囊的实测值（lens 10,14 + 色散）：胶囊面积
+ * 约 1/count 栏宽 × 48dp（整屏约 2~3%），与 P1-3"大面积卡片关色散"的决策不冲突，
+ * 且参数乘 pressProgress（静止时折射趋 0）、受 `enableBackdropBlur` 总闸。
  */
 @Composable
 fun GlassSegmented(
@@ -45,24 +95,289 @@ fun GlassSegmented(
         modifier = modifier.fillMaxWidth(),
         material = GlassMaterial.THIN,
         capsule = true,
-        // 大面积容器：色散 7 次采样扛不住，必须关。
+        // 大面积容器：色散 7 次采样扛不住，必须关（P1-3）。
         dispersion = false,
         contentPadding = PaddingValues(3.dp),
     ) {
+        // 空列表：`fillMaxWidth(1f/0)` 会算出 NaN 约束，直接占位返回。
+        if (items.isEmpty()) {
+            Box(Modifier.heightIn(min = 24.dp))
+            return@LiquidGlassSurface
+        }
+        SegmentedIndicator(
+            items = items,
+            selectedIndex = safeIndex,
+            onSelected = onSelected,
+            enabled = enabled,
+        )
+    }
+}
+
+@Composable
+private fun SegmentedIndicator(
+    items: List<String>,
+    selectedIndex: Int,
+    onSelected: (Int) -> Unit,
+    enabled: Boolean,
+) {
+    val itemsCount = items.size
+    val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
+    val config = LocalGlassConfig.current
+    // 胶囊底色（仅退化路径用）：THICK 的 backgroundAlpha，"透明度不要太高"。
+    val thick = GlassMaterials.of(GlassMaterial.THICK)
+
+    // 全屏壁纸背景源（GlassScaffold 最外层提供）——与 LiquidBottomTabs 同源。
+    val wallpaperBackdrop = if (config.enableBackdropBlur) LocalBackdrop.current else EmptyBackdrop
+    // 回显行的录制层。
+    val tabsBackdrop = rememberLayerBackdrop()
+
+    val density = LocalDensity.current
+    val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
+    val animationScope = rememberCoroutineScope()
+
+    // 布局量用 State 承载而不是闭包捕获：分屏/旋转后宽度变化，旧闭包会失真
+    //（与 LiquidBottomTabs 的 tabWidthState 同一决定）。
+    val itemWidthState = remember { mutableStateOf(0f) }
+
+    // 内部选中态：单击项与拖动胶囊都只改它，由它统一驱动动画与回调。
+    var currentIndex by remember { mutableStateOf(selectedIndex) }
+
+    // ⚠️ consumeSlopPx 必须 8dp —— 胶囊叠在选中项上，"点击选中项没反应"的保险丝。
+    val consumeSlopPx = with(density) { 8.dp.toPx() }
+    val dampedDragAnimation = remember(animationScope) {
+        DampedDragAnimation(
+            animationScope = animationScope,
+            initialValue = selectedIndex.toFloat(),
+            valueRange = 0f..(itemsCount - 1).toFloat(),
+            visibilityThreshold = 0.001f,
+            initialScale = 1f,
+            // 48dp 的胶囊按下时放大到 60dp 高。
+            pressedScale = 60f / 48f,
+            consumeSlopPx = consumeSlopPx,
+            onDragStarted = {},
+            onDragStopped = {
+                // 松手：四舍五入到最近项，内部态收敛。
+                val targetIndex = targetValue.roundToInt().coerceIn(0, itemsCount - 1)
+                currentIndex = targetIndex
+                animateToValue(targetIndex.toFloat())
+            },
+            onDrag = { _, dragAmount ->
+                // 拖动 = 把累计位移换算成"项坐标"（每移动一个 itemWidth 前进一项）。
+                val itemWidth = itemWidthState.value
+                if (itemWidth > 0f) {
+                    updateValue(
+                        (targetValue + dragAmount.x / itemWidth * (if (isLtr) 1f else -1f))
+                            .coerceIn(0f, (itemsCount - 1).toFloat()),
+                    )
+                }
+            },
+        )
+    }
+
+    // 外部选中态变化（父层状态回流）→ 写回内部态。
+    // 回流时 currentIndex 已经是同值，snapshotFlow 不再发射，不成环。
+    LaunchedEffect(selectedIndex) {
+        currentIndex = selectedIndex
+    }
+    // 内部态变化 → 弹簧动画到位 + 通知调用方。drop(1)：初始组合不回调。
+    // onSelected 走 rememberUpdatedState：调用方每次重组传新 lambda 时
+    // 不重启本 effect（LaunchedEffect key 只留 dampedDragAnimation）。
+    val onSelectedCallback by rememberUpdatedState(onSelected)
+    LaunchedEffect(dampedDragAnimation) {
+        snapshotFlow { currentIndex }
+            .drop(1)
+            .collectLatest { index ->
+                dampedDragAnimation.animateToValue(index.toFloat())
+                onSelectedCallback(index)
+            }
+    }
+
+    // 高光中心跟随"胶囊当前位置"而不是手指落点。
+    val interactiveHighlight = remember(animationScope) {
+        InteractiveHighlight(
+            animationScope = animationScope,
+            position = { size, _ ->
+                Offset(
+                    if (isLtr) {
+                        (dampedDragAnimation.value + 0.5f) * itemWidthState.value
+                    } else {
+                        size.width - (dampedDragAnimation.value + 0.5f) * itemWidthState.value
+                    },
+                    size.height / 2f,
+                )
+            },
+        )
+    }
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .onSizeChanged { size ->
+                // 可见行与回显行都是 fillMaxWidth，Box 宽度 / count = 单项宽。
+                val itemWidth = size.width.toFloat() / itemsCount
+                if (itemWidthState.value != itemWidth) itemWidthState.value = itemWidth
+            },
+    ) {
+        /* ── 1. 可见行：纯文字 + clickable（无自身玻璃、无手势）──────────── */
         Row(modifier = Modifier.fillMaxWidth()) {
             items.forEachIndexed { index, item ->
                 SegmentItem(
                     text = item,
-                    selected = index == safeIndex,
+                    selected = index == currentIndex,
                     enabled = enabled,
-                    onClick = { onSelected(index) },
+                    onClick = { currentIndex = index },
                     modifier = Modifier.weight(1f),
                 )
             }
         }
+
+        /* ── 2. 隐形回显行（录进 tabsBackdrop，供胶囊折射"发光文字"）──────── */
+        Row(
+            Modifier
+                .fillMaxWidth()
+                // 回显行不参与无障碍 / 触摸（真实交互在可见行与胶囊）。
+                .clearAndSetSemantics {}
+                // alpha(0f) 挂在 layerBackdrop **之前**：录制时拿到不透明内容，
+                // 上屏时整层透明 —— "屏幕上看不见、玻璃里看得见"。
+                .alpha(0f)
+                .layerBackdrop(tabsBackdrop)
+                .heightIn(min = tokens.minTouchTarget)
+                // 整层 tint 成强调色：胶囊折射看到的"发光文字"就是这层染色的内容。
+                .graphicsLayer(colorFilter = ColorFilter.tint(colors.accent)),
+        ) {
+            items.forEach { item ->
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .heightIn(min = tokens.minTouchTarget)
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = item,
+                        style = MaterialTheme.typography.labelLarge,
+                        // 颜色会被整层 tint 覆盖，但必须不透明（录制依赖不透明内容）。
+                        color = Color.White,
+                        maxLines = 1,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+
+        /* ── 3. 滑动指示胶囊（手势 + 折射都在这层）────────────────────────── */
+        Box(modifier = Modifier.matchParentSize()) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(1f / itemsCount)
+                    .graphicsLayer {
+                        translationX =
+                            if (isLtr) {
+                                dampedDragAnimation.value * itemWidthState.value
+                            } else {
+                                size.width - (dampedDragAnimation.value + 1f) * itemWidthState.value
+                            }
+                    }
+                    .then(
+                        // 禁用时不挂手势：胶囊静态显示在选中位置。
+                        if (enabled) {
+                            Modifier
+                                .then(interactiveHighlight.gestureModifier)
+                                .then(dampedDragAnimation.modifier)
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .drawBackdrop(
+                        // 背景 = 壁纸 + 回显行：折射同时弯折壁纸与染色的文字。
+                        backdrop = rememberCombinedBackdrop(wallpaperBackdrop, tabsBackdrop),
+                        shape = { Capsule },
+                        effects = {
+                            if (config.enableBackdropBlur) {
+                                val progress = dampedDragAnimation.pressProgress
+                                // 胶囊小（1/count 栏宽），7 次采样扛得住 —— 色散开
+                                //（与 LiquidBottomTabs 指示胶囊同一判定，受总闸）。
+                                lens(
+                                    refractionHeight = 10f.dp.toPx() * progress,
+                                    refractionAmount = 14f.dp.toPx() * progress,
+                                    chromaticAberration = true,
+                                )
+                            }
+                        },
+                        highlight = {
+                            if (config.enableBackdropBlur) {
+                                Highlight.Default.copy(alpha = dampedDragAnimation.pressProgress)
+                            } else {
+                                // 退化路径：高光常驻，不随按压。
+                                Highlight.Default
+                            }
+                        },
+                        shadow = {
+                            Shadow(alpha = dampedDragAnimation.pressProgress)
+                        },
+                        innerShadow = {
+                            val progress = dampedDragAnimation.pressProgress
+                            InnerShadow(radius = 8f.dp * progress, alpha = progress)
+                        },
+                        layerBlock = {
+                            // 按压缩放（DampedDragAnimation 的 scaleX/scaleY）
+                            // + 速度各向异性：拖得快沿运动方向拉长、垂直方向压扁。
+                            scaleX = dampedDragAnimation.scaleX
+                            scaleY = dampedDragAnimation.scaleY
+                            val velocity = dampedDragAnimation.velocity / 10f
+                            scaleX /= 1f - (velocity * 0.75f).coerceIn(-0.2f, 0.2f)
+                            scaleY *= 1f - (velocity * 0.25f).coerceIn(-0.2f, 0.2f)
+                        },
+                        onDrawSurface = {
+                            if (config.enableBackdropBlur) {
+                                // 正常路径只压一层薄对比色把胶囊衬出来（Kyant0 原配方），
+                                // 按下时淡出、换成阴影表达"被按住"。
+                                val progress = dampedDragAnimation.pressProgress
+                                drawRect(
+                                    if (colors.isDark) {
+                                        Color.White.copy(alpha = 0.10f)
+                                    } else {
+                                        Color.Black.copy(alpha = 0.10f)
+                                    },
+                                    alpha = 1f - progress,
+                                )
+                                drawRect(
+                                    Color.Black
+                                        .copy(alpha = 0.03f * progress),
+                                )
+                            } else {
+                                // 退化路径：折射没了，"选中"信号改由常驻底色 + accent 描边
+                                // 承担（描边即选中，不依赖折射链，也不读 pressProgress ——
+                                // 常驻层不引入逐帧重绘）。
+                                // 描边用 drawRoundRect + Stroke（同 LiquidBottomTabs fd74a1c）：
+                                // 半径 = min(w,h)/2，与 Capsule.createOutline 公式一致，
+                                // 避免 drawOutline 的引用解析问题（CI 实测 Unresolved）。
+                                drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
+                                val capsuleRadius = minOf(size.width, size.height) / 2f
+                                drawRoundRect(
+                                    color = colors.accent.copy(alpha = 0.35f),
+                                    cornerRadius = CornerRadius(capsuleRadius, capsuleRadius),
+                                    style = Stroke(width = 1.dp.toPx()),
+                                )
+                            }
+                        },
+                    ),
+            )
+        }
     }
 }
 
+/**
+ * 单个分段项：纯文字 + 单击改内部选中态。
+ *
+ * "选中"的玻璃表达由顶层滑动胶囊承担，item 自身不再挂 liquidGlass
+ * （旧实现 REGULAR vs ULTRA_THIN 的厚薄区分会让胶囊滑到时出现双层玻璃）。
+ *
+ * `indication = null`：液态玻璃的高光 / 折射反馈已足够，再叠 M3 ripple 就是
+ * "原生按钮贴玻璃纸"。触摸目标必须是完整 48dp。
+ */
 @Composable
 private fun SegmentItem(
     text: String,
@@ -74,8 +389,6 @@ private fun SegmentItem(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val motion = LocalLiquidMotion.current
-    val animationScope = rememberCoroutineScope()
-    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
 
     val pressScale by animateFloatAsState(
         targetValue = if (selected) 1f else 0.94f,
@@ -86,7 +399,7 @@ private fun SegmentItem(
 
     Box(
         modifier = modifier
-            // 选中/取消用弹簧缩放，不用位移（省掉一次测量，且天然居中）。
+            // 选中/取消用弹簧缩放（纯视觉，无手势参与）。
             .graphicsLayer {
                 scaleX = pressScale
                 scaleY = pressScale
@@ -103,32 +416,7 @@ private fun SegmentItem(
                     Modifier
                 },
             )
-            .liquidGlass(
-                material = if (selected) GlassMaterial.REGULAR else GlassMaterial.ULTRA_THIN,
-                capsule = true,
-                blurRadius = 8.dp,
-                refractionHeight = 24.dp,
-                refractionAmount = 24.dp,
-                dispersion = false,
-                pressProgress = { interactiveHighlight.pressProgress },
-                layerBlock = if (enabled) {
-                    pressLayerBlock(interactiveHighlight = interactiveHighlight, maxScale = 16.dp)
-                } else {
-                    null
-                },
-            )
-            .then(
-                // 顺序不能交换：clickable 在前、gestureModifier 在后（Kyant0 原序）。
-                if (enabled) {
-                    Modifier
-                        .then(interactiveHighlight.modifier)
-                        .then(interactiveHighlight.gestureModifier)
-                } else {
-                    Modifier
-                },
-            )
-            // 触摸目标必须是完整 48dp（原来是 minTouchTarget - 12.dp = 36dp）。
-            // 分段控件是主要操作入口，36dp 在高 DPI 屏上误触率明显。
+            // 触摸目标必须是完整 48dp（分段控件是主要操作入口）。
             .heightIn(min = tokens.minTouchTarget)
             .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center,
