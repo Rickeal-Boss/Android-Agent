@@ -136,21 +136,6 @@ class DampedDragAnimation(
 
     private var finishedNormallyState = false
 
-    /**
-     * 手势结束时那一帧 up 的 `isConsumed`。
-     *
-     * 只用于让调用方区分「用户自己抬手」与「被父级抢走（去滚列表了）」，
-     * 例如将来要做"轻扫一下给个提示"这类交互时需要它。
-     *
-     * 为什么这里读 `isConsumed` 是可靠的：我们 break 在 `!change.pressed`，
-     * 拿到的最后一帧**就是** up 帧；而 up 帧之后不会再有 move，
-     * 因此这个位置没人能再把它置位 —— 它只可能是"父级确实消费过"。
-     * （move 帧的 isConsumed 则不可靠，会被各路 pointerInput 任意置位。）
-     */
-    val swallowUpConsumed: Boolean get() = swallowUpConsumedState
-
-    private var swallowUpConsumedState = false
-
     /** 归一化进度 0~1（相对 [valueRange]）。轨道填充宽度、thumb 位移都用它。 */
     val progress: Float
         get() {
@@ -183,7 +168,6 @@ class DampedDragAnimation(
             // 也就是说这个标志的生命周期是"本次手势"，由下一轮的开头负责收尾。
             yieldedToParentState = false
             finishedNormallyState = false
-            swallowUpConsumedState = false
             val down = awaitFirstDown(requireUnconsumed = false)
             var previous = down.position
             // 累积位移：consume 与否按**累积量**判定，不按单帧 delta。
@@ -219,22 +203,20 @@ class DampedDragAnimation(
                         //   2. 这根 change 从未真正按下（事件流断了 / change 被移除）
                         //      → 不是手势结束，不该走业务提交
                         //
-                        // 用 `down.previousPressed`。down 是"按下那一帧"的快照，
-                        // 它的 previousPressed 恒为 true，所以走到这一行时结果恒为 true。
+                        // ⚠️ 直接置 true，**不要用 down.previousPressed**。
                         //
-                        // 那它的价值在哪？在守上面 `? : break` 那条路：
-                        // change 被移除（事件流断了）时根本走不到这里，
-                        // 标志保持初始的 false —— "这不是一次完整手势"。
+                        // 早期这里写成 `down.previousPressed`，并注释"恒为 true"——
+                        // **两个都是错的**。源码（foundation 1.10.3 PointerEvent.kt）：
+                        //   changedToDownIgnoreConsumed() = !previousPressed && pressed
+                        // 而 awaitFirstDown 的循环条件正是 isChangedToDown，
+                        // 所以返回的 down **必定满足 previousPressed == false**
+                        // → finishedNormally 恒为 false → 业务提交被永久关闭
+                        // （滑块改完不落盘、开关拨不动，只能点）。
                         //
-                        // 📌 附带澄清（别被之前的说法误导）：
-                        // 若将来要区分「真抬手 vs 被父级抢走 releasedCancel」，
-                        // 在**这个位置**读 change.isConsumed 是可靠的 ——
-                        // 我们 break 在 `!change.pressed` 而不是 `changedToUp()`，
-                        // 拿到的最后一帧就是 up 帧，而 up 帧之后不会再有 move，
-                        // 没人能再置位 isConsumed。
-                        // （当前没有调用方需要它，先不暴露，免得多一个没人用的 API。）
-                        finishedNormallyState = down.previousPressed
-                        swallowUpConsumedState = change.isConsumed
+                        // 能走到这个分支，说明我们确实看到了指针释放，即一次完整手势。
+                        // 真正需要拦的是上面 `? : break` 那条路：change 被移除
+                        // （事件流断了）时根本走不到这里，标志保持初始的 false。
+                        finishedNormallyState = true
                         break
                     }
                     val current = change.position
