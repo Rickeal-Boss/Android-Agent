@@ -35,11 +35,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -499,12 +499,14 @@ fun LiquidBottomTabs(
                             // 退化路径：折射没了，"选中"信号改由**常驻底色 + accent 描边**
                             // 承担（描边即选中，不依赖折射链，也不读 pressProgress ——
                             // 常驻层不引入逐帧重绘）。
+                            // 描边用 drawRoundRect + Stroke（qa-review 认可的等价方案）：
+                            // 半径 = min(w,h)/2，与 Capsule.createOutline 的公式完全一致，
+                            // 避免 drawOutline 的引用解析问题（CI 实测 Unresolved）。
                             drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
-                            drawOutline(
-                                outline = Outline.Generic(
-                                    Capsule.createOutline(size, layoutDirection, this)
-                                ),
+                            val capsuleRadius = minOf(size.width, size.height) / 2f
+                            drawRoundRect(
                                 color = colors.accent.copy(alpha = 0.35f),
+                                cornerRadius = CornerRadius(capsuleRadius, capsuleRadius),
                                 style = Stroke(width = 1.dp.toPx()),
                             )
                         }
