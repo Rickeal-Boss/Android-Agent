@@ -81,7 +81,10 @@ fun GlassChip(
             )
             .heightIn(min = tokens.minTouchTarget)
             .padding(PaddingValues(horizontal = 12.dp, vertical = 7.dp)),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        // ⚠️ 间距必须带 CenterHorizontally：裸 `spacedBy` 不带对齐，外部给定宽度时
+        // 内容会从 start 排开而不是居中。旧版走 LiquidGlassSurface 的
+        // contentAlignment = Alignment.Center，改成裸 Row 后这条约束被丢了。
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
