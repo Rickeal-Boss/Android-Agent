@@ -24,7 +24,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Outline
@@ -47,7 +46,6 @@ import com.rickeal.agent.core.design.liquid.drawBackdrop
 import com.rickeal.agent.core.design.liquid.effects.lens
 import com.rickeal.agent.core.design.liquid.highlight.Highlight
 import com.rickeal.agent.core.design.liquid.interactive.DampedDragAnimation
-import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
 import com.rickeal.agent.core.design.liquid.shadow.InnerShadow
 import com.rickeal.agent.core.design.liquid.shadow.Shadow
 import com.rickeal.agent.core.design.liquid.shapes.Capsule
@@ -68,7 +66,7 @@ import kotlin.math.roundToInt
  *     图层并整层 tint 成强调色：胶囊折射看到的"发光文字"就是这层染色的内容。
  *  3. **滑动指示胶囊** —— `fillMaxWidth(1f/count)` 的 Box，
  *     `translationX = value * itemWidth`；手势全在这层
- *     （[InteractiveHighlight.gestureModifier] + [DampedDragAnimation.modifier]），
+ *     （[DampedDragAnimation.modifier]），
  *     背景折射 `combined(壁纸, 回显行)`。
  *
  * ## 手势分流（为什么胶囊的 consumeSlopPx 必须 8dp）
@@ -194,22 +192,10 @@ private fun SegmentedIndicator(
             }
     }
 
-    // 高光中心跟随"胶囊当前位置"而不是手指落点。
-    val interactiveHighlight = remember(animationScope) {
-        InteractiveHighlight(
-            animationScope = animationScope,
-            position = { size, _ ->
-                Offset(
-                    if (isLtr) {
-                        (dampedDragAnimation.value + 0.5f) * itemWidthState.value
-                    } else {
-                        size.width - (dampedDragAnimation.value + 0.5f) * itemWidthState.value
-                    },
-                    size.height / 2f,
-                )
-            },
-        )
-    }
+    // 注：不像 LiquidBottomTabs 那样配 InteractiveHighlight(position)——
+    // 那边的高光画在面板层（第 1 层 drawBackdrop 的 highlight），position 才有意义；
+    // 这边胶囊手势区是 matchParentSize 整个指示胶囊，无需 position 定制，
+    // dampedDragAnimation 自带的按压缩放已覆盖按压反馈。
 
     Box(
         Modifier
@@ -284,9 +270,7 @@ private fun SegmentedIndicator(
                     .then(
                         // 禁用时不挂手势：胶囊静态显示在选中位置。
                         if (enabled) {
-                            Modifier
-                                .then(interactiveHighlight.gestureModifier)
-                                .then(dampedDragAnimation.modifier)
+                            Modifier.then(dampedDragAnimation.modifier)
                         } else {
                             Modifier
                         },
@@ -400,11 +384,6 @@ private fun SegmentItem(
 
     Box(
         modifier = modifier
-            // 选中/取消用弹簧缩放（纯视觉，无手势参与）。
-            .graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
-            }
             .then(
                 if (enabled) {
                     Modifier.clickable(
@@ -427,6 +406,13 @@ private fun SegmentItem(
             style = MaterialTheme.typography.labelLarge,
             color = textColor,
             maxLines = 1,
+            // 选中/取消的弹簧缩放挂在 **Text**（链最内层）而不是 Box 外层：
+            // graphicsLayer 缩放的是其后的绘制，若挂外层会把 48dp 命中区也缩掉
+            //（0.94 → 实际命中 45dp，违反触摸目标标准）；挂内层只缩视觉不缩命中。
+            modifier = Modifier.graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+            },
             textAlign = TextAlign.Center,
         )
     }
