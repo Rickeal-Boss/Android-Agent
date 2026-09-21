@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -38,6 +39,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
@@ -252,12 +255,18 @@ fun LiquidBottomTabs(
         }
         // 内部态变化 → 弹簧动画到位 + 通知调用方。drop(1)：初始组合不回调
         // （外部本来就知道当前选中的是谁）。
-        LaunchedEffect(dampedDragAnimation, onSelected) {
+        //
+        // ⚠️ key 只留 dampedDragAnimation，不含 onSelected：调用方的 lambda 字面量
+        // 每次重组都是新实例，拿它当 key 会让 effect 随导航状态反复重启（drop(1)
+        // 能保正确性，但纯属浪费）。用 rememberUpdatedState 让闭包始终读最新
+        // lambda，effect 生命周期与组件一致，调用方零负担。
+        val onSelectedCallback by rememberUpdatedState(onSelected)
+        LaunchedEffect(dampedDragAnimation) {
             snapshotFlow { currentIndex }
                 .drop(1)
                 .collectLatest { index ->
                     dampedDragAnimation.animateToValue(index.toFloat())
-                    onSelected(index)
+                    onSelectedCallback(index)
                 }
         }
 
@@ -315,19 +324,25 @@ fun LiquidBottomTabs(
                         scaleY = scale
                     },
                     onDrawSurface = {
-                        // THICK 底色：上亮下暗垂直渐变，与 liquidGlass 的本体绘制同一配方。
-                        val baseAlpha = thick.backgroundAlpha
-                        drawRect(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    colors.glassTint.copy(alpha = baseAlpha),
-                                    colors.glassTintElevated
-                                        .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
-                                ),
-                                startY = 0f,
-                                endY = size.height,
+                        if (config.enableBackdropBlur) {
+                            // 正常路径：THICK 底色上亮下暗垂直渐变，与 liquidGlass 同一配方。
+                            val baseAlpha = thick.backgroundAlpha
+                            drawRect(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        colors.glassTint.copy(alpha = baseAlpha),
+                                        colors.glassTintElevated
+                                            .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
+                                    ),
+                                    startY = 0f,
+                                    endY = size.height,
+                                )
                             )
-                        )
+                        } else {
+                            // 退化路径（背景模糊关）：常驻底色，不读任何动画状态 ——
+                            // 与 liquidGlass 门面「底色 + 高光」的退化承诺对齐。
+                            drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
+                        }
                     },
                 )
                 .then(interactiveHighlight.modifier)
@@ -368,22 +383,32 @@ fun LiquidBottomTabs(
                             }
                         },
                         highlight = {
-                            val progress = dampedDragAnimation.pressProgress
-                            Highlight.Default.copy(alpha = progress)
+                            if (config.enableBackdropBlur) {
+                                val progress = dampedDragAnimation.pressProgress
+                                Highlight.Default.copy(alpha = progress)
+                            } else {
+                                // 退化路径：高光是门面退化承诺的一半，不能被 progress=0 关死。
+                                Highlight.Default
+                            }
                         },
                         onDrawSurface = {
-                            val baseAlpha = thick.backgroundAlpha
-                            drawRect(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        colors.glassTint.copy(alpha = baseAlpha),
-                                        colors.glassTintElevated
-                                            .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
-                                    ),
-                                    startY = 0f,
-                                    endY = size.height,
+                            if (config.enableBackdropBlur) {
+                                val baseAlpha = thick.backgroundAlpha
+                                drawRect(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            colors.glassTint.copy(alpha = baseAlpha),
+                                            colors.glassTintElevated
+                                                .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
+                                        ),
+                                        startY = 0f,
+                                        endY = size.height,
+                                    )
                                 )
-                            )
+                            } else {
+                                // 退化路径：常驻底色，不读任何动画状态。
+                                drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
+                            }
                         },
                     )
                     .then(interactiveHighlight.modifier)
@@ -429,8 +454,13 @@ fun LiquidBottomTabs(
                         }
                     },
                     highlight = {
-                        val progress = dampedDragAnimation.pressProgress
-                        Highlight.Default.copy(alpha = progress)
+                        if (config.enableBackdropBlur) {
+                            val progress = dampedDragAnimation.pressProgress
+                            Highlight.Default.copy(alpha = progress)
+                        } else {
+                            // 退化路径：高光常驻，不随按压（与回显行同一处理）。
+                            Highlight.Default
+                        }
                     },
                     shadow = {
                         val progress = dampedDragAnimation.pressProgress
@@ -450,20 +480,34 @@ fun LiquidBottomTabs(
                         scaleY *= 1f - (velocity * 0.25f).coerceIn(-0.2f, 0.2f)
                     },
                     onDrawSurface = {
-                        // ⚠️ 刻意**不用** THICK 底色：面板（第 1 层）已经是 THICK，
+                        // ⚠️ 正常路径刻意**不用** THICK 底色：面板（第 1 层）已经是 THICK，
                         // 胶囊再叠一层厚底色会把回显行的强调色盖掉、"发光"就没了。
                         // 这里只压一层薄对比色把胶囊从面板里衬出来（Kyant0 原配方），
                         // 按下时淡出、换成阴影表达"被按住"。
                         val progress = dampedDragAnimation.pressProgress
-                        drawRect(
-                            if (colors.isDark) {
-                                Color.White.copy(alpha = 0.10f)
-                            } else {
-                                Color.Black.copy(alpha = 0.10f)
-                            },
-                            alpha = 1f - progress,
-                        )
-                        drawRect(Color.Black.copy(alpha = 0.03f * progress))
+                        if (config.enableBackdropBlur) {
+                            drawRect(
+                                if (colors.isDark) {
+                                    Color.White.copy(alpha = 0.10f)
+                                } else {
+                                    Color.Black.copy(alpha = 0.10f)
+                                },
+                                alpha = 1f - progress,
+                            )
+                            drawRect(Color.Black.copy(alpha = 0.03f * progress))
+                        } else {
+                            // 退化路径：折射没了，"选中"信号改由**常驻底色 + accent 描边**
+                            // 承担（描边即选中，不依赖折射链，也不读 pressProgress ——
+                            // 常驻层不引入逐帧重绘）。
+                            drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
+                            drawOutline(
+                                outline = Outline.Generic(
+                                    Capsule.createOutline(size, layoutDirection, this)
+                                ),
+                                color = colors.accent.copy(alpha = 0.35f),
+                                style = Stroke(width = 1.dp.toPx()),
+                            )
+                        }
                     },
                 )
                 .height(56.dp)
