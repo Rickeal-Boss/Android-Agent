@@ -147,16 +147,23 @@ class DampedDragAnimation(
                         accumulatedX += abs(dragAmount.x)
                         accumulatedY += abs(dragAmount.y)
 
-                        // 轴向锁定：只有**横向累积 ≥ 纵向累积**才算"横向拖动意图"。
-                        // 纯纵向滑 accumX 恒为 0 → 永不命中 → 父级正常接管滚动。
-                        // 斜向滑（滚动时常带横向抖动）accumY 更大 → 同样不命中，
-                        // 避免"一边滚页面一边改数值"。
-                        val horizontalIntent = accumulatedX >= accumulatedY
-                        if (horizontalIntent && accumulatedX > consumeSlopPx) {
-                            // 严格大于：consumeSlopPx = 0f 时 `0 > 0` 为假，
-                            // 纵向（accumX 恒 0）不会消费 —— 主轴累加才不白做。
+                        // 轴向锁定：纵向累积更大 → 判定为"用户想滚列表"，本手势让位。
+                        //
+                        // ⚠️ 必须 **break**，不能只"跳过本次 consume/onDrag"（源码依据）：
+                        // verticalScroll / LazyColumn 的 startDragImmediately = false，
+                        // 父级只在 **Main pass** 消费，而 Main 自下而上 —— 子级永远
+                        // 先拿到未消费事件。只跳一次的话，父级开滚后子级仍会在后续帧
+                        // 继续走 onDrag，表现为"一边滚页面一边改数值"。
+                        // break 后 awaitEachGesture 等抬手才重启，一次解决。
+                        // 代价：用户要多滑几 px 才起滚。
+                        if (accumulatedY > accumulatedX) {
+                            break
+                        }
+
+                        // 横向意图：越过 [consumeSlopPx] 才消费。
+                        // 严格大于：consumeSlopPx = 0f 时 `0 > 0` 为假，纯抖动不消费。
+                        if (accumulatedX > consumeSlopPx) {
                             change.consume()
-                            // onDrag 一并跳过：纵向意图时调用它会让数值漂移。
                             onDrag(this@DampedDragAnimation, valueAnimatable.value, dragAmount)
                         }
                     }

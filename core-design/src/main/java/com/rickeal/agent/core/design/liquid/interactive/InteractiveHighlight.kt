@@ -153,11 +153,16 @@ class InteractiveHighlight(
                         accumulatedY += abs(dragAmount.y)
 
                         // 轴向锁定：纵向累积更大 → 判定为"用户想滚列表"，本手势让位。
-                        // 既**不消费**（父级 LazyColumn / verticalScroll 才能接管滚动），
-                        // 也**不更新跟手位移**（否则页面滚动时按钮还跟着手指跑，很怪）。
-                        // pressProgress 仍保持 1 —— 手指确实还按着，该有按压反馈。
+                        //
+                        // ⚠️ 必须 **break**，不能只"跳过 consume"（源码依据）：
+                        // verticalScroll / LazyColumn 的 startDragImmediately = false，
+                        // 父级只在 **Main pass** 消费，而 Main 自下而上 —— 子级永远
+                        // 先拿到未消费事件。只跳 consume 的话，父级开滚后子级仍会继续
+                        // 走 onDrag / 跟手位移，表现为"一边滚页面一边改数值"。
+                        // break 后 awaitEachGesture 等抬手才重启，一次解决。
+                        // 代价：用户要多滑几 px 才起滚，且按压态提前归位（与系统一致）。
                         if (accumulatedY > accumulatedX) {
-                            continue
+                            break
                         }
 
                         // ⚠️ 用公开的 `touchSlop`。foundation 内部那个
