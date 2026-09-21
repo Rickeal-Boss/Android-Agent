@@ -297,7 +297,7 @@ jobs:
             exit 1
           fi
           echo "::notice::签名方案命中：v2=$([ "$v2_ok" -gt 0 ] && echo yes || echo no) v3=$([ "$v3_ok" -gt 0 ] && echo yes || echo no)"
-          echo "::notice::Release APK verified: v2 + v3 schemes OK, signed with the release key (not debug)."
+          echo "::notice::Release APK verified: signed with the release key (not debug), 签名方案见上一行。"
 
       - name: Upload release APK / AAB / R8 mapping
         if: steps.assemble_release.outcome == 'success'
