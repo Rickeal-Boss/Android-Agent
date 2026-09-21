@@ -155,6 +155,10 @@ class DampedDragAnimation(
             // 一并取消掉 —— 表现就是"点了没反应"。
             var accumulatedX = 0f
             var accumulatedY = 0f
+            // ⚠️ slop 必须在**循环外**取一次快照。
+            // viewConfiguration 来自 CompositionLocal，手势跑到后面时 composition
+            // 可能已经 dispose，此时再取值会抛 IllegalStateException（CompositionLocal 越界）。
+            val slop = viewConfiguration.touchSlop
             yieldedToParentState = false
             setPressed(true)
             onDragStarted()
@@ -191,12 +195,20 @@ class DampedDragAnimation(
                         // 继续走 onDrag，表现为"一边滚页面一边改数值"。
                         // break 后 awaitEachGesture 等抬手才重启，一次解决。
                         // 代价：用户要多滑几 px 才起滚。
-                        if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
-                            // 让位给父级滚动。必须置位——见 [yieldedToParent] 的说明：
-                            // 不消费意味着外层 toggleable/clickable 不会被取消，
-                            // 抬手时它还会提交一次；若 onDragStopped 也提交就是两次。
-                            yieldedToParentState = true
-                            break
+                        // ⚠️ 方向判定**必须先过幅度门限**，不能在第一帧就判。
+                        // 起手那一两帧 accumulatedX/Y 还是亚像素噪声：
+                        // dx=0.3px、dy=0.6px → 0.6 > 0.3*0.577 → 立刻 break，
+                        // 整个手势作废 → 滑块/开关"有时拖不动"（随机，极难查）。
+                        // Compose 也是在越过 slop 那一刻才算 gestureAngle，不是第一帧。
+                        val reach = Offset(abs(accumulatedX), abs(accumulatedY)).getDistance()
+                        if (reach >= slop) {
+                            if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
+                                // 让位给父级滚动。必须置位——见 [yieldedToParent] 的说明：
+                                // 不消费意味着外层 toggleable/clickable 不会被取消，
+                                // 抬手时它还会提交一次；若 onDragStopped 也提交就是两次。
+                                yieldedToParentState = true
+                                break
+                            }
                         }
 
                         // 横向意图：越过 [consumeSlopPx] 才消费。

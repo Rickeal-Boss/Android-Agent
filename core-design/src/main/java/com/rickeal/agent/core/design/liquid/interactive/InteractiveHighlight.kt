@@ -138,6 +138,10 @@ class InteractiveHighlight(
             // 两轴分开记 —— 纵向累积更大时判定为"用户想滚列表"，本手势让位。
             var accumulatedX = 0f
             var accumulatedY = 0f
+            // ⚠️ slop 必须在**循环外**取一次快照（pin）。
+            // viewConfiguration 来自 CompositionLocal，手势跑到后面时 composition
+            // 可能已经 dispose，此时再取值会抛 IllegalStateException（CompositionLocal 越界）。
+            val slop = viewConfiguration.touchSlop
             touchOffset = down.position
             setPressed(true)
             try {
@@ -189,14 +193,22 @@ class InteractiveHighlight(
                         //
                         // 用**累计** dx/dy 判定（Compose 自己也是用 dragAccumulator），
                         // 单帧 delta 在起手那一两帧方向噪声很大。
-                        if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
-                            break
+                        // ⚠️ 方向判定**必须先过幅度门限**，不能在第一帧就判。
+                        // 起手那一两帧 accumulatedX/Y 还是亚像素噪声，
+                        // 直接套 0.577 会让纯横向拖动被误判成纵向 → 整个手势作废
+                        // → 按钮/页签"有时拖不出跟手效果"（随机，极难查）。
+                        // Compose 也是在越过 slop 那一刻才算 gestureAngle，不是第一帧。
+                        val reach = Offset(abs(accumulatedX), abs(accumulatedY)).getDistance()
+                        if (reach >= slop) {
+                            if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
+                                break
+                            }
                         }
 
                         // ⚠️ 用公开的 `touchSlop`。foundation 内部那个
                         // `viewConfiguration.pointerSlop(pointerType)` 是 internal 扩展，
                         // 外部调不到（CI 实测 Unresolved reference）。
-                        if (abs(accumulatedX) >= viewConfiguration.touchSlop) {
+                        if (abs(accumulatedX) >= slop) {
                             change.consume()
                         }
                         // 跟手位移与是否消费无关，照常累加 —— 手感不受影响。
