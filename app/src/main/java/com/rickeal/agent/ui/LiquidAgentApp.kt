@@ -56,9 +56,11 @@ import com.rickeal.agent.core.design.GlassBackdropBlurOverride
 import com.rickeal.agent.core.design.GlassConfig
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LiquidAgentTheme
+import com.rickeal.agent.core.design.LiquidBottomTabs
 import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.TabSpec
 import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
 import com.rickeal.agent.core.design.liquidGlass
 import com.rickeal.agent.core.design.pressLayerBlock
@@ -346,13 +348,12 @@ private const val MAX_BACK_STACK_DRAIN = 8
 /**
  * 底部导航栏（COMPACT）。
  *
- * 结构照 `core-design` 的 `GlassSegmented` —— 它就是"多分项 + 玻璃容器"的现成答案：
- * **容器走门面 `LiquidGlassSurface`，每个页签项走裸 `Modifier.liquidGlass`**。
- * 之所以不能整块都用门面：门面的 `modifier` 在最外层，跟手手势挂不进
- * `drawBackdrop` 之后（Kyant0 原序），页签就只剩静态玻璃，验收过不了。
+ * 真·LiquidBottomTabs：**选中指示胶囊随选中项滑动**（对齐 Kyant0 的四层结构），
+ * 不再用"材质厚薄"区分选中态。四层结构与材质/折射参数全部收在
+ * `core-design` 的 [LiquidBottomTabs] 里，这里只做 TopDestination → TabSpec 的映射。
  *
- * 折射参数取 Kyant0 `LiquidBottomTabs` 的 `lens(24, 24)`（与 `GlassSegmented` 一致）：
- * 导航栏比按钮大，折射带要给足才看得出厚度。
+ * 拖动胶囊可直接换页（松手吸附到最近页签并触发导航）；单击未选中页签同样触发。
+ * 外部选中态回流（返回键回到对话页等）会让胶囊滑回正确位置。
  */
 @Composable
 private fun GlassNavBar(
@@ -360,30 +361,14 @@ private fun GlassNavBar(
     onSelect: (TopDestination) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val tokens = LocalGlassTokens.current
-    LiquidGlassSurface(
+    LiquidBottomTabs(
+        tabs = TopDestination.entries.map { destination ->
+            TabSpec(label = destination.label, icon = iconOf(destination))
+        },
+        selectedIndex = TopDestination.entries.indexOf(selected),
+        onSelected = { index -> onSelect(TopDestination.entries[index]) },
         modifier = modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-        material = GlassMaterial.THICK,
-        // 胶囊（两端正半圆）取代原来的 radiusFull 圆角矩形 —— iOS Liquid Glass 的标志性轮廓。
-        capsule = true,
-        // cornerRadius 保留但被胶囊覆盖（与 GlassButton 的 cornerRadius 同一处理）：
-        // 留着是为了不丢掉"这里原本想做全圆角"的意图；capsule=true 时它被忽略。
-        cornerRadius = tokens.radiusFull,
-        // 色散要 7 次采样（约 7 倍开销）。导航栏常驻屏幕、3 个页签同时渲染，必须关。
-        dispersion = false,
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-    ) {
-        Row(modifier = Modifier.fillMaxWidth()) {
-            for (destination in TopDestination.entries) {
-                NavDestinationItem(
-                    destination = destination,
-                    selected = destination == selected,
-                    onClick = { onSelect(destination) },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-    }
+    )
 }
 
 /**
