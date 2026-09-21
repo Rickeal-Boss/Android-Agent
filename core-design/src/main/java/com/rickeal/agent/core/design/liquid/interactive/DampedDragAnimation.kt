@@ -279,23 +279,33 @@ class DampedDragAnimation(
                             if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
                                 // 让位给父级滚动。置位后本手势"吞掉"后续事件。
                                 yieldedToParentState = true
+                                // ⚠️ 父级一接管就要取消按压，**不能等到 finally**（那要等抬手）。
+                                // 否则手指按在滑块/开关上纵向滑走之后，pressProgress 会一直
+                                // 保持 1：thumb 维持 1.5 倍拉伸、玻璃维持"变实"
+                                // （模糊减弱 + 折射增强）贯穿整个滚动过程，直到抬手才归位。
+                                // 平台标准行为是"父级接管即取消"，InteractiveHighlight
+                                // （走 break 路径）也是这个行为 —— 两边必须一致，
+                                // 否则同一个手势语义在两个类里表现相反。
+                                setPressed(false)
                             }
                         }
 
-                        // ⚠️ 让位后**不能 break**，要继续留在循环里把这个手势走完。
+                        // 让位后留在循环里"吞掉"后续事件：既不消费也不 onDrag，但继续等 up。
                         //
-                        // 源码（foundation 1.10.3 AwaitPointerEventScope）：
-                        //   awaitEachGesture { ... } 的结构是
-                        //     while (true) { awaitFirstDown(); ...; awaitAllEventsUp() }
-                        //   且 awaitFirstDown(requireUnconsumed = false) 会立刻接受
-                        //   **当前仍按着**的手指。所以这里一旦 break，
-                        //   下一轮 awaitFirstDown 会马上拿到同一根手指，
-                        //   awaitPointerEvent() 直接返回 up → !change.pressed → 立刻 break
-                        //   → 又走一次 onDragStopped（didDrag 仍为 true → 落盘）
-                        //   → 反复直到抬手，落盘 N 次。
+                        // 📌 机制澄清（早期这里写过一段**错误**的说明，已更正）：
+                        //   曾认为「break 之后下一轮 awaitFirstDown 会立刻拿到同一根手指，
+                        //   反复走 onDragStopped → 落盘 N 次」。这不成立 ——
+                        //   awaitEachGesture 在 block() 返回后会调用 awaitAllPointersUp()，
+                        //   正是用来防止"手势还没结束就重开一轮"的，
+                        //   所以 break 之后协程会等到所有手指抬起才进下一轮。
                         //
-                        // 正确做法：置位后既不消费也不 onDrag，但**继续等 up**，
-                        // 让 onDragStopped 只在真正结束时被调用一次。
+                        //   那为什么还保留吞事件、不退回 break？因为吞事件有一个
+                        //   break 做不到的好处：让 yieldedToParent 标志**活到 up 帧**。
+                        //   GlassSlider 的 detectTapGestures 守卫
+                        //   （`if (yieldedToParent) return@detectTapGestures`）在 up 帧读它；
+                        //   若退回 break，finally 会在 up 之前就把标志清掉，跳值又会发生。
+                        //
+                        //   代价是按压态要提前归位 —— 由上面那次显式 setPressed(false) 负责。
                         if (!yieldedToParentState) {
                             // 横向：越过 [consumeSlopPx] 才消费。
                             // 严格大于：consumeSlopPx = 0f 时 `0 > 0` 为假，纯抖动不消费。
