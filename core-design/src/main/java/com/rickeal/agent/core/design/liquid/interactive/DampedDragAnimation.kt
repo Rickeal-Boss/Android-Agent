@@ -132,7 +132,7 @@ class DampedDragAnimation(
      * 两者在 `awaitPointerEvent` 里都表现为 `!change.pressed`，必须靠 `isConsumed`
      * 区分：被消费即 cancel。一律按"正常抬手"处理会让按压缩放错误弹回。
      */
-    val yawReleaseCancel: Boolean get() = releaseCancelState
+    val endWasCanceled: Boolean get() = releaseCancelState
 
     private var releaseCancelState = false
 
