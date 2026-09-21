@@ -345,6 +345,25 @@ class DampedDragAnimation(
         animationScope.launch { valueAnimatable.animateTo(coerced) }
     }
 
+    /**
+     * **立即到位**（`snapTo`，不走弹簧）。拖动期间专用。
+     *
+     * 为什么拖动不能用弹簧：thumb 位置完全由 [valueAnimatable] 驱动，若拖动期间
+     * 每帧都 `animateTo` 重启弹簧，弹簧永远追不上每帧更新的目标 → 永不收敛 →
+     * thumb 恒定滞后于手指（"不跟手"）。拖动要求的是**瞬时相等**，不是缓动。
+     *
+     * `snapTo` 与 `animateTo` 共用同一个 mutation 锁：每次调用会取消在途动画，
+     * 所以逐帧调用是安全且预期的（旧目标直接作废）。
+     *
+     * ⚠️ 只做"值立即到位"这一件事 —— 不碰手势循环 / consume 门控 / 轴向锁定，
+     * 那三块是真机验过的稳定性所在，别为手感顺手改它们。
+     */
+    fun snapValue(value: Float) {
+        val coerced = value.coerceIn(valueRange)
+        targetValue = coerced
+        animationScope.launch { valueAnimatable.snapTo(coerced) }
+    }
+
     private fun setPressed(pressed: Boolean) {
         animationScope.launch {
             pressAnimatable.animateTo(

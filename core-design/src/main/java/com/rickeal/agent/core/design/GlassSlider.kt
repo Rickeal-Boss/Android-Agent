@@ -176,6 +176,17 @@ private fun LiquidSliderTrack(
         val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
         val animationScope = rememberCoroutineScope()
         var didDrag by remember { mutableStateOf(false) }
+        // 拖动期的三条状态（按下快照 / 手势内累积 / 拖动中标记）。
+        //
+        // ⚠️ 拖动的唯一事实来源是**手势本身**，不是调用方回传的 value：
+        // onValueChange → ViewModel StateFlow → 重组 → snapshotFlow 回显，滞后 1~2 帧。
+        // 若以回显值为增量基准（旧实现），慢拖时 `snapToStep(target + 0.1)` 会被
+        // 量化回原值 → 状态不变无回显 → targetValue 永不前进 → **卡死**；
+        // 快甩才跨过半档跳一格 → **"抽动"**。Kyant0 原版 onDrag 里没有 snap，
+        // snapToStep 是移植时加进去的 —— 增量基准必须换成手势内累积才能共存。
+        var dragAccumPx by remember { mutableStateOf(0f) }
+        var dragStartValue by remember { mutableStateOf(0f) }
+        var isDragging by remember { mutableStateOf(false) }
         // 这些值在 remember 出来的回调里被读取，必须用 rememberUpdatedState 拿最新值，
         // 否则回调会闭包住第一次组合时的旧引用（滑块在列表里复用时尤其明显）。
         val currentValue by rememberUpdatedState(value)
@@ -200,7 +211,13 @@ private fun LiquidSliderTrack(
                 visibilityThreshold = 0.001f,
                 initialScale = 1f,
                 pressedScale = 1.5f,
-                onDragStarted = {},
+                onDragStarted = {
+                    // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
+                    // 不能用回显值当起点 —— 它滞后于手指。
+                    dragAccumPx = 0f
+                    dragStartValue = currentValue
+                    isDragging = true
+                },
                 onDragStopped = {
                     // ⚠️ 让位给父级滚动时**不落盘**：
                     // 判定为纵向意图之前的几帧可能有横向亚像素噪声，那时 onDrag 已被调用
@@ -217,27 +234,51 @@ private fun LiquidSliderTrack(
                         currentOnFinished?.invoke()
                     }
                     didDrag = false
+                    isDragging = false
                 },
                 onDrag = { _, dragAmount ->
-                    // didDrag 只在**确实改了值**时才置真，且让位期间不置。
+                    // ⚠️ 这里不能写 `dampedDragAnimation.xxx`：这个 lambda 正是
+                    // `dampedDragAnimation` 自己的初始化表达式，变量尚未在作用域里。
+                    // lambda 类型是 `DampedDragAnimation.(value, dragAmount) -> Unit`，
+                    // 带 receiver —— `yieldedToParent` / `snapValue` 直接走 receiver。
                     //
-                    // 判据用 `abs(dragAmount.x) > 0.5f` 而不是 `!= 0f`：
-                    // 纵向滑列表经过滑块时必然带亚像素横向噪声，`!= 0f` 会被
-                    // 噪声置真 → 抬手白白落盘一次。0.5px 远超噪声量级。
-                    if (!didDrag && !yieldedToParent && abs(dragAmount.x) > 0.5f) {
-                        didDrag = true
+                    // 让位期间彻底静默：不累积、不改值、不置 didDrag。
+                    // 手势已经让给父级滚动，这里的任何值变化都是
+                    // "一边滚页面一边改数值"。
+                    if (!yieldedToParent) {
+                        dragAccumPx += dragAmount.x
+                        // didDrag 只在**确实改了值**时才置真。
+                        // 判据用累积位移 `abs(dragAccumPx) > 0.5f` 而不是 `!= 0f`：
+                        // 纵向滑列表经过滑块时必然带亚像素横向噪声，`!= 0f` 会被
+                        // 噪声置真 → 抬手白白落盘一次。0.5px 远超噪声量级。
+                        if (!didDrag && abs(dragAccumPx) > 0.5f) {
+                            didDrag = true
+                        }
+                        val range = currentRange
+                        val span = range.endInclusive - range.start
+                        // 绝对映射：`dragStartValue + 累积位移比例`，与回显完全解耦。
+                        // （旧实现 `targetValue + delta`：target 是异步回显值，慢拖时
+                        // 被 snapToStep 量化回原值 → 卡死；快甩才跨半档 → 抽动。）
+                        val fraction = (dragAccumPx / trackWidth) * if (isLtr) 1f else -1f
+                        val raw = dragStartValue + span * fraction
+                        val snapped = snapToStep(raw.coerceIn(range), range, currentSteps)
+                        // 值没变不回调：掐掉同一档位内亚像素抖动造成的无意义重入
+                        // （回调 → StateFlow → 重组 → 回显，一整条链只为重复同一个值）。
+                        if (snapped != currentValue) {
+                            snapValue(snapped)
+                            currentOnChange(snapped)
+                        }
                     }
-                    val range = currentRange
-                    val delta = (range.endInclusive - range.start) * (dragAmount.x / trackWidth)
-                    val raw = if (isLtr) targetValue + delta else targetValue - delta
-                    currentOnChange(snapToStep(raw.coerceIn(range), range, currentSteps))
                 }
             )
         }
         LaunchedEffect(dampedDragAnimation) {
             snapshotFlow { currentValue }
                 .collectLatest { v ->
-                    if (dampedDragAnimation.targetValue != v) {
+                    // 拖动期间**压制回显**：拖动的事实来源是手势（dragStartValue +
+                    // 累积位移），回显（经 StateFlow → 重组，滞后 1~2 帧）此时只会
+                    // 把值往旧方向拽 → thumb 抖动 / 不跟手。松手后恢复外部状态同步。
+                    if (!isDragging && dampedDragAnimation.targetValue != v) {
                         dampedDragAnimation.updateValue(v)
                     }
                 }
@@ -310,11 +351,16 @@ private fun LiquidSliderTrack(
                 .fillMaxWidth()
                 .pointerInput(animationScope) {
                     detectTapGestures { position ->
-                        // ⚠️ 让位给父级滚动后，抬手**不要**当成点击跳值。
-                        // 用户是"按在滑块上想滑列表"，不是"点轨道某个位置"。
-                        // detectTapGestures 有自己的 slop，大幅滑动本来就不会触发 onTap；
-                        // 这条挡的是小幅斜滑（未过它 slop）却已判定为纵向意图的边界情况。
-                        if (dampedDragAnimation.yieldedToParent) return@detectTapGestures
+                        // ⚠️ 两种情况抬手**都不要**当成点击跳值：
+                        // 1. 让位给父级滚动 —— 用户是"按在滑块上想滑列表"，不是
+                        //    "点轨道某个位置"。detectTapGestures 有自己的 slop，大幅
+                        //    滑动本来就不会触发 onTap；这条挡的是小幅斜滑（未过它
+                        //    slop）却已判定为纵向意图的边界情况。
+                        // 2. 拖动后抬手 —— 拖动位移可能未过 detectTapGestures 自己的
+                        //    slop（比如慢速拖半档又拖回来），此时 onTap 会触发
+                        //    commitValue(按下点) → **thumb 跳回按下点**（"抽动"的
+                        //    第二条来源）。didDrag 为真就说明这次交互是拖，不是点。
+                        if (dampedDragAnimation.yieldedToParent || didDrag) return@detectTapGestures
                         val range = currentRange
                         val delta = (range.endInclusive - range.start) * (position.x / trackWidth)
                         val target =
