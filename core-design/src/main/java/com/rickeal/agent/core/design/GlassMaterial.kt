@@ -82,7 +82,9 @@ object GlassMaterials {
         refractionAmount = 14.dp,
     )
     val Thin = GlassMaterialSpec(
-        backgroundAlpha = 0.11f,
+        // 0.11 → 0.18：真机反馈"卡片透明度不要太高"——底色太薄时内容压在
+        // 复杂背景上可读性差。blur / lens / 折射一律不动，只加厚底色这一层。
+        backgroundAlpha = 0.18f,
         blurRadius = 5.dp,
         borderAlpha = 0.44f,
         specularAlpha = 0.28f,
@@ -103,7 +105,9 @@ object GlassMaterials {
         refractionAmount = 24.dp,
     )
     val Thick = GlassMaterialSpec(
-        backgroundAlpha = 0.26f,
+        // 0.26 → 0.34：同上 —— 真机反馈"卡片透明度不要太高"。卡片（GlassCard /
+        // 弹层）多走 Thick，底色加厚后折射仍在（refractionAmount 未动）。
+        backgroundAlpha = 0.34f,
         blurRadius = 9.dp,
         borderAlpha = 0.72f,
         specularAlpha = 0.44f,
