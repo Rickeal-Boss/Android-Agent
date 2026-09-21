@@ -5,8 +5,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -64,7 +67,16 @@ fun ModelCard(
         cornerRadius = tokens.radiusMd,
         onClick = if (isActive) null else onSelect,
     ) {
-        Column {
+        // 高度上限 420dp：常规内容约 300dp 永不触发滚动，只兜住大字号 / 长文件名 /
+        // NPU 警告等极端内容 —— 超高时在卡内滚动，而不是把网格撑出一整屏高的行
+        // （行高超过视口时 LazyVerticalGrid 按行滚，卡片下半截永远看不到）。
+        // 卡内 verticalScroll（父）与玻璃控件（子）的手势共存已由轴向锁定处理：
+        // DampedDragAnimation / InteractiveHighlight 判定纵向意图就让位给父级滚动。
+        Column(
+            modifier = Modifier
+                .heightIn(max = 420.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
