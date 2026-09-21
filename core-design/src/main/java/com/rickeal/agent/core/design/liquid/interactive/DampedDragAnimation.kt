@@ -48,6 +48,17 @@ import kotlinx.coroutines.launch
  * 上下文接收者，本项目按「不开 -Xcontext-receivers」改为普通 lambda 参数）。
  */
 @Stable
+/**
+ * 判定"纵向意图"的阈值：tan(30°) = 0.577。
+ *
+ * 与 foundation 1.10.3 `DragGestureNode.processAwaitTouchSlop` 的分轴规则对齐
+ * （Horizontal: `angle <= 30`；Vertical: `30 < angle <= 90`，角度由
+ * `atan2(x = |dx|, y = |dy|)` 得出，从 X 轴量角）。
+ *
+ * ⚠️ 不要"简化"成 `|dy| > |dx|`（= 45°），否则 30°~45° 斜滑留残余死区。
+ */
+private const val VERTICAL_INTENT_TAN30 = 0.577f
+
 class DampedDragAnimation(
     private val animationScope: CoroutineScope,
     initialValue: Float,
@@ -98,6 +109,22 @@ class DampedDragAnimation(
     /** 按压进度 0~1。 */
     val pressProgress: Float get() = pressAnimatable.value
 
+    /**
+     * 本次手势是否已**让位给父级滚动**（判定为纵向意图后 break 退出）。
+     *
+     * ⚠️ 必须在让位分支里置真，调用方的 `onDragStopped` 要据此**跳过提交**：
+     * 让位意味着我们**没有消费**事件，于是外层的 `toggleable` / `clickable` 不会
+     * 因"事件被消费"而取消按压 —— 抬手时它仍会走一次 `onValueChange`。
+     * 如果此时 `onDragStopped` 也提交（`draggedX≈0` 会落进"纯点击"分支），
+     * 就会**提交两次 = 状态翻两次 = 看起来完全没反应**。
+     * 这正是 P0「点了没反应」从另一条路复活，务必用这个标志挡住。
+     *
+     * 典型场景：设置页按在开关上纵向滑（想滚列表）→ 滚完抬手，开关不能突然翻转。
+     */
+    val yieldedToParent: Boolean get() = yieldedToParentState
+
+    private var yieldedToParentState = false
+
     /** 归一化进度 0~1（相对 [valueRange]）。轨道填充宽度、thumb 位移都用它。 */
     val progress: Float
         get() {
@@ -128,6 +155,7 @@ class DampedDragAnimation(
             // 一并取消掉 —— 表现就是"点了没反应"。
             var accumulatedX = 0f
             var accumulatedY = 0f
+            yieldedToParentState = false
             setPressed(true)
             onDragStarted()
             try {
@@ -139,15 +167,22 @@ class DampedDragAnimation(
                     val dragAmount = current - previous
                     previous = current
                     if (dragAmount != Offset.Zero) {
-                        // ⚠️ 分别累积两轴，**不要用 getDistance()（欧氏距离）**。
-                        // 纵向滑动会让 getDistance() 也变大，于是滑块在 slop 之前就把
-                        // 事件消费掉 → 父级 verticalScroll 的 awaitTouchSlopOrCancellation
-                        // 直接放弃 → **手指按在滑块上时页面滚不动**。
-                        // 13 个滑块全在可滚动容器里（设置页 5 + 参数面板 7 + 端点页 1）。
-                        accumulatedX += abs(dragAmount.x)
-                        accumulatedY += abs(dragAmount.y)
+                        // ⚠️ 累加**有符号**的 dx/dy（净位移）。
+                        // 不要用 abs / getDistance()：它们恒非负，累加的是"路径长度"，
+                        // 来回抖动会单调累加顶过 slop → 误判为拖动 → 误消费。
+                        // Compose 自己累加的也是 dragAccumulator += dragAmount（有符号 Offset）。
+                        //
+                        // 分轴是为了跟父级滚动共存：纵向滑动不该被本手势吃掉，
+                        // 否则父级 verticalScroll 的 awaitTouchSlopOrCancellation 会放弃
+                        // → **手指按在滑块上时页面滚不动**（13 个滑块全在可滚动容器里）。
+                        accumulatedX += dragAmount.x
+                        accumulatedY += dragAmount.y
 
-                        // 轴向锁定：纵向累积更大 → 判定为"用户想滚列表"，本手势让位。
+                        // 轴向锁定：判定为纵向意图 → 让位给父级滚动。
+                        //
+                        // ⚠️ 阈值必须跟 Compose 对齐（同 InteractiveHighlight）：
+                        //   |dy| > |dx| * tan30°(0.577)
+                        // 写成 |dy| > |dx|（45°）会在 30°~45° 斜滑留残余死区。
                         //
                         // ⚠️ 必须 **break**，不能只"跳过本次 consume/onDrag"（源码依据）：
                         // verticalScroll / LazyColumn 的 startDragImmediately = false，
@@ -156,13 +191,17 @@ class DampedDragAnimation(
                         // 继续走 onDrag，表现为"一边滚页面一边改数值"。
                         // break 后 awaitEachGesture 等抬手才重启，一次解决。
                         // 代价：用户要多滑几 px 才起滚。
-                        if (accumulatedY > accumulatedX) {
+                        if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
+                            // 让位给父级滚动。必须置位——见 [yieldedToParent] 的说明：
+                            // 不消费意味着外层 toggleable/clickable 不会被取消，
+                            // 抬手时它还会提交一次；若 onDragStopped 也提交就是两次。
+                            yieldedToParentState = true
                             break
                         }
 
                         // 横向意图：越过 [consumeSlopPx] 才消费。
                         // 严格大于：consumeSlopPx = 0f 时 `0 > 0` 为假，纯抖动不消费。
-                        if (accumulatedX > consumeSlopPx) {
+                        if (abs(accumulatedX) > consumeSlopPx) {
                             change.consume()
                             onDrag(this@DampedDragAnimation, valueAnimatable.value, dragAmount)
                         }

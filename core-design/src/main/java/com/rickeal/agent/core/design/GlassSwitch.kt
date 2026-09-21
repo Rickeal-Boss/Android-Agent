@@ -112,15 +112,22 @@ fun GlassSwitch(
             pressedScale = 1.5f,
             onDragStarted = {},
             onDragStopped = {
-                if (abs(draggedX) > touchSlopPx) {
-                    // 真的拖过了：按松手时的位置决定最终态，并在这里提交。
-                    fraction = if (targetValue >= 0.5f) 1f else 0f
-                    currentOnCheckedChange?.invoke(fraction == 1f)
+                // ⚠️ 让位给父级滚动时**一律不提交**。
+                // 让位意味着我们没有消费事件，外层 toggleable 不会因"被消费"而取消按压；
+                // 它自己还会在位移越过 touchSlop 时取消（那才是我们要的正确路径）。
+                // 若这里再提交一次，就会和 toggleable 的提交叠加 —— 状态翻两次，
+                // 表现就是"点了没反应"，正是 P0 那条从另一条路复活。
+                if (!yieldedToParent) {
+                    if (abs(draggedX) > touchSlopPx) {
+                        // 真的拖过了：按松手时的位置决定最终态，并在这里提交。
+                        fraction = if (targetValue >= 0.5f) 1f else 0f
+                        currentOnCheckedChange?.invoke(fraction == 1f)
+                    }
+                    // 纯点击**不在这里提交**：交给外层的 toggleable 统一走 onValueChange，
+                    // 否则同一次点击会回调 onCheckedChange 两次。
+                    // 值回来后由下面的 LaunchedEffect(checked) 把 fraction 动画过去 ——
+                    // 保持"checked 是唯一事实来源"，被外部驳回时视觉也不会先翻过去。
                 }
-                // 纯点击**不在这里提交**：交给外层的 toggleable 统一走 onValueChange，
-                // 否则同一次点击会回调 onCheckedChange 两次。
-                // 值回来后由下面的 LaunchedEffect(checked) 把 fraction 动画过去 ——
-                // 保持"checked 是唯一事实来源"，被外部驳回时视觉也不会先翻过去。
                 draggedX = 0f
             },
             onDrag = { _, dragAmount ->

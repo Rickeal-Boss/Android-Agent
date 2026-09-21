@@ -201,10 +201,14 @@ private fun LiquidSliderTrack(
                 pressedScale = 1.5f,
                 onDragStarted = {},
                 onDragStopped = {
-                    if (didDrag) {
+                    // ⚠️ 让位给父级滚动时**不落盘**：
+                    // 判定为纵向意图之前的几帧可能有横向亚像素噪声，那时 onDrag 已被调用
+                    // 过、didDrag 已置真；若照常触发 onValueChangeFinished，用户只是
+                    // 想滑列表却白白落盘一次（且值其实没怎么动）。
+                    if (didDrag && !yieldedToParent) {
                         currentOnFinished?.invoke()
-                        didDrag = false
                     }
+                    didDrag = false
                 },
                 onDrag = { _, dragAmount ->
                     if (!didDrag) {
@@ -293,6 +297,11 @@ private fun LiquidSliderTrack(
                 .fillMaxWidth()
                 .pointerInput(animationScope) {
                     detectTapGestures { position ->
+                        // ⚠️ 让位给父级滚动后，抬手**不要**当成点击跳值。
+                        // 用户是"按在滑块上想滑列表"，不是"点轨道某个位置"。
+                        // detectTapGestures 有自己的 slop，大幅滑动本来就不会触发 onTap；
+                        // 这条挡的是小幅斜滑（未过它 slop）却已判定为纵向意图的边界情况。
+                        if (dampedDragAnimation.yieldedToParent) return@detectTapGestures
                         val range = currentRange
                         val delta = (range.endInclusive - range.start) * (position.x / trackWidth)
                         val target =

@@ -44,6 +44,18 @@ private val DragFollowSpring = spring<Float>(
 )
 
 /**
+ * 判定"纵向意图"的阈值：tan(30°) = 0.577。
+ *
+ * 与 foundation 1.10.3 `DragGestureNode.processAwaitTouchSlop` 的分轴规则对齐：
+ *   `atan2(x = |dx|, y = |dy|)` → Horizontal: `angle <= 30`；Vertical: `30 < angle <= 90`
+ * 换算成可直接比较的形式即 `|dy| > |dx| * tan(30°)`。
+ *
+ * ⚠️ 不要"简化"成 `|dy| > |dx|`（那等于把分界放到 45°），
+ * 否则 30°~45° 的斜滑会出现「Compose 认为父级该滚、我们却判横向并消费」的死区。
+ */
+private const val VERTICAL_INTENT_TAN30 = 0.577f
+
+/**
  * 交互高光：把「按压进度」+「跟手拖拽偏移」打包成一个对象，供 `layerBlock` 读。
  *
  * Kyant0 的每个交互组件都在 `layerBlock` 里读它的两个值：
@@ -149,10 +161,23 @@ class InteractiveHighlight(
                         //
                         // 越过 slop 才消费，两条路径就干净分开了：
                         // 点击（含抖动）不消费 → clickable 正常触发；真拖动消费 → 父级滚动抢不走。
-                        accumulatedX += abs(dragAmount.x)
-                        accumulatedY += abs(dragAmount.y)
+                        // ⚠️ 累加**有符号**的 dx/dy（净位移），不要累加 abs / getDistance()。
+                        // getDistance() 恒非负 → 累加的是"路径长度"，来回抖动会单调累加
+                        // 顶过 slop → 误判为拖动 → 误消费 → 外层 clickable 被取消。
+                        // Compose 自己累加的也是 dragAccumulator += dragAmount（有符号 Offset）。
+                        accumulatedX += dragAmount.x
+                        accumulatedY += dragAmount.y
 
-                        // 轴向锁定：纵向累积更大 → 判定为"用户想滚列表"，本手势让位。
+                        // 轴向锁定：判定为纵向意图 → 让位给父级滚动。
+                        //
+                        // ⚠️ 阈值 **必须跟 Compose 对齐**，不能用直觉的「|dy| > |dx|」。
+                        // foundation 1.10.3 DragGestureNode.processAwaitTouchSlop：
+                        //   atan2(x = |dx|, y = |dy|) 换算角度
+                        //   Horizontal: angle <= 30 ; Vertical: 30 < angle <= 90
+                        // 命名参数 x=|dx|、y=|dy|，即 atan(|dy|/|dx|)，**从 X 轴量角**
+                        // （0°=纯横、90°=纯纵）。故 Vertical ⟺ |dy| > |dx| * tan30° = 0.577。
+                        // 若写成 |dy| > |dx|（等于 45°），则 30°~45° 这段斜滑会出现
+                        // "Compose 认为父级该滚、我们却判横向并消费"的残余死区。
                         //
                         // ⚠️ 必须 **break**，不能只"跳过 consume"（源码依据）：
                         // verticalScroll / LazyColumn 的 startDragImmediately = false，
@@ -161,14 +186,17 @@ class InteractiveHighlight(
                         // 走 onDrag / 跟手位移，表现为"一边滚页面一边改数值"。
                         // break 后 awaitEachGesture 等抬手才重启，一次解决。
                         // 代价：用户要多滑几 px 才起滚，且按压态提前归位（与系统一致）。
-                        if (accumulatedY > accumulatedX) {
+                        //
+                        // 用**累计** dx/dy 判定（Compose 自己也是用 dragAccumulator），
+                        // 单帧 delta 在起手那一两帧方向噪声很大。
+                        if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
                             break
                         }
 
                         // ⚠️ 用公开的 `touchSlop`。foundation 内部那个
                         // `viewConfiguration.pointerSlop(pointerType)` 是 internal 扩展，
                         // 外部调不到（CI 实测 Unresolved reference）。
-                        if (accumulatedX >= viewConfiguration.touchSlop) {
+                        if (abs(accumulatedX) >= viewConfiguration.touchSlop) {
                             change.consume()
                         }
                         // 跟手位移与是否消费无关，照常累加 —— 手感不受影响。
