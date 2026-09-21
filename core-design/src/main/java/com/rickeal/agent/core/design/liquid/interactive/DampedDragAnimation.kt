@@ -125,6 +125,17 @@ class DampedDragAnimation(
 
     private var yieldedToParentState = false
 
+    /**
+     * 本次手势结束的原因：`true` = 手指还按着但事件被父级拿走（releasedCancel），
+     * `false` = 用户真的抬手了（released）。
+     *
+     * 两者在 `awaitPointerEvent` 里都表现为 `!change.pressed`，必须靠 `isConsumed`
+     * 区分：被消费即 cancel。一律按"正常抬手"处理会让按压缩放错误弹回。
+     */
+    val yawReleaseCancel: Boolean get() = releaseCancelState
+
+    private var releaseCancelState = false
+
     /** 归一化进度 0~1（相对 [valueRange]）。轨道填充宽度、thumb 位移都用它。 */
     val progress: Float
         get() {
@@ -148,6 +159,15 @@ class DampedDragAnimation(
      */
     val modifier: Modifier = Modifier.pointerInput(this) {
         awaitEachGesture {
+            // ⚠️ 每轮手势**最开头**就清掉让位标志（在 awaitFirstDown 之前）。
+            // awaitEachGesture 的语义是一次手势 = down 到 up，up 之后才进下一轮；
+            // 放在这里能保证"上一次让位过"绝不会残留到下一次手势。
+            //
+            // 反过来，**不要在 finally 里清**：onDragStopped 是在 finally 里执行的，
+            // 它必须读到 true 才能跳过提交（否则让位后仍会双重提交，状态翻两次）。
+            // 也就是说这个标志的生命周期是"本次手势"，由下一轮的开头负责收尾。
+            yieldedToParentState = false
+            releaseCancelState = false
             val down = awaitFirstDown(requireUnconsumed = false)
             var previous = down.position
             // 累积位移：consume 与否按**累积量**判定，不按单帧 delta。
@@ -155,9 +175,20 @@ class DampedDragAnimation(
             // 一并取消掉 —— 表现就是"点了没反应"。
             var accumulatedX = 0f
             var accumulatedY = 0f
+            // 轴向**只判定一次**（latch）。不能用 running 净位移逐帧重判：
+            // 来回拖动会让净位移归零、方向来回翻转，手势会在中途莫名其妙让位。
+            var axisDecided = false
             // ⚠️ slop 必须在**循环外**取一次快照。
-            // viewConfiguration 来自 CompositionLocal，手势跑到后面时 composition
-            // 可能已经 dispose，此时再取值会抛 IllegalStateException（CompositionLocal 越界）。
+            //
+            // 为什么这行是安全的：`awaitFirstDown` / `awaitEachGesture` 的 lambda 与
+            // `pointerInput` 的协程在同一个 continuation 里，进入 `awaitEachGesture`
+            // 那一刻仍在 composition 内，所以这里读 CompositionLocal 合法。
+            //
+            // 但**之后就不行了**：`awaitFirstDown` 返回后，当前 continuation 已经离开
+            // composition；此后每次 `awaitPointerEvent()` 返回都会跑到下一个
+            // `awaitPointerEvent()`，这中间不在 composition 内 —— 那时再读
+            // `viewConfiguration` 会抛 IllegalStateException。
+            // 所以循环内一律用这里的 `slop`，不许再出现 viewConfiguration。
             val slop = viewConfiguration.touchSlop
             yieldedToParentState = false
             setPressed(true)
@@ -166,7 +197,15 @@ class DampedDragAnimation(
                 while (true) {
                     val event = awaitPointerEvent()
                     val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                    if (!change.pressed) break
+                    if (!change.pressed) {
+                        // ⚠️ `!change.pressed` 有**两种**截然不同的含义，不能一律当抬手：
+                        //   released()        —— 用户真的抬手了
+                        //   releasedCancel()  —— 手指还按着，但事件被父级消费（我们去滚列表了）
+                        // 后者如果按"正常抬手"处理，会让按压缩放弹回、状态机误判。
+                        // 判据：被消费 = cancel。
+                        releaseCancelState = change.isConsumed
+                        break
+                    }
                     val current = change.position
                     val dragAmount = current - previous
                     previous = current
@@ -201,20 +240,42 @@ class DampedDragAnimation(
                         // 整个手势作废 → 滑块/开关"有时拖不动"（随机，极难查）。
                         // Compose 也是在越过 slop 那一刻才算 gestureAngle，不是第一帧。
                         val reach = Offset(abs(accumulatedX), abs(accumulatedY)).getDistance()
-                        if (reach >= slop) {
+                        // 轴向**只判定一次**（axisDecided latch）。
+                        // 不能用 running 净位移逐帧重判：有符号累加下，来回拖两帧净位移
+                        // 就归零，方向会来回翻转 —— 手势中途莫名其妙让位。
+                        if (!axisDecided && reach >= slop) {
+                            axisDecided = true
                             if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
-                                // 让位给父级滚动。必须置位——见 [yieldedToParent] 的说明：
-                                // 不消费意味着外层 toggleable/clickable 不会被取消，
-                                // 抬手时它还会提交一次；若 onDragStopped 也提交就是两次。
+                                // 让位给父级滚动。置位后本手势"吞掉"后续事件。
                                 yieldedToParentState = true
-                                break
                             }
                         }
 
-                        // 横向意图：越过 [consumeSlopPx] 才消费。
-                        // 严格大于：consumeSlopPx = 0f 时 `0 > 0` 为假，纯抖动不消费。
-                        if (abs(accumulatedX) > consumeSlopPx) {
-                            change.consume()
+                        // ⚠️ 让位后**不能 break**，要继续留在循环里把这个手势走完。
+                        //
+                        // 源码（foundation 1.10.3 AwaitPointerEventScope）：
+                        //   awaitEachGesture { ... } 的结构是
+                        //     while (true) { awaitFirstDown(); ...; awaitAllEventsUp() }
+                        //   且 awaitFirstDown(requireUnconsumed = false) 会立刻接受
+                        //   **当前仍按着**的手指。所以这里一旦 break，
+                        //   下一轮 awaitFirstDown 会马上拿到同一根手指，
+                        //   awaitPointerEvent() 直接返回 up → !change.pressed → 立刻 break
+                        //   → 又走一次 onDragStopped（didDrag 仍为 true → 落盘）
+                        //   → 反复直到抬手，落盘 N 次。
+                        //
+                        // 正确做法：置位后既不消费也不 onDrag，但**继续等 up**，
+                        // 让 onDragStopped 只在真正结束时被调用一次。
+                        if (!yieldedToParentState) {
+                            // 横向：越过 [consumeSlopPx] 才消费。
+                            // 严格大于：consumeSlopPx = 0f 时 `0 > 0` 为假，纯抖动不消费。
+                            if (abs(accumulatedX) > consumeSlopPx) {
+                                change.consume()
+                            }
+                            // ⚠️ onDrag **必须每帧无条件回调**，不能塞进上面的门控里。
+                            // 累加是有符号净位移，来回拖两帧它就归零；若 onDrag 受
+                            // `abs(accumulatedX) > consumeSlopPx` 门控，来回拖到中途
+                            // onDrag 会彻底不再触发 → 滑块值卡住、开关拖到一半松手失效。
+                            // 改动前它就是每个 move 无条件回调的，这里保持该语义。
                             onDrag(this@DampedDragAnimation, valueAnimatable.value, dragAmount)
                         }
                     }
@@ -226,7 +287,12 @@ class DampedDragAnimation(
                 // 更糟的是 onDragStopped 不触发 —— 滑块的 onValueChangeFinished
                 // 永远不来，设置页改完温度**不落盘**。
                 setPressed(false)
+                // ⚠️ 顺序不能换：onDragStopped 必须**先**执行、且能读到 true，
+                // 它才能据此跳过提交（让位场景）。清标志必须放在它之后。
                 onDragStopped(this@DampedDragAnimation)
+                // 让位标志的生命周期 = 本次手势。这里清掉，避免跨手势残留。
+                // （awaitEachGesture 开头那次复位是双保险，两者不冲突。）
+                yieldedToParentState = false
             }
         }
     }

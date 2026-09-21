@@ -211,8 +211,11 @@ private fun LiquidSliderTrack(
                     didDrag = false
                 },
                 onDrag = { _, dragAmount ->
-                    if (!didDrag) {
-                        didDrag = dragAmount.x != 0f
+                    // didDrag 只在**确实改了值**时才置真，且让位期间不置。
+                    // 原来写成 `dragAmount.x != 0f`：纵向滚列表经过滑块时也会有
+                    // 亚像素横向噪声 → 误置真 → 抬手白白落盘一次。
+                    if (!didDrag && !yieldedToParent && dragAmount.x != 0f) {
+                        didDrag = true
                     }
                     val range = currentRange
                     val delta = (range.endInclusive - range.start) * (dragAmount.x / trackWidth)
