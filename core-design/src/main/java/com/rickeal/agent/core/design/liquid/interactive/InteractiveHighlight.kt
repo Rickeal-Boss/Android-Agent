@@ -14,6 +14,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
+import kotlin.math.abs
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -122,7 +123,9 @@ class InteractiveHighlight(
             val down = awaitFirstDown(requireUnconsumed = false)
             var previous = down.position
             // 累积位移：是否 consume 按**累积量**判定，不按单帧 delta。
-            var accumulated = 0f
+            // 两轴分开记 —— 纵向累积更大时判定为"用户想滚列表"，本手势让位。
+            var accumulatedX = 0f
+            var accumulatedY = 0f
             touchOffset = down.position
             setPressed(true)
             try {
@@ -146,11 +149,21 @@ class InteractiveHighlight(
                         //
                         // 越过 slop 才消费，两条路径就干净分开了：
                         // 点击（含抖动）不消费 → clickable 正常触发；真拖动消费 → 父级滚动抢不走。
-                        accumulated += dragAmount.getDistance()
+                        accumulatedX += abs(dragAmount.x)
+                        accumulatedY += abs(dragAmount.y)
+
+                        // 轴向锁定：纵向累积更大 → 判定为"用户想滚列表"，本手势让位。
+                        // 既**不消费**（父级 LazyColumn / verticalScroll 才能接管滚动），
+                        // 也**不更新跟手位移**（否则页面滚动时按钮还跟着手指跑，很怪）。
+                        // pressProgress 仍保持 1 —— 手指确实还按着，该有按压反馈。
+                        if (accumulatedY > accumulatedX) {
+                            continue
+                        }
+
                         // ⚠️ 用公开的 `touchSlop`。foundation 内部那个
                         // `viewConfiguration.pointerSlop(pointerType)` 是 internal 扩展，
                         // 外部调不到（CI 实测 Unresolved reference）。
-                        if (accumulated >= viewConfiguration.touchSlop) {
+                        if (accumulatedX >= viewConfiguration.touchSlop) {
                             change.consume()
                         }
                         // 跟手位移与是否消费无关，照常累加 —— 手感不受影响。
