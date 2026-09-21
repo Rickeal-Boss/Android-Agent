@@ -45,6 +45,8 @@
 | **卡片 / 对话框 / 对话气泡没有色散**（边缘没有彩虹色带） | 色散要 7 次采样、约 7 倍开销。气泡是全 App 最长的列表，一屏十几条，开着必掉帧。**性能取舍，不是效果缺失** | commit `b63cca7` |
 | **色散只出现在小控件上**（滑块 / 开关的 thumb） | 面积小才扛得住 7 倍开销，这是本轮刻意保留的 | `GlassSlider.kt:353`、`GlassSwitch.kt:188` |
 | logcat 里出现 `LiquidGlass: lens 跳过折射：shape=... 不是 ...` | **正常且无害**。传非 `Capsule` 形状本身合法，只是拿不到折射优化。级别是 `Log.d`，release 包会被 R8 整条删掉 | `Lens.kt:126-131` |
+| **设置页按在开关 / 设置行上滑不动页面** | **预期行为，不要报**。整行都是手势区、`fillMaxWidth()` 全宽吃满，父级只能从行与行之间的空白起手。用户早已习惯"按在行上没反应、按在空白才滚" | `GlassSettingRow.kt:59` / `:82`（`fillMaxWidth`） |
+| **在按钮上起手滑列表，要先滑一小段才起滚** | **预期代价，不是 bug**。轴向判定需要几 px 位移才能确定方向，所以起滚会有极短的延迟 | 见 §4.2 |
 
 > 另有一条**本轮已变更**、容易误判的：
 > **底栏页签项是跟手的**（按住会跟着手指位移、沿拖动方向拉长，松手回弹）。
@@ -209,6 +211,52 @@ CI 和静态审查都发现不了，只有真机能复现。
     而不是把纵向 / 横向的欧氏距离一起累加
     （现状是 `accumulated += dragAmount.getDistance()`，见 `DampedDragAnimation.kt:134`）
 
+### 4.2 模型页：按在按钮 / chip 上纵向滑，页面要能滚（**P0，覆盖面最大**）
+
+**这是比 §4.1 更大的面，别只测滑块就收工。**
+
+> **为什么模型页是最大面**：`ModelsScreen.kt:136` 是 `LazyVerticalGrid`，而每张 `ModelCard`
+> 里有 **4 个 `GlassButton`**（`ModelCard.kt:160/174/190/203`）**外加一堆 `GlassChip`**
+> （体积 / 量化 / 家族 / 能力位等，一张卡最多能到 9 个）。
+> 这是全 App 唯一"**在可滚容器里塞多个小按钮**"的地方，而模型页是主页面之一 ——
+> 用户在按钮上起手滑列表是**最高频**动作。
+>
+> 对照：设置页的 `GlassSettingRow` **不受影响**（整行全宽吃满手势区，见 §1）——
+> 那边滑不动是预期的，**不要报**。
+
+- **操作**：
+  1. 进**模型页**（卡片网格，主页面之一）
+  2. 手指**按在某张卡片上的按钮**（卸载 / 加载 / 探测 / 删除任一）**纵向**滑动
+  3. 同样在卡片里的 **chip** 上试一次
+  4. 再试：按在卡片**空白处**（按钮之间的区域）纵向滑 —— 这个应当**一直**能滚
+- **预期**：
+  - 按在按钮 / chip 上纵向滑 → **页面应当滚动**，不该被按钮吃掉
+  - 按在卡片空白处滑 → **一直**能滚
+  - **横向**拖按钮仍然有**跟手形变**（玻璃跟着手指跑、沿拖动方向拉长）——
+    这条不能丢，它是本轮的核心视觉特性
+- **不合格时的排查指向**：
+  - **"按在按钮上滑不动，但按空白处能滑"** → `InteractiveHighlight` 的**轴向锁定没生效**。
+    定位 `liquid/interactive/InteractiveHighlight.kt` 里 `accumulatedY > accumulatedX`
+    那个分支（`:164-165`）——应当是 **`break`**，不是 `continue`、**也不是只跳过 `consume()`**。
+
+    > 为什么必须是 `break`：`verticalScroll` / `LazyColumn` 的 `startDragImmediately = false`，
+    > 父级只在 **Main pass** 消费，而 Main **自下而上**，子级永远先拿到未消费事件。
+    > 只跳一次 `consume()` 的话，父级开滚后子级仍会继续 `onDrag` 把事件吃掉。
+    > `break` 后 `awaitEachGesture` 等抬手才重启，一次解决。
+  - **"现在能滚了，但横向拖动不跟手了"** → **修过头了**：`break` 条件写成了
+    "只要有位移就 break"。正确是**只在纵向累积更大时 break**（`accumulatedY > accumulatedX`），
+    横向要保住消费 + 跟手 —— 横向消费的作用是取消外层 `clickable`，
+    避免拖动后松手误触发 `onClick`
+  - **"要先滑一小段才起滚"** → **这是预期代价，不是 bug**，见 §1。
+    轴向判定需要几 px 位移才能确定方向
+  - **"chip 的占位比预期宽 / 挤开了旁边的控件"** → 见下面这条观察项
+
+> **观察项（当前无调用点依赖，但值得留意）**：`GlassChip` 的
+> `Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)`（`GlassChip.kt:87`）
+> 带了对齐参数后会**吃满父级宽度**；chip 家族本身没有 `fillMaxWidth` 的写法，
+> 所以放进 `Row` 的 `weight` / `spacer` 布局时，实际占位会和加对齐之前不一样。
+> 如果发现 chip 比预期宽，就是这处。
+
 ---
 
 ## 5. 对话页灌 30+ 条消息快速滚动（**验证 P1-3：色散开销**）
@@ -333,11 +381,14 @@ CI 和静态审查都发现不了，只有真机能复现。
 | 开关 TalkBack 双击切不动 | 外层 `toggleable` + `heightIn(min = tokens.minTouchTarget)` | 不应只有孤立的 `role = Role.Switch` |
 | 滑块点不中 / 值不保存 | 48dp 外层 + `onValueChangeFinished` 落盘 | 手势不能挂在 6dp 轨道上 |
 | **按在滑块上滑不动页面** | `GlassSlider` 构造 `DampedDragAnimation` 时是否传 `consumeSlopPx` | 没传 = 默认 `0f`；对比 `GlassSwitch.kt:137` 传的是 `touchSlopPx` |
+| **模型页按在按钮/chip 上滑不动** | `InteractiveHighlight.kt:164-165` 的轴向锁定分支 | 必须是 `accumulatedY > accumulatedX` 时 **break**，不能只跳过 `consume()` |
 | 气泡滚动掉帧 | 大面积容器的 `dispersion` | `dispersion: Boolean = true` 应零命中 |
 | 返回键按 N+ 次 / 毫无反应 | [`docs/09`](09-back-navigation.md) | `startDestination` 与 route 是否同源 |
 | 底栏拖动不跟手 | `LiquidAgentApp.kt` 页签项的 `pressLayerBlock` | 每个页签项各自持有 `InteractiveHighlight` |
 | 低端机崩 / 黑块 | `LiquidGlassCapabilities` 的 AGSL 门控 | 不应硬写 `SDK_INT >= 33` |
 | 开关没名字（TalkBack 只念"开关"） | **已知问题**，见 §1.1 | `GlassSwitch` 无 `label` 参数；若设置行外层 Text 能念出名字则降级 |
+| 设置页按在开关 / 设置行上滑不动 | **不用报**，见 §1 | 整行全宽吃满手势区，属预期 |
+| 在按钮上起手滑，要先滑一小段才起滚 | **不用报**，见 §1 | 轴向判定的预期代价 |
 | 顶栏 / 输入框不是胶囊 | **不用报**，见 §1 | 有意为之 |
 | thumb 静止是白色实心 | **不用报**，见 §1 | 对齐 Kyant0 |
 | 气泡没有色散 | **不用报**，见 §1 | 性能取舍 |
