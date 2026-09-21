@@ -257,6 +257,44 @@ CI 和静态审查都发现不了，只有真机能复现。
 > 所以放进 `Row` 的 `weight` / `spacer` 布局时，实际占位会和加对齐之前不一样。
 > 如果发现 chip 比预期宽，就是这处。
 
+### 4.3 底部导航 LiquidBottomTabs（**真机反馈轮新组件，全量验**）
+
+本轮把底部"对话/模型/设置"重写为 Kyant0 式四层结构（滑动指示面板 +
+隐形回显行 + 滑动指示胶囊），选中态从"材质厚薄区分"升级为"胶囊滑动跟随"。
+
+1. **单击已选中页签**（手指落在高亮胶囊上）：8dp 内不消费，必须正常无反应/
+   或保持选中（**这是"点了没反应"那口井的专项** —— 胶囊手势与页签 clickable 同点叠加）
+2. **单击未选中页签**：胶囊从当前位置**滑过去**（不是瞬移），到达后吸附
+3. **按住胶囊横向拖动**：胶囊跟手滑动、面板 4dp 拉伸、松手吸附最近页签并回调切换
+4. **拖到首末端**：不溢出不卡死，面板拉伸回弹
+5. **导航返回 / 程序化切页后**：胶囊自动滑回正确位置（外部 selectedIndex 回流）
+6. **设置里关掉「背景模糊」**再看底部导航：退化为常驻底色 + accent 描边选中框，
+   不空窗、选中信号仍可辨（描边约 0.5dp 视觉宽，若太细报回来，两边同步加宽）
+7. **旋转 / 分屏**后拖动换页：跟手比例正常（tabWidth 已 State 化，旧闭包 bug 已修）
+8. **低端机帧率**：拖动胶囊时看是否掉帧（胶囊开了色散 7 采样，面积小理论扛得住）
+
+### 4.4 GlassSegmented 指示胶囊（CPU/GPU/NPU 那排，新结构）
+
+分段控件重写为三层骨架（可见行 / 回显行 / 滑动胶囊），与底部导航同一套机制：
+
+1. **单击已选中段**：8dp 分流，点击直达（不得"点了没反应"）
+2. **单击未选中段**：胶囊滑过去、文字高亮切换
+3. **按住胶囊横拖**：项间滑动过渡、松手吸附；item 文字被胶囊折射出"发光"效果
+4. **回归**：各页的 Segmented（对话参数 本地/远程 + 思考模式、模型页 CPU/GPU/NPU、
+   设置页、诊断页）逐个点一遍，行为一致
+5. **回归**：分段项**纯点击**仍触发（`dc89569` 删了旧按压手势层，按压反馈只剩
+   dampedDragAnimation 路径 —— 点按手感有变化属预期，但点击必须生效）
+
+### 4.5 空对话页按钮排 + 模型卡卡内滚动（新功能）
+
+1. **空对话页三个按钮**：导入本地模型 / 下载推荐模型 → 模型页；配置远程端点 → 端点页。
+   返回键回对话页（端点页是子路由，返回栈保留）
+2. **窄屏 / 最大系统字号**：三个按钮是否溢出被裁（Row 无换行，溢出则报，
+   修法是换 FlowRow）
+3. **模型卡内容超高时**（大字号 / 长文件名）：卡内滚动，滚到底后网格接力；
+   内容不超高时卡片正常、网格直接滚
+4. **模型卡内 CPU/GPU/NPU 横拖 vs 卡片纵滚分流**：横向拖段控件换值、纵向滑卡片滚动
+
 ---
 
 ## 5. 对话页灌 30+ 条消息快速滚动（**验证 P1-3：色散开销**）
@@ -380,11 +418,13 @@ CI 和静态审查都发现不了，只有真机能复现。
 | **按钮 / 页签点了没反应**（含底栏侧栏） | `InteractiveHighlight.kt` 的 `gestureModifier` | 必须按**累积**位移越过 `viewConfiguration.touchSlop` 才 `consume()` |
 | 开关 TalkBack 双击切不动 | 外层 `toggleable` + `heightIn(min = tokens.minTouchTarget)` | 不应只有孤立的 `role = Role.Switch` |
 | 滑块点不中 / 值不保存 | 48dp 外层 + `onValueChangeFinished` 落盘 | 手势不能挂在 6dp 轨道上 |
-| **按在滑块上滑不动页面** | `GlassSlider` 构造 `DampedDragAnimation` 时是否传 `consumeSlopPx` | 没传 = 默认 `0f`；对比 `GlassSwitch.kt:137` 传的是 `touchSlopPx` |
-| **模型页按在按钮/chip 上滑不动** | `InteractiveHighlight.kt:164-165` 的轴向锁定分支 | 必须是 `accumulatedY > accumulatedX` 时 **break**，不能只跳过 `consume()` |
+| **按在滑块上滑不动页面** | `DampedDragAnimation.kt` 的轴向锁定 | 纵向意图判定必须是 `abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30(0.577)` 且 **break** 让位；阈值写成 45° 会在 30°~45° 留死区 |
+| **模型页按在按钮/chip 上滑不动** | `InteractiveHighlight.kt` 的 `VERTICAL_INTENT_TAN30` break 分支（约 :203） | 同上：0.577 阈值 + break，不能只跳过 `consume()` |
+| **滑块拖动抽动 / 不跟手 / 到不了首末端** | `GlassSlider.kt` 的 `onDrag` | 必须是 `dragAccumPx` 手势内累积 + `dragStartValue` 绝对映射；出现 `targetValue + delta` 增量基准即回归 |
 | 气泡滚动掉帧 | 大面积容器的 `dispersion` | `dispersion: Boolean = true` 应零命中 |
 | 返回键按 N+ 次 / 毫无反应 | [`docs/09`](09-back-navigation.md) | `startDestination` 与 route 是否同源 |
-| 底栏拖动不跟手 | `LiquidAgentApp.kt` 页签项的 `pressLayerBlock` | 每个页签项各自持有 `InteractiveHighlight` |
+| **底部导航拖动不跟手 / 选中胶囊不动** | `LiquidBottomTabs.kt`（四层结构） | 胶囊层必须有 `dampedDragAnimation.modifier` + `consumeSlopPx = 8dp` |
+| **分段控件（CPU/GPU/NPU）点击没反应 / 拖不动** | `GlassSegmented.kt` 胶囊层 | 同上：`consumeSlopPx` 必须 8dp；纵向让位同 `VERTICAL_INTENT_TAN30` |
 | 低端机崩 / 黑块 | `LiquidGlassCapabilities` 的 AGSL 门控 | 不应硬写 `SDK_INT >= 33` |
 | 开关没名字（TalkBack 只念"开关"） | **已知问题**，见 §1.1 | `GlassSwitch` 无 `label` 参数；若设置行外层 Text 能念出名字则降级 |
 | 设置页按在开关 / 设置行上滑不动 | **不用报**，见 §1 | 整行全宽吃满手势区，属预期 |
