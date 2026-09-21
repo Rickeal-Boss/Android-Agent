@@ -65,7 +65,11 @@ fun GlassTopBar(
                         maxScale = 4.dp
                     ),
                 )
-                .then(interactiveHighlight.modifier)
+                // ⚠️ 刻意**不**挂 InteractiveHighlight 的高光修饰器，只挂 gestureModifier：
+                // 那个修饰器会在玻璃之后画一层**镜面高光**，半径 = min(w,h) * 0.9 ——
+                // 顶栏是全宽 × 56dp，半径算出来 ≈ 50dp，会从边缘溢出去盖住标题文字
+                // 和右侧 action 图标（drawWithContent 在玻璃之后绘制，压在内容之上）。
+                // 设置行（全宽 × 48dp）是同一类问题，见 GlassSettingRow 的注释。
                 .then(interactiveHighlight.gestureModifier)
                 .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
