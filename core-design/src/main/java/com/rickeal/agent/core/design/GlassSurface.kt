@@ -65,6 +65,12 @@ import java.util.Locale
  *   分段项）都应该用胶囊 —— 这是 iOS Liquid Glass 的标志性轮廓。
  * @param layerBlock **跟手形变**：直接透传给 `liquidGlass`，见
  *   `liquid/interactive/InteractiveHighlight`。静态截图看不出差别，真机一按就露馅。
+ * @param gestureModifier 跟手手势（通常是 `InteractiveHighlight.gestureModifier`）。
+ *   ⚠️ **必须**走这个形参，不能塞进 [modifier]：门面内部会把 `clickable` 追加在
+ *   [modifier] **之后**，从 [modifier] 里塞进来的手势会变成
+ *   `手势 → clickable`（顺序反了），横拖时可能误触发 onClick。
+ *   本形参在 `clickable` **之后**才 `.then`，与其它组件
+ *   （GlassButton / Chip / Fab / Segmented）的 `clickable → ... → 手势` 一致。
  * @param dispersion 色散（RGB 分离 → 边缘彩虹）。默认**关**：色散要 7 次采样（约 7 倍
  *   开销），默认开会让"没显式传"的调用点**悄悄吃掉 7 倍** —— 对话气泡这类长列表
  *   一屏十几条，开着必掉帧。大面积容器（Card / Dialog / 气泡）一律关；
@@ -86,6 +92,7 @@ fun LiquidGlassSurface(
     refractionHeight: Dp? = null,
     refractionAmount: Dp? = null,
     layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
+    gestureModifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
     // 按压进度 → 传给玻璃，让它在按下时"变实"（模糊减弱 + 折射增强 + 高光变亮）。
@@ -135,6 +142,10 @@ fun LiquidGlassSurface(
             pressProgress = pressProgress,
             layerBlock = layerBlock,
         )
+        // 手势挂在整个链的**最后**（与 GlassButton / Chip / Fab / Segmented 一致）：
+        // 它在内侧，真拖动时 consume 掉事件会让外层 clickable 取消按压；
+        // 纯点击时它不消费，clickable 正常触发。顺序反了就是横拖误触发跳转。
+        .then(gestureModifier)
     Box(
         modifier = glassModifier,
         contentAlignment = contentAlignment,

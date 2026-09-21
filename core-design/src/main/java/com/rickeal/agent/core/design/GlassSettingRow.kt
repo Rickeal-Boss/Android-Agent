@@ -49,10 +49,15 @@ fun GlassSettingRow(
 
     LiquidGlassSurface(
         // 无副标题时整行只有 ≈44dp；整行都是点击区，补到 48dp。
+        //
+        // ⚠️ 手势**不能**塞在 modifier 里（原来就是这么写的）：LiquidGlassSurface
+        // 会把自己的 clickable 追加在 modifier **之后**，于是实际链是
+        // `手势 → clickable`，与其它组件的 `clickable → ... → 手势` 相反 ——
+        // 横拖整行会误触发 onClick。改走门面的 gestureModifier 形参，
+        // 由门面在 clickable 之后挂载。
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = tokens.minTouchTarget)
-            .then(if (interactive) interactiveHighlight.gestureModifier else Modifier),
+            .heightIn(min = tokens.minTouchTarget),
         material = GlassMaterial.THIN,
         cornerRadius = tokens.radiusMd,
         enabled = enabled,
@@ -64,6 +69,12 @@ fun GlassSettingRow(
             pressLayerBlock(interactiveHighlight = interactiveHighlight, maxScale = 4.dp)
         } else {
             null
+        },
+        // 由门面在 clickable **之后**挂载，顺序才对。
+        gestureModifier = if (interactive) {
+            interactiveHighlight.gestureModifier
+        } else {
+            Modifier
         },
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
     ) {
