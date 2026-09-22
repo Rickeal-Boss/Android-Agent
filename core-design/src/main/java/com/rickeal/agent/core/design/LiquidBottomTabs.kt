@@ -1,7 +1,7 @@
 package com.rickeal.agent.core.design
 
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -66,6 +66,7 @@ import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
 import com.rickeal.agent.core.design.liquid.shadow.InnerShadow
 import com.rickeal.agent.core.design.liquid.shadow.Shadow
 import com.rickeal.agent.core.design.liquid.shapes.Capsule
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -190,13 +191,18 @@ fun LiquidBottomTabs(
         val maxWidthPx = constraints.maxWidth.toFloat()
         if (containerWidthState.value != maxWidthPx) containerWidthState.value = maxWidthPx
 
-        // 面板拉伸偏移：拖动时整条玻璃朝拖动方向最长拉 4dp，松手弹簧归零。
-        val offsetAnimation = remember { Animatable(0f) }
+        // 面板拉伸偏移（px）：拖动时整条玻璃朝拖动方向最长拉 4dp，松手弹簧归零。
+        //
+        // ⚠️ 拖动期**同步累加**到这个 State，不再每帧 `animationScope.launch { … snapTo(…) }`。
+        // 旧写法每帧新建一个协程，多个在途协程都先读到**同一个** `offsetAnimation.value`
+        // 再加各自的 delta，谁最后写谁生效 → 累加丢帧 → 面板 ±4dp 抽搐（真机反馈）。
+        // 同步累加在 onDrag 当帧完成，没有任何在途协程读旧值。
+        val panelOffsetPx = remember { mutableStateOf(0f) }
         val panelOffset = remember(density) {
             derivedStateOf {
                 val containerWidth = containerWidthState.value
                 val fraction = if (containerWidth > 0f) {
-                    (offsetAnimation.value / containerWidth).coerceIn(-1f, 1f)
+                    (panelOffsetPx.value / containerWidth).coerceIn(-1f, 1f)
                 } else {
                     0f
                 }
@@ -205,12 +211,33 @@ fun LiquidBottomTabs(
                 }
             }
         }
+        // 松手回弹的在途协程。新一次拖动开始要先取消它 —— 否则回弹一边归零、拖动一边
+        // 累加，两者对同一个 State 互相覆盖，面板又抖。
+        val panelReboundJob = remember { mutableStateOf<Job?>(null) }
 
         // 内部选中态：单击页签与拖动胶囊都只改它，由它统一驱动动画与回调。
         var currentIndex by remember { mutableStateOf(safeSelectedIndex) }
 
         // ⚠️ consumeSlopPx 必须 8dp（见类 KDoc）——"点击选中页签没反应"的保险丝。
         val consumeSlopPx = with(density) { 8.dp.toPx() }
+
+        // 拖动期的绝对映射基准（按下快照 / 手势内累积）。
+        //
+        // ⚠️ 拖动唯一的事实来源是**手势本身**，不是异步回显链：旧实现把
+        //「当前目标值 + 本帧位移增量」交给 `updateValue`，而 `updateValue` 内部是
+        // `animateTo(spring)`（**收敛动画，不是瞬时**），拖动期每帧重启弹簧 → 弹簧永远
+        // 追不上每帧前移的目标 → 胶囊恒定滞后手指（"不跟手"）；单帧只走"一步"而目标走
+        // "一个手指增量" → 误差随拖动距离单调累积（"越远越偏差"）；速度快时弹簧速度反向
+        // 打架 → 抽搐。绝对映射 + snapValue（瞬时到位）彻底解耦，与 GlassSlider 同一套修法。
+        //
+        // ⚠️ `onDragStarted` 的类型是 `() -> Unit`（**无 receiver**），读不到
+        // `DampedDragAnimation.targetValue` —— 与 GlassSlider 一样，在按下瞬间快照一个
+        // 可访问的值：`currentIndex`。静止时它就是胶囊的 targetValue（onDragStopped 里
+        // `currentIndex = targetValue.roundToInt()` 与 `animateToValue` 同步赋值），
+        // 等价且无需额外标志位。
+        var dragAccumPx by remember { mutableStateOf(0f) }
+        var dragStartValue by remember { mutableStateOf(0f) }
+
         val dampedDragAnimation = remember(animationScope) {
             DampedDragAnimation(
                 animationScope = animationScope,
@@ -221,28 +248,49 @@ fun LiquidBottomTabs(
                 // 56dp 的胶囊按下时放大到 78dp 高 —— Kyant0 BottomTabs 的实测值。
                 pressedScale = 78f / 56f,
                 consumeSlopPx = consumeSlopPx,
-                onDragStarted = {},
+                onDragStarted = {
+                    // 新一次拖动：取消在途回弹，避免它与拖动同时写 panelOffsetPx。
+                    panelReboundJob.value?.cancel()
+                    panelReboundJob.value = null
+                    // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
+                    // 不能用回显值当起点 —— 它滞后于手指。
+                    dragAccumPx = 0f
+                    dragStartValue = currentIndex.toFloat()
+                },
                 onDragStopped = {
                     // 松手：四舍五入到最近页签，内部态收敛，面板拉伸弹回 0。
                     val targetIndex = targetValue.roundToInt().coerceIn(0, tabsCount - 1)
                     currentIndex = targetIndex
                     animateToValue(targetIndex.toFloat())
-                    animationScope.launch {
-                        offsetAnimation.animateTo(
-                            0f,
-                            spring(dampingRatio = 1f, stiffness = 300f, visibilityThreshold = 0.5f),
-                        )
+                    // 面板拉伸弹回：从当前累加值出发做一次弹簧（**单个**协程，非每帧）。
+                    val start = panelOffsetPx.value
+                    if (start != 0f) {
+                        panelReboundJob.value?.cancel()
+                        panelReboundJob.value = animationScope.launch {
+                            animate(
+                                initialValue = start,
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = 1f,
+                                    stiffness = 300f,
+                                    visibilityThreshold = 0.5f,
+                                ),
+                            ) { value, _ -> panelOffsetPx.value = value }
+                        }
                     }
                 },
                 onDrag = { _, dragAmount ->
-                    // 拖动 = 把累计位移换算成"页签坐标"（每移动一个 tabWidth 前进一页）。
-                    updateValue(
-                        (targetValue + dragAmount.x / tabWidthState.value * if (isLtr) 1f else -1f)
-                            .coerceIn(0f, (tabsCount - 1).toFloat())
-                    )
-                    // 面板拉伸逐帧跟上（snapTo，不走弹簧 —— 弹簧留给松手回弹）。
-                    animationScope.launch {
-                        offsetAnimation.snapTo(offsetAnimation.value + dragAmount.x)
+                    // 面板拉伸：**同步累加**（当帧完成），不再每帧 launch。
+                    panelOffsetPx.value += dragAmount.x
+                    // 胶囊位置：手势内累积 → 绝对映射（每移动一个 tabWidth 前进一页），
+                    // 与异步回显完全解耦。
+                    dragAccumPx += dragAmount.x
+                    val tabWidth = tabWidthState.value
+                    if (tabWidth > 0f) {
+                        val raw = dragStartValue + dragAccumPx / tabWidth * if (isLtr) 1f else -1f
+                        val coerced = raw.coerceIn(0f, (tabsCount - 1).toFloat())
+                        // 值没变不重复 snapValue：掐掉亚像素抖动造成的无意义协程启动。
+                        if (coerced != targetValue) snapValue(coerced)
                     }
                 },
             )
@@ -473,6 +521,14 @@ fun LiquidBottomTabs(
                     layerBlock = {
                         // 按压缩放（DampedDragAnimation 的 scaleX/scaleY）
                         // + 速度各向异性：拖得快沿运动方向拉长、垂直方向压扁。
+                        //
+                        // ⚠️ 已知取舍（本轮 P0 拖动跟手改造引入）：拖动改用 snapValue
+                        //（瞬时到位）后，`valueAnimatable` 不再保留"未走完的弹簧速度"，
+                        // `velocity` 会偏小 → 这里的各向异性拉伸在**拖动中**会减弱
+                        //（松手回弹那一段仍有速度，拉伸还在）。换取的是胶囊**严格跟手**
+                        //（真机"不跟手/越远越偏差"的根治）——跟手优先。
+                        // 若真机确认拉伸观感缺失，再单独调 velocity 的来源，
+                        // **不为此回退绝对映射**。
                         scaleX = dampedDragAnimation.scaleX
                         scaleY = dampedDragAnimation.scaleY
                         val velocity = dampedDragAnimation.velocity / 10f

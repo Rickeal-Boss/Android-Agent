@@ -144,6 +144,20 @@ private fun SegmentedIndicator(
 
     // ⚠️ consumeSlopPx 必须 8dp —— 胶囊叠在选中项上，"点击选中项没反应"的保险丝。
     val consumeSlopPx = with(density) { 8.dp.toPx() }
+
+    // 拖动期的绝对映射基准（按下快照 / 手势内累积）。与 LiquidBottomTabs 同一套修法：
+    // 拖动的事实来源是**手势本身**，不是 `targetValue` 的异步回显链 —— 旧实现把
+    //「当前目标值 + 本帧位移增量」交给 `updateValue`，而 `updateValue` 内部是
+    // `animateTo(spring)`（收敛动画）：拖动期每帧重启弹簧 → 追不上每帧前移的目标 →
+    // 胶囊不跟手 / 越远越偏差 / 抽搐。
+    // 绝对映射 + snapValue（瞬时到位）解耦。
+    //
+    // ⚠️ `onDragStarted` 是 `() -> Unit`（**无 receiver**），读不到 targetValue ——
+    // 与 GlassSlider 一样，在按下瞬间快照可访问的 `currentIndex`：静止时它即胶囊的
+    // targetValue（onDragStopped 里二者同步赋值），等价且无需额外标志位。
+    var dragAccumPx by remember { mutableStateOf(0f) }
+    var dragStartValue by remember { mutableStateOf(0f) }
+
     val dampedDragAnimation = remember(animationScope) {
         DampedDragAnimation(
             animationScope = animationScope,
@@ -154,7 +168,11 @@ private fun SegmentedIndicator(
             // 48dp 的胶囊按下时放大到 60dp 高。
             pressedScale = 60f / 48f,
             consumeSlopPx = consumeSlopPx,
-            onDragStarted = {},
+            onDragStarted = {
+                // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
+                dragAccumPx = 0f
+                dragStartValue = currentIndex.toFloat()
+            },
             onDragStopped = {
                 // 松手：四舍五入到最近项，内部态收敛。
                 val targetIndex = targetValue.roundToInt().coerceIn(0, itemsCount - 1)
@@ -162,13 +180,16 @@ private fun SegmentedIndicator(
                 animateToValue(targetIndex.toFloat())
             },
             onDrag = { _, dragAmount ->
-                // 拖动 = 把累计位移换算成"项坐标"（每移动一个 itemWidth 前进一项）。
+                // 拖动 = 手势内累积位移 → 绝对映射到"项坐标"（每移动一个 itemWidth 前进
+                // 一项），与异步回显完全解耦。
+                dragAccumPx += dragAmount.x
                 val itemWidth = itemWidthState.value
                 if (itemWidth > 0f) {
-                    updateValue(
-                        (targetValue + dragAmount.x / itemWidth * (if (isLtr) 1f else -1f))
-                            .coerceIn(0f, (itemsCount - 1).toFloat()),
-                    )
+                    val raw =
+                        dragStartValue + dragAccumPx / itemWidth * (if (isLtr) 1f else -1f)
+                    val coerced = raw.coerceIn(0f, (itemsCount - 1).toFloat())
+                    // 值没变不重复 snapValue：掐掉亚像素抖动造成的无意义协程启动。
+                    if (coerced != targetValue) snapValue(coerced)
                 }
             },
         )
