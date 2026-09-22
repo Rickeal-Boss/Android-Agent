@@ -372,7 +372,7 @@ private const val TOP_NAV_TRANSITION_MS = 300
 
 /**
  * 页签切换的滑动方向：+1 = 新页从右入（页签索引增大），-1 = 从左入。
- * 子路由按其所属顶层页签计（settings/* → 2、models/* → 1、其余 → 0），
+ * 子路由按其所属顶层页签计（settings 前缀 → 2、models 前缀 → 1、其余 → 0），
  * 这样"进入设置子页"也天然从右侧滑入。
  */
 private fun slideDirection(initialRoute: String?, targetRoute: String?): Int =
