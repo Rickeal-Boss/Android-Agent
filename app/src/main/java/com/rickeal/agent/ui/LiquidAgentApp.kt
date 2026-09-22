@@ -7,6 +7,8 @@ import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -217,12 +219,37 @@ private fun MainShell() {
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
-                // 默认 700ms 淡入淡出在切页签时明显“拖沓”，这里统一压到 160ms。
+                // 页签切换 = fade + 水平位移：方向由新旧 destination 的页签索引差决定
+                // （索引增大 → 新页从右入、旧页向左出；反向则相反）。pop 方向取反。
                 // 四个方向都显式给值，避免依赖 NavHost 各版本不同的默认值。
-                enterTransition = { fadeIn(animationSpec = tween(TOP_NAV_TRANSITION_MS)) },
-                exitTransition = { fadeOut(animationSpec = tween(TOP_NAV_TRANSITION_MS)) },
-                popEnterTransition = { fadeIn(animationSpec = tween(TOP_NAV_TRANSITION_MS)) },
-                popExitTransition = { fadeOut(animationSpec = tween(TOP_NAV_TRANSITION_MS)) },
+                enterTransition = {
+                    val dir = slideDirection(initialState.destination.route, targetState.destination.route)
+                    slideInHorizontally(
+                        initialOffsetX = { fullWidth -> dir * fullWidth },
+                        animationSpec = tween(TOP_NAV_TRANSITION_MS),
+                    ) + fadeIn(tween(TOP_NAV_TRANSITION_MS))
+                },
+                exitTransition = {
+                    val dir = slideDirection(initialState.destination.route, targetState.destination.route)
+                    slideOutHorizontally(
+                        targetOffsetX = { fullWidth -> -dir * fullWidth },
+                        animationSpec = tween(TOP_NAV_TRANSITION_MS),
+                    ) + fadeOut(tween(TOP_NAV_TRANSITION_MS))
+                },
+                popEnterTransition = {
+                    val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
+                    slideInHorizontally(
+                        initialOffsetX = { fullWidth -> dir * fullWidth },
+                        animationSpec = tween(TOP_NAV_TRANSITION_MS),
+                    ) + fadeIn(tween(TOP_NAV_TRANSITION_MS))
+                },
+                popExitTransition = {
+                    val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
+                    slideOutHorizontally(
+                        targetOffsetX = { fullWidth -> -dir * fullWidth },
+                        animationSpec = tween(TOP_NAV_TRANSITION_MS),
+                    ) + fadeOut(tween(TOP_NAV_TRANSITION_MS))
+                },
             ) {
                 chatGraph(
                     navController = navController,
@@ -336,8 +363,27 @@ private fun NavHostController.navigateTop(route: String) {
     }
 }
 
-/** 顶层页签切换的过渡时长（ms）。默认 700ms 太慢，160ms 既顺滑又不拖沓。 */
-private const val TOP_NAV_TRANSITION_MS = 160
+/**
+ * 顶层页签切换的过渡时长（ms）。160ms 看不出过渡（真机反馈"切换太快、看不见液态"），
+ * 700ms 又拖沓 —— 300ms 与胶囊的 TabSwitch 弹簧（收敛 ~250-290ms）对齐，避免
+ * 内容层与胶囊层割裂。
+ */
+private const val TOP_NAV_TRANSITION_MS = 300
+
+/**
+ * 页签切换的滑动方向：+1 = 新页从右入（页签索引增大），-1 = 从左入。
+ * 子路由按其所属顶层页签计（settings/* → 2、models/* → 1、其余 → 0），
+ * 这样"进入设置子页"也天然从右侧滑入。
+ */
+private fun slideDirection(initialRoute: String?, targetRoute: String?): Int =
+    if (topIndex(targetRoute) >= topIndex(initialRoute)) 1 else -1
+
+private fun topIndex(route: String?): Int = when {
+    route == null -> 0
+    route.startsWith("settings") -> 2
+    route.startsWith("models") -> 1
+    else -> 0
+}
 
 /**
  * 返回键兜底收敛的 pop 次数上限。
