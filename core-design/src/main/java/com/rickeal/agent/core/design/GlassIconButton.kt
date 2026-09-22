@@ -20,6 +20,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
@@ -83,6 +85,9 @@ enum class GlassIconButtonShape { Circle, Capsule }
  * 触摸目标由 [size] 撑满（默认 `48.dp`，即 [GlassTokens.minTouchTarget]）。
  *
  * @param size 触摸目标尺寸。`Circle` 取正方形边长；`Capsule` 取最小高度。
+ * @param iconSize 图标自身的绘制尺寸。**默认 20dp**（顶栏 / 发送按钮的原尺寸），
+ *   但输入区图片 / 音频图标原本是 24dp、附件移除与提示条关闭是 16dp ——
+ *   调用点按需传入即可**保持原有视觉尺寸**，不因为换组件而偷偷放大或缩小。
  * @param containerColor 容器底色。非空时铺一层实色，并**自动关闭玻璃** ——
  *   本项目强调色不透明（`accent` alpha = FF），玻璃会被完全盖住，叠了只是白付开销。
  *   发送按钮这类"强调色实心圆"用它：保留强调色的可操作性暗示，同时拿到跟手形变。
@@ -97,6 +102,7 @@ fun GlassIconButton(
     enabled: Boolean = true,
     shape: GlassIconButtonShape = GlassIconButtonShape.Circle,
     size: Dp = 48.dp,
+    iconSize: Dp = 20.dp,
     material: GlassMaterial = GlassMaterial.ULTRA_THIN,
     contentColor: Color = LocalGlassColors.current.onGlass,
     containerColor: Color? = null,
@@ -121,7 +127,7 @@ fun GlassIconButton(
             // 否则 TalkBack 会把同一个名字念两遍。
             contentDescription = null,
             tint = contentColor,
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(iconSize),
         )
     }
 }
@@ -165,6 +171,19 @@ fun GlassIconButton(
 
     Box(
         modifier = modifier
+            .then(
+                // contentDescription 非空时，把语义合并到容器上**一次**：
+                // 内容里的文字（如「返回」）会被 mergeDescendants 并进来，
+                // 但 contentDescription 优先，所以 TalkBack 只念一遍。
+                // 内容自带可见文字时通常不必传它（传了也是覆盖，语义一致）。
+                if (contentDescription != null) {
+                    Modifier.semantics(mergeDescendants = true) {
+                        this.contentDescription = contentDescription
+                    }
+                } else {
+                    Modifier
+                },
+            )
             .then(
                 if (interactive) {
                     Modifier.clickable(
