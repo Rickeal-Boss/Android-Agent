@@ -313,7 +313,14 @@ fun LiquidBottomTabs(
             snapshotFlow { currentIndex }
                 .drop(1)
                 .collectLatest { index ->
-                    dampedDragAnimation.animateToValue(index.toFloat())
+                    // 点击切换（及外部选中态回流）走页签专用的"较慢 + 略欠阻尼"规格：
+                    // 看得见液态滑动，收敛时间对齐 NavHost 过渡（~300ms）。
+                    // ⚠️ 拖动松手收敛（onDragStopped 里的 animateToValue）**不传** spec，
+                    // 保持默认快收敛 —— 松手手感不能变慢。
+                    dampedDragAnimation.animateToValue(
+                        index.toFloat(),
+                        LiquidMotion.floatSpring(LiquidMotion.TabSwitch),
+                    )
                     onSelectedCallback(index)
                 }
         }

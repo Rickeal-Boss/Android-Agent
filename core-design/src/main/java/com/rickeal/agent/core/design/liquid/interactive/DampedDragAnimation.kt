@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.design.liquid.interactive
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -338,11 +339,19 @@ class DampedDragAnimation(
         }
     }
 
-    /** 直接把值 animate 过去（点轨道跳转 / 外部选中态变化时用，默认弹簧带一点点回弹）。 */
-    fun animateToValue(value: Float) {
+    /**
+     * 直接把值 animate 过去（点轨道跳转 / 外部选中态变化时用）。
+     *
+     * [animationSpec] 默认 `spring()` —— 与历史行为一致（同一刚度 / 阻尼），既有调用点
+     * 不受影响。需要"看得见的液态滑动"的调用点（如页签点击切换）可显式传入更慢、
+     * 略欠阻尼的规格，见 `com.rickeal.agent.core.design.LiquidMotion.TabSwitch`。
+     *
+     * ⚠️ 拖动松手收敛（`onDragStopped`）刻意**不传** spec，保持默认的快收敛手感。
+     */
+    fun animateToValue(value: Float, animationSpec: AnimationSpec<Float> = spring()) {
         val coerced = value.coerceIn(valueRange)
         targetValue = coerced
-        animationScope.launch { valueAnimatable.animateTo(coerced) }
+        animationScope.launch { valueAnimatable.animateTo(coerced, animationSpec) }
     }
 
     /**

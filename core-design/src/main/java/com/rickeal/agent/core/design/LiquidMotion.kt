@@ -58,6 +58,22 @@ object LiquidMotion {
         dampingRatio = ExpressiveDampingRatio
     )
 
+    /**
+     * 页签"点击切换"的胶囊滑动规格（[LiquidBottomTabs] 指示胶囊 / 同类切换控件）。
+     *
+     * 与拖动区分：拖动是瞬时 `snapValue`（跟手优先，无动画）；**点击切换**要的是
+     * "看得见的液态滑动"。比 `animateToValue` 的默认 `spring()`（`StiffnessMedium`
+     * =1500 / ζ=1，感知收敛 ≈120ms）慢得多、且略欠阻尼 —— 有轻微过冲，"有生命"。
+     *
+     * 收敛时间对齐 dev-app 的 NavHost 过渡（~300ms fade+slide），避免内容层与胶囊层
+     * 割裂。刚度取 M3E spatial 档的 [Spring.StiffnessMediumLow]（400，非散落魔数），
+     * 阻尼比 0.8：过冲 ≈ 1.5%（看得见"液态"又不廉价），感知收敛 ≈ 250–290ms。
+     */
+    val TabSwitch = LiquidMotionSpec(
+        stiffness = Spring.StiffnessMediumLow,
+        dampingRatio = 0.8f,
+    )
+
     /** 通用弹簧规格（可用于 Dp/Offset/Color 等） */
     fun <T> spring(spec: LiquidMotionSpec = Default): SpringSpec<T> = spring(
         dampingRatio = spec.dampingRatio,
