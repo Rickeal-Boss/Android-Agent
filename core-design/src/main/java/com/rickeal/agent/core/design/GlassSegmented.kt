@@ -208,7 +208,15 @@ private fun SegmentedIndicator(
         snapshotFlow { currentIndex }
             .drop(1)
             .collectLatest { index ->
-                dampedDragAnimation.animateToValue(index.toFloat())
+                // 点击切换（及外部选中态回流）走分段/页签共用的"较慢 + 略欠阻尼"规格
+                //（LiquidMotion.TabSwitch）：看得见液态滑动，收敛时间对齐 NavHost 过渡
+                //（~300ms），与 LiquidBottomTabs 保持一致。
+                // ⚠️ 拖动松手收敛（onDragStopped 里第 180 行的 animateToValue）**不传**
+                // spec，保持默认快收敛 —— 松手手感不能变慢。
+                dampedDragAnimation.animateToValue(
+                    index.toFloat(),
+                    LiquidMotion.floatSpring(LiquidMotion.TabSwitch),
+                )
                 onSelectedCallback(index)
             }
     }
