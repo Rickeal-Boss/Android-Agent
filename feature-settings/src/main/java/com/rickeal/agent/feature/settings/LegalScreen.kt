@@ -1,6 +1,5 @@
 package com.rickeal.agent.feature.settings
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -173,26 +172,29 @@ private fun LegalDocumentCard(
             )
 
             if (linkUrl.isNotBlank()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = tokens.gapSm)
-                        .clickable { onOpenLink(linkUrl) },
-                    verticalAlignment = Alignment.CenterVertically,
+                // 条款入口此前是裸 Row + clickable（只有字高 ≈24dp、无任何反馈）。
+                // 换成胶囊小按钮：触摸区 48dp、按下有跟手形变；文字即语义。
+                GlassIconButton(
+                    onClick = { onOpenLink(linkUrl) },
+                    modifier = Modifier.padding(top = tokens.gapSm),
+                    shape = GlassIconButtonShape.Capsule,
+                    contentPadding = PaddingValues(horizontal = 10.dp),
                 ) {
-                    Text(
-                        text = LegalDocuments.VIEW_FULL_TERMS_LABEL,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = colors.accent,
-                    )
-                    Icon(
-                        imageVector = Icons.Filled.OpenInNew,
-                        contentDescription = null,
-                        tint = colors.accent,
-                        modifier = Modifier
-                            .padding(start = 4.dp)
-                            .size(15.dp),
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = LegalDocuments.VIEW_FULL_TERMS_LABEL,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = colors.accent,
+                        )
+                        Icon(
+                            imageVector = Icons.Filled.OpenInNew,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier
+                                .padding(start = 4.dp)
+                                .size(15.dp),
+                        )
+                    }
                 }
             } else if (missingLinkNote != null) {
                 Text(

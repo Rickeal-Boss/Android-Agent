@@ -1,6 +1,5 @@
 package com.rickeal.agent.onboarding
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -28,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.data.LegalDocuments
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
+import com.rickeal.agent.core.design.GlassIconButton
+import com.rickeal.agent.core.design.GlassIconButtonShape
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
@@ -167,30 +168,33 @@ private fun LegalStepLayout(
                 }
 
                 if (linkUrl.isNotBlank()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 12.dp)
-                            .clickable {
-                                // 设备上没有浏览器时 openUri 会抛 ActivityNotFoundException，
-                                // 条款入口不该让应用崩溃。
-                                runCatching { uriHandler.openUri(linkUrl) }
-                            },
-                        verticalAlignment = Alignment.CenterVertically,
+                    // 条款入口此前是裸 Row + clickable（只有字高 ≈24dp、无任何反馈）。
+                    // 换成胶囊小按钮：触摸区 48dp、按下有跟手形变；文字即语义。
+                    GlassIconButton(
+                        onClick = {
+                            // 设备上没有浏览器时 openUri 会抛 ActivityNotFoundException，
+                            // 条款入口不该让应用崩溃。
+                            runCatching { uriHandler.openUri(linkUrl) }
+                        },
+                        modifier = Modifier.padding(top = 12.dp),
+                        shape = GlassIconButtonShape.Capsule,
+                        contentPadding = PaddingValues(horizontal = 10.dp),
                     ) {
-                        Text(
-                            text = linkLabel,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = colors.accent,
-                        )
-                        Icon(
-                            imageVector = Icons.Filled.OpenInNew,
-                            contentDescription = null,
-                            tint = colors.accent,
-                            modifier = Modifier
-                                .padding(start = 4.dp)
-                                .size(15.dp),
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = linkLabel,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = colors.accent,
+                            )
+                            Icon(
+                                imageVector = Icons.Filled.OpenInNew,
+                                contentDescription = null,
+                                tint = colors.accent,
+                                modifier = Modifier
+                                    .padding(start = 4.dp)
+                                    .size(15.dp),
+                            )
+                        }
                     }
                 }
 
