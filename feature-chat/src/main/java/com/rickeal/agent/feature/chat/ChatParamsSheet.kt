@@ -6,7 +6,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,13 +16,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.GlassIconButton
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
@@ -101,20 +99,15 @@ fun ChatParamsSheet(
                             color = colors.onGlass,
                             modifier = Modifier.weight(1f),
                         )
-                        // 图标 22dp，点击区 48dp（外层 Box 撑开）。
-                        Box(
-                            modifier = Modifier
-                                .size(tokens.minTouchTarget)
-                                .clickable(onClick = onDismiss),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Close,
-                                contentDescription = "关闭",
-                                tint = colors.onGlassMuted,
-                                modifier = Modifier.padding(4.dp),
-                            )
-                        }
+                        // 抽屉头部的关闭键：触摸区 48dp 由组件保证，按下有跟手形变。
+                        // 图标保持原来的 24dp（此前 Icon 没写显式尺寸，取默认 24dp）。
+                        GlassIconButton(
+                            icon = Icons.Filled.Close,
+                            contentDescription = "关闭",
+                            onClick = onDismiss,
+                            contentColor = colors.onGlassMuted,
+                            iconSize = 24.dp,
+                        )
                     }
                     ChatParamsContent(
                         config = config,

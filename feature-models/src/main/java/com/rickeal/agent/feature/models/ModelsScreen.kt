@@ -8,7 +8,6 @@ import androidx.compose.foundation.lazy.items
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -50,6 +49,7 @@ import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassFab
 import com.rickeal.agent.core.design.GlassIconButton
+import com.rickeal.agent.core.design.GlassIconButtonShape
 import com.rickeal.agent.core.design.GlassSettingRow
 import com.rickeal.agent.core.design.GlassSwitch
 import com.rickeal.agent.core.design.GlassScaffold
@@ -359,29 +359,32 @@ private fun GemmaTermsGateDialog(
                         color = colors.onGlassMuted,
                     )
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = tokens.gapSm)
-                        .clickable {
-                            // 没有浏览器时 openUri 会抛异常，条款入口不该让应用崩溃
-                            runCatching { uriHandler.openUri(LegalDocuments.GEMMA_TERMS_URL) }
-                        },
-                    verticalAlignment = Alignment.CenterVertically,
+                // 条款入口此前是裸 Row + clickable（只有字高 ≈24dp、无任何反馈）。
+                // 换成胶囊小按钮：触摸区 48dp、按下有跟手形变；文字即语义。
+                GlassIconButton(
+                    onClick = {
+                        // 没有浏览器时 openUri 会抛异常，条款入口不该让应用崩溃
+                        runCatching { uriHandler.openUri(LegalDocuments.GEMMA_TERMS_URL) }
+                    },
+                    modifier = Modifier.padding(top = tokens.gapSm),
+                    shape = GlassIconButtonShape.Capsule,
+                    contentPadding = PaddingValues(horizontal = 10.dp),
                 ) {
-                    Text(
-                        text = LegalDocuments.VIEW_FULL_TERMS_LABEL,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = colors.accent,
-                    )
-                    Icon(
-                        imageVector = Icons.Filled.OpenInNew,
-                        contentDescription = null,
-                        tint = colors.accent,
-                        modifier = Modifier
-                            .padding(start = 4.dp)
-                            .size(15.dp),
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = LegalDocuments.VIEW_FULL_TERMS_LABEL,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = colors.accent,
+                        )
+                        Icon(
+                            imageVector = Icons.Filled.OpenInNew,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier
+                                .padding(start = 4.dp)
+                                .size(15.dp),
+                        )
+                    }
                 }
             }
         },

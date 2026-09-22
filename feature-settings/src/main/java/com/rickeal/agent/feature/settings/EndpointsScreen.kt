@@ -1,6 +1,5 @@
 package com.rickeal.agent.feature.settings
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,7 +11,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -209,27 +207,17 @@ private fun EndpointCard(
                     .padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // 「编辑 / 删除」是 Text + clickable，天然只有字高（≈24dp）。
-                // 用 sizeIn 把点击区撑到 48dp（sizeIn 放在 clickable 之前，
-                // 先确定最小尺寸再挂点击，语义也更清楚）。
-                Box(
-                    modifier = Modifier
-                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                        .clickable(onClick = onEdit),
-                    contentAlignment = Alignment.Center,
-                ) {
+                // 「编辑 / 删除」是文字小按钮，同样是裸 Box + clickable，没有液态反馈。
+                // 换成胶囊形态的 GlassIconButton：触摸目标 48dp 由组件保证，
+                // 文字自带可见文本即语义，不必再传 contentDescription。
+                GlassIconButton(onClick = onEdit, shape = GlassIconButtonShape.Capsule) {
                     Text(
                         text = "编辑",
                         style = MaterialTheme.typography.labelLarge,
                         color = colors.accent,
                     )
                 }
-                Box(
-                    modifier = Modifier
-                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                        .clickable(onClick = onDelete),
-                    contentAlignment = Alignment.Center,
-                ) {
+                GlassIconButton(onClick = onDelete, shape = GlassIconButtonShape.Capsule) {
                     Text(
                         text = "删除",
                         style = MaterialTheme.typography.labelLarge,
