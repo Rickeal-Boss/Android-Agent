@@ -36,6 +36,8 @@ import com.rickeal.agent.core.design.GlassChip
 import com.rickeal.agent.core.design.GlassDialog
 import com.rickeal.agent.core.design.GlassEmptyState
 import com.rickeal.agent.core.design.GlassFab
+import com.rickeal.agent.core.design.GlassIconButton
+import com.rickeal.agent.core.design.GlassIconButtonShape
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassSlider
 import com.rickeal.agent.core.design.GlassSwitch
@@ -67,11 +69,11 @@ fun EndpointsScreen(
                 subtitle = "OpenAI 兼容接口",
                 modifier = Modifier.statusBarsPadding(),
                 navigationIcon = {
-                    Box(
-                        modifier = Modifier
-                            .size(tokens.minTouchTarget)
-                            .clickable(onClick = onBack),
-                        contentAlignment = Alignment.Center,
+                    // pressOnly：顶栏图标位于 GlassTopBar 自己的玻璃之上（见 GlassIconButton KDoc）。
+                    GlassIconButton(
+                        onClick = onBack,
+                        shape = GlassIconButtonShape.Capsule,
+                        pressOnly = true,
                     ) {
                         Text(
                             text = "返回",

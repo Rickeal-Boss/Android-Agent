@@ -2,7 +2,6 @@ package com.rickeal.agent.feature.settings
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -31,6 +30,8 @@ import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.data.LegalDocuments
 import com.rickeal.agent.core.data.LocalAppContainer
 import com.rickeal.agent.core.design.GlassCard
+import com.rickeal.agent.core.design.GlassIconButton
+import com.rickeal.agent.core.design.GlassIconButtonShape
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LocalGlassColors
@@ -76,11 +77,11 @@ fun LegalScreen(
                 subtitle = "你已同意的内容与原文入口",
                 modifier = Modifier.statusBarsPadding(),
                 navigationIcon = {
-                    Box(
-                        modifier = Modifier
-                            .size(tokens.minTouchTarget)
-                            .clickable(onClick = onBack),
-                        contentAlignment = Alignment.Center,
+                    // pressOnly：顶栏图标位于 GlassTopBar 自己的玻璃之上（见 GlassIconButton KDoc）。
+                    GlassIconButton(
+                        onClick = onBack,
+                        shape = GlassIconButtonShape.Capsule,
+                        pressOnly = true,
                     ) {
                         Text(
                             text = "返回",

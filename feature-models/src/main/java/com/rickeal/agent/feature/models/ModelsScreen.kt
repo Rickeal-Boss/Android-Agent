@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -50,6 +49,7 @@ import com.rickeal.agent.core.design.GlassDialog
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassFab
+import com.rickeal.agent.core.design.GlassIconButton
 import com.rickeal.agent.core.design.GlassSettingRow
 import com.rickeal.agent.core.design.GlassSwitch
 import com.rickeal.agent.core.design.GlassScaffold
@@ -102,19 +102,13 @@ fun ModelsScreen(
                 subtitle = if (state.models.isEmpty()) "还没有模型" else "共 ${state.models.size} 个",
                 modifier = Modifier.statusBarsPadding(),
                 actions = {
-                    Box(
-                        modifier = Modifier
-                            .size(tokens.minTouchTarget)
-                            .clickable { viewModel.onScanDirectories() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Refresh,
-                            contentDescription = "扫描目录",
-                            tint = colors.onGlassMuted,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
+                    GlassIconButton(
+                        icon = Icons.Filled.Refresh,
+                        contentDescription = "扫描目录",
+                        onClick = { viewModel.onScanDirectories() },
+                        contentColor = colors.onGlassMuted,
+                        pressOnly = true,
+                    )
                 },
             )
         },

@@ -1,6 +1,5 @@
 package com.rickeal.agent.feature.settings
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +30,8 @@ import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassEmptyState
+import com.rickeal.agent.core.design.GlassIconButton
+import com.rickeal.agent.core.design.GlassIconButtonShape
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassSegmented
 import com.rickeal.agent.core.design.GlassTopBar
@@ -92,11 +93,12 @@ fun DiagnosticsScreen(
                 subtitle = "内存 ${snapshot.size} 条 · 磁盘 ${persisted.size} 条",
                 modifier = Modifier.statusBarsPadding(),
                 navigationIcon = {
-                    Box(
-                        modifier = Modifier
-                            .size(tokens.minTouchTarget)
-                            .clickable(onClick = onBack),
-                        contentAlignment = Alignment.Center,
+                    // pressOnly：顶栏图标位于 GlassTopBar 自己的玻璃之上，再叠玻璃会浑浊、
+                    // 也会复现「镜面高光从边缘溢出盖住标题」的问题（详见 GlassIconButton KDoc）。
+                    GlassIconButton(
+                        onClick = onBack,
+                        shape = GlassIconButtonShape.Capsule,
+                        pressOnly = true,
                     ) {
                         Text(
                             text = "返回",

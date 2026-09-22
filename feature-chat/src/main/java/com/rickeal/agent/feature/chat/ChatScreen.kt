@@ -1,6 +1,5 @@
 package com.rickeal.agent.feature.chat
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -12,7 +11,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
@@ -21,7 +19,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
+import com.rickeal.agent.core.design.GlassIconButton
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassThinkingIndicator
@@ -89,52 +87,36 @@ fun ChatScreen(
                 subtitle = subtitle,
                 modifier = Modifier.statusBarsPadding(),
                 navigationIcon = {
-                    Box(
-                        modifier = Modifier
-                            .size(tokens.minTouchTarget)
-                            .clickable(onClick = onOpenModels),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Storage,
-                            contentDescription = "模型",
-                            tint = colors.onGlassMuted,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
+                    // pressOnly：顶栏图标位于 GlassTopBar 自己的玻璃之上，
+                    // 再叠一层玻璃会浑浊，也会复现高光溢出盖住标题的问题。
+                    GlassIconButton(
+                        icon = Icons.Filled.Storage,
+                        contentDescription = "模型",
+                        onClick = onOpenModels,
+                        contentColor = colors.onGlassMuted,
+                        pressOnly = true,
+                    )
                 },
                 actions = {
                     if (state.isGenerating) {
                         GlassThinkingIndicator(label = "${state.agentRound}/${state.agentMaxRounds} 轮")
                     }
                     if (!windowSize.useThreePane) {
-                        Box(
-                            modifier = Modifier
-                                .size(tokens.minTouchTarget)
-                                .clickable { paramsOpen = true },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Tune,
-                                contentDescription = "参数",
-                                tint = colors.onGlassMuted,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(tokens.minTouchTarget)
-                            .clickable(onClick = viewModel::onNewConversation),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Edit,
-                            contentDescription = "新对话",
-                            tint = colors.onGlassMuted,
-                            modifier = Modifier.size(20.dp),
+                        GlassIconButton(
+                            icon = Icons.Filled.Tune,
+                            contentDescription = "参数",
+                            onClick = { paramsOpen = true },
+                            contentColor = colors.onGlassMuted,
+                            pressOnly = true,
                         )
                     }
+                    GlassIconButton(
+                        icon = Icons.Filled.Edit,
+                        contentDescription = "新对话",
+                        onClick = viewModel::onNewConversation,
+                        contentColor = colors.onGlassMuted,
+                        pressOnly = true,
+                    )
                 },
             )
         },
@@ -193,20 +175,14 @@ fun ChatScreen(
                                 color = colors.danger,
                                 modifier = Modifier.weight(1f),
                             )
-                            // 图标 16dp，点击区 48dp（外层 Box 撑开，图标尺寸不变）。
-                            Box(
-                                modifier = Modifier
-                                    .size(tokens.minTouchTarget)
-                                    .clickable(onClick = viewModel::onDismissError),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Close,
-                                    contentDescription = "关闭",
-                                    tint = colors.onGlassSubtle,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            }
+                            // 触摸目标由组件内的 size 参数撑满 48dp；图标保持原来的 16dp。
+                            GlassIconButton(
+                                icon = Icons.Filled.Close,
+                                contentDescription = "关闭",
+                                onClick = viewModel::onDismissError,
+                                contentColor = colors.onGlassSubtle,
+                                iconSize = 16.dp,
+                            )
                         }
                         if (canRetry) {
                             Spacer(modifier = Modifier.height(tokens.gapSm))
