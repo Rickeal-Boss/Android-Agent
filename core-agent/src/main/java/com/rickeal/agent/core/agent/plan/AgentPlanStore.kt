@@ -112,7 +112,12 @@ class AgentPlanStore(private val maxConversations: Int = 16) {
 }
 
 /** 计划工具的公共基座：从协程上下文取父 run 的会话键。 */
-internal abstract class PlanToolBase(
+/**
+ * 计划工具公共基座。Kotlin 禁止 public 类继承 internal 类（超类型会出现在公开
+ * 类型层级里），而两个子类必须 public（installPlanTools 的注册入口），
+ * 因此基类同为 public —— 它不含任何可变状态，暴露面是安全的。
+ */
+abstract class PlanToolBase(
     private val store: AgentPlanStore,
     name: String,
     description: String,
