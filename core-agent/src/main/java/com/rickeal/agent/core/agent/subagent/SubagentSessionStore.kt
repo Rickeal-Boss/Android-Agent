@@ -4,6 +4,8 @@ import com.rickeal.agent.core.model.AgentJson
 import com.rickeal.agent.core.model.ChatMessage
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Actor 会话存储：按「会话 × Actor 名」累积上下文（ZCode 语义：同一个 Actor 上连续
@@ -98,7 +100,22 @@ class SubagentSessionStore(
         val file = fileFor(key) ?: return
         runCatching {
             file.parentFile?.mkdirs()
-            file.writeText(AgentJson.Default.encodeToString(MessagesSerializer, messages))
+            // 原子写（tmp + ATOMIC_MOVE）：直接覆写时进程死在半路留半截 JSON，
+            // 下次 load 解析失败 → 静默清零（getOrDefault(emptyList)）—— Actor
+            // 积累的上下文凭空蒸发。与 AgentMemory.writeSync 同型修复。
+            val tmp = File(file.parentFile, file.name + "." + System.nanoTime() + ".tmp")
+            tmp.writeText(AgentJson.Default.encodeToString(MessagesSerializer, messages))
+            try {
+                Files.move(
+                    tmp.toPath(),
+                    file.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (t: Throwable) {
+                // 个别文件系统不支持 ATOMIC_MOVE，退化普通 rename（仍是元数据操作）
+                Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
         }.onFailure {
             com.rickeal.agent.core.model.AgentLogStore.warn(
                 "Actor 会话写入失败（忽略，不影响运行）：${it.javaClass.simpleName}"

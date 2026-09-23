@@ -1,8 +1,8 @@
 package com.rickeal.agent.core.agent.schema
 
+import com.rickeal.agent.core.model.AgentJson
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolSpec
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -48,7 +48,10 @@ data class ArgsViolation(
  */
 object ToolArgsValidator {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    // 统一走全局 AgentJson.Default：本文件曾私建 Json{ignoreUnknownKeys=true}，
+    // 与全局配置（ignoreUnknownKeys + explicitNulls=false）形成漂移面 —— 将来任何
+    // 一侧调整序列化口径，另一侧都悄悄落后。全仓只允许一个 Json 配置源。
+    private val json = AgentJson.Default
 
     /**
      * 校验一段工具调用参数。返回违规列表；**空列表 = 通过**。

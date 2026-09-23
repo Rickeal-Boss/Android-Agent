@@ -18,6 +18,10 @@ class MemoryWriteTool(private val memory: AgentMemory) : Tool {
             ToolParameter("content", ToolParamType.STRING, "记忆内容，一到三句话"),
         ),
         category = "memory",
+        // 记忆是跨会话持久的副作用（写错一条会污染后续每一次会话的系统提示词），
+        // 与 file_write 同级 —— 执行前过审批闸门；子 run 无审批通道时按 fail-closed 拒绝
+        // （子代理本就不该有沉淀长期记忆的权限，这正是想要的边界）。
+        requiresConfirmation = true,
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {
@@ -60,6 +64,8 @@ class MemoryDeleteTool(private val memory: AgentMemory) : Tool {
             ToolParameter("title", ToolParamType.STRING, "要删除的记忆标题"),
         ),
         category = "memory",
+        // 与 memory_write 同理：删除是不可逆的持久副作用，过审批闸门。
+        requiresConfirmation = true,
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {

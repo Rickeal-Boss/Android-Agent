@@ -9,6 +9,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 @Serializable
 data class MemorySection(
@@ -48,12 +50,14 @@ class AgentMemory(
     /**
      * 渲染成注入 system prompt 的文本；空记忆返回 null（不注入，省 token）。
      * 刻意用紧凑格式：端侧 4B 的系统提示词每一个 token 都在挤占工作记忆。
+     * title 也必须单行化（不只是 content）：title 是唯一键，模型可以往里写换行，
+     * 换行会把注入段切成多条伪 section 头，伪造「系统提示词结构」—— 注入面收紧。
      */
     suspend fun renderForPrompt(maxChars: Int = PROMPT_MAX_CHARS): String? {
         val list = sections()
         if (list.isEmpty()) return null
         val text = list.joinToString("\n") { section ->
-            "- [${section.title}] ${section.content.replace("\n", " ")}"
+            "- [${section.title.replace("\n", " ")}] ${section.content.replace("\n", " ")}"
         }
         return if (text.length <= maxChars) text else text.take(maxChars) + "…(已截断)"
     }
@@ -74,7 +78,10 @@ class AgentMemory(
                 updatedAtMillis = System.currentTimeMillis(),
             )
             if (index >= 0) current[index] = section else current.add(section)
-            writeSync(current.take(MAX_SECTIONS))
+            // 只保留**最新**的 MAX_SECTIONS 条（takeLast）：超限淘汰方向曾写反成
+            // take(...) —— 保留最旧、丢掉刚写入的新记忆，模型写的第 65 条永远
+            // 不生效且无任何提示。
+            writeSync(current.takeLast(MAX_SECTIONS))
         }
     }
 
@@ -101,7 +108,22 @@ class AgentMemory(
     private fun writeSync(sections: List<MemorySection>) {
         runCatching {
             file.parentFile?.mkdirs()
-            file.writeText(AgentJson.Default.encodeToString(ListSerializer(MemorySection.serializer()), sections))
+            // 原子写（tmp + ATOMIC_MOVE）：直接 writeText 覆写时进程死在半路会留下
+            // 半截 JSON，下次读解析失败 → 静默清零（readSync 的 getOrDefault）——
+            // 用户全部长期记忆凭空蒸发。Wave2 遗留缺陷。
+            val tmp = File(file.parentFile, file.name + "." + System.nanoTime() + ".tmp")
+            tmp.writeText(AgentJson.Default.encodeToString(ListSerializer(MemorySection.serializer()), sections))
+            try {
+                Files.move(
+                    tmp.toPath(),
+                    file.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (t: Throwable) {
+                // 个别文件系统不支持 ATOMIC_MOVE，退化普通 rename（仍是元数据操作）
+                Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
         }.onFailure {
             com.rickeal.agent.core.model.AgentLogStore.warn(
                 "记忆写入失败：${it.javaClass.simpleName}"

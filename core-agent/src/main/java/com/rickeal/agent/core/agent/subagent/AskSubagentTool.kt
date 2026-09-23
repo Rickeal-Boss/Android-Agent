@@ -5,6 +5,7 @@ import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.AgentRequest
 import com.rickeal.agent.core.agent.AgentRunner
 import com.rickeal.agent.core.agent.Tool
+import com.rickeal.agent.core.agent.ToolRegistry
 import com.rickeal.agent.core.model.AgentJson
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
@@ -37,6 +38,8 @@ data class SubagentAnswer(
     val actor: String,
     val text: String,
     val rounds: Int,
+    /** 子 run 的失败原因（Failed 事件透传）；null = 正常结束。 */
+    val failure: String? = null,
 )
 
 /**
@@ -61,6 +64,13 @@ class AskSubagentTool(
     private val registry: SubagentRegistry,
     private val sessions: SubagentSessionStore,
     private val agentRunner: AgentRunner,
+    /**
+     * 真实工具注册表（用于「未声明 allowedTools = 继承全部」的兜底解析）。
+     * Wave2 没注入它，兜底误用了 [registry]（SubagentRegistry）的 Actor 名当工具名
+     * —— Markdown 自定义 Actor 不写 tools 字段时子 run 实际零工具可用，与注释宣称
+     * 的「继承全部」矛盾。null = 兜底为零工具（保守）。
+     */
+    private val toolRegistry: ToolRegistry? = null,
 ) : Tool {
 
     override val spec: ToolSpec = ToolSpec(
@@ -104,6 +114,18 @@ class AskSubagentTool(
             ?: return failure("子代理缺少父 run 上下文（装配错误），请反馈开发者")
 
         val answer = ask(definition, parent, task)
+        // 失败透传：ok=false + 失败原因（脱敏），父模型据此改走其它路径或说明阻塞。
+        // 只在「文本为空且确有失败」时降级 —— 有文本时失败信息反而会稀释可用结果。
+        if (answer.text.isBlank() && answer.failure != null) {
+            return ToolResult(
+                callId = "",
+                name = TOOL_NAME,
+                ok = false,
+                output = "",
+                errorMessage = "子代理 ${definition.name} 执行失败：" +
+                    AgentLogStore.sanitizeUserFacing(answer.failure),
+            )
+        }
         return ToolResult(
             callId = "",
             name = TOOL_NAME,
@@ -136,8 +158,11 @@ class AskSubagentTool(
         val history = sessions.snapshot(sessionKey)
         val userInput = ChatMessage(role = Role.USER, text = task)
 
-        // 工具白名单：null = 继承全部，但 ask_actor 自身永远排除（防递归自我委派）
-        val toolNames = (definition.allowedTools ?: registry.names().filter { it != TOOL_NAME })
+        // 工具白名单：未声明 allowedTools = 继承全部**已注册工具**（ask_actor 自身
+        // 永远排除，防递归自我委派）。继承面必须从真实 ToolRegistry 取 —— Wave2
+        // 误用 SubagentRegistry 的 Actor 名当工具名，子 run 实际零工具。
+        val toolNames = (definition.allowedTools
+            ?: toolRegistry?.specs()?.map { it.name }.orEmpty())
             .filter { it != TOOL_NAME }
             .toSet()
 
@@ -161,6 +186,7 @@ class AskSubagentTool(
         sessions.append(sessionKey, userInput)
         var rounds = 0
         var finalText = ""
+        var failureMessage: String? = null
         agentRunner.runUnlocked(request).collect { event ->
             when (event) {
                 is AgentEvent.MessageCommitted -> sessions.append(sessionKey, event.message)
@@ -168,11 +194,15 @@ class AskSubagentTool(
                     finalText = event.text
                     rounds = event.rounds
                 }
+                // 子 run 失败不能静默吞掉：Wave2 只处理了 MessageCommitted/Finished，
+                // Failed 落进 else 被丢 —— 父模型只看到「没有产出可见文本」，无从区分
+                // 「任务确实无输出」和「引擎加载失败」，更没法调整策略。
+                is AgentEvent.Failed -> failureMessage = event.message
                 else -> Unit
             }
         }
         AgentLogStore.info("子代理 ${definition.name} 完成：$rounds 轮，输出 ${finalText.length} 字符")
-        return SubagentAnswer(definition.name, finalText, rounds)
+        return SubagentAnswer(definition.name, finalText, rounds, failureMessage)
     }
 
     private fun failure(message: String): ToolResult = ToolResult(
