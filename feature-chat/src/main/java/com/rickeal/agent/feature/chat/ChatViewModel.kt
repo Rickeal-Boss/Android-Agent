@@ -121,6 +121,8 @@ data class ChatUiState(
     val toolTraces: List<ToolTrace> = emptyList(),
     /** 已提交消息里被展开的「思考过程」 */
     val expandedThinkingIds: Set<String> = emptySet(),
+    /** 工具过程折叠组（F 项）中被手动展开的组（组 id = 首成员 trace.id；默认全折叠）。 */
+    val expandedGroupIds: Set<String> = emptySet(),
     /**
      * 最近一次请求实际送进模型的上下文规模（`TokenUsage.promptTokens`）。
      *
@@ -397,6 +399,15 @@ class ChatViewModel(
             val next = it.expandedThinkingIds.toMutableSet()
             if (!next.add(messageId)) next.remove(messageId)
             it.copy(expandedThinkingIds = next)
+        }
+    }
+
+    /** 展开/收起一个工具过程折叠组（F 项；组默认折叠）。 */
+    fun toggleGroup(groupId: String) {
+        _uiState.update {
+            val next = it.expandedGroupIds.toMutableSet()
+            if (!next.add(groupId)) next.remove(groupId)
+            it.copy(expandedGroupIds = next)
         }
     }
 

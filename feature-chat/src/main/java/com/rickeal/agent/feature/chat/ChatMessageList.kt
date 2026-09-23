@@ -90,6 +90,9 @@ fun ChatMessageList(
     onToggleThinking: () -> Unit,
     expandedThinkingIds: Set<String>,
     onToggleMessageThinking: (String) -> Unit,
+    /** 折叠组展开集合（F 项）与切换回调。 */
+    expandedGroupIds: Set<String>,
+    onToggleGroup: (String) -> Unit,
     toolTraces: List<ToolTrace>,
     /** 空态按钮排的出口：导入/下载模型页与端点配置页。回调链见 [ChatRoute.chatGraph]。 */
     onOpenModels: () -> Unit,
@@ -168,15 +171,31 @@ fun ChatMessageList(
         if (streaming.isStreaming) {
             item(key = "streaming", contentType = 1) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (trace in toolTraces) {
-                        ChatToolCard(
-                            name = trace.name,
-                            argumentsJson = trace.arguments,
-                            output = trace.result,
-                            elapsedMillis = trace.elapsedMillis,
-                            ok = trace.status == ToolTraceStatus.OK,
-                            running = trace.status == ToolTraceStatus.RUNNING,
-                        )
+                    // 工具过程折叠组（F 项）：连续完结轨迹折叠成组，RUNNING/FAILED
+                    // 独立渲染；toolTraces 引用不变时 remember 跳过分组计算。
+                    val renderItems = rememberTraceRenderItems(toolTraces)
+                    for (renderItem in renderItems) {
+                        when (renderItem) {
+                            is ToolTraceOrGroup.Group -> {
+                                val group = renderItem.group
+                                ChatTraceGroupCard(
+                                    group = group,
+                                    expanded = expandedGroupIds.contains(group.id),
+                                    onToggle = { onToggleGroup(group.id) },
+                                )
+                            }
+                            is ToolTraceOrGroup.Single -> {
+                                val trace = renderItem.trace
+                                ChatToolCard(
+                                    name = trace.name,
+                                    argumentsJson = trace.arguments,
+                                    output = trace.result,
+                                    elapsedMillis = trace.elapsedMillis,
+                                    ok = trace.status == ToolTraceStatus.OK,
+                                    running = trace.status == ToolTraceStatus.RUNNING,
+                                )
+                            }
+                        }
                     }
                     GlassBubble(
                         text = streaming.text,
