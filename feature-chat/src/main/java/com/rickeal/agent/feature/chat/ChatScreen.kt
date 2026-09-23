@@ -332,6 +332,38 @@ fun ChatScreen(
                 }
                 Spacer(modifier = Modifier.height(tokens.gapSm))
             }
+
+            // 自愈提示卡（G 项）：引擎重建/重试「已自动恢复」的非阻塞告知。
+            // 与 error 的区别：无需用户处置，终态事件自动清除，也可手动关。
+            val notice = state.notice
+            if (notice != null) {
+                GlassCard(
+                    material = GlassMaterial.THICK,
+                    cornerRadius = tokens.radiusMd,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = notice,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onGlassMuted,
+                            modifier = Modifier.weight(1f),
+                        )
+                        GlassIconButton(
+                            icon = Icons.Filled.Close,
+                            contentDescription = "关闭提示",
+                            onClick = viewModel::onDismissNotice,
+                            contentColor = colors.onGlassSubtle,
+                            iconSize = 16.dp,
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(tokens.gapSm))
+            }
             }
         },
     ) { _ ->
@@ -340,9 +372,7 @@ fun ChatScreen(
                 Box(modifier = Modifier.weight(1f).fillMaxSize()) {
                     ChatMessageList(
                         messages = state.messages,
-                        streamingText = state.streamingText,
-                        streamingThinking = state.streamingThinking,
-                        isStreaming = state.isStreaming,
+                        streamingFlow = viewModel.streaming,
                         thinkingExpanded = state.thinkingExpanded,
                         onToggleThinking = { viewModel.toggleThinking() },
                         expandedThinkingIds = state.expandedThinkingIds,
@@ -365,9 +395,7 @@ fun ChatScreen(
         } else {
             ChatMessageList(
                 messages = state.messages,
-                streamingText = state.streamingText,
-                streamingThinking = state.streamingThinking,
-                isStreaming = state.isStreaming,
+                streamingFlow = viewModel.streaming,
                 thinkingExpanded = state.thinkingExpanded,
                 onToggleThinking = viewModel::toggleThinking,
                 expandedThinkingIds = state.expandedThinkingIds,

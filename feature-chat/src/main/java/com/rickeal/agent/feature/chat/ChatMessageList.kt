@@ -22,9 +22,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -42,6 +44,8 @@ import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.TokenUsage
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 
 /**
  * 传给 `animateScrollToItem` 的 scrollOffset：一个「足够大」的值，把列表顶到最底部。
@@ -80,9 +84,8 @@ fun TokenUsage.toGlassUsage(): GlassBubbleUsage = GlassBubbleUsage(
 @Composable
 fun ChatMessageList(
     messages: List<ChatMessage>,
-    streamingText: String,
-    streamingThinking: String,
-    isStreaming: Boolean,
+    /** 流式通道独立流（A 项节流）：在列表内部 collect，ChatScreen 顶层不再随 token 失效。 */
+    streamingFlow: StateFlow<StreamingState>,
     thinkingExpanded: Boolean,
     onToggleThinking: () -> Unit,
     expandedThinkingIds: Set<String>,
@@ -94,6 +97,7 @@ fun ChatMessageList(
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
 ) {
+    val streaming by streamingFlow.collectAsState()
     // 「用户是否贴着底部」必须用 derivedStateOf 包住：layoutInfo 每次滚动都会更新，
     // 直接在组合里读会让整个列表跟着每一帧滚动重组。
     val atBottom by remember {
@@ -110,17 +114,21 @@ fun ChatMessageList(
         if (index >= 0) listState.animateScrollToItem(index, scrollOffset = SCROLL_TO_TAIL_SLACK)
     }
 
-    // 流式期间 messages.size 与 isStreaming **都不变**，只 key 在这两者上的话
-    // 整个生成过程一次都不会滚动（用户看不到最新 token）。
-    // 改成 key 在真正逐帧变化的 streamingText / toolTraces.size 上，
-    // 并且只在用户本来就贴着底部时才跟随 —— 否则会把正在往上翻历史的用户硬拽回去。
-    LaunchedEffect(streamingText, toolTraces.size) {
-        if (isStreaming && atBottom) {
-            val lastIndex = listState.layoutInfo.totalItemsCount - 1
-            if (lastIndex >= 0) {
-                listState.animateScrollToItem(lastIndex, scrollOffset = SCROLL_TO_TAIL_SLACK)
+    // 流式跟随（A 项节流改造）：key 在低频的 isStreaming / toolTraces.size 上
+    // （原来 key 在 streamingText 上 —— 每 token 重启协程；现在文本经 120ms 收敛，
+    // 仍可用但没必要）。协程体内用 snapshotFlow 读文本长度变化驱动滚动，
+    // collectLatest 保证滚动动画慢于 flush 节奏时取消上一次，不堆积。
+    LaunchedEffect(streaming.isStreaming, toolTraces.size) {
+        if (!streaming.isStreaming) return@LaunchedEffect
+        snapshotFlow { streaming.text.length }
+            .collectLatest {
+                if (atBottom) {
+                    val lastIndex = listState.layoutInfo.totalItemsCount - 1
+                    if (lastIndex >= 0) {
+                        listState.animateScrollToItem(lastIndex, scrollOffset = SCROLL_TO_TAIL_SLACK)
+                    }
+                }
             }
-        }
     }
 
     LazyColumn(
@@ -129,7 +137,7 @@ fun ChatMessageList(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (messages.isEmpty() && !isStreaming) {
+        if (messages.isEmpty() && !streaming.isStreaming) {
             item(key = "empty") {
                 Box(modifier = Modifier.fillParentMaxHeight(0.7f), contentAlignment = Alignment.Center) {
                     // 空态三出口：前两条都去模型页（导入本地文件 / 从推荐列表下载），
@@ -157,7 +165,7 @@ fun ChatMessageList(
                 onToggleThinking = onToggleMessageThinking,
             )
         }
-        if (isStreaming) {
+        if (streaming.isStreaming) {
             item(key = "streaming", contentType = 1) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (trace in toolTraces) {
@@ -171,12 +179,23 @@ fun ChatMessageList(
                         )
                     }
                     GlassBubble(
-                        text = streamingText,
+                        text = streaming.text,
                         isUser = false,
-                        thinking = streamingThinking.ifBlank { null },
+                        thinking = streaming.thinking.ifBlank { null },
                         thinkingExpanded = thinkingExpanded,
                         onToggleThinking = onToggleThinking,
                         isStreaming = true,
+                        // 流式实时指标（E 项）：TTFT 精确、tps 粗估；只在有数据时传，
+                        // 避免把 "in 0 / out 0 · 0 tok/s" 之类无意义占位画出来。
+                        usage = streaming.usage?.takeIf { it.ttftMillis > 0 || it.tokensPerSecond > 0f }
+                            ?.let {
+                                GlassBubbleUsage(
+                                    promptTokens = 0,
+                                    completionTokens = 0,
+                                    tokensPerSecond = it.tokensPerSecond,
+                                    firstTokenLatencyMillis = it.ttftMillis,
+                                )
+                            },
                     )
                 }
             }

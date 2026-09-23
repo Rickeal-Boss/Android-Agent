@@ -331,7 +331,13 @@ fun GlassBubble(
 private fun usageText(usage: GlassBubbleUsage): String {
     val tps = if (usage.tokensPerSecond > 0f) " · %.1f tok/s".format(Locale.US, usage.tokensPerSecond) else ""
     val ttft = if (usage.firstTokenLatencyMillis > 0L) " · 首字 ${usage.firstTokenLatencyMillis}ms" else ""
-    return "in ${usage.promptTokens} / out ${usage.completionTokens}$tps$ttft"
+    // 流式实时指标（Wave3）只带 tok/s 与首字延迟，in/out 为 0：此时省略 token 计数前缀，
+    // 避免「in 0 / out 0」的无意义占位。终态后引擎精确 usage 会覆盖为完整形态。
+    val counts =
+        if (usage.promptTokens > 0 || usage.completionTokens > 0) "in ${usage.promptTokens} / out ${usage.completionTokens}"
+        else ""
+    val body = "$counts$tps$ttft"
+    return if (body.startsWith(" ·")) body.trimStart(' ', '·') else body
 }
 
 @Composable

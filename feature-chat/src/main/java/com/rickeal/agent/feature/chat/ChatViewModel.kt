@@ -64,15 +64,40 @@ data class RecoveryOffer(
     val messageCount: Int,
 )
 
+/**
+ * 流式通道的独立状态（Wave3 节流改造）：从 [ChatUiState] 拆出高频字段，
+ * token 突发只失效读本流的组合点，不再打挂整个 ChatScreen。
+ *
+ * 关键语义：TextDelta/ThinkingDelta 先进 [ChatViewModel] 的字符缓冲，
+ * 由 120ms flush 循环收敛后才进这里 —— 渲染频率与 token 速率解耦
+ * （gallery BufferedFadingMarkdownText 的 conflate 参数实测值）。
+ */
+@Immutable
+data class StreamingState(
+    val text: String = "",
+    val thinking: String = "",
+    val role: Role? = null,
+    val isStreaming: Boolean = false,
+    /** 流式期间的实时指标（TTFT 精确、tps 粗估）；终态后由引擎精确 usage 覆盖。 */
+    val usage: StreamingUsage? = null,
+)
+
+/** 流式实时指标（E 项）：TTFT = run 启动 → 首个可见 token；tps 按字符数粗估。 */
+@Immutable
+data class StreamingUsage(
+    val ttftMillis: Long = 0L,
+    val tokensPerSecond: Float = 0f,
+)
+
+/** 流式 flush 间隔（gallery 实测参数）：token 突发收敛为最多每 120ms 一次渲染。 */
+private const val STREAM_FLUSH_INTERVAL_MS = 120L
+
 @Immutable
 data class ChatUiState(
     val conversationId: String? = null,
     val title: String = "新对话",
-    /** 已完成的消息，稳定不变；流式中的那条单独放 streaming* 字段 */
+    /** 已完成的消息，稳定不变；流式中的那条在 [StreamingState]（独立低频流）。 */
     val messages: List<ChatMessage> = emptyList(),
-    val streamingText: String = "",
-    val streamingThinking: String = "",
-    val streamingRole: Role? = null,
     val isStreaming: Boolean = false,
     val agentRound: Int = 0,
     val agentMaxRounds: Int = 8,
@@ -84,6 +109,12 @@ data class ChatUiState(
     val activeEndpoint: RemoteEndpoint? = null,
     val isGenerating: Boolean = false,
     val error: String? = null,
+    /**
+     * 非阻塞告知（G 项，gallery 自愈链可见化）：引擎重建/重试这类「已自动恢复，
+     * 但用户应该知道发生了什么」的信息。与 error 的区别 —— error 是失败终态需要
+     * 用户处置，notice 是自愈过程提示，下一终态事件自动清除。
+     */
+    val notice: String? = null,
     val toolsEnabled: Boolean = true,
     /** 流式气泡里「思考过程」是否展开 */
     val thinkingExpanded: Boolean = false,
@@ -112,6 +143,72 @@ class ChatViewModel(
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+
+    /** 流式通道（A 项节流）：高频字段独立流，token 变化不打挂大 StateFlow 的订阅者。 */
+    private val _streaming = MutableStateFlow(StreamingState())
+    val streaming: StateFlow<StreamingState> = _streaming.asStateFlow()
+
+    /** 字符缓冲：delta 进缓冲，flush 循环 120ms 收敛一次才真正进 [StreamingState]。 */
+    private val textBuffer = StringBuilder()
+    private val thinkingBuffer = StringBuilder()
+    private var flushJob: Job? = null
+
+    /** 实时指标时间戳：run 启动 / 首个可见 token（TTFT 计算的两端）。 */
+    private var runStartedAtMillis: Long? = null
+    private var firstTokenAtMillis: Long? = null
+
+    /** token 缓冲收敛进状态流（120ms 一次）。缓冲排空循环自然退出，不常驻。 */
+    private fun ensureFlushLoop() {
+        if (flushJob?.isActive == true) return
+        flushJob = viewModelScope.launch {
+            try {
+                while (textBuffer.isNotEmpty() || thinkingBuffer.isNotEmpty()) {
+                    kotlinx.coroutines.delay(STREAM_FLUSH_INTERVAL_MS)
+                    flushNow()
+                    updateStreamingUsage()
+                }
+            } finally {
+                flushJob = null
+            }
+        }
+    }
+
+    /** 同步排空缓冲到状态流（终态收尾用：保证「半截回答不凭空消失」）。 */
+    private fun flushNow() {
+        val t = textBuffer.toString()
+        val th = thinkingBuffer.toString()
+        textBuffer.setLength(0)
+        thinkingBuffer.setLength(0)
+        if (t.isNotEmpty() || th.isNotEmpty()) {
+            _streaming.update { it.copy(text = it.text + t, thinking = it.thinking + th) }
+        }
+    }
+
+    /** 流式实时指标（E 项）：TTFT 精确；tps 用字符数粗估（中英混合按 2 字符/token）。 */
+    private fun updateStreamingUsage() {
+        val started = runStartedAtMillis ?: return
+        val first = firstTokenAtMillis ?: return
+        val decodeMs = (System.currentTimeMillis() - first).coerceAtLeast(1)
+        val estimatedTokens = _streaming.value.text.length / 2
+        val tps = estimatedTokens * 1000f / decodeMs
+        _streaming.update { it.copy(usage = StreamingUsage(ttftMillis = first - started, tokensPerSecond = tps)) }
+    }
+
+    /** 清空流式文本与缓冲（Retrying/Failed：失败尝试不落库，重新来）。 */
+    private fun resetStreamingText() {
+        textBuffer.setLength(0)
+        thinkingBuffer.setLength(0)
+        _streaming.update { it.copy(text = "", thinking = "", usage = null) }
+    }
+
+    /** 完全复位流式通道（run 启动/终态收尾）。 */
+    private fun resetStreaming(role: Role? = Role.MODEL, isStreaming: Boolean = false) {
+        textBuffer.setLength(0)
+        thinkingBuffer.setLength(0)
+        runStartedAtMillis = null
+        firstTokenAtMillis = null
+        _streaming.value = StreamingState(role = role, isStreaming = isStreaming)
+    }
 
     private var runJob: Job? = null
     private var conversationId: String? = initialConversationId
@@ -304,6 +401,11 @@ class ChatViewModel(
         _uiState.update { it.copy(error = null) }
     }
 
+    /** 关闭自愈提示（G 项 notice）。终态事件会自动清除，手动关闭是提前处置。 */
+    fun onDismissNotice() {
+        _uiState.update { it.copy(notice = null) }
+    }
+
     /** 用户对当前授权请求做出裁决（授权卡按钮）。 */
     fun onApprovalResult(approved: Boolean) {
         val pending = _uiState.value.pendingApproval ?: return
@@ -429,14 +531,13 @@ class ChatViewModel(
                     // 既有计划回填（计划已持久化）：恢复 run 不重放历史版本水印，
                     // 时间线必须在这里主动接上，否则磁盘上有计划而 UI 空白。
                     planSteps = container.agentPlanStore.stepsFor(cid),
-                    streamingText = "",
-                    streamingThinking = "",
-                    streamingRole = Role.MODEL,
                     isStreaming = true,
                     isGenerating = true,
                     agentRound = 0,
                 )
             }
+            resetStreaming(role = Role.MODEL, isStreaming = true)
+            runStartedAtMillis = System.currentTimeMillis()
             // 只有「合成的继续输入」（旧 journal 退化路径）才需要落库；savedInput
             // 那条本来就在会话文件里（onSend 落库过 / 上次恢复已落库），不重复写。
             if (savedInput == null) {
@@ -494,6 +595,7 @@ class ChatViewModel(
         conversationId = null
         // 会话销毁 = 授权作用域消失：审批缓存全清（key 含 cid 本就隔离，这里保超额清）。
         container.toolApprovalCache.revokeAll(null)
+        resetStreaming(role = null, isStreaming = false)
         val keep = _uiState.value
         _uiState.value = ChatUiState(
             config = keep.config,
@@ -517,17 +619,21 @@ class ChatViewModel(
      * 胜负不同而存出不同的东西。
      */
     fun onStop() {
-        val partial = _uiState.value.streamingText
+        // 保序（A 项节流改造后仍然关键）：先 flushNow 同步排空缓冲 → 取快照 →
+        // 再取消 → 再清流式状态。flush 协程独立于 runJob，缓冲排空后自然退出，
+        // 终态清空不会与残留 delta 竞争。
+        flushNow()
+        val partial = _streaming.value.text
         runJob?.cancel()
         runJob = null
         _uiState.update {
             it.copy(
-                streamingText = "",
-                streamingThinking = "",
                 isStreaming = false,
                 isGenerating = false,
+                notice = null,
             )
         }
+        resetStreaming(role = null, isStreaming = false)
         if (partial.isNotBlank()) {
             // conversationId 为空说明首轮的用户消息都还没落库（极窄窗口），此时没有可写入的
             // 会话，不提交，避免出现「界面有气泡但历史里没有」的假象。
@@ -559,18 +665,18 @@ class ChatViewModel(
                 messages = history,
                 draftInput = "",
                 attachments = emptyList(),
-                streamingText = "",
-                streamingThinking = "",
-                streamingRole = Role.MODEL,
                 isStreaming = true,
                 isGenerating = true,
                 agentRound = 0,
                 toolTraces = emptyList(),
                 thinkingExpanded = false,
                 error = null,
+                notice = null,
                 recovery = null,
             )
         }
+        resetStreaming(role = Role.MODEL, isStreaming = true)
+        runStartedAtMillis = System.currentTimeMillis()
         // 覆盖 runJob 之前必须先取消旧的：core-agent 侧已有 runMutex 根治并发，
         // 这里是第二层 —— 少这一行就是「两个 run 抢同一个引擎实例」的入口。
         runJob?.cancel()
@@ -637,8 +743,6 @@ class ChatViewModel(
             it.copy(
                 messages = trimmed,
                 error = null,
-                streamingText = "",
-                streamingThinking = "",
                 toolTraces = emptyList(),
             )
         }
@@ -655,19 +759,19 @@ class ChatViewModel(
         _uiState.update {
             it.copy(
                 messages = history,
-                streamingText = "",
-                streamingThinking = "",
-                streamingRole = Role.MODEL,
                 isStreaming = true,
                 isGenerating = true,
                 agentRound = 0,
                 toolTraces = emptyList(),
                 error = null,
+                notice = null,
                 recovery = null,
             )
         }
         // 同上：覆盖 runJob 之前先取消旧的，绝不让两个 run 同时活着。
         runJob?.cancel()
+        resetStreaming(role = Role.MODEL, isStreaming = true)
+        runStartedAtMillis = System.currentTimeMillis()
         runJob = viewModelScope.launch {
             val cid = ensureConversation(firstUserText(history))
             val config = _uiState.value.config
@@ -727,10 +831,14 @@ class ChatViewModel(
                 it.copy(agentRound = event.round, agentMaxRounds = event.maxRounds)
             }
 
-            // 引擎损坏后重建并重试本轮：必须清空流式文本。
-            // 否则第二轮的 delta 会追加到第一轮的半截输出之后，用户看到两段拼在一起。
-            is AgentEvent.Retrying -> _uiState.update {
-                it.copy(streamingText = "", streamingThinking = "")
+            // 引擎损坏后重建并重试本轮：清空流式缓冲（两轮输出不得叠在一起），
+            // 并用 notice 告知用户「已自动恢复」（gallery 自愈链可见化，G 项）——
+            // 以前这里只清文本，用户唯一感知是内容突然清零重来，零解释。
+            // 注意：清缓冲**不落库**（s3 审查修正）——重试=丢弃半截输出重新生成，
+            // flush 落库反而会把失败尝试的半截文本存进会话。
+            is AgentEvent.Retrying -> {
+                resetStreamingText()
+                _uiState.update { it.copy(notice = "引擎异常，已自动重建并重试") }
             }
 
             // 工具审批请求：立一条 RUNNING 轨迹占位（授权卡另在 snackbarHost 区渲染）。
@@ -754,12 +862,15 @@ class ChatViewModel(
                 it.copy(planSteps = event.steps)
             }
 
-            is AgentEvent.TextDelta -> _uiState.update {
-                it.copy(streamingText = it.streamingText + event.text)
+            is AgentEvent.TextDelta -> {
+                if (firstTokenAtMillis == null) firstTokenAtMillis = System.currentTimeMillis()
+                textBuffer.append(event.text)
+                ensureFlushLoop()
             }
 
-            is AgentEvent.ThinkingDelta -> _uiState.update {
-                it.copy(streamingThinking = it.streamingThinking + event.text)
+            is AgentEvent.ThinkingDelta -> {
+                thinkingBuffer.append(event.text)
+                ensureFlushLoop()
             }
 
             is AgentEvent.ToolCallStarted -> {
@@ -824,8 +935,11 @@ class ChatViewModel(
             }
 
             is AgentEvent.Finished -> {
-                val text = event.text.ifBlank { _uiState.value.streamingText }
-                val thinking = _uiState.value.streamingThinking.ifBlank { null }
+                // 终态收尾（A 项节流改造）：先同步排空缓冲再取快照 —— 保证
+                // 「半截回答不凭空消失」的既有承诺在节流后仍然成立。
+                flushNow()
+                val text = event.text.ifBlank { _streaming.value.text }
+                val thinking = _streaming.value.thinking.ifBlank { null }
                 if (text.isNotBlank() || thinking != null) {
                     commitAssistant(text, thinking, event.usage, conversationId)
                 }
@@ -835,38 +949,45 @@ class ChatViewModel(
                 val promptTokens = event.usage?.promptTokens ?: 0
                 _uiState.update {
                     it.copy(
-                        streamingText = "",
-                        streamingThinking = "",
                         isStreaming = false,
                         isGenerating = false,
                         toolTraces = emptyList(),
                         contextTokens = if (promptTokens > 0) promptTokens else it.contextTokens,
+                        notice = null,
                     )
                 }
+                resetStreaming(role = null, isStreaming = false)
             }
 
-            is AgentEvent.Failed -> _uiState.update {
-                // 同上：AgentEvent.Failed 的 message 可能带着远程端点的 URL / 请求头。
-                it.copy(
-                    isStreaming = false,
-                    isGenerating = false,
-                    error = AgentLogStore.sanitizeUserFacing(event.message),
-                )
+            is AgentEvent.Failed -> {
+                // 失败尝试的半截输出不落库（与 Retrying 同理），但缓冲必须清。
+                resetStreamingText()
+                _uiState.update {
+                    // AgentEvent.Failed 的 message 可能带着远程端点的 URL / 请求头。
+                    it.copy(
+                        isStreaming = false,
+                        isGenerating = false,
+                        error = AgentLogStore.sanitizeUserFacing(event.message),
+                        notice = null,
+                    )
+                }
+                _streaming.update { it.copy(isStreaming = false) }
             }
 
             is AgentEvent.Cancelled -> {
-                val partial = event.partialText.ifBlank { _uiState.value.streamingText }
+                flushNow()
+                val partial = event.partialText.ifBlank { _streaming.value.text }
                 if (partial.isNotBlank()) {
                     commitAssistant(partial, null, null, conversationId)
                 }
                 _uiState.update {
                     it.copy(
-                        streamingText = "",
-                        streamingThinking = "",
                         isStreaming = false,
                         isGenerating = false,
+                        notice = null,
                     )
                 }
+                resetStreaming(role = null, isStreaming = false)
             }
         }
     }
