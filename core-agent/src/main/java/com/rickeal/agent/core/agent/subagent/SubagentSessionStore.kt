@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.agent.subagent
 
 import com.rickeal.agent.core.model.AgentJson
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
 import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
@@ -95,15 +96,16 @@ class SubagentSessionStore(
         // ChatMessage 全字段带默认值，内生 schema 演化不会触发此路径；
         // 唯一暴露面是外部损坏（文件系统/手工编辑），但拒写的代价（丢一条 append）
         // 远小于覆写的代价（丢整个 Actor 上下文）。
-        return runCatching {
-            val raw = file.readText()
-            if (raw.isBlank()) return emptyList()
+        // 注意用 try 而不是 runCatching + return 混排：早退分支会让 getOrElse 的
+        // 泛型推断失效（CI 实测 Cannot infer type for type parameter 'T'）。
+        val raw = file.readText()
+        if (raw.isBlank()) return emptyList()
+        return try {
             AgentJson.Default.decodeFromString(MessagesSerializer, raw)
-        }.getOrElse {
-            com.rickeal.agent.core.model.AgentLogStore.error(
-                "Actor 会话文件解析失败（${file.name}），已跳过加载且拒绝覆写"
-            )
-            emptyList().also { corruptedKeys.add(key) }
+        } catch (t: Throwable) {
+            AgentLogStore.error("Actor 会话文件解析失败（${file.name}），已跳过加载且拒绝覆写")
+            corruptedKeys.add(key)
+            emptyList()
         }
     }
 
@@ -132,7 +134,7 @@ class SubagentSessionStore(
                 Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
         }.onFailure {
-            com.rickeal.agent.core.model.AgentLogStore.warn(
+            AgentLogStore.warn(
                 "Actor 会话写入失败（忽略，不影响运行）：${it.javaClass.simpleName}"
             )
         }

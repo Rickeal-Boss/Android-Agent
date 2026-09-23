@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.agent.memory
 
 import com.rickeal.agent.core.model.AgentJson
+import com.rickeal.agent.core.model.AgentLogStore
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -158,7 +159,7 @@ class AgentMemory(
                 Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
         }.onFailure {
-            com.rickeal.agent.core.model.AgentLogStore.warn(
+            AgentLogStore.warn(
                 "记忆写入失败：${it.javaClass.simpleName}"
             )
         }
