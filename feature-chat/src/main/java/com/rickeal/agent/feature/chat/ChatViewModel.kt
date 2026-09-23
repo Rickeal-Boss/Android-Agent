@@ -213,6 +213,9 @@ class ChatViewModel(
     private var runJob: Job? = null
     private var conversationId: String? = initialConversationId
 
+    /** 当前 run 的 journal（D 项回合归档用）：run 启动时置，onNewConversation 清。 */
+    private var currentJournal: AgentRunJournal? = null
+
     /**
      * 审批通道：把「危险/需确认工具的执行前裁决」挂起到用户点击为止。
      * fail-closed 的另一半在这里——run 取消时 `deferred.await()` 随协程取消，
@@ -406,6 +409,37 @@ class ChatViewModel(
         _uiState.update { it.copy(notice = null) }
     }
 
+    /**
+     * 回合归档（D 项 history_v2）：journal 折叠成 TurnRecord → 正文进内容寻址池 →
+     * 回合记录落 segments.jsonl → journal 改名 .archived 退出恢复扫描。
+     * 硬顺序：**先 commitTurn 后归档**（反序窗口 = 回合记录与 journal 双双丢失）。
+     * 全链 best-effort：任何失败只记日志，绝不影响终态处理。
+     * archive 参数：onStop 路径传 false —— cancel 时 journal 的 NonCancellable 收尾
+     * 可能还没写完，此时 rename 会产生幽灵文件；只记 TurnRecord，归档留给终态路径。
+     */
+    private fun archiveTurnNow(
+        state: com.rickeal.agent.core.agent.history.TurnState,
+        termination: String?,
+        cid: String?,
+        archive: Boolean,
+    ) {
+        val journal = currentJournal ?: return
+        val dir = container.historyRoot
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val store = com.rickeal.agent.core.agent.history.SegmentedHistoryStore.open(dir, cid ?: return@runCatching)
+                val record = com.rickeal.agent.core.agent.history.TurnFold.fromJournal(
+                    pool = store.pool,
+                    journal = journal,
+                    state = state,
+                    termination = termination,
+                ) ?: return@runCatching
+                store.commitTurn(record)
+                if (archive) journal.archiveAsSettled()
+            }
+        }
+    }
+
     /** 用户对当前授权请求做出裁决（授权卡按钮）。 */
     fun onApprovalResult(approved: Boolean) {
         val pending = _uiState.value.pendingApproval ?: return
@@ -486,6 +520,7 @@ class ChatViewModel(
         runJob?.cancel()
         runJob = viewModelScope.launch {
             val journal = AgentRunJournal.open(File(container.journalRoot, cid), offer.runId)
+            currentJournal = journal
             val savedInput = withContext(Dispatchers.IO) { journal.readUserInputSync() }
             val committed = withContext(Dispatchers.IO) { journal.committedMessagesSync() }
             if (committed.isEmpty() && savedInput == null) {
@@ -595,6 +630,7 @@ class ChatViewModel(
         conversationId = null
         // 会话销毁 = 授权作用域消失：审批缓存全清（key 含 cid 本就隔离，这里保超额清）。
         container.toolApprovalCache.revokeAll(null)
+        currentJournal = null
         resetStreaming(role = null, isStreaming = false)
         val keep = _uiState.value
         _uiState.value = ChatUiState(
@@ -633,6 +669,15 @@ class ChatViewModel(
                 notice = null,
             )
         }
+        // 回合归档（D 项）：用户主动停止 = Interrupted。**只记 TurnRecord 不归档** ——
+        // cancel 时 journal 的 NonCancellable settled 收尾可能还没写完，此刻 rename
+        // 会产生幽灵文件（归档留待该 journal 在下次终态路径/扫描时处理）。
+        archiveTurnNow(
+            com.rickeal.agent.core.agent.history.TurnState.INTERRUPTED,
+            "Cancelled",
+            conversationId,
+            archive = false,
+        )
         resetStreaming(role = null, isStreaming = false)
         if (partial.isNotBlank()) {
             // conversationId 为空说明首轮的用户消息都还没落库（极窄窗口），此时没有可写入的
@@ -696,6 +741,7 @@ class ChatViewModel(
                 runDir = File(container.journalRoot, cid),
                 runId = "run_" + System.currentTimeMillis(),
             )
+            currentJournal = journal
             val request = AgentRequest(
                 conversationId = cid,
                 history = history,
@@ -787,6 +833,7 @@ class ChatViewModel(
                 runDir = File(container.journalRoot, cid),
                 runId = "run_" + System.currentTimeMillis(),
             )
+            currentJournal = journal
             val request = AgentRequest(
                 conversationId = cid,
                 history = history,
@@ -957,6 +1004,13 @@ class ChatViewModel(
                     )
                 }
                 resetStreaming(role = null, isStreaming = false)
+                // 回合归档（D 项）：settled 已落 journal，先 commitTurn 再归档。
+                archiveTurnNow(
+                    com.rickeal.agent.core.agent.history.TurnState.COMPLETE,
+                    event.terminatedBy.name,
+                    conversationId,
+                    archive = true,
+                )
             }
 
             is AgentEvent.Failed -> {
@@ -972,6 +1026,13 @@ class ChatViewModel(
                     )
                 }
                 _streaming.update { it.copy(isStreaming = false) }
+                // 回合归档（D 项）：失败也是终态（settled("Failed") 已落 journal）。
+                archiveTurnNow(
+                    com.rickeal.agent.core.agent.history.TurnState.FAILED,
+                    null,
+                    conversationId,
+                    archive = true,
+                )
             }
 
             is AgentEvent.Cancelled -> {
@@ -988,6 +1049,13 @@ class ChatViewModel(
                     )
                 }
                 resetStreaming(role = null, isStreaming = false)
+                // 引擎主动 CANCELLED 终帧（可达路径）同归档；协程取消路径走 onStop。
+                archiveTurnNow(
+                    com.rickeal.agent.core.agent.history.TurnState.INTERRUPTED,
+                    "Cancelled",
+                    conversationId,
+                    archive = true,
+                )
             }
         }
     }

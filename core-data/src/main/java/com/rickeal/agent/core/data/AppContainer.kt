@@ -78,6 +78,13 @@ class AppContainer(private val context: Context) {
      */
     val journalRoot: File = File(context.filesDir, "journal")
 
+    /**
+     * 回合归档根目录（Wave3 history_v2：`<filesDir>/history/<conversationId>/`）。
+     * run 终态后由宿主把 journal 折叠成 TurnRecord 归档（正文进内容寻址池），
+     * journal 本体随后改名 .jsonl.archived 退出恢复扫描 —— AgentRunner 零感知。
+     */
+    val historyRoot: File = File(context.filesDir, "history")
+
     /** 模型下载（系统 DownloadManager，落盘到 externalFilesDir/Download）。 */
     val downloadDirPath: String?
         get() = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath

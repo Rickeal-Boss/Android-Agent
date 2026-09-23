@@ -44,6 +44,9 @@ class AgentRunJournal private constructor(
     private val file: File,
     private val ioDispatcher: CoroutineDispatcher,
 ) {
+    /** run 标识 = 文件名去掉 .jsonl 后缀（open() 已做清洗，恢复用与血缘归档共用）。 */
+    val runId: String
+        get() = file.nameWithoutExtension
 
     /** 序号与互斥：JSONL 行号即恢复顺序，乱序写入会让 replay 语义失效。 */
     private val mutex = Mutex()
@@ -153,7 +156,24 @@ class AgentRunJournal private constructor(
     // ------------------------------------------------------------------
 
     /**
-     * 用户选择「不继续」时把 journal 改名归档而非删除：过程记录里可能有排查需要的
+     * settled 后的历史归档（Wave3 history_v2 回合归档链）：改名 `.jsonl.archived`
+     * 退出 [findUnsettled] 扫描（不以 `.jsonl` 结尾）。与 [markDismissed] 的
+     * `.dismissed.jsonl` 语义区分：那是「用户丢弃未完成 run」，这是「正常完成后的
+     * 过程记录归档」。返回是否成功；renameTo 失败返回 false 不抛异常，显式检查。
+     */
+    fun archiveAsSettled(): Boolean {
+        val renamed = runCatching {
+            file.renameTo(File(file.parentFile, file.name + ".archived"))
+        }.getOrDefault(false)
+        if (!renamed && file.exists()) {
+            com.rickeal.agent.core.model.AgentLogStore.warn(
+                "journal 历史归档失败（目标可能已存在）：${file.name}"
+            )
+        }
+        return renamed
+    }
+
+    /** 用户选择「不继续」时把 journal 改名归档而非删除：过程记录里可能有排查需要的
      * 工具结果，删除不可逆；改名后 [findUnsettled] 不再命中（恢复提示消失）。
      *
      * 目标名用 `.dismissed.jsonl` 结尾（保持 jsonl 结尾便于目录浏览），与
