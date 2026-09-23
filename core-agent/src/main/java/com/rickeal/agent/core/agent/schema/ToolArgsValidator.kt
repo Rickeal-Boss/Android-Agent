@@ -104,7 +104,7 @@ object ToolArgsValidator {
                         ArgsViolation(
                             parameter.name,
                             "one of [${parameter.enumValues.joinToString(", ")}]",
-                            "\"${raw.content}\"",
+                            "\"${rawOrNull.content}\"",
                         )
                     )
                 }
