@@ -489,7 +489,7 @@ class AgentRunner(
                         thinking = accumulator.thinking.takeIf { it.isNotBlank() },
                         usage = accumulator.usage,
                         finishReason = accumulator.finishReason ?: FinishReason.STOP,
-                        modelRef = request.model?.id ?: request.endpoint?.id,
+                        modelRef = request.model?.id,
                     )
                     working.add(committed)
                     journal?.appendMessage(committed)
