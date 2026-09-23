@@ -7,6 +7,8 @@ import com.rickeal.agent.core.agent.AgentEvent
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.AgentRequest
+import com.rickeal.agent.core.agent.journal.AgentRunJournal
+import java.io.File
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
@@ -313,6 +315,12 @@ class ChatViewModel(
             } else {
                 null
             }
+            // 每次 run 一个 journal 文件：进程被杀后可从「已完成轮次」继续
+            // （core-agent/journal；写入 best-effort，失败不影响 run 本身）。
+            val journal = AgentRunJournal.open(
+                runDir = File(container.journalRoot, cid),
+                runId = "run_" + System.currentTimeMillis(),
+            )
             val request = AgentRequest(
                 conversationId = cid,
                 history = history,
@@ -321,6 +329,7 @@ class ChatViewModel(
                 model = _uiState.value.activeModel,
                 endpoint = endpoint,
                 policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
+                journal = journal,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -391,6 +400,12 @@ class ChatViewModel(
             } else {
                 null
             }
+            // 每次 run 一个 journal 文件：进程被杀后可从「已完成轮次」继续
+            // （core-agent/journal；写入 best-effort，失败不影响 run 本身）。
+            val journal = AgentRunJournal.open(
+                runDir = File(container.journalRoot, cid),
+                runId = "run_" + System.currentTimeMillis(),
+            )
             val request = AgentRequest(
                 conversationId = cid,
                 history = history,
@@ -399,6 +414,7 @@ class ChatViewModel(
                 model = _uiState.value.activeModel,
                 endpoint = endpoint,
                 policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
+                journal = journal,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }

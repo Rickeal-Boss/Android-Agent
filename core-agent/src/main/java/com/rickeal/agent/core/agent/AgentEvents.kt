@@ -6,6 +6,7 @@ import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.RemoteEndpoint
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
+import com.rickeal.agent.core.model.ToolSpec
 import com.rickeal.agent.core.model.TokenUsage
 
 /**
@@ -46,6 +47,13 @@ sealed interface AgentEvent {
      * 两轮输出叠在一起。UI 收到本事件应清空流式缓冲（streamingText / streamingThinking）。
      */
     data class Retrying(val reason: String) : AgentEvent
+
+    /**
+     * 一次工具调用等待用户裁决（Octop tool_guard / ZCode 命令审批语义移植）。
+     * UI 收到后应展示确认界面，并通过 [AgentRequest.approvalHandler] 给出的通道回填
+     * APPROVED / DENIED；主循环会挂起等待，直到裁决或整个 run 被取消。
+     */
+    data class ApprovalRequested(val call: ToolCall, val spec: ToolSpec) : AgentEvent
 }
 
 data class AgentRequest(
@@ -58,4 +66,17 @@ data class AgentRequest(
     /** null = 使用全部已启用工具；否则只用白名单内的 */
     val toolNames: Set<String>? = null,
     val policy: AgentPolicy = AgentPolicy(),
+    /**
+     * 运行日志（可选）。传入时主循环把关键节点（run_started / round_started /
+     * 每条上下文消息 / settled）追加落盘 —— Android 进程随时可能被系统杀掉，
+     * journal 让下一次 run 能从已完成的推理与工具结果处继续（ZCode Journal 语义移植）。
+     * null = 关闭（与历史行为一致）。写入永远 best-effort，绝不影响主流程。
+     */
+    val journal: AgentRunJournal? = null,
+    /**
+     * 工具审批通道（可选）。非 null 时，危险工具（`dangerous`）与声明需确认的工具
+     * （`requiresConfirmation`）会在执行前通过它请求用户裁决（Octop tool_guard +
+     * ZCode 命令审批语义移植）；null = 维持历史行为（危险工具直接拒绝执行）。
+     */
+    val approvalHandler: ToolApprovalHandler? = null,
 )

@@ -16,6 +16,8 @@ import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
+import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.agent.schema.ToolArgsValidator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -108,6 +110,15 @@ class AgentRunner(
             var engine = engineFactory.create(kind)
             val loadConfig = environment.loadConfig(request.model, request.endpoint, config)
 
+            // ── Journal（ZCode Journal 语义移植）──────────────────────────────
+            // 进程随时可能被系统杀掉；journal 让「已完成的推理轮 / 工具结果」可被下一次
+            // run 复用。写入是 best-effort（内部吞异常），绝不在主流程上引入新失败面。
+            val journal = request.journal
+            journal?.append(
+                AgentRunJournal.KIND_RUN_STARTED,
+                AgentRunJournal.runStartedPayload(request.conversationId, request.model?.id ?: request.endpoint?.id),
+            )
+
             try {
                 engine.load(loadConfig)
             } catch (t: Throwable) {
@@ -122,6 +133,10 @@ class AgentRunner(
                     // 与上面那条 warn 的分界：warn = 我们兜住了/还在重试，error = 兜不住了。
                     AgentLogStore.error(
                         "引擎加载失败：$kind 重建后仍失败（${retry.javaClass.simpleName}: ${retry.message}），已放弃"
+                    )
+                    journal?.append(
+                        AgentRunJournal.KIND_SETTLED,
+                        AgentRunJournal.settledPayload("Failed", round),
                     )
                     emit(AgentEvent.Failed("引擎加载失败：${retry.message}", retry))
                     return@flow
@@ -188,6 +203,10 @@ class AgentRunner(
 
             while (round < policy.maxRounds) {
                 emit(AgentEvent.RoundStarted(round, policy.maxRounds))
+                journal?.append(
+                    AgentRunJournal.KIND_ROUND_STARTED,
+                    AgentRunJournal.roundStartedPayload(round, policy.maxRounds),
+                )
 
                 val budget = (config.contextLength * policy.compressThreshold).toInt()
                 val window = if (policy.compressContext) {
@@ -233,6 +252,10 @@ class AgentRunner(
                         break
                     } catch (t: Throwable) {
                         if (t is CancellationException) {
+                            journal?.append(
+                                AgentRunJournal.KIND_SETTLED,
+                                AgentRunJournal.settledPayload("Cancelled", round),
+                            )
                             emit(AgentEvent.Cancelled(accumulator.text))
                             throw t
                         }
@@ -241,6 +264,10 @@ class AgentRunner(
                             // 流式连接被截断（引擎已补 LENGTH 终帧）后重试仍失败的情况也收敛到这里。
                             AgentLogStore.error(
                                 "生成失败：$kind 重试后仍失败（${t.javaClass.simpleName}: ${t.message}），已放弃本轮"
+                            )
+                            journal?.append(
+                                AgentRunJournal.KIND_SETTLED,
+                                AgentRunJournal.settledPayload("Failed", round),
                             )
                             emit(AgentEvent.Failed("生成失败：${t.message}", t))
                             return@flow
@@ -255,6 +282,10 @@ class AgentRunner(
                             // ERROR：生成失败之后连重建都失败，本轮已经没有恢复手段了。
                             AgentLogStore.error(
                                 "引擎重载失败：$kind 生成失败后重建也失败（${retry.javaClass.simpleName}: ${retry.message}），已放弃本轮"
+                            )
+                            journal?.append(
+                                AgentRunJournal.KIND_SETTLED,
+                                AgentRunJournal.settledPayload("Failed", round),
                             )
                             emit(AgentEvent.Failed("引擎重载失败：${retry.message}", retry))
                             return@flow
@@ -271,6 +302,10 @@ class AgentRunner(
                 }
 
                 if (accumulator.finishReason == FinishReason.CANCELLED) {
+                    journal?.append(
+                        AgentRunJournal.KIND_SETTLED,
+                        AgentRunJournal.settledPayload("Cancelled", round),
+                    )
                     emit(AgentEvent.Cancelled(accumulator.text))
                     return@flow
                 }
@@ -338,14 +373,14 @@ class AgentRunner(
                     if (reminder != null) {
                         // 本轮是「重复的下车点」：不把它当答案交付，注入一次提醒后再给模型一轮机会。
                         // 每个签名只会被提醒一次（标记已在检测处前置位），叠加 maxRounds 兜底，不会形成新循环。
-                        working.add(
-                            ChatMessage(
-                                role = Role.MODEL,
-                                text = cleanText,
-                                thinking = accumulator.thinking.takeIf { it.isNotBlank() },
-                                finishReason = accumulator.finishReason ?: FinishReason.STOP,
-                            )
+                        val repeatModel = ChatMessage(
+                            role = Role.MODEL,
+                            text = cleanText,
+                            thinking = accumulator.thinking.takeIf { it.isNotBlank() },
+                            finishReason = accumulator.finishReason ?: FinishReason.STOP,
                         )
+                        working.add(repeatModel)
+                        journal?.appendMessage(repeatModel)
                         working.add(ChatMessage(role = Role.USER, text = reminder))
                         pendingReminder = null
                         round++
@@ -370,20 +405,21 @@ class AgentRunner(
                         modelRef = request.model?.id ?: request.endpoint?.id,
                     )
                     working.add(committed)
+                    journal?.appendMessage(committed)
                     emit(AgentEvent.MessageCommitted(committed))
                     modelStopped = true
                     break
                 }
 
-                working.add(
-                    ChatMessage(
-                        role = Role.MODEL,
-                        text = accumulator.text,
-                        thinking = accumulator.thinking.takeIf { it.isNotBlank() },
-                        toolCalls = calls,
-                        finishReason = FinishReason.TOOL_CALLS,
-                    )
+                val toolCallModel = ChatMessage(
+                    role = Role.MODEL,
+                    text = accumulator.text,
+                    thinking = accumulator.thinking.takeIf { it.isNotBlank() },
+                    toolCalls = calls,
+                    finishReason = FinishReason.TOOL_CALLS,
                 )
+                working.add(toolCallModel)
+                journal?.appendMessage(toolCallModel)
 
                 for (call in calls) {
                     val tool = toolRegistry.get(call.name)
@@ -403,24 +439,64 @@ class AgentRunner(
                                 output = "",
                                 errorMessage = "未注册的工具：${call.name}",
                             ),
+                            journal,
                         )
                         emit(AgentEvent.ToolResultReceived(result))
                         continue
                     }
-                    if (tool.spec.dangerous && !policy.autoApproveDangerous) {
-                        emit(AgentEvent.ToolSkipped(call, "危险工具需用户授权"))
-                        commitToolMessage(
-                            working,
-                            call,
-                            ToolResult(
-                                callId = call.id,
-                                name = call.name,
-                                ok = false,
-                                output = "",
-                                errorMessage = "该工具需要用户授权后才会执行",
-                            ),
-                        )
-                        continue
+                    // ── 审批闸门（Octop tool_guard / ZCode 命令审批语义移植）────
+                    // dangerous / requiresConfirmation 的工具在执行前请求宿主裁决；
+                    // fail-closed：审批通道缺失或异常一律拒绝，绝不默认放行。
+                    // autoApproveDangerous 是显式策略豁免，优先于审批通道。
+                    val needsApproval = tool.spec.dangerous || tool.spec.requiresConfirmation
+                    val autoApproved = tool.spec.dangerous && policy.autoApproveDangerous
+                    if (needsApproval && !autoApproved) {
+                        val handler = request.approvalHandler
+                        if (handler == null) {
+                            emit(AgentEvent.ToolSkipped(call, "危险工具需用户授权"))
+                            commitToolMessage(
+                                working,
+                                call,
+                                ToolResult(
+                                    callId = call.id,
+                                    name = call.name,
+                                    ok = false,
+                                    output = "",
+                                    errorMessage = "该工具需要用户授权后才会执行",
+                                ),
+                                journal,
+                            )
+                            continue
+                        }
+                        emit(AgentEvent.ApprovalRequested(call, tool.spec))
+                        val decision = try {
+                            handler.onApprovalRequested(call, tool.spec)
+                        } catch (t: CancellationException) {
+                            throw t
+                        } catch (t: Throwable) {
+                            // 审批通道自身异常 = 拒绝（fail-closed），并把原因留给日志
+                            AgentLogStore.warn("审批通道异常，按拒绝处理：${t.javaClass.simpleName}")
+                            null
+                        }
+                        if (decision != ToolApprovalDecision.APPROVED) {
+                            AgentLogStore.info("工具被拒绝：${call.name}")
+                            emit(AgentEvent.ToolSkipped(call, "用户拒绝了该工具调用"))
+                            val denied = commitToolMessage(
+                                working,
+                                call,
+                                ToolResult(
+                                    callId = call.id,
+                                    name = call.name,
+                                    ok = false,
+                                    output = "",
+                                    errorMessage = "用户拒绝了该工具调用。不要原样重复这次调用；" +
+                                        "请改用其它方式完成任务，或向用户说明缺了什么。",
+                                ),
+                                journal,
+                            )
+                            emit(AgentEvent.ToolResultReceived(denied))
+                            continue
+                        }
                     }
 
                     emit(AgentEvent.ToolCallStarted(call))
@@ -445,6 +521,7 @@ class AgentRunner(
                                 output = "",
                                 errorMessage = ToolArgsValidator.renderForModel(call.name, violations),
                             ),
+                            journal,
                         )
                         emit(AgentEvent.ToolResultReceived(result))
                         continue
@@ -452,13 +529,15 @@ class AgentRunner(
 
                     val result = executeWithGuard(call, tool, policy)
                     emit(AgentEvent.ToolResultReceived(result))
-                    commitToolMessage(working, call, result)
+                    commitToolMessage(working, call, result, journal)
                 }
 
                 // 提醒作为下一轮 messages 里的合成 user 消息（槽位是单值，所以每轮最多注入一次）。
                 val reminder = pendingReminder
                 if (reminder != null) {
-                    working.add(ChatMessage(role = Role.USER, text = reminder))
+                    val reminderMessage = ChatMessage(role = Role.USER, text = reminder)
+                    working.add(reminderMessage)
+                    journal?.appendMessage(reminderMessage)
                     pendingReminder = null
                 }
 
@@ -489,12 +568,17 @@ class AgentRunner(
             } else {
                 AgentLogStore.info("正常结束：$round 轮，模型自行给出最终答案")
             }
+            val termination = if (exhausted) TerminationReason.MaxRounds else TerminationReason.ModelStopped
+            journal?.append(
+                AgentRunJournal.KIND_SETTLED,
+                AgentRunJournal.settledPayload(termination.name, round),
+            )
             emit(
                 AgentEvent.Finished(
                     text = outgoing,
                     rounds = round,
                     usage = lastUsage,
-                    terminatedBy = if (exhausted) TerminationReason.MaxRounds else TerminationReason.ModelStopped,
+                    terminatedBy = termination,
                 )
             )
         }
@@ -527,13 +611,16 @@ class AgentRunner(
      * `sanitizeForProvider` 把真实结果当孤儿丢弃、远端端点因空 tool_call_id 报 400。
      * 成功 / 未注册 / 未授权三条路径都从这里出，保证不会再漏。
      */
-    private fun commitToolMessage(
+    private suspend fun commitToolMessage(
         working: MutableList<ChatMessage>,
         call: ToolCall,
         result: ToolResult,
+        journal: AgentRunJournal? = null,
     ): ToolResult {
         val committed = if (result.callId.isBlank()) result.copy(callId = call.id) else result
-        working.add(ChatMessage(role = Role.TOOL, toolResults = listOf(committed)))
+        val message = ChatMessage(role = Role.TOOL, toolResults = listOf(committed))
+        working.add(message)
+        journal?.appendMessage(message)
         return committed
     }
 

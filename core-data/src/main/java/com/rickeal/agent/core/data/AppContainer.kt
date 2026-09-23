@@ -59,6 +59,13 @@ class AppContainer(private val context: Context) {
 
     val sandboxDir: File = File(context.filesDir, "agent_sandbox").apply { mkdirs() }
 
+    /**
+     * Agent run journal 根目录（`<filesDir>/journal/<conversationId>/<runId>.jsonl`）。
+     * 每次 run 由 ChatViewModel 打开一个新文件；进程被杀后可从这里恢复已完成的
+     * 推理轮与工具结果（core-agent/journal/AgentRunJournal）。
+     */
+    val journalRoot: File = File(context.filesDir, "journal")
+
     /** 模型下载（系统 DownloadManager，落盘到 externalFilesDir/Download）。 */
     val downloadDirPath: String?
         get() = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath
