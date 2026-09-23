@@ -270,14 +270,20 @@ Android-Agent/
 ## 路线图
 
 - [x] 仓库开荒：CI 体系、版本矩阵、文档基线
-- [ ] **M1** — 工程骨架：`app` + `core:design` + `core:model`，Liquid Glass 基础组件
-- [ ] **M2** — 引擎接入：`runtime:engine` 打通 LiteRT-LM，本地文本推理跑通
-- [ ] **M3** — 会话体验：`feature:chat` 流式输出 + 会话持久化 + 参数调节
+- [x] **M1** — 工程骨架：`app` + `core:design` + `core:model`，Liquid Glass 基础组件
+- [x] **M2** — 引擎接入：`core-engine` 打通 LiteRT-LM，本地文本推理跑通
+- [x] **M3** — 会话体验：`feature-chat` 流式输出 + 会话持久化 + 参数调节
 - [ ] **M4** — 多模态：图片 / 音频输入，GPU / NPU 后端切换
-- [ ] **M5** — Agent 能力：思考模式、工具调用、Agent 循环编排
-- [ ] **M6** — 模型市场：导入、能力探测、下载管理
-- [ ] **M7** — 远程后端：OkHttp + SSE，与本地引擎统一切换
+- [x] **M5** — Agent 能力：思考模式、工具调用、Agent 循环编排
+- [x] **M6** — 模型市场：导入、能力探测、下载管理
+- [x] **M7** — 远程后端：OkHttp + SSE，与本地引擎统一切换
 - [ ] **M8** — 打磨：动效、无障碍、性能、发布签名
+- [ ] **M9** — **Harness 升级**（`harness` 分支）：移植 ZCode（Journal/Actor/typed-ask）
+  与 Octop（工具审批/长期记忆/委派）的核心机制 —— 蓝图见
+  [`docs/11-harness-blueprint.md`](docs/11-harness-blueprint.md)
+  - [x] Wave 1：Journal、参数 Schema 校验、审批闸门、ask_actor 子代理、长期记忆
+  - [ ] Wave 2：崩溃恢复接线、阶段图（Phase/Plan）、结算语义对齐、历史版本化
+  - [ ] Wave 3：定时任务、检索记忆、人格系统、插件化装载
 
 ---
 
