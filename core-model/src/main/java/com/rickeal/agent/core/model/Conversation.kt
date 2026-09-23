@@ -10,7 +10,6 @@ data class Conversation(
     val updatedAtMillis: Long = System.currentTimeMillis(),
     val messages: List<ChatMessage> = emptyList(),
     val modelId: String? = null,
-    val endpointId: String? = null,
     val config: InferenceConfig = InferenceConfig(),
     val summary: String? = null,
     val pinned: Boolean = false,

@@ -263,7 +263,6 @@ class ChatViewModel(
         viewModelScope.launch {
             container.conversationRepository.refresh()
             container.modelRepository.refresh()
-            container.endpointRepository.refresh()
         }
         viewModelScope.launch {
             container.settingsRepository.inferenceConfig.collect { config ->

@@ -868,7 +868,6 @@ class ModelsViewModel(
                     engine.load(
                         EngineLoadConfig(
                             model = model,
-                            remote = null,
                             config = config,
                             cacheDir = container.engineEnvironment.cacheDir,
                             nativeLibraryDir = container.engineEnvironment.nativeLibraryDir,
