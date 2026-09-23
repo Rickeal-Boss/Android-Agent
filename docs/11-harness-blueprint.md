@@ -113,22 +113,27 @@ ACP/浏览器/远程桌面/IM 通道 **不适用端侧**（无服务器、无桌
 
 ---
 
-## 4. 后续波次（按价值/风险排序）
+## 4. 波次状态
 
-**Wave 2 —— 结构与恢复（高价值低风险）**
-1. Journal→恢复接线：ChatViewModel 检测未结算 journal，提示「从中断处继续」
-2. Actor 会话持久化（复用 journal 写路径）
-3. **阶段图 Phase Graph 降级移植**：plan/todo 机制（工具 `plan_set`/`plan_update`）+
-   UI 时间线；审批单元从「单工具」升到「阶段」
-4. **结算语义对齐**：TerminationReason 扩展 ProviderStop / Interrupted / Superseded
-5. **历史版本化 Wave A**（Octop history_v2 降级）：回合快照 + 前缀分叉
+### Wave 2（✅ 已落地，HEAD `6386e35`，CI 绿）
 
-**Wave 3 —— 能力扩展（中风险，需依赖决策）**
-6. 定时任务（WorkManager 新依赖需过版本矩阵评审）
-7. 检索记忆（FTS/向量，RAG 知识库）
-8. 人格系统（SOUL.md + 模板库，接 feature-settings）
-9. 插件化工具装载（ToolContributor 已有，补清单式声明 + 热启停 UI）
-10. ACP 出站降级形态：委派给远程 coding agent 端点
+| 机制 | 形态 | 移植来源 |
+|---|---|---|
+| 执行计划 plan_set / plan_update | `plan/AgentPlanStore.kt` 会话级计划（按 cid 隔离、跨 run 存活、LRU 16）；COMPLETED 自动推进下一个 PENDING；工具循环内版本检测 → `PlanUpdated` 事件 → ChatScreen 计划时间线 | ZCode Phase Graph 降级 |
+| 崩溃恢复接线 | `findUnsettled`（无 settled 行 = Interrupted）→ 恢复卡「从中断处继续」；onRecover 用 journal 重建完整上下文（工具调用/结果只有 journal 有）；markDismissed 改名归档 | ZCode Journal |
+| 真审批 UI | `approvalHandler`（CompletableDeferred 挂起等点击）+ 授权卡（工具名+参数+授权/拒绝），run 取消随协程取消 | Octop tool_guard 人在回路闭环 |
+| Actor 会话持久化 | SubagentSessionStore(persistDir)：每「会话×Actor」一 JSON，append 即落盘、snapshot 惰性加载 | ZCode 持久化 Actor |
+| 结算语义 | TerminationReason + ProviderStop / Interrupted；REMOTE+EngineException → journal ProviderStop；Interrupted 以「无 settled 行」表达 | ZCode RunSettlement |
+
+### Wave 3（待做，按价值/风险排序）
+
+1. **历史版本化**（Octop history_v2 降级）：回合快照 + 内容寻址正文 + 前缀分叉
+2. 定时任务（WorkManager 新依赖需过版本矩阵评审）
+3. 检索记忆（FTS/向量，RAG 知识库）
+4. 人格系统（SOUL.md + 模板库，接 feature-settings）
+5. 插件化工具装载（ToolContributor 已有，补清单式声明 + 热启停 UI）
+6. ACP 出站降级形态：委派给远程 coding agent 端点
+7. 审批粒度升级：从「单工具」到「阶段」（计划的一步一次性授权）
 
 **明确不做（端侧不适用）**：Workflow Compiler 静态分析栈、浏览器自动化、
 远程桌面、IM 通道、多用户 JWT、Postgres。

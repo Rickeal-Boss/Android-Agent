@@ -282,8 +282,9 @@ Android-Agent/
   与 Octop（工具审批/长期记忆/委派）的核心机制 —— 蓝图见
   [`docs/11-harness-blueprint.md`](docs/11-harness-blueprint.md)
   - [x] Wave 1：Journal、参数 Schema 校验、审批闸门、ask_actor 子代理、长期记忆
-  - [ ] Wave 2：崩溃恢复接线、阶段图（Phase/Plan）、结算语义对齐、历史版本化
-  - [ ] Wave 3：定时任务、检索记忆、人格系统、插件化装载
+  - [x] Wave 2：崩溃恢复接线、计划机制（plan_set/plan_update + 时间线）、真审批 UI、
+    Actor 会话持久化、结算语义对齐（ProviderStop/Interrupted）
+  - [ ] Wave 3：历史版本化、定时任务、检索记忆、人格系统、插件化装载
 
 ---
 
