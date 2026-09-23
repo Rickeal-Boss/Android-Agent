@@ -1,20 +1,11 @@
 package com.rickeal.agent.core.agent.memory
 
 import com.rickeal.agent.core.agent.Tool
-import com.rickeal.agent.core.agent.ToolContext
-import com.rickeal.agent.core.model.AgentJson
+import com.rickeal.agent.core.agent.tools.stringArg
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-
-private fun stringArg(argumentsJson: String, key: String): String? =
-    (runCatching { AgentJson.Default.parseToJsonElement(argumentsJson) }.getOrNull() as? JsonObject)
-        ?.get(key) as? JsonPrimitive
-        ?.takeIf { it.isString }
-        ?.content
 
 /** 写/更新一条长期记忆（按标题 upsert）。 */
 class MemoryWriteTool(private val memory: AgentMemory) : Tool {
@@ -30,8 +21,8 @@ class MemoryWriteTool(private val memory: AgentMemory) : Tool {
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {
-        val title = stringArg(argumentsJson, "title")?.trim().orEmpty()
-        val content = stringArg(argumentsJson, "content")?.trim().orEmpty()
+        val title = stringArg(argumentsJson, "title").trim()
+        val content = stringArg(argumentsJson, "content").trim()
         if (title.isEmpty()) return ToolResult(name = spec.name, ok = false, errorMessage = "缺少 title 参数")
         if (content.isEmpty()) return ToolResult(name = spec.name, ok = false, errorMessage = "缺少 content 参数")
         memory.upsert(title, content)
@@ -72,7 +63,7 @@ class MemoryDeleteTool(private val memory: AgentMemory) : Tool {
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {
-        val title = stringArg(argumentsJson, "title")?.trim().orEmpty()
+        val title = stringArg(argumentsJson, "title").trim()
         if (title.isEmpty()) return ToolResult(name = spec.name, ok = false, errorMessage = "缺少 title 参数")
         val removed = memory.remove(title)
         return ToolResult(

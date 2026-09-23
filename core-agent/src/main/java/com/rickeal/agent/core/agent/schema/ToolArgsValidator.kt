@@ -79,17 +79,17 @@ object ToolArgsValidator {
 
         val violations = ArrayList<ArgsViolation>()
         for (parameter in spec.parameters) {
-            val present = root.containsKey(parameter.name)
-            val raw = root[parameter.name]
-
-            if (!present || raw is JsonNull) {
+            // 缺失与显式 null 同语义（模型爱写 "path": null）：required 判违规，可选项静默跳过。
+            // 条件为假处 rawOrNull 智能转换为非空 JsonElement（数据流分析处理 OR 条件）。
+            val rawOrNull = root[parameter.name]
+            if (rawOrNull == null || rawOrNull is JsonNull) {
                 if (parameter.required) {
                     violations.add(ArgsViolation(parameter.name, "必填", "缺失"))
                 }
                 continue
             }
 
-            val typeError = typeMismatch(parameter.type, raw)
+            val typeError = typeMismatch(parameter.type, rawOrNull)
             if (typeError != null) {
                 violations.add(ArgsViolation(parameter.name, parameter.type.name.lowercase(), typeError))
                 continue
@@ -97,9 +97,9 @@ object ToolArgsValidator {
 
             if (parameter.type == ToolParamType.STRING &&
                 parameter.enumValues.isNotEmpty() &&
-                raw is JsonPrimitive
+                rawOrNull is JsonPrimitive
             ) {
-                if (raw.content !in parameter.enumValues) {
+                if (rawOrNull.content !in parameter.enumValues) {
                     violations.add(
                         ArgsViolation(
                             parameter.name,

@@ -165,7 +165,7 @@ class AgentRunner(
                     )
                     journal?.append(
                         AgentRunJournal.KIND_SETTLED,
-                        AgentRunJournal.settledPayload("Failed", round),
+                        AgentRunJournal.settledPayload("Failed", 0),
                     )
                     emit(AgentEvent.Failed("引擎加载失败：${retry.message}", retry))
                     return
@@ -669,9 +669,10 @@ class AgentRunner(
 
     private suspend fun executeWithGuard(call: ToolCall, tool: Tool, policy: AgentPolicy): ToolResult {
         val started = System.currentTimeMillis()
+        // 超时值必须在 try 外声明：catch 分支（超时文案）要用它，而 catch 看不见 try 体内的局部量
+        val timeoutMillis = tool.spec.timeoutMillisOverride ?: policy.toolTimeoutMillis
         return try {
             // 工具会做文件读写 / 剪贴板 / 进程外调用，必须离开调用方线程（Default/Main）跑在 IO 上
-            val timeoutMillis = tool.spec.timeoutMillisOverride ?: policy.toolTimeoutMillis
             val raw = withTimeout(timeoutMillis) {
                 withContext(Dispatchers.IO) { tool.invoke(call.argumentsJson) }
             }

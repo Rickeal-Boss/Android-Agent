@@ -1,5 +1,7 @@
 package com.rickeal.agent.core.agent
 
+import com.rickeal.agent.core.agent.approval.ToolApprovalHandler
+import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor

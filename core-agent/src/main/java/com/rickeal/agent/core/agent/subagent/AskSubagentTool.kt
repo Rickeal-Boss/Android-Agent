@@ -16,8 +16,8 @@ import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
-import kotlinx.coroutines.CoroutineContext
-import kotlinx.coroutines.coroutineContext
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.coroutines.AbstractCoroutineContextElement
