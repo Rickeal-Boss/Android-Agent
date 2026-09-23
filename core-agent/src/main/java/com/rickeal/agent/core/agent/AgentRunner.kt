@@ -16,6 +16,7 @@ import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.agent.schema.ToolArgsValidator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -423,6 +424,32 @@ class AgentRunner(
                     }
 
                     emit(AgentEvent.ToolCallStarted(call))
+
+                    // ── 参数 Schema 校验（ZCode typed-ask 语义的移植）─────────────
+                    // 在执行前按 ToolSpec.parameters 校验类型/必填/枚举；违规不执行工具，
+                    // 而是把结构化差异（路径 + 期望 + 实得）作为失败结果回给模型，
+                    // 让它在下一轮定向修复 —— 端侧 4B 的工具失败大头是参数给错，
+                    // 笼统的"执行异常"只会诱发盲猜循环。
+                    val violations = ToolArgsValidator.validate(tool.spec, call.argumentsJson)
+                    if (violations.isNotEmpty()) {
+                        AgentLogStore.warn(
+                            "工具参数校验失败：${call.name}（${violations.size} 项）"
+                        )
+                        val result = commitToolMessage(
+                            working,
+                            call,
+                            ToolResult(
+                                callId = call.id,
+                                name = call.name,
+                                ok = false,
+                                output = "",
+                                errorMessage = ToolArgsValidator.renderForModel(call.name, violations),
+                            ),
+                        )
+                        emit(AgentEvent.ToolResultReceived(result))
+                        continue
+                    }
+
                     val result = executeWithGuard(call, tool, policy)
                     emit(AgentEvent.ToolResultReceived(result))
                     commitToolMessage(working, call, result)
