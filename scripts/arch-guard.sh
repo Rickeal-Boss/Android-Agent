@@ -47,6 +47,18 @@ check "core-model 无 android/androidx 依赖" \
 check "禁止的依赖（KSP/Room/Hilt/Koin/Retrofit/Coil）" \
   bash -c 'grep -rn "androidx.room\|com.google.dagger\|org.koin\|com.squareup.retrofit\|io.coil-kt\|com.google.devtools.ksp" --include="*.kts" . || true'
 
+# 5) 全仓禁网络栈（纯端侧收敛：远程引擎已整体移除，任何直连网络栈的代码
+#    都是对「模型任务不出设备」承诺的破坏）。android.net.Uri / ConnectivityManager
+#    这类平台 API 不在拦截面（附件 SAF 与下载流量提示是合法用途）。
+check "全仓禁网络栈（okhttp/HttpURLConnection/java.net/javax.net）" \
+  bash -c 'grep -rn "okhttp3\.\|HttpURLConnection\|java\.net\.Socket\|java\.net\.URL\|java\.net\.URI\|javax\.net\|okio\." --include="*.kt" . \
+    | grep -vE "^[^:]+:[0-9]+:[[:space:]]*(\*|//|/\*)" || true'
+
+# 6) 全仓禁进程执行（模型工具面不得拉起子进程 —— 沙箱的最后一道边界）
+check "全仓禁进程执行（ProcessBuilder/Runtime.exec）" \
+  bash -c 'grep -rn "ProcessBuilder\|Runtime\.getRuntime()\.exec" --include="*.kt" . \
+    | grep -vE "^[^:]+:[0-9]+:[[:space:]]*(\*|//|/\*)" || true'
+
 # 5) 禁止在业务代码里吞异常的裸 catch（经验性检查，仅提示）
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then

@@ -9,6 +9,14 @@ import com.rickeal.agent.core.model.ToolSpec
 
 /** 写/更新一条长期记忆（按标题 upsert）。 */
 class MemoryWriteTool(private val memory: AgentMemory) : Tool {
+
+    companion object {
+        /** 单条大小上限：记忆会注入每次会话的 system prompt（渲染截断 1200 字符）， */
+        /** 存储面无界写入既浪费磁盘也放大注入面（r6 审查 P2-10）。 */
+        private const val MAX_TITLE_CHARS = 80
+        private const val MAX_CONTENT_CHARS = 2000
+    }
+
     override val spec: ToolSpec = ToolSpec(
         name = "memory_write",
         description = "把一条应当长期记住的信息（用户偏好、项目事实、长期约定）写入持久记忆，" +
@@ -29,6 +37,20 @@ class MemoryWriteTool(private val memory: AgentMemory) : Tool {
         val content = stringArg(argumentsJson, "content").trim()
         if (title.isEmpty()) return ToolResult(name = spec.name, ok = false, errorMessage = "缺少 title 参数")
         if (content.isEmpty()) return ToolResult(name = spec.name, ok = false, errorMessage = "缺少 content 参数")
+        if (title.length > MAX_TITLE_CHARS) {
+            return ToolResult(
+                name = spec.name,
+                ok = false,
+                errorMessage = "标题过长（${title.length} 字符，上限 $MAX_TITLE_CHARS）：请缩短标题",
+            )
+        }
+        if (content.length > MAX_CONTENT_CHARS) {
+            return ToolResult(
+                name = spec.name,
+                ok = false,
+                errorMessage = "内容过长（${content.length} 字符，上限 $MAX_CONTENT_CHARS）：只记结论本身，细节放沙箱文件",
+            )
+        }
         memory.upsert(title, content)
         return ToolResult(name = spec.name, ok = true, output = "已记住：[$title] $content")
     }
