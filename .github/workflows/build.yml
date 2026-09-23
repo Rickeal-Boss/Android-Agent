@@ -21,9 +21,9 @@ name: Build
 
 on:
   push:
-    branches: [main, UI]
+    branches: [main, UI, harness]
   pull_request:
-    branches: [main, UI]
+    branches: [main, UI, harness]
   workflow_dispatch:
     inputs:
       gradle_task:

@@ -1,0 +1,130 @@
+name: Cache Maintenance
+
+# ---------------------------------------------------------------------------
+# GitHub Actions 缓存治理（对齐 docs/02-ci.md 的缓存策略）
+#
+# 为什么需要它：
+#   gradle/actions/setup-gradle 的缓存键是「内容寻址」的——Gradle User Home 内容
+#   一旦变化就会写出一个新 key 的缓存条目，旧条目永远不会被再次命中，但体积
+#   一直占着 10GB 仓库限额。实测 2026-09-23：102 个缓存 6.43GB，其中 95 个
+#   （5.9GB，几乎全是 219MB 的 gradle-transforms 快照）自 09-19 起就不再被命中。
+#
+#   GitHub 只在总量触顶时按 LRU 驱逐，平时不会主动清理 → 这里提供两条路径：
+#   1. 手动 workflow_dispatch（默认 dry-run，只报告不删除）
+#   2. 每周一 03:00 UTC 定时巡检（同样默认 dry-run；要真删需要显式传 mode=purge）
+#
+# 删除判据（保守）：last_accessed_at 早于 --days 天的缓存才允许删除。
+# 「最近访问过」的活跃缓存（含当前分支正在使用的）永远不会命中该判据。
+#
+# 权限：只需要 actions:write（删除缓存）与 contents:read（读仓库）。
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report = 只列出将删除的缓存；purge = 真正删除'
+        required: false
+        default: 'report'
+        type: choice
+        options: [report, purge]
+      days:
+        description: '多少天未被访问的缓存视为陈旧（默认 7）'
+        required: false
+        default: '7'
+        type: string
+
+  schedule:
+    # 每周一 03:00 UTC（北京时间 11:00）——只跑 dry-run 巡检报告。
+    # 真删除永远是显式手动动作，避免定时任务误删仍在生效的缓存。
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: cache-maintenance
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Report stale caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Summarize cache usage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode || 'report' }}
+          DAYS: ${{ inputs.days || '7' }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          echo "## Actions cache maintenance" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Mode | Cutoff |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| $MODE | last ${DAYS}d accessed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # 拉全量缓存（100/页）
+          page=1
+          echo "" > /tmp/caches.ndjson
+          while : ; do
+            resp="$(gh api "/repos/$repo/actions/caches?per_page=100&page=$page")"
+            count="$(echo "$resp" | jq -r '.actions_caches | length')"
+            echo "$resp" | jq -c '.actions_caches[]' >> /tmp/caches.ndjson
+            [ "$count" -lt 100 ] && break
+            page=$((page + 1))
+          done
+
+          total="$(wc -l < /tmp/caches.ndjson | tr -d ' ')"
+          total_mb="$(jq -s 'map(.size_in_bytes) | add / 1048576 | floor' /tmp/caches.ndjson)"
+          echo "Total caches: $total (${total_mb} MB)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          cutoff_ts="$(date -d "-${DAYS} days" +%s)"
+          stale_mb="$(jq -s --argjson cutoff "$cutoff_ts" '
+            map(select((.last_accessed_at | fromdateiso8601) < $cutoff)) |
+            if length == 0 then 0 else map(.size_in_bytes) | add / 1048576 | floor end
+          ' /tmp/caches.ndjson)"
+          stale_n="$(jq -s --argjson cutoff "$cutoff_ts" '
+            map(select((.last_accessed_at | fromdateiso8601) < $cutoff)) | length
+          ' /tmp/caches.ndjson)"
+          echo "Stale (not accessed in ${DAYS}d): $stale_n caches, ${stale_mb} MB" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          # 按前缀聚合，便于定位膨胀源
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key prefix | Count | MB |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          jq -s -r 'group_by(.key | split("-")[0:2] | join("-"))[] |
+            [.[0].key | split("-")[0:2] | join("-") , length,
+             (map(.size_in_bytes) | add / 1048576 | floor | tostring)] |
+            @tsv' /tmp/caches.ndjson | sort -k3 -rn | \
+            awk -F'\t' '{ printf "| %s | %s | %s |\n", $1, $2, $3 }' >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$MODE" != "purge" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> dry-run：未删除任何缓存。要清理请手动触发并选择 \`purge\`。" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$stale_n" -eq 0 ]; then
+            echo "Nothing to purge." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # purge：逐个删除陈旧缓存（按 last_accessed_at 升序，最老的先删）
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Purging $stale_n stale caches..." >> "$GITHUB_STEP_SUMMARY"
+          jq -s --argjson cutoff "$cutoff_ts" -r '
+            map(select((.last_accessed_at | fromdateiso8601) < $cutoff)) |
+            sort_by(.last_accessed_at) | .[] | "\(.id) \(.key)"
+          ' /tmp/caches.ndjson | while read -r id key; do
+            if gh api -X DELETE "/repos/$repo/actions/caches/$id"; then
+              echo "deleted: $id $key"
+            else
+              echo "::warning::failed to delete cache $id ($key)"
+            fi
+          done
+          echo "Purge complete." | tee -a "$GITHUB_STEP_SUMMARY"
