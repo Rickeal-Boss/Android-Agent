@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
@@ -186,6 +187,11 @@ fun LiquidBottomTabs(
         val tabWidth = with(density) {
             (constraints.maxWidth.toFloat() - 8f.dp.toPx()) / tabsCount
         }
+        // Wave4 审查（B-P0-3/P1-3）：5 项后窄容器（分屏 / 自由窗口可低至 ~206dp）单项
+        // 宽度跌破 48dp 触摸标准且文字被 Clip 成半个字。完整修法（横向滚动 + 宽度同源）
+        // 需要联动改 4 处几何，本轮不做；先用「窄容器退化为纯图标」缓解拥挤与截字 ——
+        // 触摸目标问题的根治方案连同 4 处联动清单记入蓝图 §4 backlog。
+        val compactTabs = with(density) { (tabWidth.toDp()) < 56.dp }
         // 带守卫的写入：值没变不触发失效，不会造成"组合期写状态"的重组循环。
         if (tabWidthState.value != tabWidth) tabWidthState.value = tabWidth
         val maxWidthPx = constraints.maxWidth.toFloat()
@@ -351,6 +357,7 @@ fun LiquidBottomTabs(
                     tab = tab,
                     selected = index == currentIndex,
                     onClick = { currentIndex = index },
+                    showLabel = !compactTabs,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -593,6 +600,7 @@ private fun RowScope.LiquidBottomTab(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    showLabel: Boolean = true,
 ) {
     val colors = LocalGlassColors.current
     val scale = LocalLiquidBottomTabScale.current
@@ -621,12 +629,19 @@ private fun RowScope.LiquidBottomTab(
             tint = if (selected) colors.accent else colors.onGlassSubtle,
             modifier = Modifier.size(22.dp),
         )
-        Text(
-            text = tab.label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (selected) colors.onGlass else colors.onGlassSubtle,
-            maxLines = 1,
-            textAlign = TextAlign.Center,
-        )
+        // 窄容器（compactTabs）下不渲染文字：4 字标签在 ~48dp 单项宽里会被 Clip 成
+        // 半个字，宁可只剩图标（contentDescription 仍保留无障碍语义）。
+        if (showLabel) {
+            Text(
+                text = tab.label,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (selected) colors.onGlass else colors.onGlassSubtle,
+                maxLines = 1,
+                // 必须显式 Ellipsis：默认 Clip 在中文下是"切半个字"，比省略号观感差得多
+                //（六路审查 B-P1-3）。
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }

@@ -24,8 +24,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Icon
@@ -72,7 +76,9 @@ import com.rickeal.agent.feature.chat.chatGraph
 import com.rickeal.agent.feature.models.ModelsRoute
 import com.rickeal.agent.feature.models.modelsGraph
 import com.rickeal.agent.feature.settings.SettingsRoute
+import com.rickeal.agent.feature.settings.memory.MemoryRoute
 import com.rickeal.agent.feature.settings.settingsGraph
+import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.onboarding.FirstRunGate
 
 private const val TAG = "LiquidAgentApp"
@@ -80,12 +86,16 @@ private const val TAG = "LiquidAgentApp"
 private enum class TopDestination(val route: String, val label: String) {
     CHAT(ChatRoute.ROUTE, "对话"),
     MODELS(ModelsRoute.ROUTE, "模型"),
+    TOOLS(ToolsRoute.ROUTE, "工具"),
+    MEMORY(MemoryRoute.ROUTE, "记忆"),
     SETTINGS(SettingsRoute.ROUTE, "设置"),
 }
 
 private fun iconOf(destination: TopDestination): ImageVector = when (destination) {
     TopDestination.CHAT -> Icons.Filled.Chat
     TopDestination.MODELS -> Icons.Filled.Storage
+    TopDestination.TOOLS -> Icons.Filled.Build
+    TopDestination.MEMORY -> Icons.Filled.Psychology
     TopDestination.SETTINGS -> Icons.Filled.Settings
 }
 
@@ -185,11 +195,12 @@ private fun MainShell() {
     val activity: Activity? = LocalActivity.current
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+    // 选中态必须与 TopDestination 一一对应（六路审查 B-P0-1）：**不要写 else 兜底** ——
+    // 枚举加项后 else 会把新页签静默归到 CHAT（胶囊错位、点当前页签重导航、Rail 无选中态），
+    // 全部是"不报错但行为错"。下面的 when 对枚举穷尽，漏改 iconOf 那样直接编译失败。
     val selected = when {
         currentRoute == null -> TopDestination.CHAT
-        currentRoute.startsWith("settings") -> TopDestination.SETTINGS
-        currentRoute.startsWith("models") -> TopDestination.MODELS
-        else -> TopDestination.CHAT
+        else -> routeTop(currentRoute) ?: TopDestination.CHAT
     }
 
     Row(modifier = Modifier.fillMaxSize()) {
@@ -199,9 +210,13 @@ private fun MainShell() {
                 onSelect = { destination ->
                     if (destination != selected) navController.navigateTop(destination.route)
                 },
+                windowSize = windowSize,
                 modifier = Modifier
                     .fillMaxHeight()
-                    .statusBarsPadding(),
+                    .statusBarsPadding()
+                    // Wave4 审查（B-P1-1）：Rail 此前缺导航栏避让 —— 5 项变高后
+                    // 底部页签会被手势导航条压住，必须补。
+                    .navigationBarsPadding(),
             )
         }
         Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
@@ -367,29 +382,43 @@ private fun NavHostController.navigateTop(route: String) {
 private const val TOP_NAV_TRANSITION_MS = 300
 
 /**
+ * route → 顶层页签的**最长前缀**匹配（六路审查 B-P0-1/P1-4 的单一事实来源改造）。
+ *
+ * 此前 `selected` 与 `topIndex` 各写一份 `startsWith` 字面量 + else 兜底，页签从 3 扩到 5
+ * 时任何一处漏改都是静默错乱。现在两者都从 [TopDestination.entries] 派生：
+ * 枚举加项只改枚举与 [iconOf]（后者漏改编译失败，是天然的第一道守卫）。
+ *
+ * 子路由（`settings/diagnostics`、`settings/legal`）按最长前缀归到所属页签，
+ * 因此「进入设置子页」天然继承设置的选中态与滑动方向。
+ */
+private fun routeTop(route: String?): TopDestination? {
+    if (route == null) return null
+    return TopDestination.entries
+        .filter { route == it.route || route.startsWith("${it.route}?") || route.startsWith("${it.route}/") }
+        .maxByOrNull { it.route.length }
+}
+
+/**
  * 页签切换的滑动方向：+1 = 新页从右入（页签索引增大），-1 = 从左入。
- * 子路由按其所属顶层页签计（settings 前缀 → 2、models 前缀 → 1、其余 → 0），
+ * 子路由按其所属顶层页签计（见 [routeTop]），
  * 这样"进入设置子页"也天然从右侧滑入。
  */
 private fun slideDirection(initialRoute: String?, targetRoute: String?): Int =
     if (topIndex(targetRoute) >= topIndex(initialRoute)) 1 else -1
 
-private fun topIndex(route: String?): Int = when {
-    route == null -> 0
-    route.startsWith("settings") -> 2
-    route.startsWith("models") -> 1
-    else -> 0
-}
+private fun topIndex(route: String?): Int =
+    routeTop(route)?.let { TopDestination.entries.indexOf(it) } ?: 0
 
 /**
  * 返回键兜底收敛的 pop 次数上限。
  *
  * 正常路径下 [NavHostController.navigateTop] 一次就把栈收敛成 `[chat]`，这里跑 0 次。
  * 只有 startDestination 与 composable route 失配（UI-01）导致 popUpTo 静默失效时才会真跑，
- * 而回退栈深度受页签数 + 子页深度约束，8 次足够兜住现实的栈深度。
+ * 而回退栈深度受页签数 + 子页深度约束 —— Wave4 页签 3→5 + 设置子页 2 个，
+ * 最坏栈深 > 8，取 12 留余量（六路审查 B-P1-5）。
  * 设上限是为了不让正确性依赖 Navigation 内部是否同步移除 backQueue。
  */
-private const val MAX_BACK_STACK_DRAIN = 8
+private const val MAX_BACK_STACK_DRAIN = 12
 
 /**
  * 底部导航栏（COMPACT）。
@@ -418,23 +447,30 @@ private fun GlassNavBar(
 }
 
 /**
- * 左侧导航栏（MEDIUM / EXPANDED）。
+ * 左侧导航栏（MEDIUM / EXPANDED）——「桌面端」分类排版的容器。
+ *
+ * Wave4 五页签改造：竖排项 3→5 后的高度预算（5×48 + 间距 24 + 标题 28 + 内边距 72
+ * ≈ 364dp）在横屏手机（可用高度 ≈ 288dp）会溢出，所以加 [verticalScroll] 兜底
+ * （六路审查 B-P1-1）；并补 [navigationBarsPadding] —— 5 项变高后底部页签更容易
+ * 被手势导航条压住。宽度按窗口档位参数化：MEDIUM 维持 88dp 图标栏，
+ * EXPANDED 加宽到 132dp 让「图标 + 文字」完全展开（桌面端分类入口的可读性）。
  *
  * 与 [GlassNavBar] 同一套：容器走门面（胶囊 + 关色散），页签项走裸 `liquidGlass` + 跟手形变。
- * 竖排时胶囊就是竖向药丸，两端正半圆 —— 与底部栏同一视觉语言。
  */
 @Composable
 private fun GlassNavRail(
     selected: TopDestination,
     onSelect: (TopDestination) -> Unit,
+    windowSize: WindowSizeClass,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
+    val railWidth = if (windowSize.width == WidthClass.EXPANDED) 132.dp else 88.dp
     LiquidGlassSurface(
         modifier = modifier
             .padding(horizontal = 10.dp, vertical = 12.dp)
-            .width(88.dp),
+            .width(railWidth),
         material = GlassMaterial.THIN,
         capsule = true,
         // 同 [GlassNavBar]：保留但被胶囊覆盖。
@@ -443,7 +479,9 @@ private fun GlassNavRail(
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
     ) {
         Column(
-            modifier = Modifier.fillMaxHeight(),
+            modifier = Modifier
+                .fillMaxHeight()
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(

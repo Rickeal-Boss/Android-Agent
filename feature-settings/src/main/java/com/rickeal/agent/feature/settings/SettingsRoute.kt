@@ -8,6 +8,9 @@ import androidx.navigation.compose.composable
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.data.LocalAppContainer
 import com.rickeal.agent.core.data.viewModelFactory
+import com.rickeal.agent.feature.settings.memory.MemoryRoute
+import com.rickeal.agent.feature.settings.memory.MemoryScreen
+import com.rickeal.agent.feature.settings.memory.MemoryViewModel
 import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.feature.settings.tools.ToolsScreen
 import com.rickeal.agent.feature.settings.tools.ToolsViewModel
@@ -47,7 +50,6 @@ fun NavGraphBuilder.settingsGraph(
         val container = LocalAppContainer.current
         SettingsScreen(
             viewModel = viewModel(factory = settingsViewModelFactory(container)),
-            onOpenTools = { navController.navigate(ToolsRoute.build()) },
             onOpenDiagnostics = { navController.navigate(DiagnosticsRoute.build()) },
             onOpenLegal = { navController.navigate(LegalRoute.build()) },
         )
@@ -66,6 +68,9 @@ fun NavGraphBuilder.settingsGraph(
         )
     }
 
+    // Wave4：工具页提升为一级页签（route 已改为顶层 "tools"），但 composable 仍注册
+    // 在本 graph builder 里 —— settingsGraph 只在 MainShell 的 NavHost 上调用一次，
+    // 与注册在独立 toolsGraph 完全等价，少一层文件改动（B-P1-8 的零构建脚本改动原则）。
     composable(route = ToolsRoute.ROUTE) {
         val container = LocalAppContainer.current
         ToolsScreen(
@@ -73,6 +78,16 @@ fun NavGraphBuilder.settingsGraph(
                 factory = viewModelFactory { ToolsViewModel(container) },
             ),
             onBack = { navController.popBackStack() },
+        )
+    }
+
+    // Wave4：记忆页与工具页同理 —— 一级页签的路由也注册在本 graph builder。
+    composable(route = MemoryRoute.ROUTE) {
+        val container = LocalAppContainer.current
+        MemoryScreen(
+            viewModel = viewModel(
+                factory = viewModelFactory { MemoryViewModel(container) },
+            ),
         )
     }
 }

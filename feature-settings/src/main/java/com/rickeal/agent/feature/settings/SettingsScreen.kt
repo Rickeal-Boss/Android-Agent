@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
@@ -46,7 +45,6 @@ import java.util.Locale
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
-    onOpenTools: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenLegal: () -> Unit,
     modifier: Modifier = Modifier,
@@ -60,7 +58,8 @@ fun SettingsScreen(
         topBar = {
             GlassTopBar(
                 title = "设置",
-                subtitle = "主题 · 推理参数 · 端点 · 工具",
+                // Wave4：工具与记忆已提升为独立一级页签，本页只留全局偏好与低频入口。
+                subtitle = "主题 · 推理参数 · 高级",
                 modifier = Modifier.statusBarsPadding(),
             )
         },
@@ -288,19 +287,6 @@ fun SettingsScreen(
             /* ---------------------------------------------------- 入口 */
             GlassCard(contentPadding = PaddingValues(0.dp)) {
                 Column {
-                    GlassSettingRow(
-                        title = "Agent 工具",
-                        subtitle = "开关与单工具试跑",
-                        onClick = onOpenTools,
-                        trailing = {
-                            Icon(
-                                imageVector = Icons.Filled.Build,
-                                contentDescription = null,
-                                tint = colors.accent,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
-                    )
                     GlassSettingRow(
                         title = "诊断信息",
                         subtitle = "最近的运行日志：异常与决策点（仅内存，最多 200 条）",
