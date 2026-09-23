@@ -67,6 +67,8 @@ import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.TabSpec
+import com.rickeal.agent.core.design.WindowSizeClass
+import com.rickeal.agent.core.design.WindowWidthClass
 import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
 import com.rickeal.agent.core.design.liquidGlass
 import com.rickeal.agent.core.design.pressLayerBlock
