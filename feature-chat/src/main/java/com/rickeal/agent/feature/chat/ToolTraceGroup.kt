@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.LocalGlassColors
 
 /**
  * 工具过程折叠组（F 项，CodPattern 式过程可见性的端侧降级；正当性来自 r4 审查
