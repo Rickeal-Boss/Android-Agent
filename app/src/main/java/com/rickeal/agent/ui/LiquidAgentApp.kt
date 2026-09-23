@@ -466,7 +466,7 @@ private fun GlassNavRail(
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
-    val railWidth = if (windowSize.width == WidthClass.EXPANDED) 132.dp else 88.dp
+    val railWidth = if (windowSize.width == WindowWidthClass.EXPANDED) 132.dp else 88.dp
     LiquidGlassSurface(
         modifier = modifier
             .padding(horizontal = 10.dp, vertical = 12.dp)
