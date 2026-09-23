@@ -1,5 +1,6 @@
 package com.rickeal.agent.core.engine
 
+import com.rickeal.agent.core.model.EngineKind
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
