@@ -17,6 +17,8 @@ import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
+import com.rickeal.agent.core.agent.subagent.AskSubagentTool
+import com.rickeal.agent.core.agent.subagent.SubagentRunContext
 import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.agent.schema.ToolArgsValidator
 import kotlinx.coroutines.CancellationException
@@ -24,6 +26,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -104,6 +107,32 @@ class AgentRunner(
 
     fun run(request: AgentRequest): Flow<AgentEvent> = flow {
         runMutex.withLock {
+            executeBody(request)
+        }
+    }
+        .flowOn(dispatcher)
+        .cancellable()
+
+    /**
+     * 无锁执行体：**仅限已持有 [runMutex] 的调用方使用**。
+     *
+     * 存在理由：子代理框架（subagent/AskSubagentTool）要在父 run 的工具执行阶段内嵌套
+     * 跑一个完整子 run。Mutex 不可重入，嵌套路径直接调 [run] 会自锁死等自己。
+     * 契约：只允许在 `run()` 的工具执行回调内部调用（此时锁由父 run 持有）；
+     * 从外部并发调用 = 两个 run 抢同一个引擎实例（见类注释，native use-after-free）。
+     *
+     * 嵌套在本地引擎上安全的原因：子 run 发生在父 run 的**工具阶段**（父 generateStream
+     * 已完整返回），不是并发生成；`ensureConversation` 因 conversationId 切换会重建
+     * Conversation 并清水印，父 run 下一轮把全量 working 历史重发，KV cache 正确重建
+     * —— 代价是一次全量 re-prefill，正确性无损（buildContents 的水印语义保证）。
+     */
+    internal fun runUnlocked(request: AgentRequest): Flow<AgentEvent> = flow {
+        executeBody(request)
+    }
+        .flowOn(dispatcher)
+        .cancellable()
+
+    private suspend fun FlowCollector<AgentEvent>.executeBody(request: AgentRequest) {
             val policy = request.policy
             val config: InferenceConfig = request.config.coerce()
             val kind: EngineKind = if (request.endpoint != null) EngineKind.REMOTE else EngineKind.LOCAL
@@ -139,7 +168,7 @@ class AgentRunner(
                         AgentRunJournal.settledPayload("Failed", round),
                     )
                     emit(AgentEvent.Failed("引擎加载失败：${retry.message}", retry))
-                    return@flow
+                    return
                 }
                 // 重建成功、即将重新 load：发一次重试信号，避免 UI 在重建期间静默卡在旧状态。
                 // 日志只记后端类型与异常类型/消息：这里拿得到 loadConfig 和端点对象，
@@ -171,8 +200,15 @@ class AgentRunner(
             // 只要「有系统指令」或「有可用工具」就必须带系统消息：停止条件段要靠它下发，
             // 文本协议模式下模型也才能从里面读到工具清单（systemInstruction 默认是空串，
             // 旧写法会让这两样都永远送不到模型）。
-            if (config.systemInstruction.isNotBlank() || availableTools.isNotEmpty()) {
-                working.add(ChatMessage(role = Role.SYSTEM, text = buildSystemInstruction(config, availableTools)))
+            if (config.systemInstruction.isNotBlank() || availableTools.isNotEmpty() ||
+                !request.memoryText.isNullOrBlank()
+            ) {
+                working.add(
+                    ChatMessage(
+                        role = Role.SYSTEM,
+                        text = buildSystemInstruction(config, availableTools, request.memoryText),
+                    ),
+                )
             }
             working.addAll(request.history)
             // history 可能已经把本轮用户输入拼在末尾（调用方常见写法：messages + userInput），
@@ -270,7 +306,7 @@ class AgentRunner(
                                 AgentRunJournal.settledPayload("Failed", round),
                             )
                             emit(AgentEvent.Failed("生成失败：${t.message}", t))
-                            return@flow
+                            return
                         }
                         generationAttempt++
                         // 重试前必须换一个干净的累加器：否则会把两次尝试的半截输出拼成一条错误答案。
@@ -288,7 +324,7 @@ class AgentRunner(
                                 AgentRunJournal.settledPayload("Failed", round),
                             )
                             emit(AgentEvent.Failed("引擎重载失败：${retry.message}", retry))
-                            return@flow
+                            return
                         }
                         // 重建成功、即将重新生成本轮。位置很关键：必须在 rebuildEngine 之后
                         // （重建失败就直接 Failed 返回，不该先清 UI）、在下一圈 generateStream 之前。
@@ -307,7 +343,7 @@ class AgentRunner(
                         AgentRunJournal.settledPayload("Cancelled", round),
                     )
                     emit(AgentEvent.Cancelled(accumulator.text))
-                    return@flow
+                    return
                 }
                 if (accumulator.usage != null) lastUsage = accumulator.usage
                 lastModelText = accumulator.text
@@ -527,7 +563,17 @@ class AgentRunner(
                         continue
                     }
 
-                    val result = executeWithGuard(call, tool, policy)
+                    // 挂载子代理上下文：ask_actor 从协程上下文读取父 run 的
+                    // conversation/config/model/endpoint（协程元素而非可变全局，取消安全）。
+                    val parentContext = AskSubagentTool.ParentContext(
+                        conversationId = request.conversationId,
+                        config = config,
+                        model = request.model,
+                        endpoint = request.endpoint,
+                    )
+                    val result = withContext(SubagentRunContext(parentContext)) {
+                        executeWithGuard(call, tool, policy)
+                    }
                     emit(AgentEvent.ToolResultReceived(result))
                     commitToolMessage(working, call, result, journal)
                 }
@@ -581,10 +627,7 @@ class AgentRunner(
                     terminatedBy = termination,
                 )
             )
-        }
     }
-        .flowOn(dispatcher)
-        .cancellable()
 
     /**
      * 丢弃当前 kind 的缓存实例，换一个全新实例重新 load() 并返回它。
@@ -628,7 +671,8 @@ class AgentRunner(
         val started = System.currentTimeMillis()
         return try {
             // 工具会做文件读写 / 剪贴板 / 进程外调用，必须离开调用方线程（Default/Main）跑在 IO 上
-            val raw = withTimeout(policy.toolTimeoutMillis) {
+            val timeoutMillis = tool.spec.timeoutMillisOverride ?: policy.toolTimeoutMillis
+            val raw = withTimeout(timeoutMillis) {
                 withContext(Dispatchers.IO) { tool.invoke(call.argumentsJson) }
             }
             val output = raw.output
@@ -654,8 +698,8 @@ class AgentRunner(
             // 必须先把它排除掉，否则「工具超时」会从「可恢复错误」变成「整个 run 被取消」。
             if (t is CancellationException && t !is kotlinx.coroutines.TimeoutCancellationException) throw t
             val message = if (t is kotlinx.coroutines.TimeoutCancellationException) {
-                AgentLogStore.warn("工具执行超时：${call.name}（${policy.toolTimeoutMillis}ms）")
-                "工具执行超时（${policy.toolTimeoutMillis}ms）"
+                AgentLogStore.warn("工具执行超时：${call.name}（${timeoutMillis}ms）")
+                "工具执行超时（${timeoutMillis}ms）"
             } else {
                 t.message ?: "工具执行异常"
             }
@@ -670,7 +714,11 @@ class AgentRunner(
         }
     }
 
-    private fun buildSystemInstruction(config: InferenceConfig, tools: List<ToolSpec>): String {
+    private fun buildSystemInstruction(
+        config: InferenceConfig,
+        tools: List<ToolSpec>,
+        memoryText: String? = null,
+    ): String {
         val sections = ArrayList<String>(4)
         if (config.systemInstruction.isNotBlank()) sections.add(config.systemInstruction)
         if (tools.isNotEmpty()) {
@@ -681,6 +729,11 @@ class AgentRunner(
             )
             // 护栏紧跟在工具清单之后：反工具名幻觉 + 「想直接回答」的显式收尾声明。
             sections.add(TOOL_GUARDRAILS)
+        }
+        // 长期记忆（harness-memory 移植）：跨会话沉淀的用户偏好/项目事实。
+        // 放在停止条件之前 —— 停止条件要保持在系统提示词的尾部以获得最高权重。
+        if (!memoryText.isNullOrBlank()) {
+            sections.add("【长期记忆】以下是此前沉淀的持久信息，回答时优先遵循：\n" + memoryText)
         }
         // 停止条件始终下发：这是让 4B 模型「自己会停」的主要手段。
         sections.add(STOP_CONDITIONS)

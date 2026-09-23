@@ -13,6 +13,8 @@ data class ToolContext(
     val appContext: Context,
     val clipboard: ClipboardManager? = null,
     val nowMillis: () -> Long = { System.currentTimeMillis() },
+    /** 长期记忆（harness-memory 移植）；null = 不装配记忆工具。 */
+    val agentMemory: com.rickeal.agent.core.agent.memory.AgentMemory? = null,
 )
 
 interface Tool {

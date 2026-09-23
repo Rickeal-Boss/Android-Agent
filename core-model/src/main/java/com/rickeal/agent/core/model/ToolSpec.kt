@@ -35,6 +35,13 @@ data class ToolSpec(
     val requiresConfirmation: Boolean = false,
     val dangerous: Boolean = false,
     val category: String = "general",
+    /**
+     * 单工具超时覆盖（毫秒）；null = 用 AgentPolicy.toolTimeoutMillis。
+     * 存在理由：个别工具天然长耗时（如 ask_actor 是一次多轮子推理，默认 15s 必然超时），
+     * 全局放宽 policy 又会放过真正卡死的普通工具。可序列化的新字段带默认值，
+     * 旧 JSON 前后兼容（ignoreUnknownKeys + explicitNulls=false）。
+     */
+    val timeoutMillisOverride: Long? = null,
 ) {
     /** 生成文本协议模式下写进 system prompt 的一行描述。 */
     fun toPromptLine(): String =

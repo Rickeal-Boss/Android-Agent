@@ -14,6 +14,12 @@ import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.agent.ToolContext
 import com.rickeal.agent.core.agent.ToolRegistry
 import com.rickeal.agent.core.agent.installBuiltInTools
+import com.rickeal.agent.core.agent.memory.AgentMemory
+import com.rickeal.agent.core.agent.memory.installMemoryTools
+import com.rickeal.agent.core.agent.subagent.AskSubagentTool
+import com.rickeal.agent.core.agent.subagent.BuiltInSubagents
+import com.rickeal.agent.core.agent.subagent.SubagentRegistry
+import com.rickeal.agent.core.agent.subagent.SubagentSessionStore
 import com.rickeal.agent.core.engine.DefaultEngineFactory
 import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
@@ -82,20 +88,37 @@ class AppContainer(private val context: Context) {
 
     val engineFactory: EngineFactory = DefaultEngineFactory()
 
+    /** 长期记忆（harness-memory 移植）：filesDir/agent_memory/memory.json */
+    val agentMemory: AgentMemory = AgentMemory(File(context.filesDir, "agent_memory/memory.json"))
+
     val toolContext: ToolContext = ToolContext(
         sandboxDir = sandboxDir,
         appContext = context.applicationContext,
         clipboard = context.applicationContext
             .getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager,
+        agentMemory = agentMemory,
     )
 
-    val toolRegistry: ToolRegistry = ToolRegistry().apply { installBuiltInTools(toolContext) }
+    val toolRegistry: ToolRegistry = ToolRegistry().apply {
+        installBuiltInTools(toolContext)
+        installMemoryTools(this, agentMemory)
+    }
 
     val agentRunner: AgentRunner = AgentRunner(
         engineFactory = engineFactory,
         toolRegistry = toolRegistry,
         environment = engineEnvironment,
     )
+
+    // ---- 子代理框架（ZCode Actor / Octop ask_agent 移植）----
+    // 顺序有讲究：先建 runner，再把 ask_actor 注册进 registry（工具内部引用 runner）。
+    val subagentRegistry: SubagentRegistry = SubagentRegistry().also { BuiltInSubagents.registerAll(it) }
+    val subagentSessions: SubagentSessionStore = SubagentSessionStore()
+    val subagentTool: AskSubagentTool = AskSubagentTool(subagentRegistry, subagentSessions, agentRunner)
+
+    init {
+        toolRegistry.register(subagentTool)
+    }
 
     /**
      * 冷启动预热：把三个仓库的内存快照拉起来。

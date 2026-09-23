@@ -330,6 +330,8 @@ class ChatViewModel(
                 endpoint = endpoint,
                 policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
                 journal = journal,
+                // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送
+                memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -415,6 +417,8 @@ class ChatViewModel(
                 endpoint = endpoint,
                 policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
                 journal = journal,
+                // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送
+                memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }

@@ -79,4 +79,9 @@ data class AgentRequest(
      * ZCode 命令审批语义移植）；null = 维持历史行为（危险工具直接拒绝执行）。
      */
     val approvalHandler: ToolApprovalHandler? = null,
+    /**
+     * 长期记忆片段（harness-memory 移植）。非空时追加为系统提示词的「长期记忆」节；
+     * 由调用方在发请求前从 [com.rickeal.agent.core.agent.memory.AgentMemory] 渲染取得。
+     */
+    val memoryText: String? = null,
 )
