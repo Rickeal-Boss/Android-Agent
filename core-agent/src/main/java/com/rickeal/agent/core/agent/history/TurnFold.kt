@@ -65,7 +65,7 @@ object TurnFold {
         }.getOrNull()
     }
 
-    private fun putIfText(pool: ContentAddressedPool, text: String): BlobRef? {
+    private suspend fun putIfText(pool: ContentAddressedPool, text: String): BlobRef? {
         if (text.isBlank()) return null
         return pool.put(text)
     }

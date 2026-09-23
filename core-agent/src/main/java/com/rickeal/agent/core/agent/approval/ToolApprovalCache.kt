@@ -30,10 +30,31 @@ interface ToolApprovalCache {
 
     /** 清空指定会话（或全部）的授权。会话销毁/用户撤销时调用。 */
     fun revokeAll(conversationId: String? = null)
+
+    companion object {
+        const val DEFAULT_TTL_MILLIS: Long = 30 * 60 * 1000L
+
+        /**
+         * 参数摘要：parse → 规范化重编码（消除空白/键序差异）→ SHA-256。
+         * 解析失败用原文哈希兜底（绝不抛异常——摘要失败不能变成审批失败面）。
+         * 放接口 companion：调用方（AgentRunner/宿主）面对的是接口类型。
+         */
+        fun argsDigest(argumentsJson: String): String = try {
+            val normalized: JsonElement = AgentJson.Default.parseToJsonElement(argumentsJson)
+            sha256Hex(normalized.toString())
+        } catch (t: Throwable) {
+            sha256Hex(argumentsJson)
+        }
+
+        fun sha256Hex(text: String): String =
+            MessageDigest.getInstance("SHA-256")
+                .digest(text.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+    }
 }
 
 class InMemoryToolApprovalCache(
-    private val defaultTtlMillis: Long = DEFAULT_TTL_MILLIS,
+    private val defaultTtlMillis: Long = ToolApprovalCache.DEFAULT_TTL_MILLIS,
 ) : ToolApprovalCache {
 
     private data class Entry(val expiresAt: Long)
@@ -66,24 +87,4 @@ class InMemoryToolApprovalCache(
 
     private fun keyOf(toolName: String, argsDigest: String, conversationId: String?): String =
         "${conversationId.orEmpty()}|$toolName|$argsDigest"
-
-    companion object {
-        const val DEFAULT_TTL_MILLIS: Long = 30 * 60 * 1000L
-
-        /**
-         * 参数摘要：parse → 规范化重编码（消除空白/键序差异）→ SHA-256。
-         * 解析失败用原文哈希兜底（绝不抛异常——摘要失败不能变成审批失败面）。
-         */
-        fun argsDigest(argumentsJson: String): String = try {
-            val normalized: JsonElement = AgentJson.Default.parseToJsonElement(argumentsJson)
-            sha256Hex(normalized.toString())
-        } catch (t: Throwable) {
-            sha256Hex(argumentsJson)
-        }
-
-        fun sha256Hex(text: String): String =
-            MessageDigest.getInstance("SHA-256")
-                .digest(text.toByteArray(Charsets.UTF_8))
-                .joinToString("") { "%02x".format(it) }
-    }
 }
