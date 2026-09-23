@@ -25,7 +25,10 @@ import com.rickeal.agent.core.agent.subagent.SubagentSessionStore
 import com.rickeal.agent.core.engine.DefaultEngineFactory
 import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
+import com.rickeal.agent.core.engine.EngineInitStatus
+import com.rickeal.agent.core.engine.EngineLoadCoordinator
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -88,7 +91,16 @@ class AppContainer(private val context: Context) {
         sandboxDir = sandboxDir.absolutePath,
     )
 
-    val engineFactory: EngineFactory = DefaultEngineFactory()
+    // 引擎加载状态机（Wave3，gallery 竞态防护语义移植）：装饰 DefaultEngineFactory，
+    // create() 返回的实例在 load 时向 engineInitStatus 状态流上报 Initializing/Initialized/Failed；
+    // 加载中收到的 evict 延迟到 load 收尾消化（native load 不可中断）。AgentRunner 零改动。
+    private val engineLoadCoordinator: EngineLoadCoordinator =
+        EngineLoadCoordinator(DefaultEngineFactory())
+
+    val engineFactory: EngineFactory get() = engineLoadCoordinator
+
+    /** 引擎加载状态流（本轮仅供观察/日志，不接 UI）。 */
+    val engineInitStatus: StateFlow<EngineInitStatus> get() = engineLoadCoordinator.status
 
     /** 长期记忆（harness-memory 移植）：filesDir/agent_memory/memory.json */
     val agentMemory: AgentMemory = AgentMemory(File(context.filesDir, "agent_memory/memory.json"))
