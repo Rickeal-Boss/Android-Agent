@@ -112,7 +112,7 @@ class AgentPlanStore(private val maxConversations: Int = 16) {
 }
 
 /** 计划工具的公共基座：从协程上下文取父 run 的会话键。 */
-private abstract class PlanToolBase(
+internal abstract class PlanToolBase(
     private val store: AgentPlanStore,
     name: String,
     description: String,
@@ -125,7 +125,7 @@ private abstract class PlanToolBase(
         category = "plan",
     )
 
-    protected fun conversationKey(): String? {
+    protected suspend fun conversationKey(): String? {
         // 上下文缺失 → null（装配错误）；有上下文但无会话 → ""（全局键）
         val parent = coroutineContext[SubagentRunContext]?.parent ?: return null
         return parent.conversationId ?: ""
@@ -215,7 +215,7 @@ class PlanUpdateTool(private val store: AgentPlanStore) : PlanToolBase(
         if (!ok) return emitResult(false, "步骤 $ordinal 不存在（当前计划共 ${store.planFor(key).steps.size} 步）")
         val plan = store.planFor(key)
         val done = plan.steps.count { it.status == PlanStepStatus.COMPLETED }
-        return emitResult(true, "计划已更新（$done/${plan.steps.size} 完成）：\n${renderCurrent(plan.steps)}")
+        return emitResult(true, "计划已更新（$done/${plan.steps.size} 完成）：\n${AgentPlanStore.render(plan.steps)}")
     }
 }
 
