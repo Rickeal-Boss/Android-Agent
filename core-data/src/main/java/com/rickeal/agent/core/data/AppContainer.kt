@@ -16,6 +16,8 @@ import com.rickeal.agent.core.agent.ToolRegistry
 import com.rickeal.agent.core.agent.installBuiltInTools
 import com.rickeal.agent.core.agent.memory.AgentMemory
 import com.rickeal.agent.core.agent.memory.installMemoryTools
+import com.rickeal.agent.core.agent.plan.AgentPlanStore
+import com.rickeal.agent.core.agent.plan.installPlanTools
 import com.rickeal.agent.core.agent.subagent.AskSubagentTool
 import com.rickeal.agent.core.agent.subagent.BuiltInSubagents
 import com.rickeal.agent.core.agent.subagent.SubagentRegistry
@@ -91,6 +93,9 @@ class AppContainer(private val context: Context) {
     /** 长期记忆（harness-memory 移植）：filesDir/agent_memory/memory.json */
     val agentMemory: AgentMemory = AgentMemory(File(context.filesDir, "agent_memory/memory.json"))
 
+    /** 会话级执行计划（ZCode Phase Graph 降级移植）：plan_set / plan_update 工具的落点。 */
+    val agentPlanStore: AgentPlanStore = AgentPlanStore()
+
     val toolContext: ToolContext = ToolContext(
         sandboxDir = sandboxDir,
         appContext = context.applicationContext,
@@ -102,6 +107,7 @@ class AppContainer(private val context: Context) {
     val toolRegistry: ToolRegistry = ToolRegistry().apply {
         installBuiltInTools(toolContext)
         installMemoryTools(this, agentMemory)
+        installPlanTools(this, agentPlanStore)
     }
 
     val agentRunner: AgentRunner = AgentRunner(
@@ -113,7 +119,10 @@ class AppContainer(private val context: Context) {
     // ---- 子代理框架（ZCode Actor / Octop ask_agent 移植）----
     // 顺序有讲究：先建 runner，再把 ask_actor 注册进 registry（工具内部引用 runner）。
     val subagentRegistry: SubagentRegistry = SubagentRegistry().also { BuiltInSubagents.registerAll(it) }
-    val subagentSessions: SubagentSessionStore = SubagentSessionStore()
+    // Actor 会话持久化目录：App 被杀后子代理上下文仍在（Wave 2 对齐 ZCode 持久化 Actor）
+    val subagentSessions: SubagentSessionStore = SubagentSessionStore(
+        persistDir = File(context.filesDir, "subagent_sessions"),
+    )
     val subagentTool: AskSubagentTool = AskSubagentTool(subagentRegistry, subagentSessions, agentRunner)
 
     init {

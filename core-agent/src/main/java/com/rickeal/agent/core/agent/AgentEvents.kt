@@ -20,6 +20,20 @@ enum class TerminationReason {
 
     /** 达到 maxRounds 兜底截断（正常情况应该由模型自己停，走到这里说明它没停住）。 */
     MaxRounds,
+
+    /**
+     * 确定性模型侧故障（认证失效 / 配额耗尽 / 模型不可用）—— ZCode RunSettlement 的
+     * `stopped(provider)` 语义。重试大概率无用，UI 应引导检查端点配置而非盲目重试。
+     * 当前仅用于 journal 终态分类（UI 仍走 Failed 事件），后续接端点诊断页。
+     */
+    ProviderStop,
+
+    /**
+     * 宿主/进程级中断（进程被杀、App 关闭）—— ZCode 的 `stopped(interrupted)` 语义。
+     * 这个值**不会**被主动写入 journal：进程死亡时来不及写，「journal 无 settled 行」
+     * 就是它的判据（恢复路径据此提示用户继续）。
+     */
+    Interrupted,
 }
 
 sealed interface AgentEvent {
@@ -56,6 +70,12 @@ sealed interface AgentEvent {
      * APPROVED / DENIED；主循环会挂起等待，直到裁决或整个 run 被取消。
      */
     data class ApprovalRequested(val call: ToolCall, val spec: ToolSpec) : AgentEvent
+
+    /**
+     * 执行计划发生变化（plan_set / plan_update 工具触发；ZCode Phase Graph 降级移植）。
+     * UI 据此渲染计划时间线；同一轮内多次变化合并为事件流上的多次更新。
+     */
+    data class PlanUpdated(val steps: List<com.rickeal.agent.core.agent.plan.PlanStep>) : AgentEvent
 }
 
 data class AgentRequest(
@@ -86,4 +106,9 @@ data class AgentRequest(
      * 由调用方在发请求前从 [com.rickeal.agent.core.agent.memory.AgentMemory] 渲染取得。
      */
     val memoryText: String? = null,
+    /**
+     * 会话级计划仓库（ZCode Phase Graph 降级移植）。非 null 时工具循环内检测 plan_set /
+     * plan_update 引起的版本变化并发 [AgentEvent.PlanUpdated]；null = 本 run 不感知计划。
+     */
+    val planStore: com.rickeal.agent.core.agent.plan.AgentPlanStore? = null,
 )

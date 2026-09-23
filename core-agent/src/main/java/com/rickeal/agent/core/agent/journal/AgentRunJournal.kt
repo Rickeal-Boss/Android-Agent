@@ -120,6 +120,23 @@ class AgentRunJournal private constructor(
             .toList()
 
     // ------------------------------------------------------------------
+    // 恢复处置
+    // ------------------------------------------------------------------
+
+    /**
+     * 用户选择「不继续」时把 journal 改名归档而非删除：过程记录里可能有排查需要的
+     * 工具结果，删除不可逆；改名后 [findUnsettled] 不再命中（恢复提示消失）。
+     */
+    fun markDismissed() {
+        runCatching { file.renameTo(File(file.parentFile, file.name + ".dismissed")) }
+            .onFailure {
+                com.rickeal.agent.core.model.AgentLogStore.warn(
+                    "journal 归档失败：${'$'}{it.javaClass.simpleName}"
+                )
+            }
+    }
+
+    // ------------------------------------------------------------------
     // 工厂
     // ------------------------------------------------------------------
 
@@ -128,6 +145,41 @@ class AgentRunJournal private constructor(
         const val KIND_ROUND_STARTED = "round_started"
         const val KIND_MESSAGE = "message"
         const val KIND_SETTLED = "settled"
+
+        /** 一个可恢复 run 的摘要（给 UI 出「继续/丢弃」选择用）。 */
+        data class UnsettledRun(
+            val runId: String,
+            /** journal 里已落盘的上下文消息数（含工具调用与结果）。 */
+            val messageCount: Int,
+            val lastAtMillis: Long,
+            val journal: AgentRunJournal,
+        )
+
+        /**
+         * 扫描某会话的 journal 目录，找出**没有 settled 行**（= 进程死亡即
+         * TerminationReason.Interrupted）且至少有一条上下文消息的 run；
+         * 返回最近的一个，没有则 null。调用方在 IO 线程调用。
+         */
+        fun findUnsettled(runDir: File): UnsettledRun? {
+            if (!runDir.isDirectory) return null
+            var best: UnsettledRun? = null
+            val files = runDir.listFiles { file -> file.isFile && file.name.endsWith(".jsonl") } ?: return null
+            for (file in files) {
+                if (file.name.endsWith(DISMISS_SUFFIX + ".jsonl")) continue
+                val runId = file.name.removeSuffix(".jsonl")
+                val journal = open(runDir, runId)
+                val lines = journal.readLines()
+                if (lines.isEmpty()) continue
+                if (lines.last().kind == KIND_SETTLED) continue
+                val messageCount = lines.count { it.kind == KIND_MESSAGE }
+                if (messageCount == 0) continue
+                val candidate = UnsettledRun(runId, messageCount, lines.last().atMillis, journal)
+                if (best == null || candidate.lastAtMillis > best.lastAtMillis) best = candidate
+            }
+            return best
+        }
+
+        private const val DISMISS_SUFFIX = ".dismissed"
 
         /**
          * 打开（或新建）一个 run 的 journal。

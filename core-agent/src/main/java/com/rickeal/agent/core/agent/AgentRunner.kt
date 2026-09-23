@@ -11,6 +11,7 @@ import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.Role
+import com.rickeal.agent.core.engine.EngineException
 import com.rickeal.agent.core.model.StreamAccumulator
 import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.ToolCall
@@ -218,6 +219,9 @@ class AgentRunner(
             }
 
             var round = 0
+            // 计划版本水印：只把「本次 run 期间发生的变化」推给 UI（run 打开前的历史计划不重放）
+            var lastPlanVersion = request.planStore
+                ?.peek(request.conversationId ?: "")?.version ?: 0L
             var finalText = ""
             // 取**最近**一条带 usage 的历史消息，不是第一条：第一条往往是建会话时的系统消息，
             // usage 恒为 null，于是 Finished 事件里的用量永远是 null（UI 一片空白）。
@@ -301,9 +305,13 @@ class AgentRunner(
                             AgentLogStore.error(
                                 "生成失败：$kind 重试后仍失败（${t.javaClass.simpleName}: ${t.message}），已放弃本轮"
                             )
+                            // 远程引擎的确定性错误（认证/配额/模型不可用）按 ZCode 的
+                            // stopped(provider) 归类 —— 重试无意义，与偶发网络故障区分开。
+                            val terminationName =
+                                if (kind == EngineKind.REMOTE && t is EngineException) "ProviderStop" else "Failed"
                             journal?.append(
                                 AgentRunJournal.KIND_SETTLED,
-                                AgentRunJournal.settledPayload("Failed", round),
+                                AgentRunJournal.settledPayload(terminationName, round),
                             )
                             emit(AgentEvent.Failed("生成失败：${t.message}", t))
                             return
@@ -576,6 +584,17 @@ class AgentRunner(
                     }
                     emit(AgentEvent.ToolResultReceived(result))
                     commitToolMessage(working, call, result, journal)
+
+                    // ── 计划变化检测（ZCode Phase Graph 降级移植）────────────────
+                    // plan_set / plan_update 工具改的是会话级 PlanStore；版本号变了就把
+                    // 最新计划推给 UI。放在工具循环内：一轮多个计划操作也能逐条可见。
+                    request.planStore?.let { store ->
+                        val tracked = store.peek(request.conversationId ?: "")
+                        if (tracked != null && tracked.version != lastPlanVersion) {
+                            lastPlanVersion = tracked.version
+                            emit(AgentEvent.PlanUpdated(tracked.steps))
+                        }
+                    }
                 }
 
                 // 提醒作为下一轮 messages 里的合成 user 消息（槽位是单值，所以每轮最多注入一次）。

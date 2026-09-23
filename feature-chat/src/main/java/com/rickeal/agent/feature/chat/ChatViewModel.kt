@@ -7,7 +7,10 @@ import com.rickeal.agent.core.agent.AgentEvent
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.AgentRequest
+import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
+import com.rickeal.agent.core.agent.approval.ToolApprovalHandler
 import com.rickeal.agent.core.agent.journal.AgentRunJournal
+import com.rickeal.agent.core.agent.plan.PlanStep
 import java.io.File
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.model.Attachment
@@ -19,12 +22,15 @@ import com.rickeal.agent.core.model.RemoteEndpoint
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.TokenUsage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 工具调用在 UI 上的一条轨迹（纯 UI，不落库）。 */
 @Immutable
@@ -38,6 +44,25 @@ data class ToolTrace(
 )
 
 enum class ToolTraceStatus { RUNNING, OK, FAILED, SKIPPED }
+
+/**
+ * 一次等待用户裁决的工具调用（Octop tool_guard 的 UI 面）。
+ * `decision` 在用户点击授权/拒绝时 complete；run 被取消时随协程一起取消。
+ */
+@Immutable
+data class PendingApproval(
+    val callId: String,
+    val toolName: String,
+    val arguments: String,
+    val decision: CompletableDeferred<ToolApprovalDecision>,
+)
+
+/** 崩溃恢复 offer：journal 扫描发现「没有 settled 行」的 run。 */
+@Immutable
+data class RecoveryOffer(
+    val runId: String,
+    val messageCount: Int,
+)
 
 @Immutable
 data class ChatUiState(
@@ -72,6 +97,12 @@ data class ChatUiState(
      * `null` = 还没有可用数据（此时 UI 不显示任何占用量，而不是显示 0）。
      */
     val contextTokens: Int? = null,
+    /** 当前会话的执行计划（plan_set / plan_update 维护；ZCode Phase Graph 降级移植）。 */
+    val planSteps: List<PlanStep> = emptyList(),
+    /** 等待用户授权的工具调用；非 null 时输入区上方显示授权卡。 */
+    val pendingApproval: PendingApproval? = null,
+    /** 崩溃恢复 offer：上次 run 被进程死亡打断（journal 无 settled 行）。 */
+    val recovery: RecoveryOffer? = null,
 )
 
 class ChatViewModel(
@@ -84,6 +115,30 @@ class ChatViewModel(
 
     private var runJob: Job? = null
     private var conversationId: String? = initialConversationId
+
+    /**
+     * 审批通道：把「危险/需确认工具的执行前裁决」挂起到用户点击为止。
+     * fail-closed 的另一半在这里——run 取消时 `deferred.await()` 随协程取消，
+     * 不需要超时兜底；弹窗未响应期间 run 挂起是**设计行为**（人在回路）。
+     */
+    private val approvalHandler = ToolApprovalHandler { call, spec ->
+        val deferred = CompletableDeferred<ToolApprovalDecision>()
+        _uiState.update {
+            it.copy(
+                pendingApproval = PendingApproval(
+                    callId = call.id,
+                    toolName = spec.name,
+                    arguments = call.argumentsJson,
+                    decision = deferred,
+                ),
+            )
+        }
+        try {
+            deferred.await()
+        } finally {
+            _uiState.update { it.copy(pendingApproval = null) }
+        }
+    }
 
     init {
         viewModelScope.launch {
@@ -118,6 +173,7 @@ class ChatViewModel(
             }
         }
         if (initialConversationId != null) {
+            viewModelScope.launch { maybeOfferRecovery(initialConversationId) }
             viewModelScope.launch {
                 val conversation = container.conversationRepository.load(initialConversationId)
                 if (conversation != null) {
@@ -223,6 +279,126 @@ class ChatViewModel(
 
     fun onDismissError() {
         _uiState.update { it.copy(error = null) }
+    }
+
+    /** 用户对当前授权请求做出裁决（授权卡按钮）。 */
+    fun onApprovalResult(approved: Boolean) {
+        val pending = _uiState.value.pendingApproval ?: return
+        pending.decision.complete(
+            if (approved) ToolApprovalDecision.APPROVED else ToolApprovalDecision.DENIED,
+        )
+    }
+
+    /** 打开会话后扫描 journal：有「没跑完就被进程死亡打断」的 run 就出恢复卡。 */
+    private suspend fun maybeOfferRecovery(cid: String) {
+        val dir = File(container.journalRoot, cid)
+        val unsettled = withContext(Dispatchers.IO) {
+            runCatching { AgentRunJournal.findUnsettled(dir) }.getOrNull()
+        } ?: return
+        _uiState.update {
+            it.copy(recovery = RecoveryOffer(runId = unsettled.runId, messageCount = unsettled.messageCount))
+        }
+    }
+
+    /**
+     * 从中断处继续（恢复卡「继续」按钮）。
+     *
+     * journal 里的已提交消息重建出完整上下文（含工具调用与结果——这些**不在**会话文件的
+     * 可见消息里，只有 journal 有），从崩溃点继续推理：
+     *  - 末条是 USER → 那条就是被打断的输入，直接作为 userInput（不重复落库）；
+     *  - 否则合成一条「继续」输入（对用户可见并落库，与 onSend 行为一致）。
+     */
+    fun onRecover() {
+        val state = _uiState.value
+        if (state.isGenerating) return
+        val offer = state.recovery ?: return
+        val cid = conversationId ?: return
+        _uiState.update { it.copy(recovery = null, error = null, toolTraces = emptyList()) }
+        runJob?.cancel()
+        runJob = viewModelScope.launch {
+            val journal = AgentRunJournal.open(File(container.journalRoot, cid), offer.runId)
+            val committed = withContext(Dispatchers.IO) { journal.committedMessagesSync() }
+            if (committed.isEmpty()) {
+                journal.markDismissed()
+                return@launch
+            }
+            val last = committed.last()
+            val userMessage: ChatMessage
+            val history: List<ChatMessage>
+            if (last.role == Role.USER) {
+                history = committed.dropLast(1)
+                userMessage = last
+            } else {
+                history = committed
+                userMessage = ChatMessage(
+                    role = Role.USER,
+                    text = "请从上次中断的地方继续未完成的任务，不要重复已完成的工作。",
+                )
+            }
+            _uiState.update {
+                it.copy(
+                    messages = if (it.messages.none { m -> m.id == userMessage.id }) {
+                        it.messages + userMessage
+                    } else {
+                        it.messages
+                    },
+                    streamingText = "",
+                    streamingThinking = "",
+                    streamingRole = Role.MODEL,
+                    isStreaming = true,
+                    isGenerating = true,
+                    agentRound = 0,
+                )
+            }
+            if (last.role != Role.USER) {
+                container.conversationRepository.appendMessage(cid, userMessage)
+            }
+            val config = _uiState.value.config
+            val endpoint = if (config.engineKind == EngineKind.REMOTE) {
+                container.endpointRepository.find(config.remoteEndpointId)
+                    ?: _uiState.value.activeEndpoint
+            } else {
+                null
+            }
+            val request = AgentRequest(
+                conversationId = cid,
+                history = history,
+                userInput = userMessage,
+                config = config,
+                model = _uiState.value.activeModel,
+                endpoint = endpoint,
+                policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
+                journal = journal,
+                memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
+                planStore = container.agentPlanStore,
+                approvalHandler = approvalHandler,
+            )
+            runCatching {
+                container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
+            }.onFailure { throwable ->
+                // 取消不是错误（与 onSend/onRetry 同一约定）
+                if (throwable is CancellationException) return@onFailure
+                _uiState.update {
+                    it.copy(
+                        isStreaming = false,
+                        isGenerating = false,
+                        error = throwable.message?.let { m -> AgentLogStore.sanitizeUserFacing(m) }
+                            ?: "生成失败",
+                    )
+                }
+            }
+        }
+    }
+
+    /** 恢复卡「丢弃」：journal 改名归档（不删——过程记录里可能有排查需要的东西）。 */
+    fun onDiscardRecovery() {
+        val offer = _uiState.value.recovery ?: return
+        val cid = conversationId ?: return
+        _uiState.update { it.copy(recovery = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val journal = AgentRunJournal.open(File(container.journalRoot, cid), offer.runId)
+            journal.markDismissed()
+        }
     }
 
     fun onNewConversation() {
@@ -332,6 +508,8 @@ class ChatViewModel(
                 journal = journal,
                 // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送
                 memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
+                planStore = container.agentPlanStore,
+                approvalHandler = approvalHandler,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -419,6 +597,8 @@ class ChatViewModel(
                 journal = journal,
                 // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送
                 memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
+                planStore = container.agentPlanStore,
+                approvalHandler = approvalHandler,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -467,6 +647,11 @@ class ChatViewModel(
                         result = "需要授权后才会执行（当前未接审批 UI，已按拒绝处理）",
                     ),
                 )
+            }
+
+            // 计划变化（plan_set / plan_update）：UI 渲染时间线。同一轮内逐次更新。
+            is AgentEvent.PlanUpdated -> _uiState.update {
+                it.copy(planSteps = event.steps)
             }
 
             is AgentEvent.TextDelta -> _uiState.update {
