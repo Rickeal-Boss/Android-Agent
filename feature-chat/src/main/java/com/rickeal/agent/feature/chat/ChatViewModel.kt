@@ -455,6 +455,20 @@ class ChatViewModel(
                 it.copy(streamingText = "", streamingThinking = "")
             }
 
+            // 工具审批请求（Wave 1 无 UI 通道 → 默认拒绝；fail-closed 与主循环行为一致）。
+            // 现在落成一条工具轨迹让用户「看得见发生了什么」；弹窗交互属于 Wave 2。
+            is AgentEvent.ApprovalRequested -> _uiState.update { state ->
+                state.copy(
+                    toolTraces = state.toolTraces + ToolTrace(
+                        id = event.call.id,
+                        name = event.spec.name,
+                        arguments = event.call.argumentsJson,
+                        status = ToolTraceStatus.SKIPPED,
+                        result = "需要授权后才会执行（当前未接审批 UI，已按拒绝处理）",
+                    ),
+                )
+            }
+
             is AgentEvent.TextDelta -> _uiState.update {
                 it.copy(streamingText = it.streamingText + event.text)
             }
