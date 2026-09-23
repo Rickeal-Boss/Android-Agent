@@ -98,9 +98,15 @@ data class AgentRequest(
     /**
      * 工具审批通道（可选）。非 null 时，危险工具（`dangerous`）与声明需确认的工具
      * （`requiresConfirmation`）会在执行前通过它请求用户裁决（Octop tool_guard +
-     * ZCode 命令审批语义移植）；null = 维持历史行为（危险工具直接拒绝执行）。
+     * ZCode 命令审批语义移植）；null = 危险工具直接拒绝执行。
      */
     val approvalHandler: ToolApprovalHandler? = null,
+    /**
+     * 审批缓存（可选，「计划级授权」轻量降级）：用户显式授权过的
+     * 「会话 × 工具 × 参数摘要」在 TTL 内免再弹卡（Octop 批量审批 + TTL 同构，
+     * 拒绝永不缓存）。null = 每次都弹。子代理 run 应保持 null（不继承授权）。
+     */
+    val approvalCache: com.rickeal.agent.core.agent.approval.ToolApprovalCache? = null,
     /**
      * 长期记忆片段（harness-memory 移植）。非空时追加为系统提示词的「长期记忆」节；
      * 由调用方在发请求前从 [com.rickeal.agent.core.agent.memory.AgentMemory] 渲染取得。

@@ -17,6 +17,7 @@ import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.agent.approval.ToolApprovalCache
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
 import com.rickeal.agent.core.agent.subagent.AskSubagentTool
 import com.rickeal.agent.core.agent.subagent.SubagentRunContext
@@ -73,6 +74,9 @@ private const val MIN_SIGNATURE_CHARS = 8
 
 /** 连续零工具调用的告警阈值。 */
 private const val NO_TOOL_STREAK_LIMIT = 3
+
+/** 拒绝熔断阈值：同一工具连续被拒 N 次后，本 run 内跳过审批直接拒（防换参骚扰）。 */
+private const val DENIAL_CIRCUIT_LIMIT = 2
 
 /**
  * Agent 主循环（架构文档 §4.1 / §4.6）。
@@ -272,6 +276,10 @@ class AgentRunner(
             var noToolStreak = 0
             var noToolReminderSent = false
             var pendingReminder: String? = null
+            // 拒绝熔断状态（run 内，不跨 run）：run 结束随协程消亡，无需持久化。
+            // 用户反悔权保留 —— 新 run 计数归零，拒绝过不代表下次还拒。
+            val toolDenialCounts = HashMap<String, Int>()
+            val denialReminderSent = HashSet<String>()
 
             while (round < policy.maxRounds) {
                 emit(AgentEvent.RoundStarted(round, policy.maxRounds))
@@ -534,57 +542,100 @@ class AgentRunner(
                         continue
                     }
                     // ── 审批闸门（Octop tool_guard / ZCode 命令审批语义移植）────
-                    // dangerous / requiresConfirmation 的工具在执行前请求宿主裁决；
-                    // fail-closed：审批通道缺失或异常一律拒绝，绝不默认放行。
-                    // autoApproveDangerous 是显式策略豁免，优先于审批通道。
-                    val needsApproval = tool.spec.dangerous || tool.spec.requiresConfirmation
+                    // 优先级链：策略豁免 > 审批缓存（用户显式授权、同参、TTL 内）>
+                    // 拒绝熔断（防换参骚扰）> 人在回路。fail-closed 纪律不变：
+                    // 审批通道缺失或异常一律拒绝，绝不默认放行。
+                    // ParamGatedTool 提供参数级判据（clipboard set 弹卡 / get 直行）。
+                    val paramGated = (tool as? ParamGatedTool)
+                        ?.requiresConfirmationFor(call.argumentsJson) == true
+                    val needsApproval = tool.spec.dangerous || tool.spec.requiresConfirmation || paramGated
                     val autoApproved = tool.spec.dangerous && policy.autoApproveDangerous
                     if (needsApproval && !autoApproved) {
-                        val handler = request.approvalHandler
-                        if (handler == null) {
-                            emit(AgentEvent.ToolSkipped(call, "危险工具需用户授权"))
-                            commitToolMessage(
-                                working,
-                                call,
-                                ToolResult(
-                                    callId = call.id,
-                                    name = call.name,
-                                    ok = false,
-                                    output = "",
-                                    errorMessage = "该工具需要用户授权后才会执行",
-                                ),
-                                journal,
-                            )
-                            continue
-                        }
-                        emit(AgentEvent.ApprovalRequested(call, tool.spec))
-                        val decision = try {
-                            handler.onApprovalRequested(call, tool.spec)
-                        } catch (t: CancellationException) {
-                            throw t
-                        } catch (t: Throwable) {
-                            // 审批通道自身异常 = 拒绝（fail-closed），并把原因留给日志
-                            AgentLogStore.warn("审批通道异常，按拒绝处理：${t.javaClass.simpleName}")
-                            null
-                        }
-                        if (decision != ToolApprovalDecision.APPROVED) {
-                            AgentLogStore.info("工具被拒绝：${call.name}")
-                            emit(AgentEvent.ToolSkipped(call, "用户拒绝了该工具调用"))
-                            val denied = commitToolMessage(
-                                working,
-                                call,
-                                ToolResult(
-                                    callId = call.id,
-                                    name = call.name,
-                                    ok = false,
-                                    output = "",
-                                    errorMessage = "用户拒绝了该工具调用。不要原样重复这次调用；" +
-                                        "请改用其它方式完成任务，或向用户说明缺了什么。",
-                                ),
-                                journal,
-                            )
-                            emit(AgentEvent.ToolResultReceived(denied))
-                            continue
+                        // 审批缓存命中 = 用户此前显式授权仍在 TTL 内（同参重试免弹卡）。
+                        // 未命中（含过期/未授权/无缓存实例）继续走正常审批。
+                        val cachedDecision = request.approvalCache
+                            ?.peek(call.name, ToolApprovalCache.argsDigest(call.argumentsJson), request.conversationId)
+                        if (cachedDecision != ToolApprovalDecision.APPROVED) {
+                            // 拒绝熔断：同一工具连续被拒 N 次后跳过审批直接拒 ——
+                            // 防止模型换参数反复触发授权卡（熔断按工具名计数，
+                            // 换参不重置；用户放行一次即清零，反悔权保留）。
+                            val denialCount = toolDenialCounts[call.name] ?: 0
+                            if (denialCount >= DENIAL_CIRCUIT_LIMIT) {
+                                AgentLogStore.warn(
+                                    "审批熔断：${call.name} 已连续拒绝 $denialCount 次，本任务内跳过审批直接拒绝"
+                                )
+                                emit(AgentEvent.ToolSkipped(call, "该工具已被多次拒绝，本任务内不再询问"))
+                                val circuit = commitToolMessage(
+                                    working,
+                                    call,
+                                    ToolResult(
+                                        callId = call.id,
+                                        name = call.name,
+                                        ok = false,
+                                        output = "",
+                                        errorMessage = "该工具已被用户多次拒绝。本任务内不要再调用它；" +
+                                            "请改用其它方式完成任务，或向用户说明限制。",
+                                    ),
+                                    journal,
+                                )
+                                emit(AgentEvent.ToolResultReceived(circuit))
+                                // 熔断提醒复用 pendingReminder 单槽，每个工具至多注入一次
+                                // （与「重复回答提醒」同轮竞争时后者让位 —— 熔断是终态信息）。
+                                if (denialReminderSent.add(call.name)) {
+                                    pendingReminder =
+                                        "工具 ${call.name} 已被用户多次拒绝，这是终态。换路径或直接收尾。"
+                                }
+                                continue
+                            }
+                            val handler = request.approvalHandler
+                            if (handler == null) {
+                                emit(AgentEvent.ToolSkipped(call, "危险工具需用户授权"))
+                                commitToolMessage(
+                                    working,
+                                    call,
+                                    ToolResult(
+                                        callId = call.id,
+                                        name = call.name,
+                                        ok = false,
+                                        output = "",
+                                        errorMessage = "该工具需要用户授权后才会执行",
+                                    ),
+                                    journal,
+                                )
+                                continue
+                            }
+                            emit(AgentEvent.ApprovalRequested(call, tool.spec))
+                            val decision = try {
+                                handler.onApprovalRequested(call, tool.spec)
+                            } catch (t: CancellationException) {
+                                throw t
+                            } catch (t: Throwable) {
+                                // 审批通道自身异常 = 拒绝（fail-closed），并把原因留给日志
+                                AgentLogStore.warn("审批通道异常，按拒绝处理：${t.javaClass.simpleName}")
+                                null
+                            }
+                            if (decision != ToolApprovalDecision.APPROVED) {
+                                toolDenialCounts.merge(call.name, 1, Int::plus)
+                                AgentLogStore.info("工具被拒绝：${call.name}")
+                                emit(AgentEvent.ToolSkipped(call, "用户拒绝了该工具调用"))
+                                val denied = commitToolMessage(
+                                    working,
+                                    call,
+                                    ToolResult(
+                                        callId = call.id,
+                                        name = call.name,
+                                        ok = false,
+                                        output = "",
+                                        errorMessage = "用户拒绝了该工具调用。不要原样重复这次调用；" +
+                                            "请改用其它方式完成任务，或向用户说明缺了什么。",
+                                    ),
+                                    journal,
+                                )
+                                emit(AgentEvent.ToolResultReceived(denied))
+                                continue
+                            }
+                            // 用户放行 = 意愿反转，该工具的熔断计数清零。
+                            toolDenialCounts.remove(call.name)
                         }
                     }
 

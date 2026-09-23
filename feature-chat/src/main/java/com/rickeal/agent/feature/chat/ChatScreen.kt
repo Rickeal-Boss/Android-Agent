@@ -194,6 +194,15 @@ fun ChatScreen(
                                 modifier = Modifier.weight(1f),
                             )
                         }
+                        Spacer(modifier = Modifier.height(tokens.gapSm))
+                        // 「相同调用不再询问」（Wave3 计划级授权轻量降级）：写入审批
+                        // 缓存（工具名 × 参数摘要，TTL 30min，会话隔离）；同参重试免弹卡，
+                        // 参数变了照样再问 —— 对齐 ZCode「输入每次不同的工具不能记住决策」。
+                        GlassButton(
+                            text = "相同调用不再询问",
+                            onClick = viewModel::onApprovalRememberForSession,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
                 }
                 Spacer(modifier = Modifier.height(tokens.gapSm))

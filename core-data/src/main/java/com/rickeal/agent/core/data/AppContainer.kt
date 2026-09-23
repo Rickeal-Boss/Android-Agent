@@ -14,6 +14,7 @@ import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.agent.ToolContext
 import com.rickeal.agent.core.agent.ToolRegistry
 import com.rickeal.agent.core.agent.installBuiltInTools
+import com.rickeal.agent.core.agent.approval.InMemoryToolApprovalCache
 import com.rickeal.agent.core.agent.memory.AgentMemory
 import com.rickeal.agent.core.agent.memory.installMemoryTools
 import com.rickeal.agent.core.agent.plan.AgentPlanStore
@@ -110,6 +111,13 @@ class AppContainer(private val context: Context) {
         // Wave3 起持久化：进程死亡后计划还在（蓝图「长程任务不丢上下文」的恢复闭环）。
         persistDir = File(context.filesDir, "agent_plans"),
     )
+
+    /**
+     * 审批缓存（Wave3「计划级授权」轻量降级）：用户显式授权的
+     * 「会话 × 工具 × 参数摘要」TTL 30min 内免再弹卡。进程级单例是安全的 ——
+     * 纯运行态（不序列化）、key 含会话 id 天然隔离、拒绝永不缓存。
+     */
+    val toolApprovalCache: InMemoryToolApprovalCache = InMemoryToolApprovalCache()
 
     val toolContext: ToolContext = ToolContext(
         sandboxDir = sandboxDir,

@@ -136,8 +136,28 @@ class ChatViewModel(
         try {
             deferred.await()
         } finally {
-            _uiState.update { it.copy(pendingApproval = null) }
+            // 身份校验（r1 审查遗留）：取消瞬间可能已有新审批入位，旧协程的
+            // finally 不能误清新卡 —— 只清自己的那张（同 deferred 引用比对）。
+            _uiState.update {
+                if (it.pendingApproval?.decision === deferred) {
+                    it.copy(pendingApproval = null)
+                } else {
+                    it
+                }
+            }
         }
+    }
+
+    /** 授权卡「相同调用不再询问」：写入审批缓存（TTL 30min，同参免再弹卡）。 */
+    fun onApprovalRememberForSession() {
+        val pending = _uiState.value.pendingApproval ?: return
+        container.toolApprovalCache.grant(
+            toolName = pending.toolName,
+            argsDigest = com.rickeal.agent.core.agent.approval.ToolApprovalCache.argsDigest(pending.arguments),
+            conversationId = conversationId,
+            ttlMillis = 0L,
+        )
+        pending.decision.complete(ToolApprovalDecision.APPROVED)
     }
 
     init {
@@ -441,6 +461,7 @@ class ChatViewModel(
                 memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
                 planStore = container.agentPlanStore,
                 approvalHandler = approvalHandler,
+                approvalCache = container.toolApprovalCache,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -471,6 +492,8 @@ class ChatViewModel(
         runJob?.cancel()
         runJob = null
         conversationId = null
+        // 会话销毁 = 授权作用域消失：审批缓存全清（key 含 cid 本就隔离，这里保超额清）。
+        container.toolApprovalCache.revokeAll(null)
         val keep = _uiState.value
         _uiState.value = ChatUiState(
             config = keep.config,
@@ -580,6 +603,7 @@ class ChatViewModel(
                 memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
                 planStore = container.agentPlanStore,
                 approvalHandler = approvalHandler,
+                approvalCache = container.toolApprovalCache,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -672,6 +696,7 @@ class ChatViewModel(
                 memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
                 planStore = container.agentPlanStore,
                 approvalHandler = approvalHandler,
+                approvalCache = container.toolApprovalCache,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
