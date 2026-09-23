@@ -125,15 +125,25 @@ ACP/浏览器/远程桌面/IM 通道 **不适用端侧**（无服务器、无桌
 | Actor 会话持久化 | SubagentSessionStore(persistDir)：每「会话×Actor」一 JSON，append 即落盘、snapshot 惰性加载 | ZCode 持久化 Actor |
 | 结算语义 | TerminationReason + ProviderStop / Interrupted；REMOTE+EngineException → journal ProviderStop；Interrupted 以「无 settled 行」表达 | ZCode RunSettlement |
 
-### Wave 3（待做，按价值/风险排序）
+### Wave 3（✅ 第一批已落地，HEAD `7f9a905`，CI run 35844699918 绿）
 
-1. **历史版本化**（Octop history_v2 降级）：回合快照 + 内容寻址正文 + 前缀分叉
-2. 定时任务（WorkManager 新依赖需过版本矩阵评审）
-3. 检索记忆（FTS/向量，RAG 知识库）
-4. 人格系统（SOUL.md + 模板库，接 feature-settings）
-5. 插件化工具装载（ToolContributor 已有，补清单式声明 + 热启停 UI）
-6. ACP 出站降级形态：委派给远程 coding agent 端点
-7. 审批粒度升级：从「单工具」到「阶段」（计划的一步一次性授权）
+| 机制 | 形态 | 移植来源 |
+|---|---|---|
+| 引擎加载状态机 | `core-engine/.../EngineLoadCoordinator.kt`：装饰 EngineFactory，load 观测进状态流；延迟 evict（加载中不可打断 native 黑盒）+ 取消回 Idle；AgentRunner 零改动 | gallery ModelManagerViewModel 竞态防护 |
+| 审批治理 | `approval/ToolApprovalCache.kt`（「相同调用不再询问」，key=会话×工具×参数摘要 SHA-256，TTL 30min，拒绝永不缓存）+ AgentRunner 拒绝熔断（run 内 per-tool N=2）+ `ParamGatedTool` 参数级闸门（clipboard set）+ `ToolRegistry.registerContributed`（第三方强制过闸） | Octop 批量审批+TTL；ZCode allowAlways:false |
+| history_v2 回合归档 | `history/` 四件（TurnRecord/ContentAddressedPool/SegmentedHistoryStore/TurnFold）：终态后宿主折叠 journal 成 TurnRecord、正文进内容寻址池、journal 改名 .archived 退出恢复扫描；**回合粒度整段 blob（不做流式切块），AgentRunner 零感知** | Octop history_v2 降级 |
+| 流式节流 + 实时指标 | `ChatViewModel.StreamingState` 独立流 + 120ms flush 循环（delta 先缓冲后收敛，渲染频率与 token 速率解耦）；TTFT+tok/s 复用 GlassBubble usage 小字；ChatMessageList 内部 collect | gallery conflate + MessageLatency |
+| 引擎重试可见化 | `Retrying` 事件 → ChatUiState.notice 非阻塞提示「引擎异常，已自动重建并重试」 | gallery 自愈链 UI 化 |
+| 工具过程折叠组 | `ToolTraceGroup.kt`：连续 ≥3 条完结轨迹折叠成组（RUNNING/FAILED 永不折叠），组头中文动词映射 | r4-P2-4 真实痛点（过程淹没正文） |
+
+**修复轮**（同批）：取消收尾 NonCancellable、嵌套 run 引擎 evict、恢复上下文完整重建
+（user_input/reminder 行类型）、审批分支 Wave1 遗留文案、存储原子写、记忆注入链收紧、
+子代理白名单解析——见 `e4b1b8a`/`c82d42e`/`709f14f` 三提交。
+
+**Wave 3 剩余 backlog**：Microcompact（清旧 tool result 保 KV 前缀）、revert 游标
+（append-only + cut 点重开）、history_v2 流式切块与恢复接管（rebuildHistorySync 备而不用）、
+prompt cache 分层注入、artifact 化工具结果预算、插件三层开关+CRITICAL_TOOLS、
+批量审批卡、会话级静态名单、定时任务（WorkManager 需版本矩阵评审）。
 
 **明确不做（端侧不适用）**：Workflow Compiler 静态分析栈、浏览器自动化、
 远程桌面、IM 通道、多用户 JWT、Postgres。
