@@ -51,7 +51,16 @@ class MemoryWriteTool(private val memory: AgentMemory) : Tool {
                 errorMessage = "内容过长（${content.length} 字符，上限 $MAX_CONTENT_CHARS）：只记结论本身，细节放沙箱文件",
             )
         }
-        memory.upsert(title, content)
+        // Wave4 审查（E-P0-2）：记忆文件损坏时 upsert 会拒写 —— 必须把失败透传给模型，
+        // 否则模型以为已记住，实际什么都没发生（静默失败比写入失败更糟）。
+        val written = memory.upsert(title, content)
+        if (!written) {
+            return ToolResult(
+                name = spec.name,
+                ok = false,
+                errorMessage = "记忆文件已损坏，本次写入被拒绝以保护原文件。请告知用户人工修复 agent_memory/memory.json",
+            )
+        }
         return ToolResult(name = spec.name, ok = true, output = "已记住：[$title] $content")
     }
 }

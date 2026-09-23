@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.data
 
 import android.content.Context
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.Conversation
 import com.rickeal.agent.core.model.ConversationMeta
@@ -48,6 +49,25 @@ class ConversationRepository(context: Context) {
         store.read("$id.json", Conversation.serializer())
 
     /**
+     * 「读-改-写」入口共用的损坏熔断：文件**存在但解析失败**时返回 false，调用方拒写。
+     *
+     * Wave4 六路审查（E-P0-1）：此前 `appendMessage` 用 `load() ?: Conversation(id)` 把
+     * 「文件不存在（新会话）」与「文件存在但损坏」坍缩成同一种结果，后者的下一次写入会用
+     * 一条新消息的 `Conversation` **覆盖**整份损坏文件 —— 用户几个月的历史在下一次按发送键
+     * 时无声消失，界面一切正常、日志零记录。同仓库的 `ModelRepository` 早就用
+     * `exists()` 判别两种 null 并写下「parseFailed 时不写回一个字节」的不变式，
+     * 这里是同一范式的补课。
+     *
+     * 返回 true = 可以继续读改写；false = 已判定损坏，调用方直接放弃本次写入并提示。
+     */
+    private suspend fun writableOrCorrupted(id: String): Boolean {
+        if (!store.exists("$id.json")) return true   // 新会话：放心写
+        if (load(id) != null) return true            // 解析正常：放心写
+        AgentLogStore.error("会话文件解析失败（conversations/$id.json），已拒绝写入以保护原文件")
+        return false
+    }
+
+    /**
      * 落盘：索引 `index.json` + 全文 `<id>.json`。
      *
      * **顺序是「先索引、后全文」**：两次写之间进程被杀，宁可留下
@@ -66,6 +86,7 @@ class ConversationRepository(context: Context) {
 
     suspend fun appendMessage(conversationId: String, message: ChatMessage) {
         writeMutex.withLock {
+            if (!writableOrCorrupted(conversationId)) return@withLock
             val current = load(conversationId) ?: Conversation(id = conversationId)
             save(
                 current.copy(

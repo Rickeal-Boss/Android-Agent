@@ -6,8 +6,16 @@
     <!-- 权限                                                              -->
     <!-- = -->
 
-    <!-- 远程引擎（OpenAI 兼容端点） -->
-    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Wave4 六路审查（F-P0-1 / D-P1-2）：应用已收敛为纯端侧推理，远程引擎与云端 API
+         已整体移除（commit 71dc6e5），此前声明的 INTERNET + usesCleartextTraffic 是
+         去云端漏网残留 —— 删。模型下载走系统 DownloadManager（下载发生在系统进程，
+         请求方 App 不需要持有 INTERNET 权限），工具面已零网络能力。
+         arch-guard 第 7 条守卫会断言本文件不再出现 INTERNET / usesCleartextTraffic。 -->
+
+    <!-- 计量网络判定（ConnectivityManager.activeNetwork）：驱动「正在使用移动数据」
+         下载确认弹窗。**不可删** —— 删掉后 activeNetwork 返回 null，AppContainer.
+         isMeteredNetwork() 的 `?: return true`（fail-open，方向安全：宁可多问一次）
+         会在 Wi-Fi 下也命中，用户每次下载都被误弹流量确认。 -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- 存储权限：本应用**刻意不申请任何存储权限**。
@@ -22,10 +30,9 @@
     <!-- 端侧 4B 模型：读写 .litertlm / .task 需要较大的可用内存 -->
 
     <!-- 关闭自动备份（Auto Backup）：
-         filesDir 下存着三类不该上云的数据 ——
-           1. 远程端点的 API Key（endpoints/*.json，明文）；
-           2. 用户会话全文（conversations/*.json，隐私）；
-           3. GB 级模型文件（models/，远超 25MB 备份上限，会导致备份失败并浪费用户云端配额）。
+         filesDir 下存着两类不该上云的数据 ——
+           1. 用户会话全文（conversations/*.json，隐私）；
+           2. GB 级模型文件（models/，远超 25MB 备份上限，会导致备份失败并浪费用户云端配额）。
          端侧优先 + 隐私优先，这里整体关闭；将来若需要换机迁移，应提供显式的导出/导入，
          而不是依赖系统静默备份。 -->
     <application
@@ -39,7 +46,6 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.LiquidAgent"
-        android:usesCleartextTraffic="true"
         tools:targetApi="31">
 
         <activity

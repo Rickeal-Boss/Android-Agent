@@ -23,8 +23,8 @@ enum class PlanStepStatus {
 
 @Serializable
 data class PlanStep(
-    val id: String,
-    val description: String,
+    val id: String = "",
+    val description: String = "",
     val status: PlanStepStatus = PlanStepStatus.PENDING,
 )
 
@@ -88,11 +88,16 @@ class AgentPlanStore(
     /**
      * 公开只读视图：宿主（ChatViewModel）打开/恢复会话时把既有计划回填进 UI 时间线。
      * 只读，不 touch 访问序（读 UI 不该影响 LRU 的淘汰判断）。
+     *
+     * Wave4 审查（C-P1-3）：内存未命中时**必须惰性回载** —— 此前直接返回 emptyList()，
+     * 冷启动（或该 key 被 LRU 淘汰）后计划时间线永远空白，只有等模型再调一次 plan 工具
+     * 才浮现，与调用方「打开会话就要看到时间线」的承诺不符。回载结果**不写回 plans**，
+     * 保留「读 UI 不影响 LRU」的原意。
      */
     @Synchronized
     fun stepsFor(key: String): List<PlanStep> {
-        val plan = plans[key] ?: return emptyList()
-        return plan.steps
+        plans[key]?.let { return it.steps }
+        return loadSync(key)?.steps ?: emptyList()
     }
 
     /** 整表替换（plan_set）。首步自动置 IN_PROGRESS。 */
@@ -154,7 +159,7 @@ class AgentPlanStore(
 
     /** 磁盘形态。version 必须持久化：恢复后 lastPlanVersion 水印才不会把旧计划误判成「新变化」。 */
     @Serializable
-    private data class PlanSnapshot(val version: Long, val steps: List<PlanStep>)
+    private data class PlanSnapshot(val version: Long = 0L, val steps: List<PlanStep> = emptyList())
 
     private fun fileKey(key: String): String =
         key.replace(Regex("[^A-Za-z0-9_.-]"), "_").take(120).ifBlank { "default" }

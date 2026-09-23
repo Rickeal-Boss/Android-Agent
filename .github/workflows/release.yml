@@ -35,13 +35,28 @@ on:
       - harness
     tags:
       - 'v*'
+    # Wave4 审查（D-P1-5）：文档/杂项推送不触发完整 release 双轨（R8+AAB 代价高）。
+    # 注意 paths 对 tag 推送不生效（tag 无 changed files）→ tag 总会跑，符合预期。
+    paths:
+      - 'app/**'
+      - 'core-*/**'
+      - 'feature-*/**'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'gradlew'
+      - 'settings.gradle.kts'
+      - 'build.gradle.kts'
+      - '.github/workflows/**'
+      - 'scripts/**'
 
 permissions:
   contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  # Wave4 审查（D-P1-1）：tag 发布不可取消（取消=发布中断），分支推送可取消 ——
+  # group 已按 ref 分隔，tag 与分支天然不同组，按 ref 类型区分即可。
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   JAVA_VERSION: '21'
@@ -156,6 +171,27 @@ jobs:
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Signing secrets NOT configured (SIGNING_KEYSTORE_BASE64 / SIGNING_KEYSTORE_PASSWORD / SIGNING_KEY_ALIAS / SIGNING_KEY_PASSWORD). Skipping signed release build; shipping debug APK instead."
+          fi
+
+      # -------------------------------------------------------------------
+      # Wave4 审查（D-P0-5）：架构守卫此前只在 build.yml 跑 —— tag 推送只触发本
+      # 流水线，打在非 main/UI/harness 提交上的 tag 会让对外发布包完全绕过守卫。
+      # 发布轨必须与门禁轨同等地过守卫。
+      # -------------------------------------------------------------------
+      - name: Architecture guard
+        run: bash scripts/arch-guard.sh
+
+      # -------------------------------------------------------------------
+      # Wave4 审查（D-P0-1）：tag 推送 + 密钥缺失时，后续签名/发布步骤全部 skip
+      # 而 skipped step 不影响 job 结论 → 「流水线全绿但 Release 页是空的」的静默事故。
+      # tag 上硬失败；分支推送保持现有降级语义（debug 保底包）。
+      # -------------------------------------------------------------------
+      - name: Gate tag release on signing secrets
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [ "${{ steps.signing.outputs.available }}" != "true" ]; then
+            echo "::error::Tag push requires SIGNING_* secrets but they are missing/incomplete. Release would be silently skipped."
+            exit 1
           fi
 
       # -------------------------------------------------------------------
@@ -303,6 +339,32 @@ jobs:
           fi
           echo "::notice::签名方案命中：v2=$([ "$v2_ok" -gt 0 ] && echo yes || echo no) v3=$([ "$v3_ok" -gt 0 ] && echo yes || echo no)"
           echo "::notice::Release APK verified: signed with the release key (not debug), 签名方案见上一行。"
+
+      - name: Verify release AAB signature
+        # Wave4 审查（D-P0-2）：verify_signature 只碰 apk/release，AAB 从未被验过。
+        # 同一 Gradle 进程内 AAB 与 APK 共用 signingConfig，但「共用」是推断不是断言 ——
+        # 用 keytool 直接解开 AAB 内的 CERT.RSA 断言非 debug 证书（与 APK 同构的负向断言）。
+        if: steps.assemble_release.outcome == 'success'
+        run: |
+          aab_path="$(find app/build/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' | head -n 1)"
+          if [ -z "$aab_path" ]; then
+            echo "::error::assembleBundle reported success but no release AAB found"
+            exit 1
+          fi
+          cert_log="${RUNNER_TEMP}/aab-cert.log"
+          if ! unzip -p "$aab_path" META-INF/CERT.RSA > "${RUNNER_TEMP}/cert.rsa" 2>/dev/null || [ ! -s "${RUNNER_TEMP}/cert.rsa" ]; then
+            echo "::error::AAB 内未找到 META-INF/CERT.RSA —— 未签名或签名文件名异常"
+            exit 1
+          fi
+          keytool -printcert -file "${RUNNER_TEMP}/cert.rsa" > "$cert_log" 2>&1 || {
+            echo "::error::keytool 无法解析 AAB 证书"; cat "$cert_log"; exit 1;
+          }
+          cat "$cert_log"
+          if grep -q "CN=Android Debug" "$cert_log"; then
+            echo "::error::Release AAB is signed with the DEBUG key."
+            exit 1
+          fi
+          echo "::notice::Release AAB verified: signed with a non-debug certificate."
 
       # -------------------------------------------------------------------
       # 产物大小写进 job summary：debug vs release APK / AAB / mapping 一目

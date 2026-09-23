@@ -79,7 +79,16 @@ class LiteRtLmEngine(
     private var probedSpeculativeDecoding: Boolean? = null
 
     /** 已发送消息的 id 水印（见 buildContents 注释）。会话重建时必须清空。 */
-    private val sentMessageIds: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+    /**
+     * 已送入 native Conversation 的消息 id 集合（增量发送水印）。
+     *
+     * 用 [ConcurrentHashMap.newKeySet] 而不是 `Collections.synchronizedSet(mutableSetOf())`：
+     * 后者只保证**单个方法调用**原子，`add()` / `contains()` 之外的复合操作（以及外部
+     * `for (id in sentMessageIds)` 迭代）仍需在外部加锁 —— 而这里的读写分散在
+     * `Dispatchers.IO.limitedParallelism(1)` 的引擎线程与 `generateStream` 的调用方线程上，
+     * 没有统一的外部锁。并发哈希集让迭代也是弱一致的、**不抛 ConcurrentModificationException**。
+     */
+    private val sentMessageIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     private val mutex = Mutex()
     private var engine: Engine? = null

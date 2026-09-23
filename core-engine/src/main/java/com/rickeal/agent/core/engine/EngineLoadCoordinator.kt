@@ -1,5 +1,6 @@
 package com.rickeal.agent.core.engine
 
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.EngineKind
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,10 +46,15 @@ sealed interface EngineInitStatus {
  * AgentRunner 拿到的仍是普通 EngineFactory —— 主循环零改动；它失败后的
  * evict→create→load 重载路径自动进入状态流（gallery「自愈链可见化」的 core 侧落点）。
  *
- * 并发边界（诚实声明）：同一时刻只应有一个 load 活动。既有闸门已保证 —— runMutex
- * 串行化 Agent 内的 run；feature-models 的加载入口有 isEngineBusy UI 闸门 + 引擎
- * `waitForGenerationsToFinish()` 硬闸门。本类的 pendingEvict 是**单槽**（不是队列）：
- * 加载中来了多个 evict 只保留语义（都等于「加载完关掉它」），单槽足够。
+ * 并发边界（Wave4 六路审查 A/C 后重写）：
+ *  - `create` / `evict` / `closeAll` 三者 `@Synchronized` 互斥 —— 三个入口分属主线程
+ *    （feature-models）与 Default 线程（AgentRunner.rebuildEngine），此前无屏障地交错
+ *    改共享字段，能排出「延迟 evict 关掉新实例」的致命序列；
+ *  - `load()` 本身不持类锁（native 加载可能长达数十秒，不能让 evict 排队等它），
+ *    依赖 [@Volatile loading/loadingInstance] 与上游闸门（AgentRunner.runMutex +
+ *    feature-models 的 isEngineBusy）保证「同一时刻只应有一个 load 活动」；
+ *  - 延迟 evict 记**实例**而非 kind，收尾只 close 那一个实例 —— 记 kind 会把收尾前
+ *    新 create 进缓存的实例误杀（native use-after-free）。
  */
 class EngineLoadCoordinator(
     private val delegate: EngineFactory,
@@ -57,27 +63,55 @@ class EngineLoadCoordinator(
     private val _status = MutableStateFlow<EngineInitStatus>(EngineInitStatus.Idle)
     val status: StateFlow<EngineInitStatus> = _status.asStateFlow()
 
-    /** 延迟 evict 标记：load 进行中收到的清理请求，收尾（成功/失败）时消化。 */
+    /**
+     * 延迟 evict 标记：load 进行中收到的清理请求，收尾（成功/失败）时消化。
+     *
+     * **必须是实例归属而不是 kind 归属**（Wave4 六路审查 A-P0-1）：
+     * 旧实现存 `EngineKind`，收尾时执行 `delegate.evict(kind)` —— 关的是**当下缓存里那一个**。
+     * 于是这条真实时序会误杀：[A 加载中] → [A 被 evict，延迟] → [重建路径 create(A) 拿到
+     * **新实例 B** 并 load] → [A 的 native load 终于返回，收尾 evict(A)] → **B 被关闭**，
+     * 而 B 正是刚重建好要用的那个。后续 generateStream 打在已 close 的 Conversation 上，
+     * native use-after-free，SIGSEGV，runCatching 抓不住。
+     * 改为记「发起 evict 时正在加载的那个实例」，收尾只关它自己。
+     */
     @Volatile
-    private var pendingEvict: EngineKind? = null
+    private var pendingEvictInstance: LlmEngine? = null
 
     /** 加载中标记（与 _status 配合，避免每次读状态做类型判断）。 */
     @Volatile
     private var loading: EngineKind? = null
 
+    /** 当前正在 load 的那个实例（供 [evict] 记录归属）。load() 不持类锁，须 volatile 保可见性。 */
+    @Volatile
+    private var loadingInstance: LlmEngine? = null
+
+    /**
+     * `create` / `evict` / `closeAll` 三者互斥（Wave4 六路审查 C-P0-2）。
+     *
+     * 加载前台的两个入口不在同一线程：`ModelsViewModel.onLoad` 在主线程发起，
+     * `AgentRunner.rebuildEngine` 在 `Dispatchers.Default` 上跑。此前三个方法各改各的字段，
+     * 交错出「半成品序列」：create → evict → load → create → load，第二次 create 与第二次
+     * load 之间没有任何屏障，`pendingEvict` 还留在"有值"状态 —— 新实例的加载一收尾就被
+     * 上一次的延迟 evict 关掉。加锁后这个序列整体串行，收尾钩子看到的实例归属是确定的。
+     */
+    @Synchronized
     override fun create(kind: EngineKind): LlmEngine = LoadObservedEngine(delegate.create(kind), kind)
 
+    @Synchronized
     override fun evict(kind: EngineKind) {
         if (loading == kind) {
             // gallery cleanUpAfterInit：加载是 native 黑盒不可打断，延迟到终态收尾。
-            pendingEvict = kind
+            // 记实例而非 kind —— 见 [pendingEvictInstance] 的注解，记 kind 会误杀新实例。
+            pendingEvictInstance = loadingInstance
             return
         }
         delegate.evict(kind)
     }
 
+    @Synchronized
     override fun closeAll() {
-        pendingEvict = null
+        pendingEvictInstance = null
+        loadingInstance = null
         loading = null
         delegate.closeAll()
     }
@@ -107,6 +141,7 @@ class EngineLoadCoordinator(
             val startedAt = System.currentTimeMillis()
             val modelRef = config.model?.id
             loading = observedKind
+            loadingInstance = inner
             _status.value = EngineInitStatus.Initializing(observedKind, modelRef)
             try {
                 inner.load(config)
@@ -129,10 +164,19 @@ class EngineLoadCoordinator(
             } finally {
                 // 收尾钩子：消化加载期间被延迟的 evict（gallery cleanUpAfterInit）。
                 // 无论成功失败都要消化 —— 失败场景（markFailed 后清理）语义一致。
+                //
+                // 只关「发起 evict 时正在加载的那个实例」（=== 比对），绝不 delegate.evict(kind)：
+                // 后者在收尾前若有新实例 create 进缓存，会误杀新实例（A-P0-1 的 SIGSEGV 面）。
+                // 直接 close 目标实例等价于旧 evict 的 remove+close，且不触碰缓存里的其他成员。
+                // `doomed === inner` 兜底：若 pendingEvict 指向别的实例（理论不可达，双 load
+                // 已被上游闸门串行化），宁可留着也不关错 —— close 错对象就是 native 崩溃。
                 loading = null
-                pendingEvict?.takeIf { it == observedKind }?.let {
-                    pendingEvict = null
-                    delegate.evict(it)
+                if (loadingInstance === inner) loadingInstance = null
+                val doomed = pendingEvictInstance
+                pendingEvictInstance = null
+                if (doomed != null && doomed === inner) {
+                    runCatching { doomed.close() }
+                        .onFailure { AgentLogStore.warn("延迟 evict：关闭加载中的旧实例失败（${it.message}）") }
                 }
             }
         }

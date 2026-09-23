@@ -29,6 +29,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -77,6 +80,9 @@ private const val NO_TOOL_STREAK_LIMIT = 3
 /** 拒绝熔断阈值：同一工具连续被拒 N 次后，本 run 内跳过审批直接拒（防换参骚扰）。 */
 private const val DENIAL_CIRCUIT_LIMIT = 2
 
+/** 连续空输出轮数上限：超过后按失败收尾，不再空转烧 prefill（Wave4 审查 A-P0-2）。 */
+private const val MAX_EMPTY_ANSWER_ROUNDS = 3
+
 /**
  * Agent 主循环（架构文档 §4.1 / §4.6）。
  *
@@ -110,9 +116,31 @@ class AgentRunner(
      */
     private val runMutex = Mutex()
 
+    /**
+     * 是否有 run 正在独占引擎 —— **全应用唯一的「引擎忙」真值源**。
+     *
+     * 存在理由（Wave4 六路审查 C-P0-1）：此前「引擎忙」由 UI 各自判定 ——
+     * `ChatViewModel.isGenerating`（会话级，切走即清零、工具阶段会回落）、
+     * `ModelsViewModel.isEngineBusy()`（只读 `LlmEngine.isBusy`，漏掉「已发起、尚未进入
+     * native 生成」与「生成完毕、工具仍在跑、下一轮待发」两段）。
+     * 于是「从对话页切到模型页换引擎」能在父 VM 已 finish、引擎实例仍在被子 run 持有
+     * 的窗口里执行 `waitForGenerationsToFinish() + close()` —— native use-after-free，
+     * SIGSEGV，`runCatching` 抓不住。
+     *
+     * 与 [runMutex] 严格同源：置位发生在**持锁之后**、清位在 finally，
+     * 所以「读到 false」一定意味着此刻没有任何 run 持有引擎，可以直接驱逐。
+     */
+    private val _isBusy = MutableStateFlow(false)
+    val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
+
     fun run(request: AgentRequest): Flow<AgentEvent> = flow {
         runMutex.withLock {
-            executeBody(request)
+            _isBusy.value = true
+            try {
+                executeBody(request)
+            } finally {
+                _isBusy.value = false
+            }
         }
     }
         .flowOn(dispatcher)
@@ -269,6 +297,8 @@ class AgentRunner(
             val seenSignatures = HashSet<String>()
             val remindedSignatures = HashSet<String>()
             var noToolStreak = 0
+            // 连续空输出轮数（见下方 answer.isBlank 分支：端侧增量水印下裸 continue 会空转）。
+            var emptyAnswerStreak = 0
             var noToolReminderSent = false
             var pendingReminder: String? = null
             // 拒绝熔断状态（run 内，不跨 run）：run 结束随协程消亡，无需持久化。
@@ -477,11 +507,36 @@ class AgentRunner(
                     // 这时退回未剥离的原文：宁可让用户看到一段 JSON，也不能交付一个空气泡。
                     val answer = cleanText.ifBlank { accumulator.text }
                     if (answer.isBlank()) {
-                        // 本轮既没有文本也没有工具调用（模型真的什么都没产出）：
-                        // 不提交空消息，也不把它当最终答案，交给下一轮（最多到 maxRounds）重试。
+                        // 本轮既没有文本也没有工具调用（模型真的什么都没产出）。
+                        // Wave4 六路审查（A-P0-2）：**不能裸 continue** —— 端侧 LiteRT 引擎是
+                        // 增量水印发送（只发 `sentMessageIds` 里没有的 id），working 不变 ⇒
+                        // 下一轮 `fresh.isEmpty()` ⇒ 引擎收到 `Content.Text("")` ⇒ 空输入几乎
+                        // 必然再产出空输出 ⇒ 一路空转到 maxRounds，每轮白烧一次 4B 全量 prefill。
+                        // 修法：注入一条合成 USER 提醒（ZCode「错误回传给模型修复」语义），
+                        // 保证下一轮一定有新消息可发；连续超过阈值则按失败收尾，不再烧轮次。
+                        emptyAnswerStreak++
+                        if (emptyAnswerStreak > MAX_EMPTY_ANSWER_ROUNDS) {
+                            AgentLogStore.error(
+                                "连续 $emptyAnswerStreak 轮空输出（已注入 $MAX_EMPTY_ANSWER_ROUNDS 次提醒仍无产出），终止 run"
+                            )
+                            journal?.append(
+                                AgentRunJournal.KIND_SETTLED,
+                                AgentRunJournal.settledPayload("Failed", round),
+                            )
+                            emit(AgentEvent.Failed("模型连续多轮输出为空，已停止本轮任务"))
+                            return
+                        }
+                        val nudge = ChatMessage(
+                            role = Role.USER,
+                            text = "你上一轮没有输出任何内容。请直接给出最终答案；如果任务无法继续，请说明原因后停止。",
+                        )
+                        working.add(nudge)
+                        journal?.appendReminder(nudge)
+                        AgentLogStore.warn("第 ${round + 1} 轮空输出，已注入提醒（连续第 $emptyAnswerStreak 次）")
                         round++
                         continue
                     }
+                    emptyAnswerStreak = 0
                     finalText = answer
                     val committed = ChatMessage(
                         role = Role.MODEL,

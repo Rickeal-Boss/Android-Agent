@@ -14,9 +14,9 @@ import java.nio.file.StandardCopyOption
 
 @Serializable
 data class MemorySection(
-    val title: String,
-    val content: String,
-    val updatedAtMillis: Long,
+    val title: String = "",
+    val content: String = "",
+    val updatedAtMillis: Long = 0L,
 )
 
 /**
@@ -66,11 +66,25 @@ class AgentMemory(
     // 写（工具路径）
     // ------------------------------------------------------------------
 
-    suspend fun upsert(title: String, content: String): Unit = withContext(ioDispatcher) {
+    suspend fun upsert(title: String, content: String): Boolean = withContext(ioDispatcher) {
         mutex.withLock {
             val trimmedTitle = title.trim()
             val trimmedContent = content.trim()
-            val current = readSync().toMutableList()
+            // Wave4 审查（E-P0-2）：三态判别 —— 文件存在但解析失败时**拒写**。
+            // 此前 readSync 把「损坏」坍缩成「空列表」，upsert 会把整份记忆文件覆写成
+            // 只含刚写入的一条：用户手工编辑 memory.json 打错一个逗号，多年沉淀的
+            // 偏好与项目事实在下一次 memory_write 时全部蒸发，且无备份不可恢复。
+            // KDoc 明确邀请用户手工编辑本文件，这个暴露面必须 fail-closed。
+            val current = when (val state = readState()) {
+                is ReadState.Ok -> state.sections.toMutableList()
+                is ReadState.Corrupted -> {
+                    AgentLogStore.error(
+                        "记忆文件解析失败（${file.name}），已拒绝写入以保护原文件；请人工修复或删除该文件"
+                    )
+                    return@withContext false
+                }
+                ReadState.Absent -> mutableListOf()
+            }
             val index = current.indexOfFirst { it.title == trimmedTitle }
             val section = MemorySection(
                 title = trimmedTitle,
@@ -82,12 +96,20 @@ class AgentMemory(
             // take(...) —— 保留最旧、丢掉刚写入的新记忆，模型写的第 65 条永远
             // 不生效且无任何提示。
             writeSync(current.takeLast(MAX_SECTIONS))
+            true
         }
     }
 
     suspend fun remove(title: String): Boolean = withContext(ioDispatcher) {
         mutex.withLock {
-            val current = readSync().toMutableList()
+            val current = when (val state = readState()) {
+                is ReadState.Ok -> state.sections.toMutableList()
+                is ReadState.Corrupted -> {
+                    AgentLogStore.error("记忆文件解析失败（${file.name}），已拒绝删除写入")
+                    return@withContext false
+                }
+                ReadState.Absent -> return@withContext false
+            }
             val removed = current.removeAll { it.title == title.trim() }
             if (removed) writeSync(current)
             removed
@@ -96,14 +118,25 @@ class AgentMemory(
 
     // ------------------------------------------------------------------
 
-    private fun readSync(): List<MemorySection> {
-        if (!file.exists()) return emptyList()
+    /** 读三态：文件不存在 / 正常 / 损坏。「损坏」绝不能坍缩成「空」，否则写路径会覆写掉原文件。 */
+    private sealed interface ReadState {
+        data object Absent : ReadState
+        data class Ok(val sections: List<MemorySection>) : ReadState
+        data object Corrupted : ReadState
+    }
+
+    private fun readState(): ReadState {
+        if (!file.exists()) return ReadState.Absent
         return runCatching {
             val raw = file.readText()
-            if (raw.isBlank()) return emptyList()
-            AgentJson.Default.decodeFromString(ListSerializer(MemorySection.serializer()), raw)
-        }.getOrDefault(emptyList())
+            if (raw.isBlank()) return ReadState.Absent
+            ReadState.Ok(AgentJson.Default.decodeFromString(ListSerializer(MemorySection.serializer()), raw))
+        }.getOrElse { ReadState.Corrupted }
     }
+
+    /** 兼容旧读法：不区分损坏与为空（仅用于只读渲染路径，写路径必须走 [readState]）。 */
+    private fun readSync(): List<MemorySection> =
+        (readState() as? ReadState.Ok)?.sections ?: emptyList()
 
     private fun writeSync(sections: List<MemorySection>) {
         runCatching {

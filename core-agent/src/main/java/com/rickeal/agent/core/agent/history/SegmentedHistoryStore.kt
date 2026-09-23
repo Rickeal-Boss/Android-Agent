@@ -4,6 +4,8 @@ import com.rickeal.agent.core.model.AgentJson
 import com.rickeal.agent.core.model.AgentLogStore
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -26,13 +28,24 @@ class SegmentedHistoryStore(
 
     private val segmentsFile: File = File(dir, "segments.jsonl")
 
+    /**
+     * 归档互斥（Wave4 审查 C-P1-2 / E-P1-2）：`commitTurn` 有两个并发入口 ——
+     * `onStop` 的取消路径与四终态的归档路径都在 `viewModelScope.launch(Dispatchers.IO)`
+     * 上触发，且每次 `open()` 都产生新实例（无共享锁）。O_APPEND 的并发 appendText
+     * 在行长超过内核原子写上限时交错出半行 JSON，读侧 mapNotNull 把整条回合记录
+     * **静默丢弃**。这里用实例级 Mutex 串行「构造行 + 一次 appendText」。
+     */
+    private val commitMutex = Mutex()
+
     /** 追加一条回合记录（同 turnId 重放幂等：读侧取最后一条）。失败只记日志。 */
     suspend fun commitTurn(record: TurnRecord) = withContext(ioDispatcher) {
-        runCatching {
-            dir.mkdirs()
-            segmentsFile.appendText(AgentJson.Default.encodeToString(TurnRecord.serializer(), record) + "\n")
-        }.onFailure {
-            AgentLogStore.warn("回合归档失败（忽略，不影响运行）：${it.javaClass.simpleName}")
+        commitMutex.withLock {
+            runCatching {
+                dir.mkdirs()
+                segmentsFile.appendText(AgentJson.Default.encodeToString(TurnRecord.serializer(), record) + "\n")
+            }.onFailure {
+                AgentLogStore.warn("回合归档失败（忽略，不影响运行）：${it.javaClass.simpleName}")
+            }
         }
     }
 

@@ -19,8 +19,8 @@ enum class TurnState {
 /** 一个已归档正文的内容寻址引用。 */
 @Serializable
 data class BlobRef(
-    val sha256: String,
-    val chars: Int,
+    val sha256: String = "",
+    val chars: Int = 0,
 )
 
 /**
@@ -34,7 +34,7 @@ data class BlobRef(
 @Serializable
 data class TurnRecord(
     /** turnId = journal runId（一 run 一回合，天然对齐）。 */
-    val turnId: String,
+    val turnId: String = "",
     val state: TurnState = TurnState.INTERRUPTED,
     /** 任务输入正文（user_input 行）。 */
     val userTextRef: BlobRef? = null,

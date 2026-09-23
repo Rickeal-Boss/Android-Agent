@@ -932,12 +932,22 @@ class ModelsViewModel(
     }
 
     /**
-     * 本地引擎当前是否有在途生成。
+     * 本地引擎当前是否不可驱逐（有在途生成，或有 run 正持有引擎）。
+     *
+     * Wave4 六路审查（C-P0-1）此前这里只读 `LlmEngine.isBusy`（= 在途生成计数 > 0），
+     * 而 run 的**工具执行 / 审批挂起 / 轮间**三个阶段 activeGenerations == 0 ——
+     * 「对话页 run 弹着审批卡挂起 → 切到模型页换模型」会绕过本闸门，
+     * load() 里的 conversation?.close() 打在子 run 即将复用的实例上，
+     * native use-after-free（SIGSEGV，runCatching 抓不住）。
+     *
+     * 现在并入 `AgentRunner.isBusy`：它与 runMutex 严格同源（持锁置位 / finally 清位），
+     * 覆盖 run 从头到尾的全生命周期，是「引擎是否被 run 持有」的唯一真值源。
      *
      * 切到 IO 读：`LlmEngine.isBusy` 的实现读的是引擎内部的可变状态，
      * 且这里紧接着就要调 load()/unload()，顺手把线程也换对。
      */
     private suspend fun isEngineBusy(): Boolean = withContext(Dispatchers.IO) {
+        if (container.agentRunner.isBusy.value) return@withContext true
         runCatching { container.engineFactory.create(EngineKind.LOCAL).isBusy }.getOrDefault(false)
     }
 

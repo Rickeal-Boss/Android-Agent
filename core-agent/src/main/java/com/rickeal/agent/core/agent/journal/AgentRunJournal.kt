@@ -54,10 +54,12 @@ class AgentRunJournal private constructor(
 
     @Serializable
     data class JournalLine(
-        val seq: Long,
-        val atMillis: Long,
-        val kind: String,
-        val payload: JsonObject,
+        // Wave4 审查（E-P2-1）：全字段带默认值 —— JSONL 是跨版本读的落盘格式，
+        // 任何新字段漏配默认值都会让旧日志整文件解析失败（丢失恢复能力）。
+        val seq: Long = 0L,
+        val atMillis: Long = 0L,
+        val kind: String = "",
+        val payload: JsonObject = kotlinx.serialization.json.JsonObject(emptyMap()),
     )
 
     // ------------------------------------------------------------------

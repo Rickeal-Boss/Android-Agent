@@ -5,6 +5,7 @@ import java.nio.file.StandardCopyOption
 import android.os.Process
 
 import com.rickeal.agent.core.model.AgentJson
+import com.rickeal.agent.core.model.AgentLogStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.DeserializationStrategy
@@ -59,8 +60,11 @@ class JsonFileStore(
         // 临时文件必须**唯一**：固定名会与并发/上一次崩溃残留的 tmp 相互覆盖。
         // 也不能用「读全文再整写」兜底 —— 那正是会把会话文件写坏的路径。
         val tmp = File(baseDir, tmpName(fileName))
-        tmp.writeText(json.encodeToString(strategy, value))
         try {
+            // Wave4 审查（E-P1-1）：tmp 写入必须在 try 内 —— 磁盘配额耗尽时 writeText 抛
+            // IOException，此前直接炸穿到 ChatViewModel.viewModelScope（无异常处理器），
+            // 表现为「发消息时 App 闪退」。吞掉并留 ERROR，UI 侧由调用方决定如何提示。
+            tmp.writeText(json.encodeToString(strategy, value))
             Files.move(
                 tmp.toPath(),
                 target.toPath(),
@@ -68,11 +72,15 @@ class JsonFileStore(
                 StandardCopyOption.REPLACE_EXISTING,
             )
         } catch (t: Throwable) {
-            // 某些文件系统不支持 ATOMIC_MOVE，退化为普通 rename（仍是元数据操作，非逐字节重写）
+            // 某些文件系统不支持 ATOMIC_MOVE，退化为普通 rename（仍是元数据操作，非逐字节重写）。
+            // 注意：writeText 失败时 move 也会失败，退化 rename 静默不成 —— 所以 finally 统一清 tmp。
             runCatching {
                 Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
-            runCatching { tmp.delete() }
+            AgentLogStore.error("JSON 落盘失败：$fileName（${t.javaClass.simpleName}: ${t.message}）")
+        } finally {
+            // 孤儿 tmp 清理：唯一清理入口 delete() 在「写失败」路径上永远走不到，必须就地清。
+            if (tmp.exists()) runCatching { tmp.delete() }
         }
     }
 

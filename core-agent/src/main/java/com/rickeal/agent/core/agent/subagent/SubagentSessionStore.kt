@@ -65,6 +65,7 @@ class SubagentSessionStore(
     fun clearConversation(conversationKey: String) {
         val prefix = "$conversationKey::"
         sessions.keys.removeAll { it.startsWith(prefix) }
+        corruptedKeys.removeAll { it.startsWith(prefix) }
         val dir = persistDir ?: return
         val files = dir.listFiles() ?: return
         for (file in files) {
@@ -89,14 +90,28 @@ class SubagentSessionStore(
     private fun loadSync(key: String): List<ChatMessage> {
         val file = fileFor(key) ?: return emptyList()
         if (!file.exists()) return emptyList()
+        // Wave4 审查（E-P1-4）：三态判别 —— 损坏 ≠ 空。此前损坏被坍缩成空列表，
+        // append() 随后的 persistSync 会把整份 Actor 上下文覆写成只含刚追加的那条。
+        // ChatMessage 全字段带默认值，内生 schema 演化不会触发此路径；
+        // 唯一暴露面是外部损坏（文件系统/手工编辑），但拒写的代价（丢一条 append）
+        // 远小于覆写的代价（丢整个 Actor 上下文）。
         return runCatching {
             val raw = file.readText()
             if (raw.isBlank()) return emptyList()
             AgentJson.Default.decodeFromString(MessagesSerializer, raw)
-        }.getOrDefault(emptyList())
+        }.getOrElse {
+            com.rickeal.agent.core.model.AgentLogStore.error(
+                "Actor 会话文件解析失败（${file.name}），已跳过加载且拒绝覆写"
+            )
+            emptyList().also { corruptedKeys.add(key) }
+        }
     }
 
+    /** 已知损坏的 key：persistSync 对它们拒绝覆写（下次成功写入或 clear 后移除）。 */
+    private val corruptedKeys = HashSet<String>()
+
     private fun persistSync(key: String, messages: List<ChatMessage>) {
+        if (key in corruptedKeys) return   // 损坏文件拒绝覆写（同 AgentMemory 的 fail-closed）
         val file = fileFor(key) ?: return
         runCatching {
             file.parentFile?.mkdirs()

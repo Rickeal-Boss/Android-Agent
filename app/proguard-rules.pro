@@ -72,13 +72,12 @@
 -dontwarn androidx.compose.**
 
 # -----------------------------------------------------------------------------
-# 5. OkHttp（远程后端 / SSE）
+# 5. OkHttp（已删除）
 # -----------------------------------------------------------------------------
--dontwarn okhttp3.**
--dontwarn okio.**
--dontwarn org.conscrypt.**
--dontwarn org.bouncycastle.**
--keep class okhttp3.internal.publicsuffix.PublicSuffixDatabase
+# Wave4 审查（D-P1-3）：应用已收敛纯端侧，网络栈库已从构建图拔除，整段
+# -dontwarn 是死配置。它的杀伤力在于：万一某个传递依赖把那些库带回构建图，
+# R8 会静默吞掉缺类警告、构建照样绿。删掉后若网络栈真的回来了，R8 会直接报错。
+# arch-guard 第 8 条守卫断言本文件不再出现网络栈相关 keep/dontwarn 规则。
 
 # -----------------------------------------------------------------------------
 # 6. Android 组件与反射入口
