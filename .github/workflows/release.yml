@@ -23,11 +23,16 @@ on:
   # 手动触发：产出 APK 并上传 artifact，但【不会】创建 GitHub Release
   # （Release 需要一个真实 tag 作为锚点，分支上没有）。
   workflow_dispatch:
-  # UI 分支：每次推送都跑一次「debug + R8 release 双轨」CI（用仓库密钥出签名包），
-  # 这样 UI 分支的每次提交都能验证 R8 缩减与混淆规则不出问题。
+  # 长期分支每次推送都跑一次「debug + R8 release 双轨」CI（用仓库密钥出签名包）：
+  #   - UI 分支：首发场景，每次提交验证 R8 缩减与混淆规则不出问题；
+  #   - harness 分支（主开发分支，2026-09-23 接入）：用户要求每次推送产出
+  #     「仓库密钥签名正式包 + debug 包」两类产物。
+  # PR 不触发本流水线（PR 门禁走 build.yml 的零密钥快速轨）；
+  # tag v* 推送在双轨之外追加 GitHub Release 发布（branches 扩展不影响 tags 过滤）。
   push:
     branches:
       - UI
+      - harness
     tags:
       - 'v*'
 

@@ -254,8 +254,8 @@ Android-Agent/
 
 | 工作流 | 触发 | 产物 |
 |---|---|---|
-| [`build.yml`](.github/workflows/build.yml) | push `main` / PR / 手动 | debug APK（artifact，保留 30 天）；失败时上传 `**/build/reports` |
-| [`release.yml`](.github/workflows/release.yml) | push tag `v*` / 手动 | debug APK（保底）+ 可选签名 release APK / AAB + GitHub Release |
+| [`build.yml`](.github/workflows/build.yml) | push `main` / `UI` / `harness` / PR → 三者 / 手动 | debug APK（artifact，保留 30 天）；失败时上传 `**/build/reports` |
+| [`release.yml`](.github/workflows/release.yml) | push `UI` / `harness` / tag `v*` / 手动 | debug APK（保底）+ 可选签名 release APK / AAB + GitHub Release |
 
 **设计要点：**
 
