@@ -11,7 +11,6 @@ import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
-import com.rickeal.agent.core.model.RemoteEndpoint
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolParameter
@@ -141,12 +140,11 @@ class AskSubagentTool(
 
     // ------------------------------------------------------------------
 
-    /** 父 run 上下文：子 run 继承引擎选择与采样配置，只换系统提示词与工具面。 */
+    /** 父 run 上下文：子 run 继承采样配置与模型选择，只换系统提示词与工具面。 */
     data class ParentContext(
         val conversationId: String?,
         val config: InferenceConfig,
         val model: ModelDescriptor?,
-        val endpoint: RemoteEndpoint?,
     )
 
     private suspend fun ask(
@@ -175,7 +173,6 @@ class AskSubagentTool(
                 enableTools = toolNames.isNotEmpty(),
             ),
             model = parent.model,
-            endpoint = parent.endpoint,
             toolNames = toolNames,
             // 辅助任务：更少的轮次上限；journal/approval 不接（子 run 不写盘、不弹审批，
             // 危险工具在子 run 中因无审批通道被拒 —— fail-closed）

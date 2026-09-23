@@ -71,7 +71,6 @@ import com.rickeal.agent.feature.chat.ChatRoute
 import com.rickeal.agent.feature.chat.chatGraph
 import com.rickeal.agent.feature.models.ModelsRoute
 import com.rickeal.agent.feature.models.modelsGraph
-import com.rickeal.agent.feature.settings.EndpointsRoute
 import com.rickeal.agent.feature.settings.SettingsRoute
 import com.rickeal.agent.feature.settings.settingsGraph
 import com.rickeal.agent.onboarding.FirstRunGate
@@ -255,9 +254,6 @@ private fun MainShell() {
                     navController = navController,
                     onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
                     onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
-                    // 端点页是设置的子路由：普通 navigate 保留返回栈（navigateTop 会
-                    // 把栈收敛到对话页，「返回」就回不到设置了）。
-                    onOpenEndpoints = { navController.navigate(EndpointsRoute.build()) },
                 )
                 modelsGraph(navController = navController)
                 settingsGraph(

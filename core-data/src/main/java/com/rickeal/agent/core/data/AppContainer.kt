@@ -45,7 +45,6 @@ class AppContainer(private val context: Context) {
 
     val settingsRepository: SettingsRepository = SettingsRepository(context)
     val modelRepository: ModelRepository = ModelRepository(context, settingsRepository)
-    val endpointRepository: EndpointRepository = EndpointRepository(context)
     val conversationRepository: ConversationRepository = ConversationRepository(context)
 
     /**
@@ -66,7 +65,6 @@ class AppContainer(private val context: Context) {
 
     // ---- 命名别名：两种叫法都能用，避免 UI 层因为叫错名字编译不过 ----
     val modelsRepository: ModelRepository get() = modelRepository
-    val remoteEndpointsRepository: EndpointRepository get() = endpointRepository
     val conversationsRepository: ConversationRepository get() = conversationRepository
 
     val sandboxDir: File = File(context.filesDir, "agent_sandbox").apply { mkdirs() }
@@ -167,19 +165,17 @@ class AppContainer(private val context: Context) {
     }
 
     /**
-     * 冷启动预热：把三个仓库的内存快照拉起来。
+     * 冷启动预热：把两个仓库的内存快照拉起来。
      *
-     * 三个 refresh **各自独立 runCatching**：串行直调时前一个抛异常，后两个就彻底不执行 ——
-     * 一次 `models.json` 解析失败（或存储满导致写失败）就会让用户自己存的端点与 API Key
-     * 全看不见、会话列表为空，而日志里一条记录都没有。
-     * 这三者互相没有依赖（各自的 JSON 文件、各自的 StateFlow），独立隔离是安全的。
+     * 两个 refresh **各自独立 runCatching**：串行直调时前一个抛异常，后一个就彻底不执行 ——
+     * 一次 `models.json` 解析失败（或存储满导致写失败）就会让用户存的模型清单、会话列表
+     * 全看不见，而日志里一条记录都没有。
+     * 两者互相没有依赖（各自的 JSON 文件、各自的 StateFlow），独立隔离是安全的。
      * 每个失败都记 ERROR：这是唯一能让"冷启动静默失败"变得可诊断的手段。
      */
     suspend fun bootstrap() {
         runCatching { modelRepository.refresh() }
             .onFailure { AgentLogStore.error("模型清单加载失败（${it.javaClass.simpleName}）") }
-        runCatching { endpointRepository.refresh() }
-            .onFailure { AgentLogStore.error("端点清单加载失败（${it.javaClass.simpleName}）") }
         runCatching { conversationRepository.refresh() }
             .onFailure { AgentLogStore.error("会话索引加载失败（${it.javaClass.simpleName}）") }
     }

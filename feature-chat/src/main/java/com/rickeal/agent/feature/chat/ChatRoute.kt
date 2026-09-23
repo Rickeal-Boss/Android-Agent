@@ -22,8 +22,6 @@ fun NavGraphBuilder.chatGraph(
     navController: NavController,
     onOpenModels: () -> Unit,
     onOpenSettings: () -> Unit,
-    /** 空对话页「配置远程端点」按钮的出口（EndpointsRoute 是设置页子路由，不新建路由）。 */
-    onOpenEndpoints: () -> Unit,
 ) {
     composable(
         route = ChatRoute.PATTERN,
@@ -44,7 +42,6 @@ fun NavGraphBuilder.chatGraph(
             viewModel = vm,
             onOpenModels = onOpenModels,
             onOpenSettings = onOpenSettings,
-            onOpenEndpoints = onOpenEndpoints,
         )
     }
 }

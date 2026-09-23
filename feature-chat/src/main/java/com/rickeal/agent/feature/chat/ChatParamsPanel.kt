@@ -21,7 +21,6 @@ import com.rickeal.agent.core.design.GlassSwitch
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.data.DeviceCapability
-import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ThinkingMode
@@ -51,7 +50,7 @@ fun ChatParamsPanel(
 
 /**
  * 参数面板内容（底部抽屉与常驻面板共用）。
- * 降级规则见架构 §5.2：NPU 后端禁用采样三项；远程引擎隐藏后端、禁用 topK。
+ * 降级规则见架构 §5.2：NPU 后端禁用采样三项。纯端侧运行（远程引擎已移除）。
  */
 @Composable
 fun ChatParamsContent(
@@ -60,36 +59,17 @@ fun ChatParamsContent(
     onParamCommit: () -> Unit,
     onParamChange: ((InferenceConfig) -> InferenceConfig) -> Unit,
     modifier: Modifier = Modifier,
-    showEngineSwitch: Boolean = true,
 ) {
     val colors = LocalGlassColors.current
-    val isLocal = config.engineKind == EngineKind.LOCAL
-    val samplingEnabled = !(isLocal && config.backend == InferenceBackend.NPU)
-    val topKEnabled = samplingEnabled && isLocal
+    // 纯端侧运行：只有本地引擎。NPU 后端不支持自定义采样（降级规则见架构 §5.2）。
+    val samplingEnabled = config.backend != InferenceBackend.NPU
+    val topKEnabled = samplingEnabled
 
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (showEngineSwitch) {
-            GlassCard(contentPadding = PaddingValues(14.dp)) {
-                Column {
-                    SectionTitle("推理位置")
-                    GlassSegmented(
-                        items = listOf("本地", "远程"),
-                        selectedIndex = if (isLocal) 0 else 1,
-                        onSelected = { index ->
-                            onParamChange {
-                                it.copy(engineKind = if (index == 0) EngineKind.LOCAL else EngineKind.REMOTE)
-                            }
-                        },
-                    )
-                }
-            }
-        }
-
-        if (isLocal) {
-            GlassCard(contentPadding = PaddingValues(14.dp)) {
+        GlassCard(contentPadding = PaddingValues(14.dp)) {
                 Column {
                     SectionTitle("计算后端")
                     GlassSegmented(
@@ -131,7 +111,6 @@ fun ChatParamsContent(
                     }
                 }
             }
-        }
 
         GlassCard(contentPadding = PaddingValues(14.dp)) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -165,7 +144,7 @@ fun ChatParamsContent(
                     },
                     onValueChangeFinished = onParamCommit,
                     label = "Top-K",
-                    valueText = if (topKEnabled) "${config.sampling.topK}" else "仅本地引擎",
+                    valueText = if (topKEnabled) "${config.sampling.topK}" else "NPU 后端不可用",
                     valueRange = 1f..200f,
                     enabled = topKEnabled,
                 )

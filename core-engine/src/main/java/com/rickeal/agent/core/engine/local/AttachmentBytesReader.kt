@@ -13,7 +13,7 @@ import java.io.File
  */
 object AttachmentBytesReader {
 
-    /** 降采样目标最长边。与远程引擎 `OpenAiCompatibleEngine.imageToDataUri()` 保持同一口径。 */
+    /** 降采样目标最长边。端侧多模态的统一口径（历史远程通道的 imageToDataUri 亦按此值，已随其移除）。 */
     private const val MAX_EDGE = 1024
 
     fun imagePngBytes(uri: String): ByteArray? {

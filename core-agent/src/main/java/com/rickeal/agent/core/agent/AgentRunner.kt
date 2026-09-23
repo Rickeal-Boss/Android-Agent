@@ -11,7 +11,6 @@ import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.Role
-import com.rickeal.agent.core.engine.EngineException
 import com.rickeal.agent.core.model.StreamAccumulator
 import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.ToolCall
@@ -163,9 +162,10 @@ class AgentRunner(
     private suspend fun FlowCollector<AgentEvent>.executeBodyUnchecked(request: AgentRequest) {
             val policy = request.policy
             val config: InferenceConfig = request.config.coerce()
-            val kind: EngineKind = if (request.endpoint != null) EngineKind.REMOTE else EngineKind.LOCAL
+            // 纯端侧运行（远程 OpenAI 兼容通道已移除）：引擎只有本地一种。
+            val kind: EngineKind = EngineKind.LOCAL
             var engine = engineFactory.create(kind)
-            val loadConfig = environment.loadConfig(request.model, request.endpoint, config)
+            val loadConfig = environment.loadConfig(request.model, config)
 
             // ── Journal（ZCode Journal 语义移植）──────────────────────────────
             // 进程随时可能被系统杀掉；journal 让「已完成的推理轮 / 工具结果」可被下一次
@@ -173,7 +173,7 @@ class AgentRunner(
             val journal = request.journal
             journal?.append(
                 AgentRunJournal.KIND_RUN_STARTED,
-                AgentRunJournal.runStartedPayload(request.conversationId, request.model?.id ?: request.endpoint?.id),
+                AgentRunJournal.runStartedPayload(request.conversationId, request.model?.id),
             )
 
             try {
@@ -191,14 +191,9 @@ class AgentRunner(
                     AgentLogStore.error(
                         "引擎加载失败：$kind 重建后仍失败（${retry.javaClass.simpleName}: ${retry.message}），已放弃"
                     )
-                    // 远程端点的确定性加载失败（认证/配额/模型不可用）同样按 ProviderStop
-                    // 归类（对齐生成阶段的映射）：重试无意义，journal 终态要能区分。
                     journal?.append(
                         AgentRunJournal.KIND_SETTLED,
-                        AgentRunJournal.settledPayload(
-                            if (kind == EngineKind.REMOTE && retry is EngineException) "ProviderStop" else "Failed",
-                            0,
-                        ),
+                        AgentRunJournal.settledPayload("Failed", 0),
                     )
                     emit(AgentEvent.Failed("引擎加载失败：${retry.message}", retry))
                     return
@@ -312,7 +307,6 @@ class AgentRunner(
                     messages = sanitizeForProvider(window),
                     config = config,
                     model = request.model,
-                    remote = request.endpoint,
                     tools = if (useNativeTools) availableTools else emptyList(),
                     conversationId = request.conversationId,
                 )
@@ -353,13 +347,9 @@ class AgentRunner(
                             AgentLogStore.error(
                                 "生成失败：$kind 重试后仍失败（${t.javaClass.simpleName}: ${t.message}），已放弃本轮"
                             )
-                            // 远程引擎的确定性错误（认证/配额/模型不可用）按 ZCode 的
-                            // stopped(provider) 归类 —— 重试无意义，与偶发网络故障区分开。
-                            val terminationName =
-                                if (kind == EngineKind.REMOTE && t is EngineException) "ProviderStop" else "Failed"
                             journal?.append(
                                 AgentRunJournal.KIND_SETTLED,
-                                AgentRunJournal.settledPayload(terminationName, round),
+                                AgentRunJournal.settledPayload("Failed", round),
                             )
                             emit(AgentEvent.Failed("生成失败：${t.message}", t))
                             return
@@ -668,12 +658,11 @@ class AgentRunner(
                     }
 
                     // 挂载子代理上下文：ask_actor 从协程上下文读取父 run 的
-                    // conversation/config/model/endpoint（协程元素而非可变全局，取消安全）。
+                    // conversation/config/model（协程元素而非可变全局，取消安全）。
                     val parentContext = AskSubagentTool.ParentContext(
                         conversationId = request.conversationId,
                         config = config,
                         model = request.model,
-                        endpoint = request.endpoint,
                     )
                     val result = withContext(SubagentRunContext(parentContext)) {
                         executeWithGuard(call, tool, policy)

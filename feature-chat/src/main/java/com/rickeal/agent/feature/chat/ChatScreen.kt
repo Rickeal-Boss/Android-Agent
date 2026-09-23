@@ -45,7 +45,6 @@ import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.rememberWindowSizeClass
-import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.Role
 
 @Composable
@@ -53,8 +52,6 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     onOpenModels: () -> Unit,
     onOpenSettings: () -> Unit,
-    /** 空对话页「配置远程端点」按钮的出口，链路同 [onOpenModels]（chatGraph 下发）。 */
-    onOpenEndpoints: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -71,16 +68,9 @@ fun ChatScreen(
     val pickImage = rememberImagePicker { uri, name -> viewModel.onAttachImage(uri, name) }
     val pickAudio = rememberAudioPicker { uri, name -> viewModel.onAttachAudio(uri, name) }
 
-    val isRemote = state.config.engineKind == EngineKind.REMOTE
-    val supportsImages = if (isRemote) {
-        true
-    } else {
-        state.activeModel?.capabilities?.image ?: true
-    }
+    val supportsImages = state.activeModel?.capabilities?.image ?: true
     val subtitle = when {
-        isRemote && state.activeEndpoint != null -> "远程 · ${state.activeEndpoint?.name.orEmpty()}"
-        isRemote -> "远程 · 未选择端点"
-        state.activeModel != null -> "本地 · ${state.activeModel?.displayName.orEmpty()}"
+        state.activeModel != null -> "端侧 · ${state.activeModel?.displayName.orEmpty()}"
         else -> "未选择模型"
     }
 
@@ -403,7 +393,6 @@ fun ChatScreen(
                         onToggleGroup = viewModel::toggleGroup,
                         toolTraces = state.toolTraces,
                         onOpenModels = onOpenModels,
-                        onOpenEndpoints = onOpenEndpoints,
                         listState = listState,
                     )
                 }
@@ -428,7 +417,6 @@ fun ChatScreen(
                 onToggleGroup = viewModel::toggleGroup,
                 toolTraces = state.toolTraces,
                 onOpenModels = onOpenModels,
-                onOpenEndpoints = onOpenEndpoints,
                 listState = listState,
             )
         }

@@ -15,10 +15,8 @@ import java.io.File
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
-import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
-import com.rickeal.agent.core.model.RemoteEndpoint
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.TokenUsage
 import kotlinx.coroutines.CancellationException
@@ -106,7 +104,6 @@ data class ChatUiState(
     val config: InferenceConfig = InferenceConfig(),
     val availableModels: List<ModelDescriptor> = emptyList(),
     val activeModel: ModelDescriptor? = null,
-    val activeEndpoint: RemoteEndpoint? = null,
     val isGenerating: Boolean = false,
     val error: String? = null,
     /**
@@ -287,11 +284,6 @@ class ChatViewModel(
         viewModelScope.launch {
             container.settingsRepository.activeModelId.collect { id ->
                 _uiState.update { it.copy(activeModel = container.modelRepository.find(id)) }
-            }
-        }
-        viewModelScope.launch {
-            container.settingsRepository.activeEndpointId.collect { id ->
-                _uiState.update { it.copy(activeEndpoint = container.endpointRepository.find(id)) }
             }
         }
         if (initialConversationId != null) {
@@ -590,19 +582,12 @@ class ChatViewModel(
                 container.conversationRepository.appendMessage(cid, userMessage)
             }
             val config = _uiState.value.config
-            val endpoint = if (config.engineKind == EngineKind.REMOTE) {
-                container.endpointRepository.find(config.remoteEndpointId)
-                    ?: _uiState.value.activeEndpoint
-            } else {
-                null
-            }
             val request = AgentRequest(
                 conversationId = cid,
                 history = history,
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                endpoint = endpoint,
                 policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
                 journal = journal,
                 memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
@@ -648,7 +633,6 @@ class ChatViewModel(
             config = keep.config,
             availableModels = keep.availableModels,
             activeModel = keep.activeModel,
-            activeEndpoint = keep.activeEndpoint,
             toolsEnabled = keep.toolsEnabled,
             agentMaxRounds = keep.agentMaxRounds,
         )
@@ -740,12 +724,6 @@ class ChatViewModel(
             val cid = ensureConversation(firstUserText(history))
             container.conversationRepository.appendMessage(cid, userMessage)
             val config = _uiState.value.config
-            val endpoint = if (config.engineKind == EngineKind.REMOTE) {
-                container.endpointRepository.find(config.remoteEndpointId)
-                    ?: _uiState.value.activeEndpoint
-            } else {
-                null
-            }
             // 每次 run 一个 journal 文件：进程被杀后可从「已完成轮次」继续
             // （core-agent/journal；写入 best-effort，失败不影响 run 本身）。
             val journal = AgentRunJournal.open(
@@ -759,7 +737,6 @@ class ChatViewModel(
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                endpoint = endpoint,
                 policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
                 journal = journal,
                 // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送
@@ -832,12 +809,6 @@ class ChatViewModel(
         runJob = viewModelScope.launch {
             val cid = ensureConversation(firstUserText(history))
             val config = _uiState.value.config
-            val endpoint = if (config.engineKind == EngineKind.REMOTE) {
-                container.endpointRepository.find(config.remoteEndpointId)
-                    ?: _uiState.value.activeEndpoint
-            } else {
-                null
-            }
             // 每次 run 一个 journal 文件：进程被杀后可从「已完成轮次」继续
             // （core-agent/journal；写入 best-effort，失败不影响 run 本身）。
             val journal = AgentRunJournal.open(
@@ -851,7 +822,6 @@ class ChatViewModel(
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                endpoint = endpoint,
                 policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
                 journal = journal,
                 // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送

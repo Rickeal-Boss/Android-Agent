@@ -5,7 +5,6 @@ import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
-import com.rickeal.agent.core.model.RemoteEndpoint
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
@@ -84,7 +83,6 @@ data class AgentRequest(
     val userInput: ChatMessage,
     val config: InferenceConfig = InferenceConfig(),
     val model: ModelDescriptor? = null,
-    val endpoint: RemoteEndpoint? = null,
     /** null = 使用全部已启用工具；否则只用白名单内的 */
     val toolNames: Set<String>? = null,
     val policy: AgentPolicy = AgentPolicy(),

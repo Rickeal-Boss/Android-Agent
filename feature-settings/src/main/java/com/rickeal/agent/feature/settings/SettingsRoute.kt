@@ -18,12 +18,6 @@ object SettingsRoute {
     fun build(): String = ROUTE
 }
 
-object EndpointsRoute {
-    const val ROUTE = "settings/endpoints"
-
-    fun build(): String = ROUTE
-}
-
 object DiagnosticsRoute {
     const val ROUTE = "settings/diagnostics"
 
@@ -53,7 +47,6 @@ fun NavGraphBuilder.settingsGraph(
         val container = LocalAppContainer.current
         SettingsScreen(
             viewModel = viewModel(factory = settingsViewModelFactory(container)),
-            onOpenEndpoints = { navController.navigate(EndpointsRoute.build()) },
             onOpenTools = { navController.navigate(ToolsRoute.build()) },
             onOpenDiagnostics = { navController.navigate(DiagnosticsRoute.build()) },
             onOpenLegal = { navController.navigate(LegalRoute.build()) },
@@ -70,14 +63,6 @@ fun NavGraphBuilder.settingsGraph(
             onBack = { navController.popBackStack() },
             readPersistedErrors = { container.agentLogFileStore.read() },
             clearPersistedErrors = { container.agentLogFileStore.clear() },
-        )
-    }
-
-    composable(route = EndpointsRoute.ROUTE) {
-        val container = LocalAppContainer.current
-        EndpointsScreen(
-            viewModel = viewModel(factory = settingsViewModelFactory(container)),
-            onBack = { navController.popBackStack() },
         )
     }
 

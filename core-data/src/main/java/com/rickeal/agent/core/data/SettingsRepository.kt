@@ -26,7 +26,6 @@ class SettingsRepository(private val context: Context) {
     private object Keys {
         val INFERENCE_CONFIG = stringPreferencesKey("inference_config")
         val ACTIVE_MODEL_ID = stringPreferencesKey("active_model_id")
-        val ACTIVE_ENDPOINT_ID = stringPreferencesKey("active_endpoint_id")
         val DARK_MODE = stringPreferencesKey("dark_mode")
         val REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
         val GLASS_INTENSITY = floatPreferencesKey("glass_intensity")
@@ -127,17 +126,11 @@ class SettingsRepository(private val context: Context) {
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
         .map { it[Keys.ACTIVE_MODEL_ID] }
 
-    val activeEndpointId: Flow<String?> = context.settingsDataStore.data
-        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
-        .map { it[Keys.ACTIVE_ENDPOINT_ID] }
-
     /**
      * 同步读取（架构文档 §7.3 里 ChatViewModel.onSend 用得到）。
      * 必须在协程里调用 —— 故意做成 suspend 而不是阻塞 runBlocking。
      */
     suspend fun activeModelIdSync(): String? = activeModelId.first()
-
-    suspend fun activeEndpointIdSync(): String? = activeEndpointId.first()
 
     suspend fun updateInferenceConfig(transform: (InferenceConfig) -> InferenceConfig) {
         context.settingsDataStore.edit { prefs ->
@@ -181,12 +174,6 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setGemmaTermsAccepted(accepted: Boolean) {
         context.settingsDataStore.edit { it[Keys.IS_GEMMA_TERMS_ACCEPTED] = accepted }
-    }
-
-    suspend fun setActiveEndpoint(id: String?) {
-        context.settingsDataStore.edit { prefs ->
-            if (id == null) prefs.remove(Keys.ACTIVE_ENDPOINT_ID) else prefs[Keys.ACTIVE_ENDPOINT_ID] = id
-        }
     }
 
     suspend fun setThemeState(state: ThemeState) {

@@ -45,7 +45,4 @@ dependencies {
 
     // 端侧推理（仅本模块）
     implementation(libs.litertlm.android)
-
-    // 远程 OpenAI 兼容后端：OkHttp + 手写 SSE
-    implementation(libs.okhttp)
 }

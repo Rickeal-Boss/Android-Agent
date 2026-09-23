@@ -1,13 +1,11 @@
 package com.rickeal.agent.feature.settings
 
-import android.net.Uri
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.data.ThemeState
 import com.rickeal.agent.core.model.InferenceConfig
-import com.rickeal.agent.core.model.RemoteEndpoint
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,10 +16,6 @@ import kotlinx.coroutines.launch
 data class SettingsUiState(
     val config: InferenceConfig = InferenceConfig(),
     val theme: ThemeState = ThemeState(),
-    val endpoints: List<RemoteEndpoint> = emptyList(),
-    val activeEndpointId: String? = null,
-    /** 非空表示正在编辑该端点（新增时为带默认值的对象） */
-    val editing: RemoteEndpoint? = null,
     val message: String? = null,
     val error: String? = null,
 )
@@ -34,7 +28,6 @@ class SettingsViewModel(
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     init {
-        viewModelScope.launch { container.endpointRepository.refresh() }
         viewModelScope.launch {
             container.settingsRepository.inferenceConfig.collect { config ->
                 _uiState.update { it.copy(config = config) }
@@ -43,16 +36,6 @@ class SettingsViewModel(
         viewModelScope.launch {
             container.settingsRepository.themeState.collect { theme ->
                 _uiState.update { it.copy(theme = theme) }
-            }
-        }
-        viewModelScope.launch {
-            container.endpointRepository.endpoints.collect { list ->
-                _uiState.update { it.copy(endpoints = list) }
-            }
-        }
-        viewModelScope.launch {
-            container.settingsRepository.activeEndpointId.collect { id ->
-                _uiState.update { it.copy(activeEndpointId = id) }
             }
         }
     }
@@ -102,73 +85,6 @@ class SettingsViewModel(
     fun onThemeCommit() {
         val next = _uiState.value.theme
         viewModelScope.launch { container.settingsRepository.setThemeState(next) }
-    }
-
-    /* ------------------------------------------------------------ 端点 CRUD */
-
-    fun onEditEndpoint(endpoint: RemoteEndpoint?) {
-        _uiState.update { it.copy(editing = endpoint) }
-    }
-
-    fun onSaveEndpoint(endpoint: RemoteEndpoint) {
-        val endpointWithName = if (endpoint.name.isBlank()) {
-            // 兜底名只能从 URL 的 host + path 推导（见 fallbackEndpointName 的注释）：
-            // 直接用完整 baseUrl 会把凭据写进 name —— 而 name 会上屏 + 落盘 + 进日志。
-            endpoint.copy(name = fallbackEndpointName(endpoint.baseUrl))
-        } else {
-            endpoint
-        }
-        viewModelScope.launch {
-            val ok = container.endpointRepository.upsertValidated(endpointWithName)
-            _uiState.update {
-                if (ok) {
-                    it.copy(editing = null, message = "已保存", error = null)
-                } else {
-                    it.copy(error = "baseUrl 不能为空")
-                }
-            }
-        }
-    }
-
-    /**
-     * 名称留空时的兜底名：**只取 host + path，绝不能直接用完整 baseUrl**。
-     *
-     * 自建反向代理把 key 塞进 query 是很常见的用法
-     * （`https://proxy.example.com/v1?key=sk-abcdef123456`）。一旦把完整 URL 当 name：
-     *  1. 端点列表上直接显示凭据原文；
-     *  2. **落盘进 `endpoints.json`**（持久化，不是一闪而过）；
-     *  3. `AgentRunner` 会把 `${remote.name}` 拼进异常文案与 `AgentLogStore`。
-     * 三条都是稳定路径，不依赖"恰好抛异常" —— 所以必须在源头就把 query/userInfo 剥掉。
-     */
-    private fun fallbackEndpointName(baseUrl: String): String {
-        if (baseUrl.isBlank()) return "自定义端点"
-        val parsed = runCatching { Uri.parse(baseUrl) }.getOrNull() ?: return "自定义端点"
-        val host = parsed.host?.takeIf { it.isNotBlank() } ?: return "自定义端点"
-        // path 保留（能区分 /v1 与 /v1beta），但 query / fragment / userInfo 一律丢弃。
-        val path = parsed.path?.trimEnd('/')?.takeIf { it.isNotBlank() }.orEmpty()
-        return host + path
-    }
-
-    fun onDeleteEndpoint(id: String) {
-        viewModelScope.launch {
-            container.endpointRepository.remove(id)
-            if (_uiState.value.activeEndpointId == id) {
-                container.settingsRepository.setActiveEndpoint(null)
-            }
-            _uiState.update {
-                it.copy(
-                    activeEndpointId = if (it.activeEndpointId == id) null else it.activeEndpointId,
-                    message = "已删除",
-                )
-            }
-        }
-    }
-
-    fun onSelectEndpoint(id: String) {
-        viewModelScope.launch {
-            container.settingsRepository.setActiveEndpoint(id)
-            _uiState.update { it.copy(activeEndpointId = id, message = "已设为当前端点") }
-        }
     }
 
     fun onDismissMessage() {

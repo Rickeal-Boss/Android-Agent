@@ -105,7 +105,7 @@ class EngineLoadCoordinator(
 
         override suspend fun load(config: EngineLoadConfig) {
             val startedAt = System.currentTimeMillis()
-            val modelRef = config.model?.id ?: config.remote?.id
+            val modelRef = config.model?.id
             loading = observedKind
             _status.value = EngineInitStatus.Initializing(observedKind, modelRef)
             try {

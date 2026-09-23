@@ -6,14 +6,12 @@ import com.rickeal.agent.core.model.GenerationChunk
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
-import com.rickeal.agent.core.model.RemoteEndpoint
 import com.rickeal.agent.core.model.ToolSpec
 import kotlinx.coroutines.flow.Flow
 
 /** 引擎加载所需的一切。刻意不传 Context —— 只传字符串，便于测试与隔离。 */
 data class EngineLoadConfig(
     val model: ModelDescriptor? = null,
-    val remote: RemoteEndpoint? = null,
     val config: InferenceConfig = InferenceConfig(),
     /** context.cacheDir —— LiteRT-LM 的权重缓存目录 */
     val cacheDir: String? = null,
@@ -29,7 +27,6 @@ data class GenerationRequest(
     val messages: List<ChatMessage>,
     val config: InferenceConfig = InferenceConfig(),
     val model: ModelDescriptor? = null,
-    val remote: RemoteEndpoint? = null,
     val tools: List<ToolSpec> = emptyList(),
     /**
      * 会话标识。LiteRT-LM 的 Conversation 自带历史，本引擎的策略是：

@@ -94,9 +94,8 @@ fun ChatMessageList(
     expandedGroupIds: Set<String>,
     onToggleGroup: (String) -> Unit,
     toolTraces: List<ToolTrace>,
-    /** 空态按钮排的出口：导入/下载模型页与端点配置页。回调链见 [ChatRoute.chatGraph]。 */
+    /** 空态按钮排的出口：导入/下载模型页。回调链见 [ChatRoute.chatGraph]。 */
     onOpenModels: () -> Unit,
-    onOpenEndpoints: () -> Unit,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
 ) {
@@ -143,15 +142,14 @@ fun ChatMessageList(
         if (messages.isEmpty() && !streaming.isStreaming) {
             item(key = "empty") {
                 Box(modifier = Modifier.fillParentMaxHeight(0.7f), contentAlignment = Alignment.Center) {
-                    // 空态三出口：前两条都去模型页（导入本地文件 / 从推荐列表下载），
-                    // 第三条去端点配置页。全部复用现有路由，不新建。
+                    // 空态两出口：都去模型页（导入本地文件 / 从推荐列表下载）。
+                    // 本应用为纯端侧运行，无远程端点可配。
                     GlassEmptyState(
                         title = "开始一段对话",
-                        subtitle = "先在「模型」页导入 .litertlm / .task，或配置一个远程端点",
+                        subtitle = "先在「模型」页导入 .litertlm / .task，或从推荐列表下载",
                         actions = listOf(
                             GlassEmptyStateAction(label = "导入本地模型", onClick = onOpenModels),
                             GlassEmptyStateAction(label = "下载推荐模型", onClick = onOpenModels),
-                            GlassEmptyStateAction(label = "配置远程端点", onClick = onOpenEndpoints),
                         ),
                     )
                 }
