@@ -62,30 +62,40 @@ class AgentRunJournal private constructor(
     // ------------------------------------------------------------------
 
     suspend fun append(kind: String, payload: JsonObject): Unit = withContext(ioDispatcher) {
-        val line = mutex.withLock {
-            JournalLine(
+        // 构造与写入必须同锁：写在锁外时，先拿序号的协程可能后落盘，
+        // 文件行序与 seq 乱序，replay 语义失效（Wave2 遗留：只锁了序号分配）。
+        // 代价是锁内做阻塞 IO —— 但 journal 写入本来就应该是串行的，这正是语义要求。
+        mutex.withLock {
+            val line = JournalLine(
                 seq = ++seq,
                 atMillis = System.currentTimeMillis(),
                 kind = kind,
                 payload = payload,
             )
-        }
-        runCatching {
-            file.parentFile?.mkdirs()
-            file.appendText(AgentJson.Default.encodeToString(JournalLine.serializer(), line) + "\n")
-        }.onFailure {
-            com.rickeal.agent.core.model.AgentLogStore.warn(
-                "journal 写入失败（忽略，不影响运行）：${it.javaClass.simpleName}"
-            )
+            runCatching {
+                file.parentFile?.mkdirs()
+                file.appendText(AgentJson.Default.encodeToString(JournalLine.serializer(), line) + "\n")
+            }.onFailure {
+                com.rickeal.agent.core.model.AgentLogStore.warn(
+                    "journal 写入失败（忽略，不影响运行）：${it.javaClass.simpleName}"
+                )
+            }
         }
     }
 
     /** 记录一条进入上下文的消息（消息体用 ChatMessage 的标准序列化形态）。 */
     suspend fun appendMessage(message: ChatMessage) {
-        val payload = runCatching {
-            AgentJson.Default.parseToJsonElement(AgentJson.Default.encodeToString(ChatMessage.serializer(), message))
-        }.getOrNull()
-        if (payload is JsonObject) append(KIND_MESSAGE, payload)
+        chatMessagePayload(message)?.let { append(KIND_MESSAGE, it) }
+    }
+
+    /** 记录本次 run 的任务输入（崩溃恢复据此找回「被打断的任务是什么」）。 */
+    suspend fun appendUserInput(message: ChatMessage) {
+        chatMessagePayload(message)?.let { append(KIND_USER_INPUT, it) }
+    }
+
+    /** 记录「无进展检测」的合成提醒（独立行类型，恢复时不混入用户输入）。 */
+    suspend fun appendReminder(message: ChatMessage) {
+        chatMessagePayload(message)?.let { append(KIND_REMINDER, it) }
     }
 
     // ------------------------------------------------------------------
@@ -108,6 +118,10 @@ class AgentRunJournal private constructor(
     /**
      * 已提交进上下文的消息（run_started/settled 之外的所有 `message` 行），
      * 按序重建 —— 传给下一次 run 的 [AgentRequest.history][com.rickeal.agent.core.agent.AgentRequest.history]。
+     *
+     * 注意「过程」与「任务」是两类行：本 run 的任务输入走 [KIND_USER_INPUT]
+     * （[readUserInputSync]），合成提醒走 [KIND_REMINDER]——都不在这里返回，
+     * 调用方按语义各取所需（Wave2 曾把提醒记成 message 行，恢复时被误判成用户输入）。
      */
     fun committedMessagesSync(): List<ChatMessage> =
         readLines().asSequence()
@@ -119,6 +133,21 @@ class AgentRunJournal private constructor(
             }
             .toList()
 
+    /**
+     * 本 run 的任务输入（最后一次 `user_input` 行；恢复 run 续写时可能是
+     * 合成的「继续」消息）。没有该行 = 升级前崩溃的旧 journal，返回 null，
+     * 调用方退化到合成「继续」输入。
+     */
+    fun readUserInputSync(): ChatMessage? =
+        readLines().asSequence()
+            .filter { it.kind == KIND_USER_INPUT }
+            .lastOrNull()
+            ?.let { line ->
+                runCatching {
+                    AgentJson.Default.decodeFromString(ChatMessage.serializer(), line.payload.toString())
+                }.getOrNull()
+            }
+
     // ------------------------------------------------------------------
     // 恢复处置
     // ------------------------------------------------------------------
@@ -126,14 +155,22 @@ class AgentRunJournal private constructor(
     /**
      * 用户选择「不继续」时把 journal 改名归档而非删除：过程记录里可能有排查需要的
      * 工具结果，删除不可逆；改名后 [findUnsettled] 不再命中（恢复提示消失）。
+     *
+     * 目标名用 `.dismissed.jsonl` 结尾（保持 jsonl 结尾便于目录浏览），与
+     * [findUnsettled] 的过滤后缀严格一致 —— Wave2 曾用 `.jsonl.dismissed` 结尾，
+     * 而过滤匹配的是 `.dismissed.jsonl`，改名后的文件仍会被扫描成「未完成 run」。
+     * 另外 `File.renameTo` 失败时返回 false 而**不抛异常**，`runCatching` 抓不到
+     * —— 必须显式检查返回值，否则「丢弃」静默失败、恢复卡永远复活。
      */
     fun markDismissed() {
-        runCatching { file.renameTo(File(file.parentFile, file.name + ".dismissed")) }
-            .onFailure {
-                com.rickeal.agent.core.model.AgentLogStore.warn(
-                    "journal 归档失败：${'$'}{it.javaClass.simpleName}"
-                )
-            }
+        val renamed = runCatching {
+            file.renameTo(File(file.parentFile, file.nameWithoutExtension + ".dismissed.jsonl"))
+        }.getOrDefault(false)
+        if (!renamed && file.exists()) {
+            com.rickeal.agent.core.model.AgentLogStore.warn(
+                "journal 归档失败（目标已存在或被占用）：${file.name}"
+            )
+        }
     }
 
     // ------------------------------------------------------------------
@@ -145,6 +182,28 @@ class AgentRunJournal private constructor(
         const val KIND_ROUND_STARTED = "round_started"
         const val KIND_MESSAGE = "message"
         const val KIND_SETTLED = "settled"
+
+        /**
+         * 本 run 的任务输入（独立于 message：恢复时由 [readUserInputSync] 单独取用，
+         * 不混进「过程消息」）。Wave2 之前从不记录任务输入，恢复上下文里没有
+         * 「被打断的任务是什么」，4B 模型只能对着工具残骸盲猜 —— 这是恢复质量的
+         * 最大缺口。
+         */
+        const val KIND_USER_INPUT = "user_input"
+
+        /**
+         * 「无进展检测」的合成提醒（独立于 message）：提醒是一次性行为矫正，
+         * 不是用户说的话，混进 message 会让恢复流程把「你的最新回复重复了…」
+         * 当成用户输入渲染进界面。
+         */
+        const val KIND_REMINDER = "reminder"
+
+        /** ChatMessage → journal payload 的统一序列化形态（message / user_input 共用）。 */
+        fun chatMessagePayload(message: ChatMessage): JsonObject? = runCatching {
+            AgentJson.Default.parseToJsonElement(
+                AgentJson.Default.encodeToString(ChatMessage.serializer(), message)
+            ) as? JsonObject
+        }.getOrNull()
 
         /** 一个可恢复 run 的摘要（给 UI 出「继续/丢弃」选择用）。 */
         data class UnsettledRun(
@@ -165,7 +224,9 @@ class AgentRunJournal private constructor(
             var best: UnsettledRun? = null
             val files = runDir.listFiles { file -> file.isFile && file.name.endsWith(".jsonl") } ?: return null
             for (file in files) {
-                if (file.name.endsWith(DISMISS_SUFFIX + ".jsonl")) continue
+                // 归档文件跳过。两种历史后缀都要挡：`.dismissed.jsonl`（现行为）与
+                // `.jsonl.dismissed`（Wave2 旧命名，目录里可能还有存量）。
+                if (file.name.endsWith(".dismissed.jsonl") || file.name.endsWith(".jsonl.dismissed")) continue
                 val runId = file.name.removeSuffix(".jsonl")
                 val journal = open(runDir, runId)
                 val lines = journal.readLines()
@@ -178,8 +239,6 @@ class AgentRunJournal private constructor(
             }
             return best
         }
-
-        private const val DISMISS_SUFFIX = ".dismissed"
 
         /**
          * 打开（或新建）一个 run 的 journal。
