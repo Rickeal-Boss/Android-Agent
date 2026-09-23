@@ -343,7 +343,9 @@ jobs:
       - name: Verify release AAB signature
         # Wave4 审查（D-P0-2）：verify_signature 只碰 apk/release，AAB 从未被验过。
         # 同一 Gradle 进程内 AAB 与 APK 共用 signingConfig，但「共用」是推断不是断言 ——
-        # 用 keytool 直接解开 AAB 内的 CERT.RSA 断言非 debug 证书（与 APK 同构的负向断言）。
+        # 用 keytool 直接解开 AAB 内的证书文件断言非 debug 证书（与 APK 同构的负向断言）。
+        # 注意证书条目名不固定：META-INF/<别名派生>.(RSA|DSA|EC)，alias 叫什么文件就叫什么
+        #（首轮实测 CERT.RSA 硬编码落空 → 改为枚举任意证书条目；失败时打印全部条目辅助定位）。
         if: steps.assemble_release.outcome == 'success'
         run: |
           aab_path="$(find app/build/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' | head -n 1)"
@@ -351,12 +353,17 @@ jobs:
             echo "::error::assembleBundle reported success but no release AAB found"
             exit 1
           fi
-          cert_log="${RUNNER_TEMP}/aab-cert.log"
-          if ! unzip -p "$aab_path" META-INF/CERT.RSA > "${RUNNER_TEMP}/cert.rsa" 2>/dev/null || [ ! -s "${RUNNER_TEMP}/cert.rsa" ]; then
-            echo "::error::AAB 内未找到 META-INF/CERT.RSA —— 未签名或签名文件名异常"
+          echo "::notice::Verifying AAB: $aab_path"
+          cert_entry="$(unzip -Z1 "$aab_path" 2>/dev/null | grep -E '^META-INF/.*\.(RSA|DSA|EC)$' | head -n 1 || true)"
+          if [ -z "$cert_entry" ]; then
+            echo "::error::AAB 内未找到任何 META-INF/*.(RSA|DSA|EC) 证书条目 —— 未签名或签名形态变化。META-INF 清单："
+            unzip -Z1 "$aab_path" 2>/dev/null | grep '^META-INF/' | head -20
             exit 1
           fi
-          keytool -printcert -file "${RUNNER_TEMP}/cert.rsa" > "$cert_log" 2>&1 || {
+          echo "::notice::Certificate entry: $cert_entry"
+          unzip -p "$aab_path" "$cert_entry" > "${RUNNER_TEMP}/aab-cert.bin"
+          cert_log="${RUNNER_TEMP}/aab-cert.log"
+          keytool -printcert -file "${RUNNER_TEMP}/aab-cert.bin" > "$cert_log" 2>&1 || {
             echo "::error::keytool 无法解析 AAB 证书"; cat "$cert_log"; exit 1;
           }
           cat "$cert_log"
