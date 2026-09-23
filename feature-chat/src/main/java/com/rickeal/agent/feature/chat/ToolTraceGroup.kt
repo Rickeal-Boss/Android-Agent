@@ -52,8 +52,6 @@ private fun toolVerb(name: String): String = when (name) {
     "calculator" -> "计算"
     "datetime" -> "查询时间"
     "clipboard" -> "剪贴板"
-    "web_search" -> "联网搜索"
-    "image_describe" -> "看图"
     "memory_read" -> "翻记忆"
     "ask_actor" -> "询问子代理"
     else -> name
@@ -149,6 +147,7 @@ internal fun ChatTraceGroupCard(
                 text = buildString {
                     append("${group.okCount}/${group.traces.size}")
                     if (group.skippedCount > 0) append(" · ${group.skippedCount} 跳过")
+                    if (group.failedCount > 0) append(" · ${group.failedCount} 失败")
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.onGlassSubtle,

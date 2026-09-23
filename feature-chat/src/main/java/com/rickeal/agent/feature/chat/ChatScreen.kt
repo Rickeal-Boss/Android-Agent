@@ -1,5 +1,6 @@
 package com.rickeal.agent.feature.chat
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,8 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
@@ -23,6 +22,8 @@ import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -33,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.agent.plan.PlanStepStatus
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassIconButton
@@ -150,9 +152,13 @@ fun ChatScreen(
             }
         },
         snackbarHost = {
-            // 宿主级状态信息区（自上而下）：工具授权 > 崩溃恢复 > 执行计划 > 错误。
+            // 宿主级状态信息区（自上而下）：工具授权 > 自愈提示 > 崩溃恢复 > 执行计划 > 错误。
             // 都是非模态卡片：run 不被弹窗打断，但「现在发生了什么 / 需要你做什么」永远可见。
-            Column(modifier = Modifier.fillMaxWidth()) {
+            // 间距统一走 spacedBy —— 之前是每张卡后面手插一个 Spacer，增删卡片容易漏。
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(tokens.gapSm),
+            ) {
 
             // ── 工具授权卡（人在回路；Octop tool_guard 的 UI 面）──────────────
             val pendingApproval = state.pendingApproval
@@ -167,18 +173,19 @@ fun ChatScreen(
                         Text(
                             text = "工具「${pendingApproval.toolName}」请求授权",
                             style = MaterialTheme.typography.titleSmall,
-                            color = colors.onGlassMuted,
+                            color = colors.onGlass,
                         )
                         Spacer(modifier = Modifier.height(tokens.gapSm))
+                        // 参数是模型给的 JSON 原文：等宽字体对齐结构，扫一眼就能看出要写哪个路径。
+                        // maxLines 截断 + 不做内嵌滚动 —— snackbar 区内嵌 scroll 会抢走外层手势。
                         Text(
                             text = pendingApproval.arguments,
                             style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
                             color = colors.onGlassSubtle,
-                            maxLines = 6,
+                            maxLines = 5,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .verticalScroll(rememberScrollState()),
+                            modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(modifier = Modifier.height(tokens.gapSm))
                         Row(modifier = Modifier.fillMaxWidth()) {
@@ -205,7 +212,38 @@ fun ChatScreen(
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(tokens.gapSm))
+            }
+
+            // ── 自愈提示卡（G 项）：引擎重建/重试「已自动恢复」的非阻塞告知。────
+            // 与 error 的区别：无需用户处置，终态事件自动清除，也可手动关。
+            // 排版位置紧跟授权卡：运行中的瞬时信息放最上，历史类卡片（恢复/计划）在下。
+            val notice = state.notice
+            if (notice != null) {
+                GlassCard(
+                    material = GlassMaterial.THICK,
+                    cornerRadius = tokens.radiusMd,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = notice,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onGlassMuted,
+                            modifier = Modifier.weight(1f),
+                        )
+                        GlassIconButton(
+                            icon = Icons.Filled.Close,
+                            contentDescription = "关闭提示",
+                            onClick = viewModel::onDismissNotice,
+                            contentColor = colors.onGlassSubtle,
+                            iconSize = 16.dp,
+                        )
+                    }
+                }
             }
 
             // ── 崩溃恢复卡（ZCode Journal 语义的可见面）────────────────────
@@ -223,9 +261,9 @@ fun ChatScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                text = "上次任务被中断（已保留 ${recovery.messageCount} 条进度）",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.onGlassMuted,
+                                text = "上次任务被中断 · 已保留 ${recovery.messageCount} 条进度",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = colors.onGlass,
                                 modifier = Modifier.weight(1f),
                             )
                             GlassIconButton(
@@ -244,7 +282,6 @@ fun ChatScreen(
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(tokens.gapSm))
             }
 
             // ── 执行计划时间线（plan_set / plan_update 实时渲染）────────────
@@ -256,31 +293,49 @@ fun ChatScreen(
                     modifier = Modifier.padding(horizontal = 24.dp),
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            text = "执行计划",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = colors.onGlassMuted,
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "执行计划",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = colors.onGlass,
+                                modifier = Modifier.weight(1f),
+                            )
+                            // 完成度徽标：不用逐行找勾就知道进度。
+                            val doneCount = state.planSteps.count { it.status == PlanStepStatus.COMPLETED }
+                            Text(
+                                text = "$doneCount/${state.planSteps.size}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                            )
+                        }
                         Spacer(modifier = Modifier.height(tokens.gapSm))
                         state.planSteps.forEachIndexed { index, step ->
                             val mark = when (step.status) {
-                                com.rickeal.agent.core.agent.plan.PlanStepStatus.COMPLETED -> "✓"
-                                com.rickeal.agent.core.agent.plan.PlanStepStatus.IN_PROGRESS -> "▶"
-                                com.rickeal.agent.core.agent.plan.PlanStepStatus.PENDING -> "·"
+                                PlanStepStatus.COMPLETED -> "✓"
+                                PlanStepStatus.IN_PROGRESS -> "▶"
+                                PlanStepStatus.PENDING -> "·"
                             }
+                            // 层级：进行中最亮 > 待办次之 > 已完成划线弱化 —— 视线应落在「正在做什么」。
                             Text(
                                 text = "$mark ${index + 1}. ${step.description}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (step.status == com.rickeal.agent.core.agent.plan.PlanStepStatus.COMPLETED) {
-                                    colors.onGlassSubtle
+                                color = when (step.status) {
+                                    PlanStepStatus.COMPLETED -> colors.onGlassSubtle
+                                    PlanStepStatus.IN_PROGRESS -> colors.onGlass
+                                    PlanStepStatus.PENDING -> colors.onGlassMuted
+                                },
+                                textDecoration = if (step.status == PlanStepStatus.COMPLETED) {
+                                    TextDecoration.LineThrough
                                 } else {
-                                    colors.onGlassMuted
+                                    null
                                 },
                             )
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(tokens.gapSm))
             }
 
             val error = state.error
@@ -330,39 +385,6 @@ fun ChatScreen(
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(tokens.gapSm))
-            }
-
-            // 自愈提示卡（G 项）：引擎重建/重试「已自动恢复」的非阻塞告知。
-            // 与 error 的区别：无需用户处置，终态事件自动清除，也可手动关。
-            val notice = state.notice
-            if (notice != null) {
-                GlassCard(
-                    material = GlassMaterial.THICK,
-                    cornerRadius = tokens.radiusMd,
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                    modifier = Modifier.padding(horizontal = 24.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = notice,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = colors.onGlassMuted,
-                            modifier = Modifier.weight(1f),
-                        )
-                        GlassIconButton(
-                            icon = Icons.Filled.Close,
-                            contentDescription = "关闭提示",
-                            onClick = viewModel::onDismissNotice,
-                            contentColor = colors.onGlassSubtle,
-                            iconSize = 16.dp,
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(tokens.gapSm))
             }
             }
         },
