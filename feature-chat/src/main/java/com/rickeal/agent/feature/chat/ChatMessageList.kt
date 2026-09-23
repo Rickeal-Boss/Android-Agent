@@ -166,7 +166,7 @@ fun ChatMessageList(
                             argumentsJson = trace.arguments,
                             output = trace.result,
                             elapsedMillis = trace.elapsedMillis,
-                            ok = trace.status != ToolTraceStatus.FAILED,
+                            ok = trace.status == ToolTraceStatus.OK,
                             running = trace.status == ToolTraceStatus.RUNNING,
                         )
                     }

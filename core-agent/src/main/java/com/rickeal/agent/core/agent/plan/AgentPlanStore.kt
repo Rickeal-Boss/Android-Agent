@@ -7,6 +7,10 @@ import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.model.AgentJson
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import kotlinx.serialization.Serializable
 import kotlin.coroutines.coroutineContext
 
@@ -36,8 +40,16 @@ data class PlanStep(
  * 状态推进约定（对模型可执行）：markStep COMPLETED 时自动把下一个 PENDING 步骤置为
  * IN_PROGRESS —— 4B 模型经常忘记这一步，替它做掉，避免出现「全部 pending 但其实
  * 已经做了一半」的僵死计划。
+ *
+ * 持久化（Wave3 补齐）：persistDir 非空时每个会话一个 JSON 文件，每次变更原子落盘
+ * （tmp + ATOMIC_MOVE）；首次访问某会话时惰性回载。进程死亡后计划还在 —— 蓝图里
+ * 「长程任务不丢上下文」的承诺原来只覆盖进程内，崩溃即清零（Wave2 遗留），这是
+ * 恢复闭环的缺口之一。persistDir 为空 = 纯内存（测试场景，与旧行为一致）。
  */
-class AgentPlanStore(private val maxConversations: Int = 16) {
+class AgentPlanStore(
+    private val persistDir: File? = null,
+    private val maxConversations: Int = 16,
+) {
 
     class TrackedPlan internal constructor() {
         @Volatile
@@ -48,16 +60,40 @@ class AgentPlanStore(private val maxConversations: Int = 16) {
             internal set
     }
 
-    private val plans = object : LinkedHashMap<String, TrackedPlan>(16, 0.75f, false) {
+    /**
+     * access-order=true 才是真正的 LRU：getOrPut/peek 都会刷新访问位，
+     * 长期不被打开的会话才会被淘汰（Wave2 写成 false，实为 FIFO —— 最老创建的
+     * 会话先被挤掉，哪怕它一直在用）。
+     */
+    private val plans = object : LinkedHashMap<String, TrackedPlan>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, TrackedPlan>): Boolean =
             size > maxConversations
     }
 
     @Synchronized
-    internal fun planFor(key: String): TrackedPlan = plans.getOrPut(key) { TrackedPlan() }
+    internal fun planFor(key: String): TrackedPlan = plans.getOrPut(key) {
+        val plan = TrackedPlan()
+        // 惰性回载：进程重启后第一次访问该会话，把磁盘上的计划接回来。
+        // load 失败按「无计划」处理（计划是辅助数据，fail-open）。
+        loadSync(key)?.let { snapshot ->
+            plan.version = snapshot.version
+            plan.steps = snapshot.steps
+        }
+        plan
+    }
 
     @Synchronized
     internal fun peek(key: String): TrackedPlan? = plans[key]
+
+    /**
+     * 公开只读视图：宿主（ChatViewModel）打开/恢复会话时把既有计划回填进 UI 时间线。
+     * 只读，不 touch 访问序（读 UI 不该影响 LRU 的淘汰判断）。
+     */
+    @Synchronized
+    fun stepsFor(key: String): List<PlanStep> {
+        val plan = plans[key] ?: return emptyList()
+        return plan.steps
+    }
 
     /** 整表替换（plan_set）。首步自动置 IN_PROGRESS。 */
     @Synchronized
@@ -71,6 +107,7 @@ class AgentPlanStore(private val maxConversations: Int = 16) {
             )
         }
         plan.version++
+        persistSync(key, plan)
     }
 
     /**
@@ -92,6 +129,7 @@ class AgentPlanStore(private val maxConversations: Int = 16) {
         }
         plan.steps = mutable.toList()
         plan.version++
+        persistSync(key, plan)
         return true
     }
 
@@ -107,6 +145,59 @@ class AgentPlanStore(private val maxConversations: Int = 16) {
                 }
                 "${index + 1}. [$mark] ${step.description}"
             }.joinToString("\n")
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 持久化（每会话一个 JSON；version 一并落盘，恢复后水印语义不变）
+    // ------------------------------------------------------------------
+
+    /** 磁盘形态。version 必须持久化：恢复后 lastPlanVersion 水印才不会把旧计划误判成「新变化」。 */
+    @Serializable
+    private data class PlanSnapshot(val version: Long, val steps: List<PlanStep>)
+
+    private fun fileKey(key: String): String =
+        key.replace(Regex("[^A-Za-z0-9_.-]"), "_").take(120).ifBlank { "default" }
+
+    private fun loadSync(key: String): PlanSnapshot? {
+        val dir = persistDir ?: return null
+        val file = File(dir, fileKey(key) + ".json")
+        if (!file.exists()) return null
+        return runCatching {
+            val raw = file.readText()
+            if (raw.isBlank()) null
+            else AgentJson.Default.decodeFromString(PlanSnapshot.serializer(), raw)
+        }.getOrNull()
+    }
+
+    /** 原子写：tmp 唯一名 + ATOMIC_MOVE，写一半崩溃不留半截文件。 */
+    private fun persistSync(key: String, plan: TrackedPlan) {
+        val dir = persistDir ?: return
+        runCatching {
+            dir.mkdirs()
+            val target = File(dir, fileKey(key) + ".json")
+            val tmp = File(dir, fileKey(key) + "." + System.nanoTime() + ".tmp")
+            tmp.writeText(
+                AgentJson.Default.encodeToString(
+                    PlanSnapshot.serializer(),
+                    PlanSnapshot(version = plan.version, steps = plan.steps),
+                )
+            )
+            try {
+                Files.move(
+                    tmp.toPath(),
+                    target.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (t: Throwable) {
+                // 个别文件系统不支持 ATOMIC_MOVE，退化普通 rename（仍是元数据操作）
+                Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        }.onFailure {
+            com.rickeal.agent.core.model.AgentLogStore.warn(
+                "计划落盘失败（忽略，不影响运行）：${it.javaClass.simpleName}"
+            )
         }
     }
 }

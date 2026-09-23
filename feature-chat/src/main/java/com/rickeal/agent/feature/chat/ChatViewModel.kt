@@ -190,6 +190,9 @@ class ChatViewModel(
                             messages = conversation.messages,
                             config = conversation.config,
                             contextTokens = lastContext,
+                            // 既有计划回填（计划已持久化）：打开会话就要看到时间线，
+                            // 而不是等下一次 plan_update 才出现。
+                            planSteps = container.agentPlanStore.stepsFor(conversation.id),
                         )
                     }
                 }
@@ -301,12 +304,56 @@ class ChatViewModel(
     }
 
     /**
+     * 把目录里除 [keepRunId] 之外的所有「未 settled」journal 归档。
+     *
+     * findUnsettled 只返回最近的一个，其余未完成 run 会永远滞留 —— 每次进会话都
+     * 再弹一张恢复卡，用户处置完最新的又来一张。归档（改名）而非删除：过程记录
+     * 可能还有排查价值；已 settled 的正常 run 与空文件不动。
+     */
+    private suspend fun archiveOtherUnsettled(runDir: File, keepRunId: String) = withContext(Dispatchers.IO) {
+        runCatching {
+            val files = runDir.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") } ?: return@runCatching
+            for (file in files) {
+                val name = file.name
+                if (name == "$keepRunId.jsonl") continue
+                if (name.endsWith(".dismissed.jsonl") || name.endsWith(".jsonl.dismissed")) continue
+                val lines = runCatching {
+                    AgentRunJournal.open(runDir, name.removeSuffix(".jsonl")).readLines()
+                }.getOrDefault(emptyList())
+                if (lines.isEmpty() || lines.last().kind == AgentRunJournal.KIND_SETTLED) continue
+                runCatching {
+                    file.renameTo(File(file.parentFile, file.nameWithoutExtension + ".dismissed.jsonl"))
+                }
+            }
+        }.getOrDefault(Unit)
+    }
+
+    /**
+     * 处置当前恢复卡（丢弃或被新 run 顶替）：归档目标 journal + 其余未完成 run。
+     *
+     * 「被新 run 顶替」是 Wave3 补的口子：恢复卡挂着时用户直接发了新消息 = 用行动
+     * 表示「不恢复」，卡必须归档 —— 不然它留在状态里，下次进会话又弹出来，而且
+     * 那份 journal 的 user_input 已经过时（上下文会拼出新 run 之前的状态）。
+     */
+    private fun dismissRecovery(offer: RecoveryOffer, cid: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val dir = File(container.journalRoot, cid)
+                AgentRunJournal.open(dir, offer.runId).markDismissed()
+                archiveOtherUnsettled(dir, offer.runId)
+            }
+        }
+    }
+
+    /**
      * 从中断处继续（恢复卡「继续」按钮）。
      *
-     * journal 里的已提交消息重建出完整上下文（含工具调用与结果——这些**不在**会话文件的
-     * 可见消息里，只有 journal 有），从崩溃点继续推理：
-     *  - 末条是 USER → 那条就是被打断的输入，直接作为 userInput（不重复落库）；
-     *  - 否则合成一条「继续」输入（对用户可见并落库，与 onSend 行为一致）。
+     * Wave3 修复的完整重建：journal 现在记录三类行 —— user_input（任务输入）、
+     * message（过程消息：工具调用/结果/中间输出）、settled（终态）。恢复上下文 =
+     * 会话可见历史（USER/MODEL 往来，去掉与本 run 任务输入重复的那条）+ journal
+     * 过程消息（工具调用与结果**只有 journal 有**，会话文件里没有）按序拼接，任务
+     * 输入本身作为 userInput 传入。Wave2 只拼 journal 过程消息：任务描述、此前
+     * 会话轮次全部丢失，4B 模型是对着工具残骸盲猜。
      */
     fun onRecover() {
         val state = _uiState.value
@@ -317,23 +364,40 @@ class ChatViewModel(
         runJob?.cancel()
         runJob = viewModelScope.launch {
             val journal = AgentRunJournal.open(File(container.journalRoot, cid), offer.runId)
+            val savedInput = withContext(Dispatchers.IO) { journal.readUserInputSync() }
             val committed = withContext(Dispatchers.IO) { journal.committedMessagesSync() }
-            if (committed.isEmpty()) {
-                journal.markDismissed()
+            if (committed.isEmpty() && savedInput == null) {
+                withContext(Dispatchers.IO) { journal.markDismissed() }
+                archiveOtherUnsettled(File(container.journalRoot, cid), offer.runId)
                 return@launch
             }
-            val last = committed.last()
             val userMessage: ChatMessage
             val history: List<ChatMessage>
-            if (last.role == Role.USER) {
-                history = committed.dropLast(1)
-                userMessage = last
+            if (savedInput != null) {
+                userMessage = savedInput
+                // 会话可见历史里去掉与本 run 任务输入同 id 的那条（它由 userInput 参数
+                // 承担，避免上下文双份）。恢复 run 续写场景（同 journal 文件）里，上一次
+                // 合成的「继续」消息也是同一条（同 id），同样被去掉 —— 它会作为 userInput
+                // 重新出现在正确位置（所有过程消息之后）。
+                val visible = state.messages.filterNot { it.id == savedInput.id }
+                // 过程消息去重：恢复 run 曾走完过一次的话，其最终回答同时落在会话文件
+                // （commitAssistant 落库）与 journal（message 行）里。判据与 commitAssistant
+                // 一致用 role+text —— journal decode 出来的 id 与 UI 侧重新生成的不同，
+                // 按 id 去重在这里永远命中不了。只剔 MODEL：TOOL / 中间 toolCall 消息
+                // 永远不会出现在会话文件里。
+                val visibleKeys = visible.mapTo(HashSet()) { it.role.name + "|" + it.text }
+                val proc = committed.filterNot { m ->
+                    m.role == Role.MODEL && (m.role.name + "|" + m.text) in visibleKeys
+                }
+                history = visible + proc
             } else {
-                history = committed
+                // 升级前的旧 journal（没有 user_input 行）：退化到合成「继续」输入，
+                // 尽力而为 —— 至少过程消息（工具调用/结果）还在。
                 userMessage = ChatMessage(
                     role = Role.USER,
                     text = "请从上次中断的地方继续未完成的任务，不要重复已完成的工作。",
                 )
+                history = committed
             }
             _uiState.update {
                 it.copy(
@@ -342,6 +406,9 @@ class ChatViewModel(
                     } else {
                         it.messages
                     },
+                    // 既有计划回填（计划已持久化）：恢复 run 不重放历史版本水印，
+                    // 时间线必须在这里主动接上，否则磁盘上有计划而 UI 空白。
+                    planSteps = container.agentPlanStore.stepsFor(cid),
                     streamingText = "",
                     streamingThinking = "",
                     streamingRole = Role.MODEL,
@@ -350,7 +417,9 @@ class ChatViewModel(
                     agentRound = 0,
                 )
             }
-            if (last.role != Role.USER) {
+            // 只有「合成的继续输入」（旧 journal 退化路径）才需要落库；savedInput
+            // 那条本来就在会话文件里（onSend 落库过 / 上次恢复已落库），不重复写。
+            if (savedInput == null) {
                 container.conversationRepository.appendMessage(cid, userMessage)
             }
             val config = _uiState.value.config
@@ -395,10 +464,7 @@ class ChatViewModel(
         val offer = _uiState.value.recovery ?: return
         val cid = conversationId ?: return
         _uiState.update { it.copy(recovery = null) }
-        viewModelScope.launch(Dispatchers.IO) {
-            val journal = AgentRunJournal.open(File(container.journalRoot, cid), offer.runId)
-            journal.markDismissed()
-        }
+        dismissRecovery(offer, cid)
     }
 
     fun onNewConversation() {
@@ -462,6 +528,9 @@ class ChatViewModel(
             attachments = state.attachments,
         )
         val history = state.messages + userMessage
+        // 恢复卡挂着时直接发新消息 = 用行动表示「不恢复」：归档那份 journal，
+        // 否则卡会在下次进会话时复活（Wave3 补的口子）。
+        state.recovery?.let { offer -> conversationId?.let { cid -> dismissRecovery(offer, cid) } }
         _uiState.update {
             it.copy(
                 messages = history,
@@ -476,6 +545,7 @@ class ChatViewModel(
                 toolTraces = emptyList(),
                 thinkingExpanded = false,
                 error = null,
+                recovery = null,
             )
         }
         // 覆盖 runJob 之前必须先取消旧的：core-agent 侧已有 runMutex 根治并发，
@@ -556,6 +626,8 @@ class ChatViewModel(
         // 但 onRetry() 自己也在改状态之后才调过来（中间有 _uiState.update 的间隙），
         // 而这里才是真正起 runJob 的地方 —— 闸门放在真正启动的那一处才拦得住。
         if (_uiState.value.isGenerating) return
+        // 重试也顶替恢复卡（同 onSend：用户行动优先于过时的恢复提示）。
+        _uiState.value.recovery?.let { offer -> conversationId?.let { cid -> dismissRecovery(offer, cid) } }
         _uiState.update {
             it.copy(
                 messages = history,
@@ -567,6 +639,7 @@ class ChatViewModel(
                 agentRound = 0,
                 toolTraces = emptyList(),
                 error = null,
+                recovery = null,
             )
         }
         // 同上：覆盖 runJob 之前先取消旧的，绝不让两个 run 同时活着。
@@ -635,16 +708,18 @@ class ChatViewModel(
                 it.copy(streamingText = "", streamingThinking = "")
             }
 
-            // 工具审批请求（Wave 1 无 UI 通道 → 默认拒绝；fail-closed 与主循环行为一致）。
-            // 现在落成一条工具轨迹让用户「看得见发生了什么」；弹窗交互属于 Wave 2。
+            // 工具审批请求：立一条 RUNNING 轨迹占位（授权卡另在 snackbarHost 区渲染）。
+            // Wave2 接了真审批 UI 之后，这里还残留着 Wave1 的「未接审批 UI 已按拒绝处理」
+            // 文案 + SKIPPED 状态 —— 用户会同时看到矛盾的错误轨迹和待授权卡片，且授权后
+            // ToolCallStarted 会再 append 一条同 id 轨迹（见下）。
             is AgentEvent.ApprovalRequested -> _uiState.update { state ->
                 state.copy(
                     toolTraces = state.toolTraces + ToolTrace(
                         id = event.call.id,
                         name = event.spec.name,
                         arguments = event.call.argumentsJson,
-                        status = ToolTraceStatus.SKIPPED,
-                        result = "需要授权后才会执行（当前未接审批 UI，已按拒绝处理）",
+                        status = ToolTraceStatus.RUNNING,
+                        result = "等待用户授权…",
                     ),
                 )
             }
@@ -665,13 +740,20 @@ class ChatViewModel(
             is AgentEvent.ToolCallStarted -> {
                 val call = event.call
                 _uiState.update { state ->
-                    state.copy(
-                        toolTraces = state.toolTraces + ToolTrace(
-                            id = call.id,
-                            name = call.name,
-                            arguments = call.argumentsJson,
-                        ),
-                    )
+                    // 授权路径已由 ApprovalRequested 立过同 id 轨迹（RUNNING 占位），
+                    // 这里只补「没有先例」的普通工具调用，否则同一调用出现两条轨迹。
+                    val exists = state.toolTraces.any { it.id == call.id }
+                    if (exists) {
+                        state
+                    } else {
+                        state.copy(
+                            toolTraces = state.toolTraces + ToolTrace(
+                                id = call.id,
+                                name = call.name,
+                                arguments = call.argumentsJson,
+                            ),
+                        )
+                    }
                 }
             }
 

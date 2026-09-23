@@ -94,7 +94,10 @@ class AppContainer(private val context: Context) {
     val agentMemory: AgentMemory = AgentMemory(File(context.filesDir, "agent_memory/memory.json"))
 
     /** 会话级执行计划（ZCode Phase Graph 降级移植）：plan_set / plan_update 工具的落点。 */
-    val agentPlanStore: AgentPlanStore = AgentPlanStore()
+    val agentPlanStore: AgentPlanStore = AgentPlanStore(
+        // Wave3 起持久化：进程死亡后计划还在（蓝图「长程任务不丢上下文」的恢复闭环）。
+        persistDir = File(context.filesDir, "agent_plans"),
+    )
 
     val toolContext: ToolContext = ToolContext(
         sandboxDir = sandboxDir,
@@ -123,7 +126,14 @@ class AppContainer(private val context: Context) {
     val subagentSessions: SubagentSessionStore = SubagentSessionStore(
         persistDir = File(context.filesDir, "subagent_sessions"),
     )
-    val subagentTool: AskSubagentTool = AskSubagentTool(subagentRegistry, subagentSessions, agentRunner)
+    val subagentTool: AskSubagentTool = AskSubagentTool(
+        subagentRegistry,
+        subagentSessions,
+        agentRunner,
+        // Wave3：白名单兜底用真实工具注册表解析「继承全部」（曾误用 Actor 注册表
+        // 的名字当工具名，Markdown 自定义 Actor 实际零工具可用）。
+        toolRegistry = toolRegistry,
+    )
 
     init {
         toolRegistry.register(subagentTool)
