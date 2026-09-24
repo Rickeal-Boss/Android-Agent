@@ -135,13 +135,18 @@ private val LocalLiquidBottomTabScale = staticCompositionLocalOf<() -> Float> { 
  * clickable 的按压 → **点击选中页签没反应**（GlassSwitch 踩过的同一口井）。
  * 越过 8dp slop 才消费，"点击"与"拖动换页"两条路径干净分开。
  *
- * ## 页签切换的数据流（单击与拖动在同一个汇合点收敛）
+ * ## 页签切换的数据流（2026-09-24 Wave 6b 重构：**onSelected 只在用户位点发**）
  *
- *  - 单击页签 → `currentIndex = index`
- *  - 拖动胶囊 → `onDragStopped` 里 `currentIndex = targetValue.roundToInt()`
- *  - 两条路都汇入 `snapshotFlow { currentIndex }` → 弹簧动画到位 + [onSelected] 回调
+ *  - 单击页签 → `currentIndex = index` + **直接** `onSelected(index)`
+ *  - 拖动胶囊 → `onDragStopped` 里 `currentIndex = targetIndex` + **直接** `onSelected(index)`
  *  - 外部 [selectedIndex] 变化（导航返回等）→ [LaunchedEffect] 写回 [currentIndex]
- *    → 同样走弹簧，指示胶囊滑回正确页签。回调回流的值不变，不会成环。
+ *    （**拖拽进行中跳过**——见该处门禁注释）→ 收集器把胶囊动画过去
+ *  - 收集器只负责动画、**不发 onSelected**：外部回显写也会触达收集器，若在那里
+ *    回调再走 navigateTop → selectedIndex 回压 → 再写 currentIndex，反馈环闭合
+ *    后任何一次回显都能自激振荡（真机录屏实证的"胶囊两端逐帧横跳"）
+ *
+ *  拖拽期锚点是 receiver 的实时 `value`（非 currentIndex）——按住动画中的胶囊
+ *  不会瞬移；底栏无纵向滚动父级，让位锁关闭（`canYieldToParent = false`）。
  */
 @Composable
 fun LiquidBottomTabs(
@@ -236,13 +241,17 @@ fun LiquidBottomTabs(
         // "一个手指增量" → 误差随拖动距离单调累积（"越远越偏差"）；速度快时弹簧速度反向
         // 打架 → 抽搐。绝对映射 + snapValue（瞬时到位）彻底解耦，与 GlassSlider 同一套修法。
         //
-        // ⚠️ `onDragStarted` 的类型是 `() -> Unit`（**无 receiver**），读不到
-        // `DampedDragAnimation.targetValue` —— 与 GlassSlider 一样，在按下瞬间快照一个
-        // 可访问的值：`currentIndex`。静止时它就是胶囊的 targetValue（onDragStopped 里
-        // `currentIndex = targetValue.roundToInt()` 与 `animateToValue` 同步赋值），
-        // 等价且无需额外标志位。
+        // ⚠️ 锚点 = receiver 的实时 `value`（onDragStarted 已带 receiver，见
+        // DampedDragAnimation）——不能用 currentIndex：点击动画进行中按住胶囊时
+        // 两者可能差出数个页签，旧锚点的第一帧 snapValue 会把胶囊瞬移到 currentIndex
+        //（真机录屏"首尾乱飘"的来源之一）。
         var dragAccumPx by remember { mutableStateOf(0f) }
         var dragStartValue by remember { mutableStateOf(0f) }
+
+        // onSelected 的最新引用：onDragStopped / 页签 onClick 两个**用户动作位点**
+        // 直接回调（见各处注释——绝不能挂回 snapshotFlow 收集器）。必须声明在
+        // dampedDragAnimation 之前：onDragStopped 闭包要捕获它。
+        val onSelectedCallback by rememberUpdatedState(onSelected)
 
         val dampedDragAnimation = remember(animationScope) {
             DampedDragAnimation(
@@ -254,20 +263,34 @@ fun LiquidBottomTabs(
                 // 56dp 的胶囊按下时放大到 78dp 高 —— Kyant0 BottomTabs 的实测值。
                 pressedScale = 78f / 56f,
                 consumeSlopPx = consumeSlopPx,
+                // ⚠️ 底栏**没有纵向滚动父级**（MainShell 的 Column 上下都无
+                // verticalScroll），让位锁在这里是纯害：拖页签时手指的自然弧线会让
+                // net-vertical 越过 tan30° 阈值 → 拖拽**中途冻结**（2026-09-24 真机
+                // 录屏"拉越远越偏移"的来源之一）。必须关掉。
+                canYieldToParent = false,
                 onDragStarted = {
                     // 新一次拖动：取消在途回弹，避免它与拖动同时写 panelOffsetPx。
                     panelReboundJob.value?.cancel()
                     panelReboundJob.value = null
                     // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
-                    // 不能用回显值当起点 —— 它滞后于手指。
+                    // ⚠️ 锚点必须用 **receiver 的实时 value**（胶囊此刻的真实位置），
+                    // 不能用 currentIndex：点击动画进行中按住胶囊时两者可能差半个
+                    // 屏 —— 旧锚点会让第一帧 snapValue 把胶囊**瞬移**到 currentIndex
+                    // （真机录屏 6.060s/6.193s 帧"首尾乱飘"的来源之一）。
                     dragAccumPx = 0f
-                    dragStartValue = currentIndex.toFloat()
+                    dragStartValue = this.value
                 },
                 onDragStopped = {
                     // 松手：四舍五入到最近页签，内部态收敛，面板拉伸弹回 0。
                     val targetIndex = targetValue.roundToInt().coerceIn(0, tabsCount - 1)
                     currentIndex = targetIndex
                     animateToValue(targetIndex.toFloat())
+                    // ⚠️ onSelected 只在**用户完成动作**的两个位点（这里与页签单击）
+                    // 直接回调 —— 绝不能挂回 snapshotFlow 收集器：外部回显写
+                    // currentIndex 也会触达收集器，若在那里再发 onSelected →
+                    // navigateTop → selectedIndex 回压 → 再写 currentIndex，
+                    // 就是真机录屏实证的"胶囊两端自激振荡"（2026-09-24 Wave 6b）。
+                    onSelectedCallback(targetIndex)
                     // 面板拉伸弹回：从当前累加值出发做一次弹簧（**单个**协程，非每帧）。
                     val start = panelOffsetPx.value
                     if (start != 0f) {
@@ -303,32 +326,32 @@ fun LiquidBottomTabs(
         }
 
         // 外部选中态变化（导航返回 / 程序化切换）→ 写回内部态。
-        // 回流时 currentIndex 已经是同值，snapshotFlow 不再发射，不成环。
+        // ⚠️ 2026-09-24 Wave 6b 门禁：**拖拽进行中绝不回写**。拖拽期手势（snapValue）
+        // 是胶囊位置的唯一事实来源；导航回压（navigateTop 落地晚于手势开始）此刻写
+        // currentIndex，会经收集器触发一次 animateToValue 旧页签，与 snapValue 逐帧
+        // 互搏 —— 真机录屏实证的"胶囊两端自激振荡"（手指按住对话、胶囊在对话/设置
+        // 间逐帧横跳 1.6 秒）。拖拽结束后 onDragStopped 提交用户的选择，这里错过的
+        // 回写由那次提交覆盖（onSelected 已把导航带到用户要的页签）。
         LaunchedEffect(selectedIndex) {
-            currentIndex = safeSelectedIndex
+            if (!dampedDragAnimation.isDragging) currentIndex = safeSelectedIndex
         }
-        // 内部态变化 → 弹簧动画到位 + 通知调用方。drop(1)：初始组合不回调
-        // （外部本来就知道当前选中的是谁）。
-        //
-        // ⚠️ key 只留 dampedDragAnimation，不含 onSelected：调用方的 lambda 字面量
-        // 每次重组都是新实例，拿它当 key 会让 effect 随导航状态反复重启（drop(1)
-        // 能保正确性，但纯属浪费）。用 rememberUpdatedState 让闭包始终读最新
-        // lambda，effect 生命周期与组件一致，调用方零负担。
-        val onSelectedCallback by rememberUpdatedState(onSelected)
+        // 内部态变化 → 弹簧动画到位。drop(1)：初始组合不回调。
+        // ⚠️ onSelected **不在收集器里发**：收集器也会被外部回显写触达，若在那里
+        // 发 onSelected → navigateTop → selectedIndex 回压 → 再写 currentIndex →
+        // 再进收集器 —— 反馈环闭合，任何一次回显都能自激振荡。用户动作的两个
+        // 位点（onClick / onDragStopped）直接回调，环被切断。
+        // key 只留 dampedDragAnimation：调用方的 lambda 字面量每次重组都是新实例，
+        // 用 rememberUpdatedState 让闭包始终读最新 lambda（见上方声明处）。
         LaunchedEffect(dampedDragAnimation) {
             snapshotFlow { currentIndex }
                 .drop(1)
                 .collectLatest { index ->
-                    // 点击切换（及外部选中态回流）走 TabSwitch 规格 —— 2026-09-24 真机
-                    // 修正后与上游一致（临界阻尼快弹簧，≈120ms 收敛，无过冲），规格的
-                    // 演化依据见 LiquidMotion.TabSwitch 的 KDoc。
-                    // ⚠️ 拖动松手收敛（onDragStopped 里的 animateToValue）不传 spec，
-                    // 保持默认快收敛 —— 两条路径现在同速，不再有"点击比松手慢"的割裂。
+                    // 点击切换（及外部选中态回流）走 TabSwitch 规格 —— 2026-09-24
+                    // 真机修正后与上游一致（临界阻尼快弹簧，≈120ms 收敛，无过冲）。
                     dampedDragAnimation.animateToValue(
                         index.toFloat(),
                         LiquidMotion.floatSpring(LiquidMotion.TabSwitch),
                     )
-                    onSelectedCallback(index)
                 }
         }
 
@@ -359,7 +382,13 @@ fun LiquidBottomTabs(
                 LiquidBottomTab(
                     tab = tab,
                     selected = index == currentIndex,
-                    onClick = { currentIndex = index },
+                    // ⚠️ onSelected 在用户动作位点直发（非收集器）——见收集器处注释。
+                    // 点当前页签时 currentIndex 不变、onSelected 照发，由调用方的
+                    // "destination != selected" 守卫去重（MainShell 的 onSelect）。
+                    onClick = {
+                        currentIndex = index
+                        onSelectedCallback(index)
+                    },
                     showLabel = !compactTabs,
                     modifier = Modifier.weight(1f),
                 )

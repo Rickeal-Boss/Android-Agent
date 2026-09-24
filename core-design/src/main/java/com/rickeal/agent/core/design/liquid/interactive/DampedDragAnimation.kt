@@ -67,7 +67,7 @@ class DampedDragAnimation(
     visibilityThreshold: Float,
     private val initialScale: Float,
     private val pressedScale: Float,
-    private val onDragStarted: () -> Unit,
+    private val onDragStarted: DampedDragAnimation.() -> Unit,
     private val onDragStopped: DampedDragAnimation.() -> Unit,
     private val onDrag: DampedDragAnimation.(value: Float, dragAmount: Offset) -> Unit,
     /**
@@ -84,7 +84,18 @@ class DampedDragAnimation(
      * 静止，只要抖 1px 就消费 → `toggleable` 的点击被取消 → **点了没反应**。
      * 过了 slop 才消费，才能把"点击"和"拖动"这两条路径干净地分开。
      */
-    private val consumeSlopPx: Float = 0f
+    private val consumeSlopPx: Float = 0f,
+    /**
+     * 是否允许"纵向意图 → 让位给父级滚动"（2026-09-24 新增开关）。
+     *
+     * 让位锁（tan30° 分轴 + 一次判定终生让位）是为**可滚动容器里的横向控件**
+     * （设置页的滑块/开关）设计的；判定为纵向后本手势永久静默。对**没有纵向
+     * 滚动父级**的控件（底栏 LiquidBottomTabs——它在 MainShell 的 Column 里，
+     * 上下都没有 verticalScroll），让位锁是纯害：用户拖页签时手指的自然弧线
+     * 会让 net-vertical 越过阈值 → 拖拽**中途冻结**（"拉越远越偏移"的直接来源
+     * 之一）。这类调用点必须传 false。
+     */
+    private val canYieldToParent: Boolean = true,
 ) {
 
     private val valueAnimatable = Animatable(initialValue, visibilityThreshold)
@@ -136,6 +147,17 @@ class DampedDragAnimation(
     val finishedNormally: Boolean get() = finishedNormallyState
 
     private var finishedNormallyState = false
+
+    /**
+     * 手势是否进行中（按下 → 抬起/让位/断流）。
+     *
+     * **可观测**（mutableStateOf）—— 调用方用它做**回显门禁**：拖动期间手势是
+     * 数值的唯一事实来源，外部状态（导航回压 / StateFlow 回流）此刻写入只会
+     * 与 `snapValue` 打架（2026-09-24 真机录屏实证的"胶囊两端乱飘"振荡）。
+     */
+    val isDragging: Boolean get() = isDraggingState.value
+
+    private val isDraggingState = mutableStateOf(false)
 
     /** 归一化进度 0~1（相对 [valueRange]）。轨道填充宽度、thumb 位移都用它。 */
     val progress: Float
@@ -193,7 +215,8 @@ class DampedDragAnimation(
             val slop = viewConfiguration.touchSlop
             yieldedToParentState = false
             setPressed(true)
-            onDragStarted()
+            isDraggingState.value = true
+            onDragStarted(this)
             try {
                 while (true) {
                     val event = awaitPointerEvent()
@@ -259,7 +282,9 @@ class DampedDragAnimation(
                         // 就归零，方向会来回翻转 —— 手势中途莫名其妙让位。
                         if (!axisDecided && reach >= slop) {
                             axisDecided = true
-                            if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
+                            if (canYieldToParent &&
+                                abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30
+                            ) {
                                 // 让位给父级滚动。置位后本手势"吞掉"后续事件。
                                 yieldedToParentState = true
                                 // ⚠️ 父级一接管就要取消按压，**不能等到 finally**（那要等抬手）。
@@ -270,6 +295,9 @@ class DampedDragAnimation(
                                 // （走 break 路径）也是这个行为 —— 两边必须一致，
                                 // 否则同一个手势语义在两个类里表现相反。
                                 setPressed(false)
+                                // 让位即拖拽事实来源终止：回显门禁要放行（isDragging 复位），
+                                // 否则外层状态在剩余手势里永远无法回写到控件上。
+                                isDraggingState.value = false
                             }
                         }
 
@@ -313,10 +341,11 @@ class DampedDragAnimation(
                 setPressed(false)
                 // ⚠️ 顺序不能换：onDragStopped 必须**先**执行、且能读到 true，
                 // 它才能据此跳过提交（让位场景）。清标志必须放在它之后。
-                onDragStopped(this@DampedDragAnimation)
+                onDragStopped(this)
                 // 让位标志的生命周期 = 本次手势。这里清掉，避免跨手势残留。
                 // （awaitEachGesture 开头那次复位是双保险，两者不冲突。）
                 yieldedToParentState = false
+                isDraggingState.value = false
             }
         }
     }

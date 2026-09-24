@@ -142,6 +142,11 @@ private fun SegmentedIndicator(
     // 内部选中态：单击项与拖动胶囊都只改它，由它统一驱动动画与回调。
     var currentIndex by remember { mutableStateOf(selectedIndex) }
 
+    // onSelected 的最新引用：onDragStopped / 项 onClick 两个**用户动作位点**
+    // 直接回调（与 LiquidBottomTabs 同款——绝不能挂回 snapshotFlow 收集器，
+    // 否则外部回显写也会触发回调 → 父层 setState → 回显 → 反馈环）。
+    val onSelectedCallback by rememberUpdatedState(onSelected)
+
     // ⚠️ consumeSlopPx 必须 8dp —— 胶囊叠在选中项上，"点击选中项没反应"的保险丝。
     val consumeSlopPx = with(density) { 8.dp.toPx() }
 
@@ -152,9 +157,9 @@ private fun SegmentedIndicator(
     // 胶囊不跟手 / 越远越偏差 / 抽搐。
     // 绝对映射 + snapValue（瞬时到位）解耦。
     //
-    // ⚠️ `onDragStarted` 是 `() -> Unit`（**无 receiver**），读不到 targetValue ——
-    // 与 GlassSlider 一样，在按下瞬间快照可访问的 `currentIndex`：静止时它即胶囊的
-    // targetValue（onDragStopped 里二者同步赋值），等价且无需额外标志位。
+    // ⚠️ 锚点用 **receiver 的实时 value**（胶囊此刻的真实位置，2026-09-24 Wave 6b
+    // 与 LiquidBottomTabs 同批修正）——不能用 currentIndex：点击动画进行中按住
+    // 胶囊时两者可能差出数项，旧锚点的第一帧 snapValue 会把胶囊瞬移。
     var dragAccumPx by remember { mutableStateOf(0f) }
     var dragStartValue by remember { mutableStateOf(0f) }
 
@@ -171,13 +176,15 @@ private fun SegmentedIndicator(
             onDragStarted = {
                 // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
                 dragAccumPx = 0f
-                dragStartValue = currentIndex.toFloat()
+                dragStartValue = this.value
             },
             onDragStopped = {
                 // 松手：四舍五入到最近项，内部态收敛。
                 val targetIndex = targetValue.roundToInt().coerceIn(0, itemsCount - 1)
                 currentIndex = targetIndex
                 animateToValue(targetIndex.toFloat())
+                // onSelected 在用户动作位点直发（见 onSelectedCallback 声明处注释）。
+                onSelectedCallback(targetIndex)
             },
             onDrag = { _, dragAmount ->
                 // 拖动 = 手势内累积位移 → 绝对映射到"项坐标"（每移动一个 itemWidth 前进
@@ -196,14 +203,14 @@ private fun SegmentedIndicator(
     }
 
     // 外部选中态变化（父层状态回流）→ 写回内部态。
-    // 回流时 currentIndex 已经是同值，snapshotFlow 不再发射，不成环。
+    // ⚠️ 2026-09-24 Wave 6b 门禁（与 LiquidBottomTabs 同款）：拖拽进行中绝不回写，
+    // 否则回显写经收集器触发 animateToValue 与拖拽 snapValue 逐帧互搏。
     LaunchedEffect(selectedIndex) {
-        currentIndex = selectedIndex
+        if (!dampedDragAnimation.isDragging) currentIndex = selectedIndex
     }
-    // 内部态变化 → 弹簧动画到位 + 通知调用方。drop(1)：初始组合不回调。
-    // onSelected 走 rememberUpdatedState：调用方每次重组传新 lambda 时
-    // 不重启本 effect（LaunchedEffect key 只留 dampedDragAnimation）。
-    val onSelectedCallback by rememberUpdatedState(onSelected)
+    // 内部态变化 → 弹簧动画到位。drop(1)：初始组合不回调。
+    // ⚠️ onSelected **不在收集器里发**（回显写也会触达收集器，会形成
+    // 回显 → 回调 → 父层 setState → 回显 的反馈环）——用户动作位点直发。
     LaunchedEffect(dampedDragAnimation) {
         snapshotFlow { currentIndex }
             .drop(1)
@@ -242,7 +249,11 @@ private fun SegmentedIndicator(
                     text = item,
                     selected = index == currentIndex,
                     enabled = enabled,
-                    onClick = { currentIndex = index },
+                    onClick = {
+                        currentIndex = index
+                        // 用户动作位点直发（与 LiquidBottomTabs 同款，见收集器注释）。
+                        onSelectedCallback(index)
+                    },
                     modifier = Modifier.weight(1f),
                 )
             }

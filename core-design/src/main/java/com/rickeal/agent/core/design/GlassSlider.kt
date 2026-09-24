@@ -186,7 +186,7 @@ private fun LiquidSliderTrack(
         // snapToStep 是移植时加进去的 —— 增量基准必须换成手势内累积才能共存。
         var dragAccumPx by remember { mutableStateOf(0f) }
         var dragStartValue by remember { mutableStateOf(0f) }
-        var isDragging by remember { mutableStateOf(false) }
+        var sliderDragging by remember { mutableStateOf(false) }
         // 这些值在 remember 出来的回调里被读取，必须用 rememberUpdatedState 拿最新值，
         // 否则回调会闭包住第一次组合时的旧引用（滑块在列表里复用时尤其明显）。
         val currentValue by rememberUpdatedState(value)
@@ -213,10 +213,14 @@ private fun LiquidSliderTrack(
                 pressedScale = 1.5f,
                 onDragStarted = {
                     // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
-                    // 不能用回显值当起点 —— 它滞后于手指。
+                    // ⚠️ 锚点用 **receiver 的实时 value**（thumb 此刻的真实位置），
+                    // 不能用 currentValue（外部回显 prop）：回显经 StateFlow → 重组
+                    // 滞后 1~2 帧，thumb 在收敛动画中/回显未落时被按下，旧锚点的
+                    // 第一帧 snapValue 会把 thumb **瞬移**到回显值（"Slider 同理"的
+                    // 抽动来源，2026-09-24 Wave 6b 与 LiquidBottomTabs 同批修正）。
                     dragAccumPx = 0f
-                    dragStartValue = currentValue
-                    isDragging = true
+                    dragStartValue = this.value
+                    sliderDragging = true
                 },
                 onDragStopped = {
                     // ⚠️ 让位给父级滚动时**不落盘**：
@@ -234,7 +238,7 @@ private fun LiquidSliderTrack(
                         currentOnFinished?.invoke()
                     }
                     didDrag = false
-                    isDragging = false
+                    sliderDragging = false
                 },
                 onDrag = { _, dragAmount ->
                     // ⚠️ 这里不能写 `dampedDragAnimation.xxx`：这个 lambda 正是
@@ -278,7 +282,7 @@ private fun LiquidSliderTrack(
                     // 拖动期间**压制回显**：拖动的事实来源是手势（dragStartValue +
                     // 累积位移），回显（经 StateFlow → 重组，滞后 1~2 帧）此时只会
                     // 把值往旧方向拽 → thumb 抖动 / 不跟手。松手后恢复外部状态同步。
-                    if (!isDragging && dampedDragAnimation.targetValue != v) {
+                    if (!sliderDragging && dampedDragAnimation.targetValue != v) {
                         dampedDragAnimation.updateValue(v)
                     }
                 }
