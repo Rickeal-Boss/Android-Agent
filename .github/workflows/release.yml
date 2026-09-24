@@ -206,6 +206,140 @@ jobs:
             "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
             :app:assembleDebug
 
+      # -------------------------------------------------------------------
+      # 外部审查 P0（上架项）：Google Play 对 targetSdk >= 35 强制 16KB ELF
+      # 页面对齐 —— Android 15+ 的 16KB page size 设备上，LOAD 段未按 16KB
+      # 对齐的 so 会直接加载失败（UnsatisfiedLinkError）。
+      # 检查对象选 debug APK：它是本流水线第一个产出的产物（最早失败/告警）；
+      # release 变体与 debug 共用同一套 AAR 依赖（litertlm-android 等），
+      # native so 同源，R8/AAB 打包不会改变 so 自身的 ELF 对齐，故不重复检查。
+      # 【策略】本波次 FAIL_ON_MISALIGNED=false：litertlm 是上游三方 so，若未
+      # 对齐，硬失败会卡死本仓库唯一验证通道 —— 先观察一轮实际结果，再决定
+      # 升级 litertlm 还是转 error 常驻。切换时只改下面 FAIL_ON_MISALIGNED。
+      # -------------------------------------------------------------------
+      - name: Verify 16KB ELF page alignment (debug APK)
+        id: verify_16kb_align
+        env:
+          # 16KB = 0x4000；将来 page size 要求提高时只改这一处
+          MIN_LOAD_ALIGN: '0x4000'
+          # false = 不达标仅 ::warning:: 不阻断；true = 不达标 ::error:: 且 exit 1
+          FAIL_ON_MISALIGNED: 'false'
+        run: |
+          apk_path="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          if [ -z "$apk_path" ]; then
+            echo "::error::assembleDebug reported success but no debug APK found — 16KB alignment check has no target"
+            exit 1
+          fi
+          echo "::notice::16KB alignment check on: $apk_path (threshold: LOAD Align >= $MIN_LOAD_ALIGN)"
+
+          stage_dir="${RUNNER_TEMP}/16kb-align-check"
+          rm -rf "$stage_dir"
+          mkdir -p "$stage_dir"
+          # 纯托管代码包没有 lib/ 条目，unzip 对未命中的模式返回非零 —— 属预期，吞掉
+          unzip -o -q "$apk_path" 'lib/*' -d "$stage_dir" 2>/dev/null || true
+
+          mapfile -t sos < <(find "$stage_dir/lib" -type f -name '*.so' 2>/dev/null | sort)
+          total="${#sos[@]}"
+          if [ "$total" -eq 0 ]; then
+            echo "::notice::APK 内没有任何 .so，16KB 检查无对象（写进 summary，防止空转被误读为通过）。"
+            {
+              echo "## 16KB ELF page alignment"
+              echo ""
+              echo "> \`$(basename "$apk_path")\` 内未发现任何 \`lib/**/*.so\` —— 本次检查无对象。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          misaligned=0
+          parse_failed=0
+          {
+            echo "## 16KB ELF page alignment"
+            echo ""
+            echo "APK: \`$(basename "$apk_path")\` · 阈值: 任一 LOAD 段 Align >= \`$MIN_LOAD_ALIGN\` · 共 $total 个 .so"
+            echo ""
+            echo "| File | ABI | Min LOAD Align | 判定 |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for so in "${sos[@]}"; do
+            rel="${so#"${stage_dir}/"}"                        # lib/<abi>/<name>.so
+            abi="$(printf '%s' "$rel" | cut -d/ -f2)"
+            # readelf -lW 宽格式：Program Headers 表中 LOAD 行的最后一列即 Align。
+            # GNU readelf 一般输出十六进制（如 0x1000），个别版本/平台输出 '2**12'
+            # 形式 —— 两种都解析；一行都提取不到视为「解析失败」（P2-4 单独告警）。
+            # 只取 Program Headers 段内的 LOAD 行：结尾的 Section to Segment
+            # mapping 区里也有 LOAD 行，但其最后一列是节名列表而非数字，必须排除。
+            min_so_align=""
+            while read -r raw; do
+              [ -z "$raw" ] && continue
+              case "$raw" in
+                2\*\*[0-9]*)
+                  n="${raw#2\*\*}"
+                  a=$(( 1 << n ))
+                  ;;
+                0[xX]*)
+                  a=$(( raw ))
+                  ;;
+                [0-9]*)
+                  a=$(( raw ))
+                  ;;
+                *)
+                  a=0
+                  ;;
+              esac
+              if [ -z "$min_so_align" ] || [ "$a" -lt "$min_so_align" ]; then
+                min_so_align="$a"
+              fi
+            done < <(readelf -lW "$so" 2>/dev/null | awk '/Section to Segment mapping:/{ph=0;next} /Program Headers:/{ph=1;next} ph && $1=="LOAD"{print $NF}')
+
+            if [ -z "$min_so_align" ]; then
+              # P2-4：解析失败是环境问题（binutils 异常 / 非 ELF 文件），
+              # 与「对齐不达标」是两类问题 —— 分开计数、分开告警、分开表述。
+              align_display="n/a"
+              verdict="解析失败"
+            elif [ "$min_so_align" -ge "$(( MIN_LOAD_ALIGN ))" ]; then
+              align_display="0x$(printf '%x' "$min_so_align")"
+              verdict="达标"
+            else
+              align_display="0x$(printf '%x' "$min_so_align")"
+              verdict="不达标"
+            fi
+            printf '| `%s` | %s | %s | %s |\n' "$rel" "$abi" "$align_display" "$verdict" >> "$GITHUB_STEP_SUMMARY"
+
+            if [ "$verdict" = "解析失败" ]; then
+              parse_failed=$((parse_failed + 1))
+              echo "::warning::$rel: readelf 解析失败（未能提取任何 LOAD 段 Align）—— 可能是 binutils 环境异常或该文件不是合法 ELF，无法判定 16KB 对齐，请人工复核。此告警与对齐不达标无关。"
+            elif [ "$verdict" = "不达标" ]; then
+              misaligned=$((misaligned + 1))
+              echo "::warning::$rel: 最小 LOAD Align=${align_display} 低于 $MIN_LOAD_ALIGN（16KB）—— Android 15+ 16KB page size 设备无法加载该 so，targetSdk >= 35 上架硬性要求。优先排查上游依赖（litertlm-android 等 native AAR）。"
+            fi
+          done
+
+          {
+            echo ""
+            if [ "$misaligned" -gt 0 ]; then
+              echo "> ⚠️ ${misaligned}/${total} 个 so 未达标（FAIL_ON_MISALIGNED=${FAIL_ON_MISALIGNED}：仅告警，不阻断）。上游 16KB 对齐修复后此行应归零。"
+            elif [ "$parse_failed" -gt 0 ]; then
+              echo "> ⚠️ ${parse_failed}/${total} 个 so readelf 解析失败，对齐状态未知（详见上方「解析失败」行）。"
+            else
+              echo "> ✅ 全部 ${total} 个 so 达标（>= $MIN_LOAD_ALIGN）。"
+            fi
+            if [ "$parse_failed" -gt 0 ] && [ "$misaligned" -gt 0 ]; then
+              echo "> 另有 ${parse_failed} 个 so 解析失败（未计入未达标数），需人工复核。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$FAIL_ON_MISALIGNED" = "true" ] && [ "$misaligned" -gt 0 ]; then
+            echo "::error::${misaligned} 个 so 的 LOAD 段未对齐到 $MIN_LOAD_ALIGN（明细见 job summary）。FAIL_ON_MISALIGNED=true，阻断构建。"
+            exit 1
+          fi
+          # 解析失败单独阻断（仅 error 模式）：保持原保守语义 —— 对齐状态未知
+          # 时宁可红也不静默放过；文案与对齐不达标分开，指向环境修复而非依赖升级。
+          if [ "$FAIL_ON_MISALIGNED" = "true" ] && [ "$parse_failed" -gt 0 ]; then
+            echo "::error::${parse_failed} 个 so 的 LOAD 段 Align 解析失败（疑似 binutils 环境异常或非 ELF 文件，明细见 job summary）。FAIL_ON_MISALIGNED=true，阻断构建。"
+            exit 1
+          fi
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
