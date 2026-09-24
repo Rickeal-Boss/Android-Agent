@@ -49,17 +49,25 @@ class SegmentedHistoryStore(
         }
     }
 
-    /** 全量回合（按 turnId 去重取最后一条；损坏行跳过）。 */
+    /** 全量回合（按 turnId 去重取最后一条；损坏行跳过但**必须可见**）。 */
     fun listTurnsSync(): List<TurnRecord> {
         if (!segmentsFile.exists()) return emptyList()
         return runCatching {
-            segmentsFile.readLines()
-                .filter { it.isNotBlank() }
-                .mapNotNull { line ->
-                    runCatching {
-                        AgentJson.Default.decodeFromString(TurnRecord.serializer(), line)
-                    }.getOrNull()
-                }
+            val lines = segmentsFile.readLines().filter { it.isNotBlank() }
+            // 损坏行可见化（外部审查报告2 §4.3）：旧实现 mapNotNull 静默丢行，
+            // 并发 append 交错出的半行 JSON 会让回合记录无声消失 —— 排障时一行日志都没有。
+            // 跳过仍是正确处置（归档层绝不成为恢复的失败源），但必须留下痕迹。
+            val (ok, bad) = lines.partition { line ->
+                runCatching { AgentJson.Default.decodeFromString(TurnRecord.serializer(), line) }.isSuccess
+            }
+            if (bad.isNotEmpty()) {
+                AgentLogStore.warn("回合归档损坏：跳过 ${bad.size} 行（${segmentsFile.name}）")
+            }
+            ok.mapNotNull { line ->
+                runCatching {
+                    AgentJson.Default.decodeFromString(TurnRecord.serializer(), line)
+                }.getOrNull()
+            }
                 .associateBy { it.turnId }
                 .values
                 .sortedBy { it.startedAtMillis }

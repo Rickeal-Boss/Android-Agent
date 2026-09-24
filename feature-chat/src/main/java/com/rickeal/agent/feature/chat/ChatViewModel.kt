@@ -10,6 +10,9 @@ import com.rickeal.agent.core.agent.AgentRequest
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
 import com.rickeal.agent.core.agent.approval.ToolApprovalHandler
 import com.rickeal.agent.core.agent.journal.AgentRunJournal
+import com.rickeal.agent.core.agent.history.SegmentedHistoryStore
+import com.rickeal.agent.core.agent.history.TurnFold
+import com.rickeal.agent.core.agent.history.TurnState
 import com.rickeal.agent.core.agent.plan.PlanStep
 import java.io.File
 import com.rickeal.agent.core.data.AppContainer
@@ -420,17 +423,18 @@ class ChatViewModel(
      * 可能还没写完，此时 rename 会产生幽灵文件；只记 TurnRecord，归档留给终态路径。
      */
     private fun archiveTurnNow(
-        state: com.rickeal.agent.core.agent.history.TurnState,
+        state: TurnState,
         termination: String?,
         cid: String?,
         archive: Boolean,
     ) {
         val journal = currentJournal ?: return
-        val dir = container.historyRoot
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                val store = com.rickeal.agent.core.agent.history.SegmentedHistoryStore.open(dir, cid ?: return@runCatching)
-                val record = com.rickeal.agent.core.agent.history.TurnFold.fromJournal(
+                // 走容器级按会话池（外部审查报告2 §4.1）：此前每次 open() 新实例，
+                // 实例级 commitMutex 在四个并发归档入口之间互不相干 —— 锁失效。
+                val store = container.historyStore(cid ?: return@runCatching)
+                val record = TurnFold.fromJournal(
                     pool = store.pool,
                     journal = journal,
                     state = state,

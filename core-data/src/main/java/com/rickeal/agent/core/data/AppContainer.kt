@@ -15,6 +15,7 @@ import com.rickeal.agent.core.agent.ToolContext
 import com.rickeal.agent.core.agent.ToolRegistry
 import com.rickeal.agent.core.agent.installBuiltInTools
 import com.rickeal.agent.core.agent.approval.InMemoryToolApprovalCache
+import com.rickeal.agent.core.agent.history.SegmentedHistoryStore
 import com.rickeal.agent.core.agent.memory.AgentMemory
 import com.rickeal.agent.core.agent.memory.installMemoryTools
 import com.rickeal.agent.core.agent.plan.AgentPlanStore
@@ -82,6 +83,24 @@ class AppContainer(private val context: Context) {
      * journal 本体随后改名 .jsonl.archived 退出恢复扫描 —— AgentRunner 零感知。
      */
     val historyRoot: File = File(context.filesDir, "history")
+
+    /**
+     * 按会话缓存的回合归档存储池（外部审查报告2 §4.1，B3 锁失效根治）。
+     *
+     * [SegmentedHistoryStore] 的 commitMutex 是**实例级** Mutex：此前宿主每次
+     * archiveTurn 都 `open()` 一个新实例，四个并发归档入口各拿各的锁，互斥形同虚设。
+     * 按 conversationId 池化后，同一会话的所有归档路径共享同一实例 ——
+     * commitMutex 因此真正生效。
+     *
+     * 生命周期：实例与会话同生命周期，随 AppContainer 存活；会话删除后目录条目
+     * 残留（一个空 store 对象 + 已删目录的引用），无泄漏风险，不值得为此加失效回调。
+     */
+    private val historyStores = java.util.concurrent.ConcurrentHashMap<String, SegmentedHistoryStore>()
+
+    fun historyStore(conversationId: String): SegmentedHistoryStore =
+        historyStores.getOrPut(conversationId) {
+            SegmentedHistoryStore.open(historyRoot, conversationId)
+        }
 
     /** 模型下载（系统 DownloadManager，落盘到 externalFilesDir/Download）。 */
     val downloadDirPath: String?
