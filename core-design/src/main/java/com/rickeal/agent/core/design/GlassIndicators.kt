@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -98,6 +99,10 @@ fun GlassEmptyState(
      * 按钮排：非空时在 subtitle 下方渲染一行 [GlassButton]。
      * 空态不该只"告知"还得"给出口"——用户卡在空对话页时最需要的就是
      * 三条进入模型的路径，而不是一句干巴巴的提示。
+     *
+     * **建议 ≤2 个**：按钮按 `weight(1f)` 等分整行宽度，每枚的文字区随数量变窄，
+     * 3 个以上会因 [GlassButton] 的单行约束而触发末尾省略号
+     * （当前唯一传 actions 的调用点固定 2 个）。
      */
     actions: List<GlassEmptyStateAction> = emptyList(),
     action: (@Composable () -> Unit)? = null,
@@ -124,11 +129,19 @@ fun GlassEmptyState(
         }
         if (actions.isNotEmpty()) {
             Row(
-                modifier = Modifier.padding(top = 10.dp),
+                modifier = Modifier
+                    // weight 只有在 Row 自身有确定宽度时才生效 —— 不 fillMaxWidth 的话
+                    // Row 是 wrapContent 宽度，weight 会被忽略，折行问题照旧。
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 for (item in actions) {
-                    GlassButton(text = item.label, onClick = item.onClick)
+                    GlassButton(
+                        text = item.label,
+                        onClick = item.onClick,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
         }

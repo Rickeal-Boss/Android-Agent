@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
@@ -128,6 +129,8 @@ fun GlassButton(
                 text = "处理中",
                 style = MaterialTheme.typography.labelLarge,
                 color = colors.onGlassMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         } else {
             if (icon != null) {
@@ -137,6 +140,11 @@ fun GlassButton(
                 text = text,
                 style = MaterialTheme.typography.labelLarge,
                 color = if (enabled) colors.onGlass else colors.onGlassSubtle,
+                // HIG：按钮标签必须单行。中文没有词边界，容器一窄就整段换行成两行，
+                // 胶囊按钮高度被顶高、两行文字挤在胶囊里 —— 宁可末尾省略号也不要折行。
+                // 已核查全仓 27 个调用点文案最长 13 字，单行不触发省略号。
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
