@@ -155,7 +155,12 @@ private fun LegalStepLayout(
                         // 限高必须保留：Dialog / 卡片高度约束无界时 verticalScroll 会抛
                         // IllegalStateException。这里只是把固定 300.dp 换成随窗口高度缩放。
                         .heightIn(max = bodyMaxHeight),
-                    material = GlassMaterial.ULTRA_THIN,
+                    // HIG materials：容纳大量文本的组件必须用 regular 变体。
+                    // 这里是限高滚动的整篇法律文本（远多于 3 行）——ULTRA_THIN 的
+                    // blur 5 压不住背后的动态光斑，长文滚动时字面发飘。
+                    // 取 REGULAR 而非 THIN：本仓 Thin.alpha(0.18) 与 Regular.alpha(0.16)
+                    // 几乎无差，真正的差别是 blur 5 → 7（把光斑磨平）；顺带与 HIG 术语对齐。
+                    material = GlassMaterial.REGULAR,
                     cornerRadius = tokens.radiusSm,
                     // 同意页正文卡是大面积容器且带滚动，色散 7 次采样在这里纯属白烧。
                     // 写死而不是依赖默认值：以后默认值被翻回去时这里不会跟着打开。

@@ -291,7 +291,10 @@ fun ChatToolCard(
     val colors = LocalGlassColors.current
     GlassCard(
         modifier = modifier.fillMaxWidth(),
-        material = GlassMaterial.ULTRA_THIN,
+        // 正文量：argumentsJson(maxLines=3) + output(maxLines=6) ≈ 最多 12 行。
+        // 判据见 GlassMaterial 文件头 KDoc —— 走 THIN 而不是 REGULAR：
+        // 本卡是 LazyColumn 的 item，模糊成本会 ×N，下限达标即止。
+        material = GlassMaterial.THIN,
         cornerRadius = 18.dp,
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
     ) {

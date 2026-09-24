@@ -350,7 +350,10 @@ private fun ThinkingBlock(
     val tokens = LocalGlassTokens.current
     LiquidGlassSurface(
         modifier = Modifier.fillMaxWidth(),
-        material = GlassMaterial.ULTRA_THIN,
+        // 展开后是几十行思考全文；且在气泡内随 LazyColumn 逐条渲染。
+        // 判据见 GlassMaterial 文件头 KDoc：≥3 行正文禁 ULTRA_THIN，
+        // 列表 item 内取 THIN（模糊成本 ×N，下限达标即止）。
+        material = GlassMaterial.THIN,
         cornerRadius = tokens.radiusSm,
         onClick = onToggle,
         // 气泡内嵌套的容器，跟着气泡一起进 LazyColumn —— 同理关色散。
