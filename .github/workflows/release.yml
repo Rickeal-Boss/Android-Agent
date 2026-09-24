@@ -222,8 +222,9 @@ jobs:
         env:
           # 16KB = 0x4000；将来 page size 要求提高时只改这一处
           MIN_LOAD_ALIGN: '0x4000'
-          # false = 不达标仅 ::warning:: 不阻断；true = 不达标 ::error:: 且 exit 1
-          FAIL_ON_MISALIGNED: 'false'
+          # true = 不达标 ::error:: 且 exit 1。首轮 run 35978095044 实测 litertlm
+          # 0.11.0 全部 so 达标（零告警），两阶段观察期结束，转 error 常驻
+          FAIL_ON_MISALIGNED: 'true'
         run: |
           apk_path="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
           if [ -z "$apk_path" ]; then
