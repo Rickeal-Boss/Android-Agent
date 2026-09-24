@@ -341,10 +341,16 @@ class ModelsViewModel(
      */
     fun onDownloadFromUrl(url: String) {
         val trimmed = url.trim()
-        if (!trimmed.startsWith("http://", ignoreCase = true) &&
-            !trimmed.startsWith("https://", ignoreCase = true)
-        ) {
-            _uiState.update { it.copy(error = "请填写 http(s) 开头的模型直链", message = null) }
+        // https-only（外部审查报告1-B9，经方案核验采纳）：明文 http 下载 2~4GB 模型
+        // 既可被中间人替换成恶意权重，也会被部分设备/网络的明文流量策略拦截。
+        // 下载链路仍健在（onDownloadFromUrl → ModelDownloader → 系统 DownloadManager，
+        // 全部预设均为 https），故收紧而非移除。
+        if (trimmed.startsWith("http://", ignoreCase = true)) {
+            _uiState.update { it.copy(error = "仅支持 https 链接", message = null) }
+            return
+        }
+        if (!trimmed.startsWith("https://", ignoreCase = true)) {
+            _uiState.update { it.copy(error = "请填写 https:// 开头的模型直链", message = null) }
             return
         }
         viewModelScope.launch {
