@@ -33,6 +33,17 @@ data class GenerationRequest(
      * conversationId 变化 => 关闭旧 Conversation 并重建（不回放历史）。
      */
     val conversationId: String? = null,
+    /**
+     * 应用侧上下文版本（外部审查报告2 §2，B1 压缩语义失效的根治）。
+     *
+     * 语义契约：**contextVersion 变化时，引擎必须关闭旧 Conversation 并全量接收
+     * [messages]**（即重建 KV cache、清增量水印、整包重放）。
+     * 存在理由：引擎的 Conversation 是「只增不减」的 —— 应用侧发生引擎无法用增量
+     * 方式表达的变化（典型：上下文压缩真的裁掉了历史消息）时，唯一的正确动作就是
+     * 重建。没有这个契约，压缩只存在于应用侧的窗口里，引擎的 KV cache 仍持有全部
+     * 旧历史 —— 压缩语义整体失效，模型「记得」所有本该被裁掉的内容。
+     */
+    val contextVersion: Long = 0,
 )
 
 /** 探测出来的引擎能力。驱动 UI 的开关可用性与 Agent 的工具通道选择。 */

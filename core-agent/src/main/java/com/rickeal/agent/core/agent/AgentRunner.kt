@@ -278,6 +278,27 @@ class AgentRunner(
             journal?.appendUserInput(request.userInput)
 
             var round = 0
+            // ── 上下文版本与 token 记账（外部审查报告2 §2，B1 压缩语义失效的根治）──
+            // 端侧引擎的 Conversation 是「只增不减」的 KV cache：一旦压缩真的裁掉了历史，
+            // 引擎没有任何增量手段表达「这段历史没了」。contextVersion 就是把这件事
+            // 显式告诉引擎的契约：版本一变，引擎必须关闭旧 Conversation、清水印、全量重放
+            // messages（见 LiteRtLmEngine.ensureConversation 与 EngineContract.contextVersion）。
+            //
+            // sentTokens / accountedIds 是发送侧的 token 记账：引擎的 Conversation 里实际
+            // 持有多少 token，只能由我们（唯一知道「哪些 id 已送进引擎」的一方）维护。
+            //  - 引擎必重建（版本变 / 会话切）→ 全量重放 → 整包重新记账；
+            //  - 否则只把「没发过的新消息」增量记账。
+            // 由此「sentTokens > budget」才是触发压缩的可靠判据（旧的只看 working 估算，
+            // 在压缩返回原样的场景下会一轮又一轮地重复压缩、永不重建）。
+            //
+            // ⚠️ 必须是 executeBodyUnchecked 的**局部**状态，不能上提到类字段：
+            // AgentRunner 是 AppContainer 单例，ask_actor 子代理会在父 run 的工具阶段
+            // **嵌套**执行完整子 run —— 类字段会被子 run 覆写、父 run 恢复后拿着脏状态
+            // 继续记账（局部变量随协程栈天然隔离）。
+            var contextVersion = 0L
+            var sentTokens = 0L
+            var accountedIds = mutableSetOf<String>()
+            var lastCid: String? = null
             // 计划版本水印：只把「本次 run 期间发生的变化」推给 UI（run 打开前的历史计划不重放）
             var lastPlanVersion = request.planStore
                 ?.peek(request.conversationId ?: "")?.version ?: 0L
@@ -329,6 +350,16 @@ class AgentRunner(
                         AgentLogStore.info("上下文压缩放弃：未找到安全切点，原样发送 ${working.size} 条（预算 $budget token）")
                     }
                 }
+                // 真的裁掉了消息 → bump 版本号，引擎下一轮收到请求时会重建 Conversation
+                // 并全量重放窗口内的历史（见 EngineContract.contextVersion 的契约）。
+                // 「压缩后仍超预算」不另设终态：压缩器放弃时原样发送（上面的 info 日志），
+                // 由下一轮的 needRebuild 判据再次尝试 —— 这是既有行为，保持不变。
+                var didRebuild = false
+                if (policy.compressContext && window.size < working.size) {
+                    contextVersion++
+                    didRebuild = true
+                    AgentLogStore.info("上下文重建：v$contextVersion，${working.size} → ${window.size} 条")
+                }
 
                 var accumulator = StreamAccumulator()
                 val generationRequest = GenerationRequest(
@@ -339,7 +370,25 @@ class AgentRunner(
                     model = request.model,
                     tools = if (useNativeTools) availableTools else emptyList(),
                     conversationId = request.conversationId,
+                    contextVersion = contextVersion,
                 )
+
+                // ── 发送侧 token 记账 ────────────────────────────────────────
+                // 以**清洗后实际发出的消息列表**（generationRequest.messages）为准。
+                // 引擎必重建（本轮 bump 了版本，或会话 id 切换 —— 子代理 ask_actor 走这里）
+                // 时会全量重放，整包重新记账；否则只把「没发过」的新消息增量记账。
+                // 记账放在请求组装完成后、真正发送前：即便后续生成失败重试，本轮消息
+                // 确实已进入请求管线，按已发送口径记账与引擎水印语义一致。
+                val requestMessages = generationRequest.messages
+                if (didRebuild || request.conversationId != lastCid) {
+                    accountedIds = requestMessages.map { it.id }.toMutableSet()
+                    sentTokens = TokenEstimator.estimate(requestMessages)
+                } else {
+                    val fresh = requestMessages.filter { it.id !in accountedIds }
+                    sentTokens += TokenEstimator.estimate(fresh)
+                    accountedIds.addAll(fresh.map { it.id })
+                }
+                lastCid = request.conversationId
 
                 // 生成失败同样「清理 + 重试一次」：本地引擎的 native 句柄一旦失效，
                 // 缓存里的实例不会自愈，只有换新实例重新 load 才能恢复（对齐官方 gallery 的
@@ -493,7 +542,15 @@ class AgentRunner(
                         )
                         working.add(repeatModel)
                         journal?.appendMessage(repeatModel)
-                        val reminderMessage = ChatMessage(role = Role.USER, text = reminder)
+                        // 合成提醒用**稳定派生 id**（外部审查报告2 §3.1 防御性随行）：
+                        // 引擎按消息 id 做增量水印去重，派生 id 保证同一轮的提醒在
+                        // 任何重放/清洗路径下都是同一条消息，而不是每轮一个新 UUID。
+                        // ⚠️ 上面的 repeatModel 不加派生 id —— 那是模型自己的回复，不是合成消息。
+                        val reminderMessage = ChatMessage(
+                            id = "reminder:$round:inject",
+                            role = Role.USER,
+                            text = reminder,
+                        )
                         working.add(reminderMessage)
                         // 提醒落独立 reminder 行（不是 message）：它是行为矫正不是用户说的话，
                         // 记成 message 会被恢复流程当成用户输入渲染进界面（Wave2 两处记录
@@ -527,6 +584,7 @@ class AgentRunner(
                             return
                         }
                         val nudge = ChatMessage(
+                            id = "nudge:$round",
                             role = Role.USER,
                             text = "你上一轮没有输出任何内容。请直接给出最终答案；如果任务无法继续，请说明原因后停止。",
                         )

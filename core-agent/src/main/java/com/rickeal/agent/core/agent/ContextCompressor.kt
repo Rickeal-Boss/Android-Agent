@@ -1,5 +1,6 @@
 package com.rickeal.agent.core.agent
 
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.TokenEstimator
@@ -183,7 +184,18 @@ fun sanitizeForProvider(messages: List<ChatMessage>): List<ChatMessage> {
                     errorMessage = "工具结果缺失（上下文被压缩或执行被中断），请基于已有信息继续。",
                 )
             }
-            out.add(ChatMessage(role = Role.TOOL, toolResults = patch))
+            // 补丁消息必须用**稳定派生 id**（外部审查报告2 §3.1，消 B2 补丁放大）：
+            // 默认 newId() 每轮生成新 UUID，本地引擎的增量水印（sentMessageIds）会把
+            // 同一条补丁当成「新消息」逐轮重发 —— 上下文里补丁越积越多，模型失焦。
+            // 以缺失调用的 callId 派生：同一组缺失补丁在引擎水印下天然去重。
+            out.add(
+                ChatMessage(
+                    id = "patch:" + missing.joinToString("_") { it.id },
+                    role = Role.TOOL,
+                    toolResults = patch,
+                )
+            )
+            AgentLogStore.warn("工具结果缺失，已补合成结果：${missing.joinToString { it.name }}")
         }
     }
     return if (changed) out else messages

@@ -16,6 +16,7 @@ import com.rickeal.agent.core.engine.EngineException
 import com.rickeal.agent.core.engine.EngineLoadConfig
 import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.DeltaTracker
 import com.rickeal.agent.core.model.EngineKind
@@ -108,6 +109,12 @@ class LiteRtLmEngine(
     private var loadedVisionBackend: InferenceBackend? = null
     private var loadedAudioBackend: InferenceBackend? = null
     private var currentConversationId: String? = null
+    /**
+     * 当前 Conversation 对应的应用侧上下文版本（[GenerationRequest.contextVersion]）。
+     * 与 currentConversationId 同生命周期：会话创建时记录、重建判据参与比对、
+     * releaseInternal 清零（外部审查报告2 §2：版本变化 = 必须重建 Conversation）。
+     */
+    private var currentContextVersion: Long = 0
     private var loadConfig: EngineLoadConfig? = null
 
     @Volatile
@@ -184,6 +191,7 @@ class LiteRtLmEngine(
                         runCatching { conversation?.close() }
                         conversation = null
                         currentConversationId = null
+                        currentContextVersion = 0
                         // 会话重建 = 上下文从零开始，水印必须一起清：
                         // 留着的话新会话会把整段历史当成「已发送」而不再重发 —— 模型直接失忆。
                         sentMessageIds.clear()
@@ -257,10 +265,22 @@ class LiteRtLmEngine(
     private fun ensureConversation(request: GenerationRequest): LiteRtConversation {
         val currentEngine = engine
             ?: throw EngineException("LiteRT-LM: 引擎未加载，请先 load()")
-        if (request.conversationId != currentConversationId) {
+        // 重建判据（外部审查报告2 §2）：conversationId 或 contextVersion 任一变化。
+        // cid 变化 = 换了会话；contextVersion 变化 = 应用侧上下文发生了引擎无法增量
+        // 表达的变化（典型：上下文压缩真的裁掉了历史）—— 两条路都必须关旧会话、
+        // 清水印、让上层全量重放 messages，否则 KV cache 与应用侧窗口脱节。
+        if (request.conversationId != currentConversationId ||
+            request.contextVersion != currentContextVersion
+        ) {
+            // 可观测重建频率（核验建议）：重建 = 一次全量 re-prefill（4B 模型秒级开销），
+            // 频率异常升高说明上层压缩/会话切换策略需要关注。
+            AgentLogStore.info(
+                "LiteRT-LM 会话重建：cid=${request.conversationId ?: "null"} v${request.contextVersion}" +
+                    "（旧 cid=${currentConversationId ?: "null"} v$currentContextVersion）"
+            )
             runCatching { conversation?.close() }
             conversation = null
-            // 换了会话 = 换了 KV cache，水印必须一起清零，否则历史不会被重发 → 新会话丢上下文
+            // 换了会话/版本 = 换了 KV cache，水印必须一起清零，否则历史不会被重发 → 新会话丢上下文
             sentMessageIds.clear()
         }
         // 关键：上一条流若被取消或出错（cancelProcess / onError），Conversation 可能停留在
@@ -300,6 +320,7 @@ class LiteRtLmEngine(
         )
         conversation = created
         currentConversationId = request.conversationId
+        currentContextVersion = request.contextVersion
         return created
     }
 
@@ -558,6 +579,7 @@ class LiteRtLmEngine(
         conversation = null
         engine = null
         currentConversationId = null
+        currentContextVersion = 0
         loaded = false
         // 「复用判据」的记忆必须和 engine 一起清掉：只清 engine 而留着这几个参数，
         // 会让下一次 load() 拿着残留参数误判成「同一个引擎」而跳过重建。
