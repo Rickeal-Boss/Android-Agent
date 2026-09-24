@@ -227,8 +227,11 @@ private fun SegmentedIndicator(
         if (!dampedDragAnimation.isDragging) currentIndex = selectedIndex
     }
     // 内部态变化 → 弹簧动画到位。drop(1)：初始组合不回调。
-    // ⚠️ onSelected **不在收集器里发**（回显写也会触达收集器，会形成
-    // 回显 → 回调 → 父层 setState → 回显 的反馈环）——用户动作位点直发。
+    // ⚠️ 事实描述（**旧注释写反了**，勿再照抄）：`onSelected` 在收集器里**也会发一次**
+    // —— 外部回显写同样触达收集器，所以一次用户提交实际走了 onDragStopped/onClick
+    // 与这里两条路（重复调用是幂等的；"双发"已入 backlog 单独立项，本波不改行为）。
+    // ⚠️ 由此得出本波最要紧的一条：**触感绝不能加进这个收集器**，加进来就是
+    // "导航返回也震""没点也震"。tick() 只发在 onDragStopped 与项 onClick 两个位点。
     LaunchedEffect(dampedDragAnimation) {
         snapshotFlow { currentIndex }
             .drop(1)

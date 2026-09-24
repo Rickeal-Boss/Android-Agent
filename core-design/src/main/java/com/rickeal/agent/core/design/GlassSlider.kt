@@ -240,10 +240,16 @@ private fun LiquidSliderTrack(
                     // 而外层 toggleable 也提交一次 → 翻两次没反应。
                     if (didDrag && !yieldedToParent && finishedNormally) {
                         currentOnFinished?.invoke()
-                        // 连续滑块（steps <= 0）拖动中一次都不发（见 onDrag 处注释），
-                        // 松手这一下就是它**唯一**的触感 —— 标记"手势结束"。
-                        // 离散滑块在拖动中已经逐档 tick 过，这里不再补，避免收尾多响一下。
-                        if (currentSteps <= 0) currentHaptics.gestureEnd()
+                        // 松手**统一**发一次 gestureEnd()，不再按 steps 分区。
+                        // 分区（原写法只给连续滑块发）有两个实打实的漏洞：
+                        //   ① 在**一档之内**拖动后松手 ⇒ 离散滑块整段手势零反馈
+                        //      （它只有过档 tick，没过档就不响）；
+                        //   ② `SegmentTick` 是 **API 34** 常量，Android 12/13
+                        //      （API 31–33）上逐档 tick **全程静默**，而 `GestureEnd`
+                        //      是 API 30 常量、minSdk 31 全版本必响 —— 分区等于让
+                        //      这些机型上的离散滑块一声不吭。
+                        // 连续滑块拖动中一次都不发（见 onDrag 处注释），这下是它唯一的反馈。
+                        currentHaptics.gestureEnd()
                     }
                     didDrag = false
                     sliderDragging = false
@@ -313,17 +319,23 @@ private fun LiquidSliderTrack(
         /**
          * 统一的值提交口（点轨道 / 键盘 / 无障碍 SetProgress 都走这里）。
          * 返回是否真的发生了变化 —— 无障碍 action 靠它决定"这步算不算被执行了"。
+         *
+         * @param throttled true = 触感走 [GlassHaptics.tick] 的 100ms 节流。
+         *   键盘与无障碍路径会**高频重复**触发：长按方向键时系统以 20~30Hz 自动
+         *   重复发 KeyDown、TalkBack 也会连续调 SetProgress —— 不节流就是本波要防的
+         *   连震嗡鸣。false = 一次性离散动作（点轨道跳转），天然一次一发，
+         *   节流只会让它丢反馈。
+         *   ⚠️ 判定**不**用 `event.nativeKeyEvent.repeatCount`：该 API 在 Compose
+         *   1.10 的状态不确定，为一个 P2 引入新编译风险不值得。
          */
-        fun commitValue(next: Float): Boolean {
+        fun commitValue(next: Float, throttled: Boolean = true): Boolean {
             if (!enabled) return false
             val range = currentRange
             val snapped = snapToStep(next.coerceIn(range), range, currentSteps)
             if (snapped == currentValue) return false
             dampedDragAnimation.animateToValue(snapped)
             currentOnChange(snapped)
-            // 一次性离散动作（点轨道跳转 / 键盘步进 / 无障碍 SetProgress）：
-            // 不走节流 —— 这些路径天然是一次一发，节流只会让连续按键丢反馈。
-            currentHaptics.tickForced()
+            if (throttled) currentHaptics.tick() else currentHaptics.tickForced()
             currentOnFinished?.invoke()
             return true
         }
@@ -387,7 +399,9 @@ private fun LiquidSliderTrack(
                         val target =
                             if (isLtr) range.start + delta
                             else range.endInclusive - delta
-                        commitValue(target)
+                        // 点轨道跳转：一次性离散动作，不受节流。
+                        // （键盘 / 无障碍路径走默认的节流版本，防长按连震。）
+                        commitValue(target, throttled = false)
                     }
                 },
             contentAlignment = Alignment.CenterStart,

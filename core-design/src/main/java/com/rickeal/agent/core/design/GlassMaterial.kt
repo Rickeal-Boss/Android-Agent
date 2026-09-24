@@ -38,6 +38,16 @@ import androidx.compose.ui.unit.dp
  * 3. **豁免**：功能层（顶栏 / 底栏 / 页签 / FAB / 开关 / 分段）、纯图像容器、
  *    单行文本（chip、气泡标题）—— 不适用本判据。功能层本来就该是悬浮玻璃，
  *    按质感选档，不要拿文本量去约束它。
+ *
+ * ## ⚠️ 同档材质**嵌套**时，层次信号来自描边 / 高光，不是底色
+ *
+ * ThinkingBlock 抬到 THIN 后，它外层那条 AI 气泡也是 THIN（气泡是
+ * `isUser ? REGULAR : THIN`）⇒ 两者 `backgroundAlpha` **完全相同**（0.18），
+ * 底色不提供任何层次。接缝靠的是 `borderAlpha` / `specularAlpha` —— 这俩才是真正的
+ * 档位信号（THIN 0.44 / 0.28 → REGULAR 0.58 / 0.36，逐档递增）。
+ *
+ * 后人再往同档容器里叠同档容器时，别指望"换个材质档"能分出层次：要么靠描边 / 高光，
+ * 要么让内外层不同档，否则就是一块看不出边界的玻璃。
  */
 @Immutable
 enum class GlassMaterial {

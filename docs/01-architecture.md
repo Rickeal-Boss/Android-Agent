@@ -4469,8 +4469,6 @@ fun GlassTopBar(
     subtitle: String? = null,
     navigationIcon: (@Composable () -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null,
-    /** 0f=完全展开（超薄材质），1f=完全折叠（加厚材质 + 分隔线） */
-    scrollFraction: Float = 0f,
 )
 
 @Composable
@@ -4575,14 +4573,22 @@ fun GlassThinkingIndicator(
     label: String? = "思考中",
 )
 
-@Composable
-fun GlassDivider(modifier: Modifier = Modifier, alpha: Float = 0.35f)
+/** 空态按钮排的单个动作。由调用方把导航/业务回调映射进来。 */
+data class GlassEmptyStateAction(
+    val label: String,
+    val onClick: () -> Unit,
+)
 
 @Composable
 fun GlassEmptyState(
     title: String,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
+    /**
+     * 按钮排：非空时在 subtitle 下方渲染一行 GlassButton，按 weight(1f) 等分整行。
+     * 建议 ≤2 个 —— 等分后每枚的文字区随数量变窄，3 个以上会触发末尾省略号。
+     */
+    actions: List<GlassEmptyStateAction> = emptyList(),
     action: (@Composable () -> Unit)? = null,
 )
 
@@ -4977,7 +4983,7 @@ dependencies {
 | B17 | `core-design/.../design/GlassSwitch.kt` | 开关 |
 | B18 | `core-design/.../design/GlassChip.kt` | 标签 |
 | B19 | `core-design/.../design/GlassDialog.kt` | 对话框 |
-| B20 | `core-design/.../design/GlassIndicators.kt` | GlassThinkingIndicator / GlassDivider / GlassEmptyState |
+| B20 | `core-design/.../design/GlassIndicators.kt` | GlassThinkingIndicator / GlassEmptyState（含 GlassEmptyStateAction） |
 | B21 | `core-design/.../design/GlassSettingRow.kt` | 设置行 |
 | B22 | `core-design/.../design/WindowSizeClass.kt` | 自适应断点 |
 | B23 | `core-design/.../design/GlassBackdropBlur.kt` | **P2 可删**：真实 RenderEffect 背景模糊 |

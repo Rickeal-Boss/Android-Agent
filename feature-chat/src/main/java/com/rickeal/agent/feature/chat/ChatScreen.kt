@@ -206,7 +206,13 @@ fun ChatScreen(
                         // 参数变了照样再问 —— 对齐 ZCode「输入每次不同的工具不能记住决策」。
                         GlassButton(
                             text = "相同调用不再询问",
-                            onClick = viewModel::onApprovalRememberForSession,
+                            onClick = {
+                                // 与同卡「授权」同类：一次明确的**肯定性提交**（写入
+                                // 审批缓存 TTL 30min）。卡里另两枚都震、唯独它不震
+                                // 会显得像没按到，补 confirm()。
+                                haptics.confirm()
+                                viewModel.onApprovalRememberForSession()
+                            },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }

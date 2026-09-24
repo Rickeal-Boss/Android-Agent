@@ -58,6 +58,7 @@ import com.rickeal.agent.core.data.LegalDocuments
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.rememberGlassHaptics
 import com.rickeal.agent.core.model.ModelCapabilities
 import java.util.Locale
 
@@ -331,12 +332,19 @@ private fun GemmaTermsGateDialog(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val uriHandler = LocalUriHandler.current
+    // 与 ConsentScreens 的 Gemma 条款页是**同一件事的两个入口**，语义必须一致：
+    // 「同意并继续」= Confirm（接受条款）；「暂不」= 不发（它是把决定推迟，不是拒绝，
+    // 与那边「稍后再说」同一口径）。
+    val haptics = rememberGlassHaptics()
 
     GlassDialog(
         onDismissRequest = onDismiss,
         title = LegalDocuments.GEMMA_TERMS_TITLE,
         confirmLabel = "同意并继续",
-        onConfirm = onAccept,
+        onConfirm = {
+            haptics.confirm()
+            onAccept()
+        },
         dismissLabel = "暂不",
         content = {
             Column(modifier = Modifier.fillMaxWidth()) {
