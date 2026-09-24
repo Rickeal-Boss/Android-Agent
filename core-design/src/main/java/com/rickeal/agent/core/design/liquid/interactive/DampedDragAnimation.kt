@@ -216,7 +216,7 @@ class DampedDragAnimation(
             yieldedToParentState = false
             setPressed(true)
             isDraggingState.value = true
-            onDragStarted(this)
+            onDragStarted(this@DampedDragAnimation)
             try {
                 while (true) {
                     val event = awaitPointerEvent()
@@ -341,7 +341,7 @@ class DampedDragAnimation(
                 setPressed(false)
                 // ⚠️ 顺序不能换：onDragStopped 必须**先**执行、且能读到 true，
                 // 它才能据此跳过提交（让位场景）。清标志必须放在它之后。
-                onDragStopped(this)
+                onDragStopped(this@DampedDragAnimation)
                 // 让位标志的生命周期 = 本次手势。这里清掉，避免跨手势残留。
                 // （awaitEachGesture 开头那次复位是双保险，两者不冲突。）
                 yieldedToParentState = false
