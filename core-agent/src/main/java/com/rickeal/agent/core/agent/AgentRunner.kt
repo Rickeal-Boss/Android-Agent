@@ -397,7 +397,7 @@ class AgentRunner(
                 val requestMessages = generationRequest.messages
                 if (contextVersion != accountedVersion || request.conversationId != lastCid) {
                     accountedIds = requestMessages.map { it.id }.toMutableSet()
-                    sentTokens = TokenEstimator.estimate(requestMessages)
+                    sentTokens = TokenEstimator.estimate(requestMessages).toLong()
                     accountedVersion = contextVersion
                 } else {
                     val fresh = requestMessages.filter { it.id !in accountedIds }
