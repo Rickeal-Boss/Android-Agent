@@ -25,8 +25,6 @@ import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
  * **刻意保持全宽、不改成胶囊**：顶栏横跨整个屏幕宽度，做成胶囊（两端半圆）会把
  * 标题和 actions 挤到圆角里。这里用 `radiusFull`（999dp）让上下边缘圆到半高，
  * 观感上已经是"浮起来的一条玻璃"，不需要胶囊。
- *
- * @param scrollFraction 0f=完全展开（超薄材质），1f=完全折叠（加厚材质 + 分隔线）
  */
 @Composable
 fun GlassTopBar(
@@ -35,12 +33,15 @@ fun GlassTopBar(
     subtitle: String? = null,
     navigationIcon: (@Composable () -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null,
-    scrollFraction: Float = 0f,
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
-    val collapsed = scrollFraction.coerceIn(0f, 1f) > 0.5f
-    val material = if (collapsed) GlassMaterial.THIN else GlassMaterial.ULTRA_THIN
+    // 顶栏恒定超薄材质：它是**功能层**（控制 / 导航 / 悬浮层），
+    // 见 GlassMaterial 文件头 KDoc 的豁免条款 —— 功能层不按"文本量"选档，
+    // 标题只有单行，也没有长文容器需要压光斑。
+    // （原实现有 scrollFraction → collapsed → THIN + 分隔线的折叠分支，
+    //   7 个调用点 0 处传参 ⇒ 该分支恒为 false，属死代码，已整链删除。）
+    val material = GlassMaterial.ULTRA_THIN
     val animationScope = rememberCoroutineScope()
     val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
 
@@ -106,9 +107,6 @@ fun GlassTopBar(
                     content = actions,
                 )
             }
-        }
-        if (collapsed) {
-            GlassDivider(modifier = Modifier.padding(horizontal = 24.dp))
         }
     }
 }

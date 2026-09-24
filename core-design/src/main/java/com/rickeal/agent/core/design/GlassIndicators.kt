@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.weight
@@ -68,17 +67,6 @@ fun GlassThinkingIndicator(
             )
         }
     }
-}
-
-@Composable
-fun GlassDivider(modifier: Modifier = Modifier, alpha: Float = 0.35f) {
-    val colors = LocalGlassColors.current
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(colors.onGlass.copy(alpha = alpha.coerceIn(0f, 1f))),
-    )
 }
 
 /**
