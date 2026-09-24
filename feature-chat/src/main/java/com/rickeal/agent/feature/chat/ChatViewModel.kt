@@ -10,7 +10,6 @@ import com.rickeal.agent.core.agent.AgentRequest
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
 import com.rickeal.agent.core.agent.approval.ToolApprovalHandler
 import com.rickeal.agent.core.agent.journal.AgentRunJournal
-import com.rickeal.agent.core.agent.history.SegmentedHistoryStore
 import com.rickeal.agent.core.agent.history.TurnFold
 import com.rickeal.agent.core.agent.history.TurnState
 import com.rickeal.agent.core.agent.plan.PlanStep

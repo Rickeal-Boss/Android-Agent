@@ -84,11 +84,17 @@ class JsonFileStore(
         } catch (t: Throwable) {
             // 某些文件系统不支持 ATOMIC_MOVE，退化为普通 rename（仍是元数据操作，非逐字节重写）。
             // 注意：writeText 失败时 move 也会失败，退化 rename 静默不成 —— 所以 finally 统一清 tmp。
-            runCatching {
+            // 退化 rename **成功**同样算落盘成功（严质衡审查 P2-2）：失败的是「原子性」
+            // 而不是「写入」，返回 true 才与调用方感知一致。
+            val fallback = runCatching {
                 Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
-            AgentLogStore.error("JSON 落盘失败：$fileName（${t.javaClass.simpleName}: ${t.message}）")
-            false
+            if (fallback.isSuccess) {
+                true
+            } else {
+                AgentLogStore.error("JSON 落盘失败：$fileName（${t.javaClass.simpleName}: ${t.message}）")
+                false
+            }
         } finally {
             // 孤儿 tmp 清理：唯一清理入口 delete() 在「写失败」路径上永远走不到，必须就地清。
             if (tmp.exists()) runCatching { tmp.delete() }

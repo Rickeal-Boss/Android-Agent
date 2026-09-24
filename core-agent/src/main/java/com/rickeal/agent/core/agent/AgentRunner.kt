@@ -296,6 +296,10 @@ class AgentRunner(
             // **嵌套**执行完整子 run —— 类字段会被子 run 覆写、父 run 恢复后拿着脏状态
             // 继续记账（局部变量随协程栈天然隔离）。
             var contextVersion = 0L
+            // 上次记账时的版本：记账分支以「版本自上次记账后是否变过」为全量触发之一，
+            // 覆盖三类 bump 来源 —— 压缩裁剪（本块）、ask_actor 子 run 执行（工具段）、
+            // 生成失败重建引擎后重试成功（生成段）。三者都意味着引擎侧将重建并全量重放。
+            var accountedVersion = 0L
             var sentTokens = 0L
             var accountedIds = mutableSetOf<String>()
             var lastCid: String? = null
@@ -353,12 +357,18 @@ class AgentRunner(
                 // 真的裁掉了消息 → bump 版本号，引擎下一轮收到请求时会重建 Conversation
                 // 并全量重放窗口内的历史（见 EngineContract.contextVersion 的契约）。
                 // 「压缩后仍超预算」不另设终态：压缩器放弃时原样发送（上面的 info 日志），
-                // 由下一轮的 needRebuild 判据再次尝试 —— 这是既有行为，保持不变。
-                var didRebuild = false
+                // 由下一轮判据再次尝试 —— 这是既有行为，保持不变。
                 if (policy.compressContext && window.size < working.size) {
                     contextVersion++
-                    didRebuild = true
                     AgentLogStore.info("上下文重建：v$contextVersion，${working.size} → ${window.size} 条")
+                    // 窗口落回 working 本体（严质衡审查 P1-1）：working 原本只增不减，
+                    // 一旦超预算，之后每轮 window 都比 working 小 → 版本每轮 ++ →
+                    // 引擎每轮重建 + 全量 re-prefill（4B 秒级），压缩收益被完全吐回。
+                    // 回写后 working 与窗口对齐，版本只在「新的越界」时再次 bump。
+                    // 安全性：working 是本 run 局部 ArrayList，原地改写不影响外部引用；
+                    // journal 已逐条独立落盘不受影响；消息 id 保持原对象，水印语义无损。
+                    working.clear()
+                    working.addAll(window)
                 }
 
                 var accumulator = StreamAccumulator()
@@ -375,14 +385,20 @@ class AgentRunner(
 
                 // ── 发送侧 token 记账 ────────────────────────────────────────
                 // 以**清洗后实际发出的消息列表**（generationRequest.messages）为准。
-                // 引擎必重建（本轮 bump 了版本，或会话 id 切换 —— 子代理 ask_actor 走这里）
-                // 时会全量重放，整包重新记账；否则只把「没发过」的新消息增量记账。
+                // 全量分支触发条件：版本自上次记账后变过（压缩裁剪 / ask_actor 子 run
+                // 执行过 / 生成失败重建后重试成功），或会话 id 切换。注意「会话 id 切换」
+                // 对**子 run 自己的首轮**成立；父 run 的 cid 全程不变，父 run 恢复后的
+                // 全量记账由 ask_actor 执行点的版本 bump 保证（见工具段的接入点注释）。
                 // 记账放在请求组装完成后、真正发送前：即便后续生成失败重试，本轮消息
                 // 确实已进入请求管线，按已发送口径记账与引擎水印语义一致。
+                // 已知残余误差：生成失败后**重试也失败**（终态 Failed 直接返回）不记账
+                // 也无影响；真正无法覆盖的是引擎在轮内被外部整体重置的场景 —— 当前
+                // 记账状态只写不读（尚未接入压缩门控），启用门控前必须先补齐该口径。
                 val requestMessages = generationRequest.messages
-                if (didRebuild || request.conversationId != lastCid) {
+                if (contextVersion != accountedVersion || request.conversationId != lastCid) {
                     accountedIds = requestMessages.map { it.id }.toMutableSet()
                     sentTokens = TokenEstimator.estimate(requestMessages)
+                    accountedVersion = contextVersion
                 } else {
                     val fresh = requestMessages.filter { it.id !in accountedIds }
                     sentTokens += TokenEstimator.estimate(fresh)
@@ -395,6 +411,9 @@ class AgentRunner(
                 // cleanUpAndReinitialize）。严格只重试一次 —— 坏模型/坏配置重试多少次都一样，
                 // 无限重试只会把失败拖成「永远在转圈」。
                 var generationAttempt = 0
+                // 重试路径发生过 rebuildEngine（引擎整体换新，Conversation 从零）→
+                // 重试成功后必须 bump 版本让下一轮记账走全量分支（严质衡审查 P1-2）。
+                var generationRetried = false
                 while (true) {
                     // 每次生成都重新解析引擎引用（不能依赖上一轮的 engine 变量）：
                     // 嵌套子 run（ask_actor）在父 run 的工具阶段内运行，若子 run 内部
@@ -458,8 +477,17 @@ class AgentRunner(
                         AgentLogStore.warn(
                             "引擎重建：$kind 生成失败（${t.javaClass.simpleName}: ${t.message}），已换新实例重试本轮"
                         )
+                        generationRetried = true
                         emit(AgentEvent.Retrying("生成失败，已重建引擎并重试本轮"))
                     }
+                }
+
+                // 重试成功才走到这里（break 只在 collect 正常结束后执行）。
+                // 新实例的 Conversation 是空的：本轮请求已全量重放（水印为空，buildContents
+                // 全发），而本轮记账在此之前已按增量口径执行 —— bump 版本让下一轮记账
+                // 检测到版本变化、整包重记，与引擎实际持有量重新对齐。
+                if (generationRetried) {
+                    contextVersion++
                 }
 
                 if (accumulator.finishReason == FinishReason.CANCELLED) {
@@ -783,6 +811,33 @@ class AgentRunner(
                     emit(AgentEvent.ToolResultReceived(result))
                     commitToolMessage(working, call, result, journal)
 
+                    // ── ask_actor 执行点接入（严质衡审查 P1-2）──────────────────
+                    // 子 run 真正执行过 → 引擎 Conversation 被换成子 run 的 cid（甚至
+                    // 因子 run 内 rebuildEngine 整机换新），父 run 下一轮请求在引擎侧
+                    // 必然重建 + 全量重放。父 run 的 cid 全程不变，记账增量分支无法
+                    // 自行感知 —— 在此 bump 父 run 的 contextVersion，下一轮记账检测到
+                    // 版本变化后整包重记，与引擎实际持有量重新对齐。
+                    //
+                    // 「确实跑了」判据（AskSubagentTool 的返回约定，改其文案时需同步）：
+                    //  - ok=true：一律是子 run 执行完毕的返回（含「没有产出可见文本」
+                    //    的降级文案）；
+                    //  - ok=false 且 errorMessage 以「子代理 」开头（含空格）：子 run 已
+                    //    启动后的失败透传（「子代理 X 执行失败：…」）—— 该路径同时伴随
+                    //    子 run 内的 rebuildEngine 换新实例；注意与 pre-run 失败
+                    //    「子代理缺少父 run 上下文…」（无空格）区分；
+                    //  - ok=false 且为工具超时：子 run 已在跑、被 executeWithGuard 击杀，
+                    //    引擎 conversationDirty 必然置位（下一轮同样强制重建）。
+                    // 参数错误 / actor 不存在等 pre-run 失败不 bump：引擎未被触碰。
+                    if (tool is AskSubagentTool) {
+                        val msg = result.errorMessage
+                        if (result.ok ||
+                            msg?.startsWith("子代理 ") == true ||
+                            msg?.startsWith("工具执行超时") == true
+                        ) {
+                            contextVersion++
+                        }
+                    }
+
                     // ── 计划变化检测（ZCode Phase Graph 降级移植）────────────────
                     // plan_set / plan_update 工具改的是会话级 PlanStore；版本号变了就把
                     // 最新计划推给 UI。放在工具循环内：一轮多个计划操作也能逐条可见。
@@ -798,7 +853,13 @@ class AgentRunner(
                 // 提醒作为下一轮 messages 里的合成 user 消息（槽位是单值，所以每轮最多注入一次）。
                 val reminder = pendingReminder
                 if (reminder != null) {
-                    val reminderMessage = ChatMessage(role = Role.USER, text = reminder)
+                    // 合成提醒统一用稳定派生 id（严质衡审查 P2-3，口径对齐 :496/:529 两处：
+                    // 引擎按 id 做增量水印去重，合成消息不该每轮拿新 UUID）。
+                    val reminderMessage = ChatMessage(
+                        id = "reminder:$round:tool",
+                        role = Role.USER,
+                        text = reminder,
+                    )
                     working.add(reminderMessage)
                     journal?.appendReminder(reminderMessage)
                     pendingReminder = null
