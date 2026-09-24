@@ -137,7 +137,9 @@ fun ModelsScreen(
             // 上溢) + 12(呼吸间隙)，与 GlassScaffold snackbar 槽位同口径。
             // ⚠️ 底部留白收敛在 contentPadding，**不再**由末尾 item 各自补 padding：
             // item 级补偿只在"末尾恰好是这两项"时成立，插入新尾部 item 就会漏。
-            contentPadding = PaddingValues(horizontal = 14.dp, top = 12.dp, bottom = 104.dp),
+            // start/end/top/bottom 四参版：PaddingValues 只有 all / horizontal+vertical /
+            // start+top+end+bottom 三个重载，horizontal 不能与 top/bottom 混用（R2 CI 红的教训）。
+            contentPadding = PaddingValues(start = 14.dp, top = 12.dp, end = 14.dp, bottom = 104.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
