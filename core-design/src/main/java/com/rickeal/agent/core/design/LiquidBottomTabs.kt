@@ -319,10 +319,11 @@ fun LiquidBottomTabs(
             snapshotFlow { currentIndex }
                 .drop(1)
                 .collectLatest { index ->
-                    // 点击切换（及外部选中态回流）走页签专用的"较慢 + 略欠阻尼"规格：
-                    // 看得见液态滑动，收敛时间对齐 NavHost 过渡（~300ms）。
-                    // ⚠️ 拖动松手收敛（onDragStopped 里的 animateToValue）**不传** spec，
-                    // 保持默认快收敛 —— 松手手感不能变慢。
+                    // 点击切换（及外部选中态回流）走 TabSwitch 规格 —— 2026-09-24 真机
+                    // 修正后与上游一致（临界阻尼快弹簧，≈120ms 收敛，无过冲），规格的
+                    // 演化依据见 LiquidMotion.TabSwitch 的 KDoc。
+                    // ⚠️ 拖动松手收敛（onDragStopped 里的 animateToValue）不传 spec，
+                    // 保持默认快收敛 —— 两条路径现在同速，不再有"点击比松手慢"的割裂。
                     dampedDragAnimation.animateToValue(
                         index.toFloat(),
                         LiquidMotion.floatSpring(LiquidMotion.TabSwitch),
@@ -337,11 +338,13 @@ fun LiquidBottomTabs(
             InteractiveHighlight(
                 animationScope = animationScope,
                 position = { size, _ ->
+                    // 与胶囊 translationX 同一套钳制（见下方 renderValue 注释）。
+                    val v = dampedDragAnimation.value.coerceIn(0f, (tabsCount - 1).toFloat())
                     Offset(
                         if (isLtr) {
-                            (dampedDragAnimation.value + 0.5f) * tabWidthState.value + panelOffset.value
+                            (v + 0.5f) * tabWidthState.value + panelOffset.value
                         } else {
-                            size.width - (dampedDragAnimation.value + 0.5f) * tabWidthState.value +
+                            size.width - (v + 0.5f) * tabWidthState.value +
                                 panelOffset.value
                         },
                         size.height / 2f,
@@ -489,11 +492,19 @@ fun LiquidBottomTabs(
             Modifier
                 .padding(horizontal = 4.dp)
                 .graphicsLayer {
+                    // 渲染值钳制（2026-09-24 Wave 6）：把 value 限回页签区间再参与定位。
+                    // TabSwitch 改临界阻尼后弹簧本身不再过冲，这是**防御层**——将来若有
+                    // 人把规格改回欠阻尼（或引入带初速的重定向），钳制保证胶囊永不画出
+                    // 玻璃条两端（真机录屏 6.060s / 6.193s 帧的"漂移越界"）。拖动路径的
+                    // snapValue 与点击路径的 animateToValue 目标都已 coerce，钳制在正常
+                    // 路径是恒等变换，零开销。
+                    val renderValue = dampedDragAnimation.value
+                        .coerceIn(0f, (tabsCount - 1).toFloat())
                     translationX =
                         if (isLtr) {
-                            dampedDragAnimation.value * tabWidthState.value + panelOffset.value
+                            renderValue * tabWidthState.value + panelOffset.value
                         } else {
-                            size.width - (dampedDragAnimation.value + 1f) * tabWidthState.value +
+                            size.width - (renderValue + 1f) * tabWidthState.value +
                                 panelOffset.value
                         }
                 }

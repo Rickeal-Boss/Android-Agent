@@ -59,19 +59,24 @@ object LiquidMotion {
     )
 
     /**
-     * 页签"点击切换"的胶囊滑动规格（[LiquidBottomTabs] 指示胶囊 / 同类切换控件）。
+     * 页签"点击切换"的胶囊滑动规格（[LiquidBottomTabs] 指示胶囊 / [GlassSegmented]）。
      *
-     * 与拖动区分：拖动是瞬时 `snapValue`（跟手优先，无动画）；**点击切换**要的是
-     * "看得见的液态滑动"。比 `animateToValue` 的默认 `spring()`（`StiffnessMedium`
-     * =1500 / ζ=1，感知收敛 ≈120ms）慢得多、且略欠阻尼 —— 有轻微过冲，"有生命"。
+     * **2026-09-24 真机修正（Wave 6，对齐上游）**：此前为"看得见的液态滑动"取
+     * `stiffness=400 / ζ=0.8`（慢 + 略欠阻尼），真机录屏实证两个病理：
+     *  1. **不跟手** —— 慢弹簧让胶囊滞后选中态一整拍（录屏 4.893s 帧：选中"设置"、
+     *     胶囊还停在"记忆"）；
+     *  2. **漂移越界** —— ζ=0.8 的过冲在快速连点（方向反复反转）下被放大，胶囊
+     *     冲出玻璃条两端边界（录屏 6.060s / 6.193s 帧）。
      *
-     * 收敛时间对齐 dev-app 的 NavHost 过渡（~300ms fade+slide），避免内容层与胶囊层
-     * 割裂。刚度取 M3E spatial 档的 [Spring.StiffnessMediumLow]（400，非散落魔数），
-     * 阻尼比 0.8：过冲 ≈ 1.5%（看得见"液态"又不廉价），感知收敛 ≈ 250–290ms。
+     * 上游 Kyant0 `DampedDragAnimation` 的 `valueAnimationSpec` 是
+     * `spring(dampingRatio = 1f, stiffness = 1000f)`：临界阻尼、无过冲、感知收敛
+     * ≈120ms——"液态感"来自**速度各向异性拉伸与按压缩放**（那两处上游与我们一致），
+     * 而不是慢弹簧。本规格与其完全对齐；胶囊先于 ~300ms 的 NavHost 内容过渡到位，
+     * 指示器快于内容层是正确的次序（点哪儿、哪儿先亮）。
      */
     val TabSwitch = LiquidMotionSpec(
-        stiffness = Spring.StiffnessMediumLow,
-        dampingRatio = 0.8f,
+        stiffness = 1000f,
+        dampingRatio = Spring.DampingRatioNoBouncy,
     )
 
     /** 通用弹簧规格（可用于 Dp/Offset/Color 等） */
