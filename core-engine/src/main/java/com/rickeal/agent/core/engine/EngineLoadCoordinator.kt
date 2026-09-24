@@ -6,7 +6,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 
 /**
  * 引擎初始化状态（gallery Model.InitializationStatus 的端侧同构）。
@@ -114,18 +113,6 @@ class EngineLoadCoordinator(
         loadingInstance = null
         loading = null
         delegate.closeAll()
-    }
-
-    /**
-     * gallery awaitInitialization 的对应物：等待在途加载收敛（无在途立即返回）。
-     * 终态是 Failed 则重抛引擎异常 —— 调用方走既有的 rebuildEngine 恢复路径。
-     */
-    suspend fun awaitInitialization(kind: EngineKind = EngineKind.LOCAL): LlmEngine {
-        val s = _status.value
-        if (s !is EngineInitStatus.Initializing || s.kind != kind) return delegate.create(kind)
-        return delegate.create(kind).also {
-            _status.first { it !is EngineInitStatus.Initializing }
-        }
     }
 
     /**

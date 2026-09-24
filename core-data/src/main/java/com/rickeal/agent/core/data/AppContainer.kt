@@ -299,6 +299,15 @@ class AppContainer(private val context: Context) {
     }
 
     fun close() {
+        // 硬闸门（外部审查报告3-A2 修正项）：closeAll 是同步的、无法等待在途生成收敛，
+        // 引擎忙时强关 = native use-after-free（SIGSEGV，runCatching 抓不住）。
+        // isBusy 与 AgentRunner.runMutex 严格同源（Wave4 C-P0-1 建立）：读到 false
+        // 才意味着此刻没有任何 run 持有引擎。调用点 LiquidAgentApplication.onTerminate
+        // 是尽力而为语义，跳过比崩掉好。
+        if (agentRunner.isBusy.value) {
+            AgentLogStore.warn("引擎忙，跳过 closeAll（防 native use-after-free）")
+            return
+        }
         engineFactory.closeAll()
     }
 }

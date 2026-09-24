@@ -50,11 +50,20 @@ class JsonFileStore(
             }
         }
 
+    /**
+     * 原子写 JSON 文件。返回**是否落盘成功**（外部审查报告3-C1 修正项）。
+     *
+     * 失败不抛异常（历史上抛异常 = 炸穿到无异常处理器的 viewModelScope，表现为
+     * 闪退 —— Wave4 E-P1-1 才改为吞掉），错误日志保留；但失败必须让调用方**可知**
+     * —— 磁盘满时静默丢数据（模型清单 / 会话全文）是最难排查的故障形态。
+     * 现有全部调用点都把返回值当语句用（忽略返回值），签名加宽编译兼容；
+     * 需要区分成败的调用方将来可直接消费返回值。
+     */
     suspend fun <T> write(
         fileName: String,
         value: T,
         strategy: SerializationStrategy<T>,
-    ) = withContext(Dispatchers.IO) {
+    ): Boolean = withContext(Dispatchers.IO) {
         if (!baseDir.exists()) baseDir.mkdirs()
         val target = File(baseDir, fileName)
         // 临时文件必须**唯一**：固定名会与并发/上一次崩溃残留的 tmp 相互覆盖。
@@ -71,6 +80,7 @@ class JsonFileStore(
                 StandardCopyOption.ATOMIC_MOVE,
                 StandardCopyOption.REPLACE_EXISTING,
             )
+            true
         } catch (t: Throwable) {
             // 某些文件系统不支持 ATOMIC_MOVE，退化为普通 rename（仍是元数据操作，非逐字节重写）。
             // 注意：writeText 失败时 move 也会失败，退化 rename 静默不成 —— 所以 finally 统一清 tmp。
@@ -78,6 +88,7 @@ class JsonFileStore(
                 Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
             AgentLogStore.error("JSON 落盘失败：$fileName（${t.javaClass.simpleName}: ${t.message}）")
+            false
         } finally {
             // 孤儿 tmp 清理：唯一清理入口 delete() 在「写失败」路径上永远走不到，必须就地清。
             if (tmp.exists()) runCatching { tmp.delete() }
