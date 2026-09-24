@@ -39,6 +39,7 @@ import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.data.DarkMode
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.motion.staggeredPageItem
 import com.rickeal.agent.core.model.ThinkingMode
 import java.util.Locale
 
@@ -77,7 +78,13 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             /* ---------------------------------------------------- 外观 */
-            GlassCard(contentPadding = PaddingValues(14.dp)) {
+            // 切到本页时三张卡错峰浮现（staggeredPageItem，graphicsLayer-only）。
+            // 挂在固定块（卡片容器）而非列表项上 —— 懒加载项的 index 随滚动回收变化，
+            // 错峰序号会错乱（该 modifier 的 KDoc 有明确约束）。
+            GlassCard(
+                modifier = Modifier.staggeredPageItem(itemIndex = 0),
+                contentPadding = PaddingValues(14.dp),
+            ) {
                 Column {
                     GroupTitle("外观")
                     GlassSegmented(
@@ -186,7 +193,10 @@ fun SettingsScreen(
             }
 
             /* ---------------------------------------------------- 推理参数 */
-            GlassCard(contentPadding = PaddingValues(14.dp)) {
+            GlassCard(
+                modifier = Modifier.staggeredPageItem(itemIndex = 1),
+                contentPadding = PaddingValues(14.dp),
+            ) {
                 Column {
                     GroupTitle("默认推理参数")
                     GlassSlider(
@@ -285,7 +295,10 @@ fun SettingsScreen(
             }
 
             /* ---------------------------------------------------- 入口 */
-            GlassCard(contentPadding = PaddingValues(0.dp)) {
+            GlassCard(
+                modifier = Modifier.staggeredPageItem(itemIndex = 2),
+                contentPadding = PaddingValues(0.dp),
+            ) {
                 Column {
                     GlassSettingRow(
                         title = "诊断信息",

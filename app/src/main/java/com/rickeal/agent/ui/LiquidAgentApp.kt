@@ -40,14 +40,20 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.navigation.NavHostController
@@ -65,12 +71,16 @@ import com.rickeal.agent.core.design.LiquidAgentTheme
 import com.rickeal.agent.core.design.LiquidBottomTabs
 import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.TabSpec
 import com.rickeal.agent.core.design.WindowSizeClass
 import com.rickeal.agent.core.design.WindowWidthClass
 import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
 import com.rickeal.agent.core.design.liquidGlass
+import com.rickeal.agent.core.design.motion.circularReveal
+import com.rickeal.agent.core.design.motion.entranceReveal
+import com.rickeal.agent.core.design.motion.rememberCircularRevealState
 import com.rickeal.agent.core.design.pressLayerBlock
 import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.feature.chat.ChatRoute
@@ -82,8 +92,17 @@ import com.rickeal.agent.feature.settings.memory.MemoryRoute
 import com.rickeal.agent.feature.settings.settingsGraph
 import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.onboarding.FirstRunGate
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 
 private const val TAG = "LiquidAgentApp"
+
+/**
+ * 壳层圆形揭示的进程级一次性标记（与 core-design motion 包的 entrancePlayed 同一策略）：
+ * 冷启动第一次进入 MainShell 播放；旋转 / Activity 重建后不重播 —— 700ms 的全屏揭示
+ * 在旋转瞬间再放一遍是干扰不是仪式感。
+ */
+private var shellRevealPlayed = false
 
 private enum class TopDestination(val route: String, val label: String) {
     CHAT(ChatRoute.ROUTE, "对话"),
@@ -205,7 +224,34 @@ private fun MainShell() {
         else -> routeTop(currentRoute) ?: TopDestination.CHAT
     }
 
-    Row(modifier = Modifier.fillMaxSize()) {
+    // ── 壳层圆形揭示（2026-09-24 Wave 6）：首启闸门放行后，整个主界面从中心 ──
+    // 圆形展开（700ms FastOutSlowIn），这是"液态壳体成型"的签名瞬间。
+    // 进程级一次性（shellRevealPlayed）：旋转 / 主题内重组一律走 progress=1 的
+    // 快速路径（无 clipPath 开销、无重播闪烁）；reduceMotion 用户直接跳过动画。
+    val glassCfg = LocalGlassConfig.current
+    val revealState = rememberCircularRevealState(
+        if (shellRevealPlayed || glassCfg.reduceMotion) 1f else 0f,
+    )
+    var shellSize by remember { mutableStateOf(IntSize.Zero) }
+    LaunchedEffect(Unit) {
+        if (revealState.progress.value >= 1f) return@LaunchedEffect
+        // 等首个布局 pass 给出壳层尺寸，再从中心展开（半径取对角线，任意原点都全覆盖）。
+        snapshotFlow { shellSize }
+            .filter { it != IntSize.Zero }
+            .first()
+        shellRevealPlayed = true
+        revealState.expand(Offset(shellSize.width / 2f, shellSize.height / 2f))
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { shellSize = it }
+            .circularReveal(
+                progress = { revealState.progress.value },
+                origin = { revealState.origin },
+            ),
+    ) {
         if (windowSize.useTwoPane) {
             GlassNavRail(
                 selected = selected,
@@ -378,8 +424,9 @@ private fun NavHostController.navigateTop(route: String) {
 
 /**
  * 顶层页签切换的过渡时长（ms）。160ms 看不出过渡（真机反馈"切换太快、看不见液态"），
- * 700ms 又拖沓 —— 300ms 与胶囊的 TabSwitch 弹簧（收敛 ~250-290ms）对齐，避免
- * 内容层与胶囊层割裂。
+ * 700ms 又拖沓 —— 300ms 给内容层 slide+fade；指示胶囊的 TabSwitch 弹簧（2026-09-24
+ * 真机修正后 ≈120ms 临界阻尼收敛）先于内容层到位：点哪儿、哪儿先亮，指示器快于
+ * 内容层是正确次序。
  */
 private const val TOP_NAV_TRANSITION_MS = 300
 
@@ -497,7 +544,11 @@ private fun GlassNavRail(
                     destination = destination,
                     selected = destination == selected,
                     onClick = { onSelect(destination) },
-                    modifier = Modifier.fillMaxWidth(),
+                    // 冷启动错峰入场：5 项按序号依次浮现（进程内仅一次，见 entranceReveal）。
+                    // graphicsLayer-only，不参与任何交互重组。
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .entranceReveal(order = destination.ordinal),
                 )
             }
         }
