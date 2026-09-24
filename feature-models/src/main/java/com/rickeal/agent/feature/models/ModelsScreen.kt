@@ -132,7 +132,11 @@ fun ModelsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .navigationBarsPadding(),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+            // 底部 104dp = 56(FAB) + 20(FAB 下边距) + 16(THICK 材质 shadowElevation
+            // 上溢) + 12(呼吸间隙)，与 GlassScaffold snackbar 槽位同口径。
+            // ⚠️ 底部留白收敛在 contentPadding，**不再**由末尾 item 各自补 padding：
+            // item 级补偿只在"末尾恰好是这两项"时成立，插入新尾部 item 就会漏。
+            contentPadding = PaddingValues(horizontal = 14.dp, top = 12.dp, bottom = 104.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -175,7 +179,6 @@ fun ModelsScreen(
             item {
                 HowToGetModelsCard(
                     importDirPath = state.importDirPath,
-                    modifier = Modifier.padding(bottom = 96.dp),
                 )
             }
             item {
@@ -185,9 +188,7 @@ fun ModelsScreen(
                         text = notice,
                         style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                         color = if (state.error != null) colors.danger else colors.onGlassMuted,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 96.dp),
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
