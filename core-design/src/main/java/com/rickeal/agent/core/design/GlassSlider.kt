@@ -194,6 +194,10 @@ private fun LiquidSliderTrack(
         val currentSteps by rememberUpdatedState(steps)
         val currentOnChange by rememberUpdatedState(onValueChange)
         val currentOnFinished by rememberUpdatedState(onValueChangeFinished)
+        // 触感只发在用户动作位点（拖动过档 / 松手 / 提交口），
+        // 绝不进下面 LaunchedEffect 里的 snapshotFlow 回显收集器。
+        val haptics = rememberGlassHaptics()
+        val currentHaptics by rememberUpdatedState(haptics)
 
         // key 用区间的两个 Float 端点，不用区间对象本身：
         // 区间对象的相等性依赖具体实现类是否重写 equals（ClosedFloatRange 重写了，是值语义），
@@ -236,6 +240,10 @@ private fun LiquidSliderTrack(
                     // 而外层 toggleable 也提交一次 → 翻两次没反应。
                     if (didDrag && !yieldedToParent && finishedNormally) {
                         currentOnFinished?.invoke()
+                        // 连续滑块（steps <= 0）拖动中一次都不发（见 onDrag 处注释），
+                        // 松手这一下就是它**唯一**的触感 —— 标记"手势结束"。
+                        // 离散滑块在拖动中已经逐档 tick 过，这里不再补，避免收尾多响一下。
+                        if (currentSteps <= 0) currentHaptics.gestureEnd()
                     }
                     didDrag = false
                     sliderDragging = false
@@ -271,6 +279,12 @@ private fun LiquidSliderTrack(
                         if (snapped != currentValue) {
                             snapValue(snapped)
                             currentOnChange(snapped)
+                            // 只有**离散**滑块才逐档震（HIG：走过一格给一次可分辨的反馈）。
+                            // 连续滑块绝不能接在这里：steps <= 0 时 snapToStep 原值返回，
+                            // 每个亚像素位移都满足 snapped != currentValue → 变成
+                            // "每像素一震"的嗡鸣，HIG 明确禁止。tick() 自带 100ms 节流，
+                            // 挡住快速划过多个档位时的连震。
+                            if (currentSteps > 0) currentHaptics.tick()
                         }
                     }
                 }
@@ -307,6 +321,9 @@ private fun LiquidSliderTrack(
             if (snapped == currentValue) return false
             dampedDragAnimation.animateToValue(snapped)
             currentOnChange(snapped)
+            // 一次性离散动作（点轨道跳转 / 键盘步进 / 无障碍 SetProgress）：
+            // 不走节流 —— 这些路径天然是一次一发，节流只会让连续按键丢反馈。
+            currentHaptics.tickForced()
             currentOnFinished?.invoke()
             return true
         }

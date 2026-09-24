@@ -33,6 +33,7 @@ import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.rememberGlassHaptics
 
 /**
  * 应用服务条款（TOS）步骤。
@@ -108,6 +109,9 @@ private fun LegalStepLayout(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val uriHandler = LocalUriHandler.current
+    // 同意 / 不同意是两个**相反语义**的提交，用 Confirm / Reject 两种触感区分，
+    // 手指不用看屏幕也知道自己按下的是哪一边。
+    val haptics = rememberGlassHaptics()
     // 正文限高随窗口高度走：横屏可用高度约 280dp，写死 300.dp 会把
     // 「同意并继续 / 不同意并退出」顶出屏幕 —— 用户既进不去也退不出，只能杀进程。
     val bodyMaxHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.4f)
@@ -206,10 +210,19 @@ private fun LegalStepLayout(
                 ) {
                     GlassButton(
                         text = secondaryLabel,
-                        onClick = onSecondary,
+                        onClick = {
+                            haptics.reject()
+                            onSecondary()
+                        },
                         material = GlassMaterial.THIN,
                     )
-                    GlassButton(text = primaryLabel, onClick = onPrimary)
+                    GlassButton(
+                        text = primaryLabel,
+                        onClick = {
+                            haptics.confirm()
+                            onPrimary()
+                        },
+                    )
                 }
             }
         }

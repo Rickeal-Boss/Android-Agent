@@ -252,6 +252,11 @@ fun LiquidBottomTabs(
         // 直接回调（见各处注释——绝不能挂回 snapshotFlow 收集器）。必须声明在
         // dampedDragAnimation 之前：onDragStopped 闭包要捕获它。
         val onSelectedCallback by rememberUpdatedState(onSelected)
+        // 触感用同一条纪律：只发在 onDragStopped 与页签 onClick 两个用户动作位点。
+        // 绝不进 LaunchedEffect(selectedIndex) 或 snapshotFlow 收集器 ——
+        // 导航返回 / 程序化切换都会触达那里，会变成"返回上一页也震"。
+        val haptics = rememberGlassHaptics()
+        val currentHaptics by rememberUpdatedState(haptics)
 
         val dampedDragAnimation = remember(animationScope) {
             DampedDragAnimation(
@@ -291,6 +296,8 @@ fun LiquidBottomTabs(
                     // navigateTop → selectedIndex 回压 → 再写 currentIndex，
                     // 就是真机录屏实证的"胶囊两端自激振荡"（2026-09-24 Wave 6b）。
                     onSelectedCallback(targetIndex)
+                    // 拖动换页提交 → 一次 tick（页签是离散档位）。
+                    currentHaptics.tick()
                     // 面板拉伸弹回：从当前累加值出发做一次弹簧（**单个**协程，非每帧）。
                     val start = panelOffsetPx.value
                     if (start != 0f) {
@@ -388,6 +395,8 @@ fun LiquidBottomTabs(
                     onClick = {
                         currentIndex = index
                         onSelectedCallback(index)
+                        // 点击换页 → 一次 tick（与拖动换页同规格）。
+                        currentHaptics.tick()
                     },
                     showLabel = !compactTabs,
                     modifier = Modifier.weight(1f),

@@ -101,6 +101,10 @@ fun GlassSwitch(
     // 回调里要读最新值，不能闭包住第一次组合时的旧引用。
     val currentChecked by rememberUpdatedState(checked)
     val currentOnCheckedChange by rememberUpdatedState(onCheckedChange)
+    // 触感只在下面两个**用户提交位点**发（onDragStopped / toggleable.onValueChange），
+    // 严禁挂到 LaunchedEffect(checked) 的回显收集器 —— 否则外部驳回/回流也会震。
+    val haptics = rememberGlassHaptics()
+    val currentHaptics by rememberUpdatedState(haptics)
 
     val dampedDragAnimation = remember(animationScope) {
         DampedDragAnimation(
@@ -123,6 +127,9 @@ fun GlassSwitch(
                         // 真的拖过了：按松手时的位置决定最终态，并在这里提交。
                         fraction = if (targetValue >= 0.5f) 1f else 0f
                         currentOnCheckedChange?.invoke(fraction == 1f)
+                        // 真拖动提交 → 触感。与上面的 invoke 同一个提交位点，
+                        // 纯点击不进这个分支（交给 toggleable），故不会双发。
+                        currentHaptics.toggle(fraction == 1f)
                     }
                     // 纯点击**不在这里提交**：交给外层的 toggleable 统一走 onValueChange，
                     // 否则同一次点击会回调 onCheckedChange 两次。
@@ -191,7 +198,11 @@ fun GlassSwitch(
                             // 就成了"原生按钮贴玻璃纸"。
                             interactionSource = null,
                             indication = null,
-                            onValueChange = { onCheckedChange?.invoke(it) },
+                            // 纯点击（含 TalkBack 双击）提交 → 触感。
+                            onValueChange = {
+                                onCheckedChange?.invoke(it)
+                                currentHaptics.toggle(it)
+                            },
                         )
                 } else {
                     Modifier

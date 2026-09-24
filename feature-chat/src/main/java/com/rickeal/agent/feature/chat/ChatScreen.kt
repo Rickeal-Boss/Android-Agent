@@ -44,6 +44,7 @@ import com.rickeal.agent.core.design.GlassThinkingIndicator
 import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.rememberGlassHaptics
 import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.core.model.Role
 
@@ -58,6 +59,8 @@ fun ChatScreen(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val windowSize = rememberWindowSizeClass()
+    // 工具授权是"放行 / 拦下"两个相反决策，用 Confirm / Reject 两种触感区分。
+    val haptics = rememberGlassHaptics()
     // 两者都要能扛住配置变更（旋转 / 折叠展开）：
     //  - paramsOpen：抽屉开着时转屏就自己关掉，用户输入一半的参数面板凭空消失；
     //  - listState：滚动位置丢失会直接跳回列表底部/顶部，用户正在看的那条就没了。
@@ -181,13 +184,19 @@ fun ChatScreen(
                         Row(modifier = Modifier.fillMaxWidth()) {
                             GlassButton(
                                 text = "拒绝",
-                                onClick = { viewModel.onApprovalResult(false) },
+                                onClick = {
+                                    haptics.reject()
+                                    viewModel.onApprovalResult(false)
+                                },
                                 modifier = Modifier.weight(1f),
                             )
                             Spacer(modifier = Modifier.width(tokens.gapSm))
                             GlassButton(
                                 text = "授权",
-                                onClick = { viewModel.onApprovalResult(true) },
+                                onClick = {
+                                    haptics.confirm()
+                                    viewModel.onApprovalResult(true)
+                                },
                                 modifier = Modifier.weight(1f),
                             )
                         }

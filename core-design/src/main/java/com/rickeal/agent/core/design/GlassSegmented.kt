@@ -147,6 +147,12 @@ private fun SegmentedIndicator(
     // 否则外部回显写也会触发回调 → 父层 setState → 回显 → 反馈环）。
     val onSelectedCallback by rememberUpdatedState(onSelected)
 
+    // 触感同上纪律：只在 onDragStopped 与项 onClick 两个**用户动作位点**发。
+    // 尤其不能进下面 snapshotFlow 的收集器 —— 外部选中态回流也会触达那里，
+    // 会出现"导航返回也震""没点也震"。
+    val haptics = rememberGlassHaptics()
+    val currentHaptics by rememberUpdatedState(haptics)
+
     // ⚠️ consumeSlopPx 必须 8dp —— 胶囊叠在选中项上，"点击选中项没反应"的保险丝。
     val consumeSlopPx = with(density) { 8.dp.toPx() }
 
@@ -185,6 +191,8 @@ private fun SegmentedIndicator(
                 animateToValue(targetIndex.toFloat())
                 // onSelected 在用户动作位点直发（见 onSelectedCallback 声明处注释）。
                 onSelectedCallback(targetIndex)
+                // 拖动换项提交 → 一次 tick（段间切换 = 离散档位跳跃）。
+                currentHaptics.tick()
             },
             onDrag = { _, dragAmount ->
                 // 拖动 = 手势内累积位移 → 绝对映射到"项坐标"（每移动一个 itemWidth 前进
@@ -253,6 +261,8 @@ private fun SegmentedIndicator(
                         currentIndex = index
                         // 用户动作位点直发（与 LiquidBottomTabs 同款，见收集器注释）。
                         onSelectedCallback(index)
+                        // 点击换项 → 一次 tick（与拖动换项同规格）。
+                        currentHaptics.tick()
                     },
                     modifier = Modifier.weight(1f),
                 )
