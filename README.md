@@ -52,7 +52,7 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | 🔧 **工具调用** | 内置工具集 + 自定义工具，模型自主决定是否调用 | 规划中 |
 | 💭 **思考模式** | `enable_thinking` 开关，独立渲染 `thought` 通道内容 | 规划中 |
 | 🎛 **参数调节** | topK / topP / temperature / maxTokens / system prompt 全可调 | 规划中 |
-| 🌐 **远程后端** | 可选接入远程模型服务（OkHttp + SSE 流式），与本地模型共存切换 | 规划中 |
+| 🌐 **远程后端** | ~~可选接入远程模型服务（OkHttp + SSE 流式）~~ 已移除（云端 API 整体删除，现为纯端侧） | 已移除 |
 | 💾 **会话管理** | 多会话持久化，DataStore + JSON，支持导入导出 | 规划中 |
 | ✨ **Liquid Glass UI** | 自研 Compose 设计系统：背景模糊、折射高光、内描边、噪声微纹理、弹性动效 | 规划中 |
 | 🔌 **模型市场** | 模型清单管理、下载状态、能力探测（speculative decoding 等） | 规划中 |
@@ -74,6 +74,8 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | Compose BOM | `2026.02.00` | gallery main |
 | LiteRT-LM | `com.google.ai.edge.litertlm:litertlm-android:0.11.0` | gallery main 已验证 |
 
+> JDK 口径消歧：CI 工具链 JDK 21，字节码目标 17（jvmTarget 17 是正常组合，不是版本冲突）。
+
 ### SDK 配置
 
 | 项 | 值 |
@@ -93,7 +95,6 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | `org.jetbrains.kotlinx:kotlinx-serialization-json` | `1.7.3` | 会话 / 配置序列化 |
 | `androidx.compose.material:material-icons-extended` | `1.7.8` | 图标 |
 | `androidx.datastore:datastore-preferences` | `1.1.7` | 轻量偏好存储 |
-| `com.squareup.okhttp3:okhttp` | `4.12.0` | 远程后端 + SSE |
 
 ### 明确**不**使用的东西
 
@@ -117,6 +118,8 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | JDK | **21**（推荐 [Temurin](https://adoptium.net/)） |
 | Android SDK | `compileSdk 36`，AGP 会自动下载缺失组件 |
 | Gradle | **用仓库自带的 wrapper**，不要用系统 gradle |
+
+> JDK 口径消歧：CI 工具链是 JDK 21，字节码目标 17（jvmTarget 17 是正常组合，不是版本冲突）。
 
 ### 构建
 
@@ -188,6 +191,8 @@ LiquidAgent **不内置、不分发任何模型权重**。`.litertlm` / `.task` 
    adb push gemma-3n-e2b.litertlm /sdcard/Download/
    ```
 2. 打开 LiquidAgent → 模型管理页 → 「导入本地模型」。
+   （debug 包的 applicationId 带 `.debug` 后缀：`com.rickeal.agent.debug`，
+   与 release 包数据目录相互独立 —— adb 直接放到应用外部目录时路径不同，见方式 B。）
 3. 用系统文件选择器选中该文件，应用会把它复制到应用私有目录并记录进模型清单。
 4. 首次加载会较慢（权重 mmap + 后端初始化），后续走缓存。
 
@@ -196,6 +201,8 @@ LiquidAgent **不内置、不分发任何模型权重**。`.litertlm` / `.task` 
 ```bash
 adb push gemma-3n-e2b.litertlm /sdcard/Android/data/com.rickeal.agent/files/
 ```
+
+> debug 包路径为 `/sdcard/Android/data/com.rickeal.agent.debug/files/`（applicationId 带 `.debug` 后缀）。
 
 对应 `context.getExternalFilesDir(null)`（即 `EngineConfig.cacheDir`）。注意 Android 11+ 的作用域存储限制，此路径在部分设备上可能无法直接 `adb push`，此时请用方式 A。
 
@@ -276,7 +283,7 @@ Android-Agent/
 - [ ] **M4** — 多模态：图片 / 音频输入，GPU / NPU 后端切换
 - [x] **M5** — Agent 能力：思考模式、工具调用、Agent 循环编排
 - [x] **M6** — 模型市场：导入、能力探测、下载管理
-- [x] **M7** — 远程后端：OkHttp + SSE，与本地引擎统一切换
+- [x] **M7** — ~~远程后端：OkHttp + SSE，与本地引擎统一切换~~ 已移除（云端 API 整体删除，现为纯端侧）
 - [ ] **M8** — 打磨：动效、无障碍、性能、发布签名
 - [ ] **M9** — **Harness 升级**（`harness` 分支）：移植 ZCode（Journal/Actor/typed-ask）
   与 Octop（工具审批/长期记忆/委派）的核心机制 —— 蓝图见
