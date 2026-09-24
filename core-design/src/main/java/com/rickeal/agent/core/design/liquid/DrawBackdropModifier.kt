@@ -23,6 +23,7 @@ import androidx.compose.ui.node.GlobalPositionAwareModifierNode
 import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.ObserverModifierNode
+import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.observeReads
 import androidx.compose.ui.node.requireDensity
 import androidx.compose.ui.node.requireGraphicsContext
@@ -199,31 +200,28 @@ private class DrawBackdropElement(
         properties["onDrawFront"] = onDrawFront
     }
 
+    /**
+     * 稳定化 equals（外部审查报告1-A1，渲染批核心）：
+     * 只比较 [backdrop] 与 [exportedBackdrop] —— 它们是节点**语义身份**的一部分
+     * （换背景源必须重建节点，见 create/update 对 layerCoordinates 的处理）。
+     *
+     * 其余字段（shapeProvider / effects / layerBlock / onDraw*）全是每次调用
+     * `drawBackdrop` 新建的 lambda 或其包装（ShapeProvider 是普通类，无 equals，
+     * 退化为引用比较）——逐项比较永远失配，重组即判「元素变了」→ 节点销毁重建 →
+     * onAttach/onDetach 反复 create/release GraphicsLayer → AGSL shader 反复重编译。
+     * 它们的变化改由 [update] 全量重赋 + invalidateDrawCache 传导，行为无损。
+     */
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is DrawBackdropElement) return false
         if (backdrop != other.backdrop) return false
-        if (shapeProvider != other.shapeProvider) return false
-        if (effects != other.effects) return false
-        if (layerBlock != other.layerBlock) return false
         if (exportedBackdrop != other.exportedBackdrop) return false
-        if (onDrawBehind != other.onDrawBehind) return false
-        if (onDrawBackdrop != other.onDrawBackdrop) return false
-        if (onDrawSurface != other.onDrawSurface) return false
-        if (onDrawFront != other.onDrawFront) return false
         return true
     }
 
     override fun hashCode(): Int {
         var result = backdrop.hashCode()
-        result = 31 * result + shapeProvider.hashCode()
-        result = 31 * result + effects.hashCode()
-        result = 31 * result + (layerBlock?.hashCode() ?: 0)
         result = 31 * result + (exportedBackdrop?.hashCode() ?: 0)
-        result = 31 * result + (onDrawBehind?.hashCode() ?: 0)
-        result = 31 * result + onDrawBackdrop.hashCode()
-        result = 31 * result + (onDrawSurface?.hashCode() ?: 0)
-        result = 31 * result + (onDrawFront?.hashCode() ?: 0)
         return result
     }
 }
@@ -347,7 +345,14 @@ private class DrawBackdropNode(
     }
 
     override fun onObservedReadsChanged() {
+        // 两者职责不同（外部审查报告1-A11，核验附加发现 #1），缺一不可：
+        //  - invalidateDrawCache()：本类自定义（见下），只重跑 observeEffects ——
+        //    把最新 pressProgress 写进 graphicsLayer.renderEffect / padding；
+        //  - invalidateDraw()：Modifier.Node 的标准失效，请求下一帧重新执行 draw()。
+        // 手动 createGraphicsLayer 的图层改 renderEffect **不会**自动触发重绘，
+        // 缺了后一句，按压时 blur/rEF 的变化可能停留在旧画面不上屏。
         invalidateDrawCache()
+        invalidateDraw()
     }
 
     fun invalidateDrawCache() {

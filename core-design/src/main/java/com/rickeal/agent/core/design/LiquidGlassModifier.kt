@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -40,6 +41,9 @@ import kotlin.random.Random
  * 1.5 会把浅色推成荧光色。降到 1.22 —— 提鲜但不失真。
  */
 private const val VibrancySaturation = 1.22f
+
+/** 玻璃本体噪点数量（与旧 buildNoisePoints 一致）。 */
+private const val NOISE_POINT_COUNT = 150
 
 /**
  * **液态玻璃主入口**（新引擎）。
@@ -135,6 +139,17 @@ fun Modifier.liquidGlass(
     // 也是 UI-07 那个性能开关能被用户关掉的前提。
     val effectiveBackdrop = if (enableBackdrop) backdrop else EmptyBackdrop
 
+    // 噪点坐标缓存（外部审查报告1-A9）：旧实现 onDrawSurface 每帧
+    // buildNoisePoints(150) —— 每帧 × 每个玻璃节点新建 Random 并分配 150 个 Offset。
+    // liquidGlass 是 @Composable 工厂，remember 缓存 150 对**归一化**坐标（0..1），
+    // 绘制时再乘以实际 size。
+    // 等价性论证：与旧 buildNoisePoints 用同一个 Random(2026) 种子、按完全相同的
+    // 调用顺序（先 x 后 y 交替 nextFloat）生成 —— 与现状像素级一致。
+    val noisePoints = remember {
+        val random = Random(2026)
+        List(NOISE_POINT_COUNT) { Offset(random.nextFloat(), random.nextFloat()) }
+    }
+
     return this.drawBackdrop(
         backdrop = effectiveBackdrop,
         shape = { shape },
@@ -205,10 +220,12 @@ fun Modifier.liquidGlass(
             val corner = CornerRadius(radiusPx, radiusPx)
             drawRoundRect(brush = fillBrush, cornerRadius = corner)
 
-            // 噪点微纹理：消除大面积纯色的"塑料感"
+            // 噪点微纹理：消除大面积纯色的"塑料感"（坐标为缓存好的归一化值，乘以实际 size）
             if (enableNoise) {
                 drawPoints(
-                    points = buildNoisePoints(size.width, size.height, 150),
+                    points = noisePoints.map { point ->
+                        Offset(point.x * size.width, point.y * size.height)
+                    },
                     pointMode = PointMode.Points,
                     color = colors.glassSpecular,
                     strokeWidth = 1.5f,
@@ -284,12 +301,5 @@ fun Modifier.liquidPress(
     return this.graphicsLayer {
         scaleX = scale
         scaleY = scale
-    }
-}
-
-private fun buildNoisePoints(width: Float, height: Float, count: Int): List<androidx.compose.ui.geometry.Offset> {
-    val random = Random(2026)
-    return List(count) {
-        androidx.compose.ui.geometry.Offset(random.nextFloat() * width, random.nextFloat() * height)
     }
 }

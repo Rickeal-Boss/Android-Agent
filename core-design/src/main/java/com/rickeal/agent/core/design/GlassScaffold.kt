@@ -28,8 +28,9 @@ import kotlin.math.max
  * 玻璃骨架。壁纸铺底 → 顶栏 → 内容 → 底栏 → FAB / Snackbar 浮层。
  * 刻意不用 material3 的 Scaffold：我们需要壁纸贯穿整个层级，且 inset 由调用方决定。
  *
- * 壁纸那一层同时被 [glassBackdropSource] 录制进一个 GraphicsLayer，
- * 通过 `LocalGlassBackdropState` 下发 —— 这是所有玻璃节点「真实背景模糊」的来源。
+ * 壁纸那一层经 [layerBackdrop] 录制进 LayerBackdrop 的 GraphicsLayer 并通过
+ * `LocalBackdrop` 下发 —— 这是所有玻璃节点（`liquidGlass`）「真实背景模糊 /
+ * 折射」的唯一来源（旧的玻璃背景录制实现已随死代码清理移除）。
  */
 @Composable
 fun GlassScaffold(
@@ -42,14 +43,11 @@ fun GlassScaffold(
     contentWindowInsets: WindowInsets = WindowInsets(0, 0, 0, 0),
     content: @Composable (PaddingValues) -> Unit,
 ) {
-    val backdropState = rememberGlassBackdropState()
     // 新液态玻璃引擎的背景源：壁纸被录进 LayerBackdrop 的 GraphicsLayer，
     // 所有 drawBackdrop 节点（即 liquidGlass）从这里取背景做模糊/折射。
-    // 必须与 LocalGlassBackdropState 一起下发，否则新引擎的玻璃拿不到壁纸，
-    // 会退化成「无背景的纯色半透明面板」。
+    // 不下发它玻璃就拿不到壁纸，会退化成「无背景的纯色半透明面板」。
     val layerBackdrop = rememberLayerBackdrop()
     CompositionLocalProvider(
-        LocalGlassBackdropState provides backdropState,
         LocalBackdrop provides layerBackdrop,
     ) {
         Box(modifier = modifier.fillMaxSize()) {

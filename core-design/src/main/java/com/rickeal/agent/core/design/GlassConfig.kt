@@ -34,12 +34,5 @@ val LocalGlassConfig: ProvidableCompositionLocal<GlassConfig> =
 val LocalGlassBackdrop: ProvidableCompositionLocal<GlassBackdrop> =
     staticCompositionLocalOf { GlassBackdrop() }
 
-/**
- * 背景录制层。由 `GlassScaffold` 在壁纸那一层提供，玻璃节点据此做真实背景模糊。
- * 为 null 表示当前子树没有可用的背景源（例如 Dialog 的独立窗口），此时玻璃退化为纯玻璃。
- */
-val LocalGlassBackdropState: ProvidableCompositionLocal<GlassBackdropState?> =
-    staticCompositionLocalOf<GlassBackdropState?> { null }
-
 val LocalLiquidMotion: ProvidableCompositionLocal<LiquidMotionSpec> =
     staticCompositionLocalOf { LiquidMotion.Default }

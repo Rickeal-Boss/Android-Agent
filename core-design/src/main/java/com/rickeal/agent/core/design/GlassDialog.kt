@@ -20,8 +20,8 @@ import com.rickeal.agent.core.design.liquid.LocalBackdrop
 /**
  * 玻璃对话框。THICK 材质 + radiusXl，浮在壁纸之上。
  *
- * Dialog 跑在独立窗口里，主窗口录制的背景层在这里既对不齐也用不上，
- * 因此显式关掉背景模糊（提供 null 背景源），退化为纯玻璃。
+ * Dialog 跑在独立窗口里，主窗口录制的壁纸层在这里既对不齐也用不上，
+ * 因此显式降级为 EmptyBackdrop（不采样背景），退化为纯玻璃。
  */
 @Composable
 fun GlassDialog(
@@ -38,9 +38,7 @@ fun GlassDialog(
     Dialog(onDismissRequest = onDismissRequest) {
         // Dialog 在独立窗口，主窗口的 LayerBackdrop 在这里既对不齐也用不上，
         // 显式降级为 EmptyBackdrop（纯玻璃：只有底色 + 高光，不采样背景）。
-        // 旧的 LocalGlassBackdropState 一并置 null，保持两代引擎行为一致。
         CompositionLocalProvider(
-            LocalGlassBackdropState provides null,
             LocalBackdrop provides EmptyBackdrop,
         ) {
             LiquidGlassSurface(

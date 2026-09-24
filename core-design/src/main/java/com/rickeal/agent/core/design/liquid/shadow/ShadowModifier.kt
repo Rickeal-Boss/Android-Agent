@@ -45,19 +45,18 @@ internal class ShadowElement(
         properties["shadow"] = shadow
     }
 
+    /**
+     * 稳定化 equals（外部审查报告1-A1）：本 Element 的全部字段（shapeProvider /
+     * shadow lambda）都是每次调用新建的函数对象，JVM 引用比较永远失配 → 重组即
+     * 重建节点 → AGSL 反复编译。改为恒等（同类型即相等），字段变化由 [update]
+     * 全量重赋 + invalidateDraw 传导 —— node 两字段均为 var，update 无遗漏。
+     */
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (other !is ShadowElement) return false
-        if (shapeProvider != other.shapeProvider) return false
-        if (shadow != other.shadow) return false
-        return true
+        return other is ShadowElement
     }
 
-    override fun hashCode(): Int {
-        var result = shapeProvider.hashCode()
-        result = 31 * result + shadow.hashCode()
-        return result
-    }
+    override fun hashCode(): Int = javaClass.hashCode()
 }
 
 internal class ShadowNode(

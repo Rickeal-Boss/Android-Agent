@@ -50,8 +50,7 @@ import kotlinx.coroutines.launch
  * ## 独立窗口 → 背景恒退化（关键约束）
  *
  * Dialog 跑在**独立窗口**里，主窗口录制的壁纸层在这里既对不齐也用不上。因此：
- *  - 两代引擎同时置空（[LocalGlassBackdropState] 置 null、[LocalBackdrop] 提供
- *    [EmptyBackdrop]）—— 与 [GlassDialog] 完全一致的写法；
+ *  - [LocalBackdrop] 提供 [EmptyBackdrop] —— 与 [GlassDialog] 完全一致的写法；
  *  - 背景恒为 [EmptyBackdrop] → **恒走退化路径**（采样不到壁纸，blur / lens 无意义）：
  *    常驻 THICK 底色 + accent 描边 + 常驻高光。不依赖 `enableBackdropBlur` 开关。
  *
@@ -123,9 +122,9 @@ fun LiquidDialog(
         onDismissRequest = { requestDismiss() },
         properties = DialogProperties(dismissOnClickOutside = dismissOnClickOutside),
     ) {
-        // 独立窗口：两代引擎同时置空（见类 KDoc）。
+        // 独立窗口：主窗口的 LayerBackdrop 在这里既对不齐也用不上，
+        // 降级为 EmptyBackdrop（见类 KDoc）。
         CompositionLocalProvider(
-            LocalGlassBackdropState provides null,
             LocalBackdrop provides EmptyBackdrop,
         ) {
             val radius = tokens.radiusXl
