@@ -4987,6 +4987,7 @@ dependencies {
 | B21 | `core-design/.../design/GlassSettingRow.kt` | 设置行 |
 | B22 | `core-design/.../design/WindowSizeClass.kt` | 自适应断点 |
 | B23 | `core-design/.../design/GlassBackdropBlur.kt` | **P2 可删**：真实 RenderEffect 背景模糊 |
+| B25 | `core-design/.../design/GlassHaptics.kt` | 语义化触感出口（零权限，走平台反馈通道） |
 | B24 | `feature-chat/build.gradle.kts` | 依赖 model/design/data/agent |
 | B25 | `feature-chat/.../chat/ChatRoute.kt` | 路由常量 + `NavGraphBuilder.chatGraph` |
 | B26 | `feature-chat/.../chat/ChatViewModel.kt` | 状态容器 + Agent 事件收集 |
