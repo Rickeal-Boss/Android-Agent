@@ -297,7 +297,13 @@ fun LiquidBottomTabs(
                     // 就是真机录屏实证的"胶囊两端自激振荡"（2026-09-24 Wave 6b）。
                     onSelectedCallback(targetIndex)
                     // 拖动换页提交 → 一次 tick（页签是离散档位）。
-                    currentHaptics.tick()
+                    //
+                    // ⚠️ 只认 `finishedNormally`：onDragStopped 在 `finally` 里执行，
+                    // pointerInput 协程被取消（旋转 / 导航 / 页面销毁）时也会走到这里，
+                    // 那时并不是一次用户提交。（本控件 `canYieldToParent = false`，
+                    // 没有"让位给滚动"这条路径，故不判 yieldedToParent —— 与
+                    // GlassSegmented 的门禁口径差异就来自这个开关。）
+                    if (finishedNormally) currentHaptics.tick()
                     // 面板拉伸弹回：从当前累加值出发做一次弹簧（**单个**协程，非每帧）。
                     val start = panelOffsetPx.value
                     if (start != 0f) {

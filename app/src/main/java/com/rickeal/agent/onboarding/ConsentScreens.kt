@@ -48,14 +48,25 @@ fun AppTosScreen(
     onAccept: () -> Unit,
     onDecline: () -> Unit,
 ) {
+    // 同意 / 不同意是两个**相反语义**的提交，用 Confirm / Reject 两种触感区分，
+    // 手指不用看屏幕也知道自己按下的是哪一边。
+    val haptics = rememberGlassHaptics()
     LegalStepLayout(
         title = LegalDocuments.APP_TERMS_TITLE,
         lead = LegalDocuments.APP_TERMS_LEAD,
         bodyText = LegalDocuments.APP_TERMS_BODY,
         primaryLabel = "同意并继续",
-        onPrimary = onAccept,
+        // 触感语义属**业务**，与 GlassButton 同理不进通用版式组件：
+        // 由各条款页自己声明「这一下按下去意味着什么」。
+        onPrimary = {
+            haptics.confirm()
+            onAccept()
+        },
         secondaryLabel = "不同意并退出",
-        onSecondary = onDecline,
+        onSecondary = {
+            haptics.reject()
+            onDecline()
+        },
         // 正式条款尚未托管（APP_TERMS_URL 为空）时不渲染外链，避免导向不存在的页面。
         linkLabel = LegalDocuments.VIEW_FULL_TERMS_LABEL,
         linkUrl = LegalDocuments.APP_TERMS_URL,
@@ -77,13 +88,21 @@ fun GemmaTermsScreen(
     onAccept: () -> Unit,
     onLater: () -> Unit,
 ) {
+    val haptics = rememberGlassHaptics()
     LegalStepLayout(
         title = LegalDocuments.GEMMA_TERMS_TITLE,
         lead = LegalDocuments.GEMMA_TERMS_LEAD,
         bodyText = LegalDocuments.GEMMA_TERMS_BODY,
         primaryLabel = "同意并继续",
-        onPrimary = onAccept,
+        onPrimary = {
+            haptics.confirm()
+            onAccept()
+        },
         secondaryLabel = "稍后再说",
+        // ⚠️ 「稍后再说」**不**走 Reject：它是把决定推迟，不是拒绝
+        // （Gemma 条款只在使用侧硬拦，见本函数 KDoc）。语义上它就是一次普通的
+        // 导航推进，与全仓其它非决策按钮一致 —— **不发触感**，避免把「延后」
+        // 误表达成「已拒绝」。
         onSecondary = onLater,
         linkLabel = LegalDocuments.VIEW_FULL_TERMS_LABEL,
         linkUrl = LegalDocuments.GEMMA_TERMS_URL,
@@ -109,9 +128,6 @@ private fun LegalStepLayout(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val uriHandler = LocalUriHandler.current
-    // 同意 / 不同意是两个**相反语义**的提交，用 Confirm / Reject 两种触感区分，
-    // 手指不用看屏幕也知道自己按下的是哪一边。
-    val haptics = rememberGlassHaptics()
     // 正文限高随窗口高度走：横屏可用高度约 280dp，写死 300.dp 会把
     // 「同意并继续 / 不同意并退出」顶出屏幕 —— 用户既进不去也退不出，只能杀进程。
     val bodyMaxHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.4f)
@@ -215,19 +231,13 @@ private fun LegalStepLayout(
                 ) {
                     GlassButton(
                         text = secondaryLabel,
-                        onClick = {
-                            haptics.reject()
-                            onSecondary()
-                        },
+                        // 触感由调用方（各条款页）在回调里发 —— 版式组件不知道
+                        // 这枚按钮是「拒绝」还是「延后」，猜了就会发错（历史上
+                        // 「稍后再说」被统一按 Reject 处理过一次）。
+                        onClick = onSecondary,
                         material = GlassMaterial.THIN,
                     )
-                    GlassButton(
-                        text = primaryLabel,
-                        onClick = {
-                            haptics.confirm()
-                            onPrimary()
-                        },
-                    )
+                    GlassButton(text = primaryLabel, onClick = onPrimary)
                 }
             }
         }

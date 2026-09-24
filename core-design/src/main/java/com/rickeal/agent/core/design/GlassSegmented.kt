@@ -192,7 +192,17 @@ private fun SegmentedIndicator(
                 // onSelected 在用户动作位点直发（见 onSelectedCallback 声明处注释）。
                 onSelectedCallback(targetIndex)
                 // 拖动换项提交 → 一次 tick（段间切换 = 离散档位跳跃）。
-                currentHaptics.tick()
+                //
+                // ⚠️ 门禁与 GlassSlider / GlassSwitch 同规格，**不能省**：
+                // onDragStopped 是在手势循环的 `finally` 里执行的，两条非用户动作的
+                // 路径同样会走到这里 ——
+                //   1. 让位给父级滚动（本控件 `canYieldToParent` 取默认 true，而全部
+                //      调用点都在可滚动页面里）：手指落在分段上纵向滑列表，松手也震；
+                //   2. pointerInput 协程被取消（旋转 / 导航 / LazyColumn 回收）。
+                // 不门禁就是本仓明令禁止的"滑列表也震""没点也震"。
+                // （只箍触感这一句：`currentIndex` / `animateToValue` / `onSelected`
+                //   是 Wave 6b 的既有语义，改动面更大，单列 backlog。）
+                if (!yieldedToParent && finishedNormally) currentHaptics.tick()
             },
             onDrag = { _, dragAmount ->
                 // 拖动 = 手势内累积位移 → 绝对映射到"项坐标"（每移动一个 itemWidth 前进
