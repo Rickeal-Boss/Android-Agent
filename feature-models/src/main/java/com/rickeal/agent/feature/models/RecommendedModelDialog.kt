@@ -30,7 +30,7 @@ import com.rickeal.agent.core.design.LocalGlassTokens
  * 它给 content 的高度约束是否无界取决于平台实现，而 foundation 的滚动容器在
  * `maxHeight == Infinity` 时会抛 `IllegalStateException: Vertically scrollable component
  * was measured with an infinity maximum height constraints` —— 编译期看不出来。
- * 这里统一限高规避：约束有界时它无副作用，无界时避免崩溃（8 条预设本来就要滚动）。
+ * 这里统一限高规避：约束有界时它无副作用，无界时避免崩溃（13 条预设本来就要滚动）。
  * `GlassTokens` 没有「对话框内容最大高度」这一档，就地定义（不改 :core-design）。
  */
 private val ModelListMaxHeight = 420.dp
@@ -40,7 +40,7 @@ private val ModelListMaxHeight = 420.dp
  *
  * 设计原则：
  *  1. **不要出现任何术语**：不提 .litertlm / .task / 量化格式 / 后端。
- *  2. **替用户做决定**：推荐项置顶并标「新手推荐」，而不是丢 8 个名字让他选。
+ *  2. **替用户做决定**：推荐项置顶并标「新手推荐」，而不是丢 13 个名字让他选。
  *  3. **把代价说在前面**：体积、建议内存、是否需要 Wi-Fi，全部在点击前可见。
  *  4. **下载中给确定性**：百分比 + 可取消，避免「卡住了吗」的焦虑。
  */

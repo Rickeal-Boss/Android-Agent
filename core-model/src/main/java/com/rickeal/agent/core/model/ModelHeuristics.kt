@@ -128,7 +128,9 @@ object ModelHeuristics {
 
         else -> ModelCapabilities(
             text = true,
-            image = lower.contains("vl") || lower.contains("vision"),
+            // "vl"：Qwen2-VL / LFM2.5-VL / SmolVLM；"minicpm-v"：MiniCPM-V 系列文件名是
+            // "-V-"（无 "vl" 子串），但该系列全部是视觉模型（文本系 MiniCPM5/4 不含此段）。
+            image = lower.contains("vl") || lower.contains("vision") || lower.contains("minicpm-v"),
             audio = lower.contains("audio") || lower.contains("omni"),
             toolCalling = lower.contains("it") || lower.contains("instruct"),
             thinking = false,

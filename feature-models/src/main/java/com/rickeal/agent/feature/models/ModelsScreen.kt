@@ -453,20 +453,50 @@ private fun ModelDownloadCard(
                 ModelPresets.all.forEach { preset ->
                     GlassChip(
                         text = "${preset.label} · ${preset.sizeText} · ${preset.ramText}",
-                        selected = url == preset.url,
+                        // 换到镜像源后 url 不再等于 preset.url，但仍是同一个预设 —— 用 ownsUrl。
+                        selected = preset.ownsUrl(url),
                         onClick = { url = preset.url },
                     )
                 }
             }
             if (url.isNotBlank()) {
+                val activePreset = ModelPresets.findByUrl(url)
                 Text(
-                    text = ModelPresets.all.firstOrNull { it.url == url }?.let { preset ->
+                    text = activePreset?.let { preset ->
                         "${preset.note} · 体积 ${preset.sizeText} · 建议可用内存 ${preset.ramText}"
                     } ?: "自定义链接（请确认直链可直接下载）",
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.onGlassSubtle,
                     modifier = Modifier.padding(top = tokens.gapSm),
                 )
+                // 换源行：主源 HuggingFace + 国内镜像一键切换。只改 url、不动预设 ——
+                // 镜像与主源逐字节同源，所以体积、内存闸门、findByFileName 的文件名
+                // 口径全部不变；这是 ModelPreset.mirrors 数据结构换来的不变式。
+                if (activePreset != null && activePreset.mirrors.isNotEmpty()) {
+                    Text(
+                        text = "下载源",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassMuted,
+                        modifier = Modifier.padding(top = tokens.gapMd),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(tokens.gapSm),
+                    ) {
+                        val sources = listOf(
+                            ModelPresetMirror("HuggingFace · 官方", activePreset.url),
+                        ) + activePreset.mirrors
+                        sources.forEach { source ->
+                            GlassChip(
+                                text = source.label,
+                                selected = url == source.url,
+                                onClick = { url = source.url },
+                            )
+                        }
+                    }
+                }
             }
             Spacer(modifier = Modifier.height(tokens.gapMd))
             if (downloadName != null) {
