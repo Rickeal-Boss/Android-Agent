@@ -89,10 +89,17 @@ check "全仓禁网络栈（java.net/javax.net/okhttp/okio/HttpClient/SocketChan
 check "全仓禁进程执行（ProcessBuilder/Runtime.exec 两段锚点）" \
   bash -c 'grep -rnE "ProcessBuilder|Runtime\.getRuntime|\bexec\(" --include="*.kt" '"${EXCL[*]}"' . | grep -vE "'"$EXCLUDE_COMMENT"'"'
 
-# 7) 声明面守卫：Manifest 不得出现 INTERNET / cleartext（纯端侧承诺的声明层，
-#    源码守卫看不见权限声明 —— F-P0-1：权限才是能力面的源头）
-check "Manifest 无 INTERNET/明文流量（纯端侧声明面）" \
-  bash -c 'grep -rn "android.permission.INTERNET\|usesCleartextTraffic=\"true\"" --include="AndroidManifest.xml" '"${EXCL[*]}"' .'
+# 7) 声明面守卫（Wave 12 修订，方向反转）：INTERNET 必须**存在** —— 系统下载服务
+#    的 enqueue() 会校验请求方权限，Wave 4 误判「请求方不需要」导致真机 SecurityException、
+#    模型直链下载从未成功过（详见 AndroidManifest.xml 的 INTERNET 注释）。
+#    纯端侧承诺的实质在代码面：第 5 条禁网络栈 / 第 6 条禁进程执行不变 ——
+#    INTERNET 只用于系统 DownloadManager 替我们取回模型文件。
+check "Manifest 有 INTERNET（系统下载链路必需，Wave 12）" \
+  bash -c 'grep -q "android.permission.INTERNET" app/src/main/AndroidManifest.xml'
+
+# 7b) 明文流量禁令保留：下载源全部 https（Wave 6 口径：HF/hf-mirror/ModelScope 39 直链实测）。
+check "Manifest 无明文流量（下载源必须 https）" \
+  bash -c '! grep -rn "usesCleartextTraffic=\"true\"" --include="AndroidManifest.xml" '"${EXCL[*]}"' .'
 
 # 8) R8 规则守卫：proguard 不得残留网络栈 -dontwarn（D-P1-3：死配置会把
 #    传递回流进来的 okhttp 静默吞掉，构建照样绿）

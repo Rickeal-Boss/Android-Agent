@@ -6,11 +6,15 @@
     <!-- 权限                                                              -->
     <!-- = -->
 
-    <!-- Wave4 六路审查（F-P0-1 / D-P1-2）：应用已收敛为纯端侧推理，远程引擎与云端 API
-         已整体移除（commit 71dc6e5），此前声明的 INTERNET + usesCleartextTraffic 是
-         去云端漏网残留 —— 删。模型下载走系统 DownloadManager（下载发生在系统进程，
-         请求方 App 不需要持有 INTERNET 权限），工具面已零网络能力。
-         arch-guard 第 7 条守卫会断言本文件不再出现 INTERNET / usesCleartextTraffic。 -->
+    <!-- INTERNET（Wave 12 修订，真机实锤）：系统 DownloadManager 的 enqueue() 要求
+         **请求方 App 持有 INTERNET 权限**——Wave 4 注释里「下载发生在系统进程，
+         请求方不需要 INTERNET」的判断是错的（AOSP DownloadProvider 会校验调用方权限，
+         无权限时 enqueue 抛 SecurityException，被 ModelDownloader.runCatching 吞成 null，
+         UI 表现为「无法启动下载：系统下载服务不可用」——模型直链下载在真机上从未成功过）。
+         权限用途**仅限**模型文件下载（下载源全部 https，见 Wave 6 换源口径）。
+         纯端侧承诺的实质在代码面，不在权限面：全仓禁网络栈 + 禁进程执行
+         （arch-guard 第 5/6 条守卫不变），推理零数据外发。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- 计量网络判定（ConnectivityManager.activeNetwork）：驱动「正在使用移动数据」
          下载确认弹窗。**不可删** —— 删掉后 activeNetwork 返回 null，AppContainer.
