@@ -55,6 +55,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -647,6 +649,8 @@ private fun NavDestinationItem(
     val tokens = LocalGlassTokens.current
     val animationScope = rememberCoroutineScope()
     val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
+    // 局部别名：semantics 块里赋值目标（selected 语义属性）与参数同名，避免误读。
+    val isSelected = selected
 
     Column(
         modifier = modifier
@@ -658,6 +662,9 @@ private fun NavDestinationItem(
                 role = Role.Tab,
                 onClick = onClick,
             )
+            // 与 LiquidBottomTabs 页签同一口径（三线审查 Wave10）：Role.Tab
+            // 必须带 selected，TalkBack 才播报得出「已选中」。
+            .semantics { selected = isSelected }
             .liquidGlass(
                 // 选中项给到 REGULAR 才有"浮起来"的厚度差；未选中压到最薄，让位给容器。
                 material = if (selected) GlassMaterial.REGULAR else GlassMaterial.ULTRA_THIN,

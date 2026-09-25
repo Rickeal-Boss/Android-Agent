@@ -47,6 +47,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.selectableGroup
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
@@ -413,6 +416,9 @@ fun LiquidBottomTabs(
         /* ── 第 1 层：滑动指示面板（可见玻璃条）────────────────────────────── */
         Row(
             Modifier
+                // 无障碍分组（三线审查 Wave10）：TalkBack 把整行当一组页签播报，
+                // 配合每个页签的 selected 才有「第 N 项，已选中，共 M 项」的语义。
+                .selectableGroup()
                 .graphicsLayer { translationX = panelOffset.value }
                 .drawBackdrop(
                     backdrop = wallpaperBackdrop,
@@ -659,6 +665,9 @@ private fun RowScope.LiquidBottomTab(
 ) {
     val colors = LocalGlassColors.current
     val scale = LocalLiquidBottomTabScale.current
+    // 局部别名：semantics 块里 `selected = isSelected` 的赋值目标（语义属性）与
+    // 取值来源（函数参数）同名，不借用中间变量极易误读。
+    val isSelected = selected
     Column(
         modifier
             .clip(Capsule)
@@ -668,6 +677,11 @@ private fun RowScope.LiquidBottomTab(
                 role = Role.Tab,
                 onClick = onClick,
             )
+            // Role.Tab 此前只有 role 没有 selected：TalkBack 播报不出「已选中」
+            // （三线审查 Wave10）。加在 clickable 同一布局节点上，两个语义配置
+            // 合并进同一节点；echo 层（:474）的 clearAndSetSemantics {} 是整层
+            // 清空、本来就不播报，不受影响。
+            .semantics { selected = isSelected }
             .fillMaxHeight()
             .weight(1f)
             .graphicsLayer {
