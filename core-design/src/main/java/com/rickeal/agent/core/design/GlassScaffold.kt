@@ -1,5 +1,4 @@
 package com.rickeal.agent.core.design
-import androidx.compose.foundation.background
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,8 +16,6 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
@@ -28,7 +25,6 @@ import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.liquid.LocalBackdrop
 import com.rickeal.agent.core.design.liquid.backdrops.layerBackdrop
 import com.rickeal.agent.core.design.liquid.backdrops.rememberLayerBackdrop
-import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
@@ -123,104 +119,52 @@ fun GlassScaffold(
 }
 
 /**
- * 程序化壁纸：三色渐变 + 光斑场。必须铺满 Scaffold 底层。
- * 这就是「背景内容联动」的源头：玻璃里的折射光斑与这里是同一组坐标。
+ * 程序化壁纸：**纯色底**（2026-09-26 用户需求：默认只米白色）。必须铺满 Scaffold 底层。
  *
- * [backgroundImage] 非空时改为「自定义壁纸」三层叠加（Wave 9 需求 3b）：
+ * [backgroundImage] 非空时**完全替换**背景（同日需求：照片不再与任何叠加层混合）：
+ * 只画照片本身，不再叠光斑层与 scrim 色温层。渲染侧无特殊处理 —— 照片层
+ * 依旧在 `layerBackdrop` 录制范围内，玻璃节点的模糊/折射照常取到它
+ *（替换的是"画什么"，不是"录不录"）。
  *
- *  1. **照片层**：`drawImage` 铺满整个尺寸（`dstSize` 显式拉伸到画布 —— 不裁剪，
- *     变形交给 ContentScale 语义之外的手工拉伸；导入时已降采样到屏幕最长边，
- *     `FilterQuality.Medium`（双线性 + mipmap）是缩放质量与逐帧开销的平衡点）；
- *  2. **光斑层**：alpha 压到 0.31 —— 照片本身已有丰富内容可供折射，光斑只做
- *     品牌色调的点缀，压在照片上太浓会把用户选的图盖成调色盘；
- *  3. **scrim 层**：壁纸渐变色整体罩一层（深色 0.55 / 浅色 0.35）—— 保证玻璃
- *     节点下面的文字可读性不依赖用户恰好选了张浅色照片，同时让任意照片与
- *     玻璃配色系统保持同一色温。
+ * drawImage 是 [androidx.compose.ui.graphics.drawscope.DrawScope] 的**成员函数**，
+ * 在 DrawWithContent 的接收者作用域内直接可用，无需 import。
  *
- * drawImage 是 [androidx.compose.ui.graphics.drawscope.DrawScope] 的**成员函数**
- * （ui-graphics 1.10.3 源码核实），在 DrawWithContent 的接收者作用域内直接可用，
- * 无需 import。
+ * ⚠️ 历史申报：旧实现 = 三色渐变 + 7 色光斑场（供折射"内容"）+ 照片模式的
+ * scrim 罩层。用户裁定光斑彩色背景整体去除、默认只米白、照片直接替换 ——
+ * 折射在纯色底上不再有可见内容（玻璃只剩磨砂与边缘形变），照片模式下不再有
+ * 色温调和（文字可读性交给照片本身），均为本需求的直接后果。
+ *
+ * [solidColor] 独立成参数（默认按深浅色取米白 / 深底），预览或特殊容器可覆盖。
  */
 @Composable
 fun GlassWallpaper(
     modifier: Modifier = Modifier,
     backgroundImage: ImageBitmap? = null,
-    colors: GlassColorScheme = LocalGlassColors.current,
-    backdrop: GlassBackdrop = LocalGlassBackdrop.current,
-    intensity: Float = LocalGlassConfig.current.intensity,
+    solidColor: Color = if (LocalGlassColors.current.isDark) {
+        Color(0xFF0B1020)
+    } else {
+        // Wave 9「浅色米白」的中段色：暖调米白，玻璃的蓝 accent 在暖底上更出挑。
+        Color(0xFFF6F1E4)
+    },
 ) {
-    // 光斑 alpha 从 0.40/0.52 提到 0.62/0.78。
-    // 原因：折射与色散是"移动/分离背景像素"，背景本身若是一片柔和浅色渐变，
-    // 移动了也看不出来 —— 这是液态玻璃效果出不来最容易被忽略的前提。
-    // 提高光斑浓度与饱和度，让背景真的有"内容"可供折射。
-    // 自定义壁纸时压到 0.31：照片已提供折射所需的"内容"，光斑退为点缀（见 KDoc）。
-    val blobAlpha = if (backgroundImage != null) {
-        0.31f
-    } else if (colors.isDark) 0.78f else 0.62f
     Box(
         modifier = modifier
-            // 照片层直接铺满画布，底下的渐变底色被完全遮住 —— 不画就是省一次全屏 fill。
-            .then(
-                if (backgroundImage == null) {
-                    Modifier.background(
-                        Brush.verticalGradient(
-                            colors = listOf(colors.wallpaperTop, colors.wallpaperMid, colors.wallpaperBottom),
-                        ),
-                    )
-                } else {
-                    Modifier
-                },
-            )
             .drawWithCache {
-                val blobs = backdrop.blobs.map { blob ->
-                    WallpaperBlob(
-                        center = Offset(blob.x * size.width, blob.y * size.height),
-                        // 半径系数 0.62 → 0.46：光斑收紧、边界更清晰，
-                        // 于是玻璃边缘压过去的折射/色散能吃到明显的色相变化。
-                        radius = blob.radiusFraction * max(size.width, size.height) * 0.46f,
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                blob.color.copy(alpha = (blobAlpha * intensity).coerceIn(0f, 1f)),
-                                Color.Transparent,
-                            ),
-                        ),
-                    )
-                }
-                // scrim：任意照片 × 玻璃配色之间的"色温调和层"，同时兜底文字可读性。
-                val scrim = backgroundImage?.let {
-                    val scrimAlpha = if (colors.isDark) 0.55f else 0.35f
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            colors.wallpaperTop.copy(alpha = scrimAlpha),
-                            colors.wallpaperMid.copy(alpha = scrimAlpha),
-                            colors.wallpaperBottom.copy(alpha = scrimAlpha),
-                        ),
-                    )
-                }
                 onDrawBehind {
                     if (backgroundImage != null) {
+                        // 照片层直接铺满画布（dstSize 显式拉伸 —— 不裁剪，与旧行为
+                        // 一致；导入时降采样已按屏幕最长边归一）。**只画照片**：
+                        // 不叠光斑、不叠 scrim，"替换背景"而非"叠加在背景上"。
                         drawImage(
                             image = backgroundImage,
                             dstOffset = IntOffset.Zero,
-                            // 拉伸铺满画布（不裁剪）：导入时降采样已按屏幕最长边归一，
-                            // 长宽比偏差由 scrim 与玻璃层吸收，裁剪会破坏用户对"整张图"的预期。
                             dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
                             filterQuality = FilterQuality.Medium,
                         )
-                    }
-                    for (blob in blobs) {
-                        drawCircle(brush = blob.brush, center = blob.center, radius = blob.radius)
-                    }
-                    if (scrim != null) {
-                        drawRect(brush = scrim)
+                    } else {
+                        drawRect(solidColor)
                     }
                 }
             },
     )
 }
-
-private class WallpaperBlob(
-    val center: Offset,
-    val radius: Float,
-    val brush: Brush,
-)

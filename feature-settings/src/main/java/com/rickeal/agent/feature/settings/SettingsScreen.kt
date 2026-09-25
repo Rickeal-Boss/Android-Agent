@@ -301,7 +301,7 @@ fun SettingsScreen(
                                 color = colors.onGlass,
                             )
                             Text(
-                                text = "选一张照片铺在玻璃下面，折射会实时跟着它变",
+                                text = "选一张照片完全替换背景，玻璃效果会实时跟着它变",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = colors.onGlassSubtle,
                             )
