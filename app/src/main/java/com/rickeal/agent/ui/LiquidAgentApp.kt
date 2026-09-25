@@ -664,7 +664,8 @@ private fun NavDestinationItem(
             )
             // 与 LiquidBottomTabs 页签同一口径（三线审查 Wave10）：Role.Tab
             // 必须带 selected，TalkBack 才播报得出「已选中」。
-            .semantics { selected = isSelected }
+            // this.selected：裸名会被同名参数遮蔽（同 LiquidBottomTabs 的教训）。
+            .semantics { this.selected = isSelected }
             .liquidGlass(
                 // 选中项给到 REGULAR 才有"浮起来"的厚度差；未选中压到最薄，让位给容器。
                 material = if (selected) GlassMaterial.REGULAR else GlassMaterial.ULTRA_THIN,

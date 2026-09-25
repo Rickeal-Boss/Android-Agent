@@ -46,8 +46,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.selectableGroup
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -681,7 +681,9 @@ private fun RowScope.LiquidBottomTab(
             // （三线审查 Wave10）。加在 clickable 同一布局节点上，两个语义配置
             // 合并进同一节点；echo 层（:474）的 clearAndSetSemantics {} 是整层
             // 清空、本来就不播报，不受影响。
-            .semantics { selected = isSelected }
+            // 注意必须写 this.selected：裸名 selected 会被同名函数参数遮蔽
+            // （局部作用域优先于隐式 receiver 的扩展属性），赋值就落在 val 参数上。
+            .semantics { this.selected = isSelected }
             .fillMaxHeight()
             .weight(1f)
             .graphicsLayer {
