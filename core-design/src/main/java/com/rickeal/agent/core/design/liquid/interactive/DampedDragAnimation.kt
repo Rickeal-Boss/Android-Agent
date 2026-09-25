@@ -13,6 +13,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 
 /*
@@ -393,13 +394,37 @@ class DampedDragAnimation(
      * `snapTo` 与 `animateTo` 共用同一个 mutation 锁：每次调用会取消在途动画，
      * 所以逐帧调用是安全且预期的（旧目标直接作废）。
      *
+     * ⚠️ 派发方式必须是 [CoroutineStart.UNDISPATCHED]，**不是**默认的 `launch`：
+     * `animationScope` 来自 `rememberCoroutineScope()`，其 context 是
+     * `AndroidUiDispatcher.Main + MonotonicFrameClock`，默认 `launch` 是**派发**的
+     * —— 协程体要等下一个 frame 的 dispatch 阶段才跑 ⇒ 拖动期渲染读到的 [value]
+     * 恒滞后 ≥1 帧（真机上表现为"胶囊/滑块慢半拍"）。`UNDISPATCHED` 让协程体在
+     * **首个挂起点之前同步执行**：`snapTo` 在没有在途动画竞争时会同步把 value 写完，
+     * 当帧即生效、严格跟手。
+     *
+     * 📌 与真机录屏里那次"胶囊在 1.6↔3.2 页签间以 ≈5.9Hz 振荡"**不是一回事**：
+     * 那次是双写者互搏（外部回显写 + 手势写），已由 `bf2bed4` 的回显门禁切断；
+     * 本处改的是残留的**派发延迟**。两者都已消除，但成因不同。
+     *
+     * ⚠️ **影响面申报（Wave 10）**：`snapValue` 是全仓共享 API，改动 `launch` →
+     * `UNDISPATCHED` 会同时影响**全部 3 个调用点**，且它们**都在拖动路径**上：
+     *  - `GlassSegmented.kt:217`（分段控件拖动换项）
+     * `GlassSlider.kt:286`（滑块拖动）
+     * `LiquidBottomTabs.kt:366`（底栏页签拖动换页）
+     * ⇒ 本次顺带改变了**已验收的滑块 / 分段跟手行为**。方向为**正向**（值同步生效、
+     * 更跟手、无回归风险），但属"申报外的行为变更"，真机验收**必须回归滑块与分段**。
+     * 📌 `animateToValue` / `updateValue` **未动**（保持默认 `launch`）：它们是非拖动
+     * 路径（1 帧启动延迟不可感知），且被 `GlassSwitch` 的弹簧路径消费，改了会波及开关。
+     *
      * ⚠️ 只做"值立即到位"这一件事 —— 不碰手势循环 / consume 门控 / 轴向锁定，
      * 那三块是真机验过的稳定性所在，别为手感顺手改它们。
      */
     fun snapValue(value: Float) {
         val coerced = value.coerceIn(valueRange)
         targetValue = coerced
-        animationScope.launch { valueAnimatable.snapTo(coerced) }
+        animationScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            valueAnimatable.snapTo(coerced)
+        }
     }
 
     private fun setPressed(pressed: Boolean) {

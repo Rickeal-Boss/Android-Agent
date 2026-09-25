@@ -109,17 +109,45 @@ private val LocalLiquidBottomTabScale = staticCompositionLocalOf<() -> Float> { 
  *
  * 结构对齐 Kyant0 `catalog/components/LiquidBottomTabs`（Apache-2.0）的四层：
  *
- *  1. **滑动指示面板**（可见玻璃条）—— Row + `graphicsLayer { translationX = panelOffset }`
- *     + Capsule + vibrancy/blur(8)/lens(24,24)。拖动时整条玻璃朝拖动方向轻微拉伸
- *     （panelOffset 最大 4dp，EaseOut），松手弹回。
+ *  1. **滑动指示面板**（可见玻璃条）—— Row + Capsule + vibrancy/blur(8)/lens(24,24)。
  *  2. **隐形回显行** —— 同一份页签内容再渲染一遍，`alpha(0f)` 屏幕上不可见，
  *     但被 `layerBackdrop` 录进 [tabsBackdrop] 图层，并整体 tint 成强调色。
  *     它是第 3 层折射的素材：胶囊里看到的"发光页签"就是它。
  *  3. **滑动指示胶囊** —— `fillMaxWidth(1f/tabsCount)` 的 Box，横向平移
- *     `value * tabWidth + panelOffset`；手势（[InteractiveHighlight.gestureModifier]
+ *     `value * tabWidth`；手势（[InteractiveHighlight.gestureModifier]
  *     + [DampedDragAnimation.modifier]）挂在这一层；lens(10,14) + 色散 +
  *     按压缩放 + 速度各向异性拉伸。
  *  4. **选中项图标随按压缩放** —— 由 [LocalLiquidBottomTabScale] 下发（见上）。
+ *
+ * ## 拖动拉伸偏移（panelOffset）只挂一层（Wave 10）
+ *
+ * 拖动时整条玻璃朝拖动方向最长拉 4dp（EaseOut），松手弹簧归零。该偏移**只在
+ * `BoxWithConstraints` 的外层 `graphicsLayer` 上挂一次** —— 原先三层各自平移同一个
+ * panelOffset、胶囊再自己 `+ panelOffset.value`，等价于"整体平移"；收敛到一层后
+ * 语义一致，但每帧只有 1 个 layer 失效而不是 3 个。
+ *
+ * 差异口径：**≤4dp 不可辨差异** —— 第 2 层的 `layerBackdrop` 录制帧在旧代码里不随
+ * `panelOffset` 平移、新代码里随外层一起平移（录制内容本身同源、位移量 ≤4dp，肉眼不可辨）。
+ * 功能无回归。机制依据：`drawBackdrop` 通过 `GlobalPositionAwareModifierNode.onGloballyPositioned`
+ * 拿**全局坐标**采样背景（`DrawBackdropModifier.kt`），祖先层平移会一并计入子节点窗口
+ * 坐标 ⇒ 采样区域不变，只是位移量同源。
+ *
+ * ## 关于 `interactiveHighlight.modifier` 的分层（Wave 10 修正）
+ *
+ * ⚠️ `InteractiveHighlight.pressAnimatable` 是**实例字段**（`InteractiveHighlight.kt:84`），
+ * 而本组件的 `interactiveHighlight` 是**单实例**（见下方 `remember(animationScope)`）——
+ * 第 3 层胶囊的 `gestureModifier`（`:561`）驱动的就是**同一个** `pressAnimatable`。
+ * 因此它驱动的按压进度是**全层共享**的：
+ *  - **第 1 层（可见玻璃条）必须保留 `.then(interactiveHighlight.modifier)`**：
+ *    它绘制的白色径向高光（`InteractiveHighlight.kt:109-128`，半径 `min(w,h)*0.9`，
+ *    圆心 = 胶囊中心 `position(nodeSize, touchOffset)`）是**可见效果**，删掉即真实视觉变更，
+ *    违反「零视觉风险」裁决。
+ *  - **第 2 层（回显行）那一处已删除**：该层 `.alpha(0f)`，屏幕上本就不可见，删它是
+ *    **真正的零视觉变更**。附带收益：`nodeSize` 从「64dp / 56dp 两节点交替写同一个 state」
+ *    变成**单写者**（只剩第 1 层），消除了状态抖动 —— 这才是这处改动真正的价值。
+ *
+ * 📌 曾误判为「第 1 / 2 层 pressProgress 恒为 0 的死代码」：错在把 `pressAnimatable`
+ * 当成按节点隔离的状态；它是**单实例共享**的。第 1 层的 modifier 是活的，不要再删。
  *
  * ## 与 Kyant0 原版的 API 差异（全部是等价替换，结构不变）
  *
@@ -190,7 +218,38 @@ fun LiquidBottomTabs(
     val tabWidthState = remember { mutableStateOf(0f) }
     val containerWidthState = remember { mutableStateOf(0f) }
 
-    BoxWithConstraints(modifier = modifier, contentAlignment = Alignment.CenterStart) {
+    // 面板拉伸偏移（px）：拖动时整条玻璃朝拖动方向最长拉 4dp，松手弹簧归零。
+    //
+    // ⚠️ 拖动期**同步累加**到这个 State，不再每帧 `animationScope.launch { … snapTo(…) }`。
+    // 旧写法每帧新建一个协程，多个在途协程都先读到**同一个** `offsetAnimation.value`
+    // 再加各自的 delta，谁最后写谁生效 → 累加丢帧 → 面板 ±4dp 抽搐（真机反馈）。
+    // 同步累加在 onDrag 当帧完成，没有任何在途协程读旧值。
+    //
+    // ⚠️ Wave 10：这两个 State **刻意声明在 BoxWithConstraints 之外**，平移只挂到最外层
+    // 一个 graphicsLayer 上（见下方 BoxWithConstraints 的 modifier）。原先三层各自
+    // `.graphicsLayer { translationX = panelOffset.value }`、胶囊再自己 `+ panelOffset.value`
+    // —— 三层平移同一个 panelOffset 等价于"整体平移"；外层挂一次语义完全一致，但每帧
+    // 只有 1 个 layer 失效（原先是 3 个）。BoxWithConstraints 自身无背景绘制，
+    // 所以"移动整体"不引入任何视觉差异。
+    val panelOffsetPx = remember { mutableStateOf(0f) }
+    val panelOffset = remember(density) {
+        derivedStateOf {
+            val containerWidth = containerWidthState.value
+            val fraction = if (containerWidth > 0f) {
+                (panelOffsetPx.value / containerWidth).coerceIn(-1f, 1f)
+            } else {
+                0f
+            }
+            with(density) {
+                4f.dp.toPx() * sign(fraction) * EaseOut.transform(abs(fraction))
+            }
+        }
+    }
+
+    BoxWithConstraints(
+        modifier = modifier.graphicsLayer { translationX = panelOffset.value },
+        contentAlignment = Alignment.CenterStart,
+    ) {
         // 容器左右各 4dp 内边距（下面三层都带同一 4dp），可用宽度 = maxWidth - 8dp。
         val tabWidth = with(density) {
             (constraints.maxWidth.toFloat() - 8f.dp.toPx()) / tabsCount
@@ -205,26 +264,8 @@ fun LiquidBottomTabs(
         val maxWidthPx = constraints.maxWidth.toFloat()
         if (containerWidthState.value != maxWidthPx) containerWidthState.value = maxWidthPx
 
-        // 面板拉伸偏移（px）：拖动时整条玻璃朝拖动方向最长拉 4dp，松手弹簧归零。
-        //
-        // ⚠️ 拖动期**同步累加**到这个 State，不再每帧 `animationScope.launch { … snapTo(…) }`。
-        // 旧写法每帧新建一个协程，多个在途协程都先读到**同一个** `offsetAnimation.value`
-        // 再加各自的 delta，谁最后写谁生效 → 累加丢帧 → 面板 ±4dp 抽搐（真机反馈）。
-        // 同步累加在 onDrag 当帧完成，没有任何在途协程读旧值。
-        val panelOffsetPx = remember { mutableStateOf(0f) }
-        val panelOffset = remember(density) {
-            derivedStateOf {
-                val containerWidth = containerWidthState.value
-                val fraction = if (containerWidth > 0f) {
-                    (panelOffsetPx.value / containerWidth).coerceIn(-1f, 1f)
-                } else {
-                    0f
-                }
-                with(density) {
-                    4f.dp.toPx() * sign(fraction) * EaseOut.transform(abs(fraction))
-                }
-            }
-        }
+        // 面板拉伸偏移（panelOffsetPx / panelOffset）已上移到 BoxWithConstraints 之外
+        // （见该处注释：平移只在最外层挂一次 graphicsLayer）。
         // 松手回弹的在途协程。新一次拖动开始要先取消它 —— 否则回弹一边归零、拖动一边
         // 累加，两者对同一个 State 互相覆盖，面板又抖。
         val panelReboundJob = remember { mutableStateOf<Job?>(null) }
@@ -381,10 +422,9 @@ fun LiquidBottomTabs(
                     val v = dampedDragAnimation.value.coerceIn(0f, (tabsCount - 1).toFloat())
                     Offset(
                         if (isLtr) {
-                            (v + 0.5f) * tabWidthState.value + panelOffset.value
+                            (v + 0.5f) * tabWidthState.value
                         } else {
-                            size.width - (v + 0.5f) * tabWidthState.value +
-                                panelOffset.value
+                            size.width - (v + 0.5f) * tabWidthState.value
                         },
                         size.height / 2f,
                     )
@@ -419,7 +459,6 @@ fun LiquidBottomTabs(
                 // 无障碍分组（三线审查 Wave10）：TalkBack 把整行当一组页签播报，
                 // 配合每个页签的 selected 才有「第 N 项，已选中，共 M 项」的语义。
                 .selectableGroup()
-                .graphicsLayer { translationX = panelOffset.value }
                 .drawBackdrop(
                     backdrop = wallpaperBackdrop,
                     shape = { Capsule },
@@ -482,7 +521,6 @@ fun LiquidBottomTabs(
                     // 上屏时整层透明 —— "屏幕上看不见、玻璃里看得见"。
                     .alpha(0f)
                     .layerBackdrop(tabsBackdrop)
-                    .graphicsLayer { translationX = panelOffset.value }
                     .drawBackdrop(
                         backdrop = wallpaperBackdrop,
                         shape = { Capsule },
@@ -526,7 +564,6 @@ fun LiquidBottomTabs(
                             }
                         },
                     )
-                    .then(interactiveHighlight.modifier)
                     .height(56.dp)
                     .fillMaxWidth()
                     .padding(horizontal = 4.dp)
@@ -552,10 +589,9 @@ fun LiquidBottomTabs(
                         .coerceIn(0f, (tabsCount - 1).toFloat())
                     translationX =
                         if (isLtr) {
-                            renderValue * tabWidthState.value + panelOffset.value
+                            renderValue * tabWidthState.value
                         } else {
-                            size.width - (renderValue + 1f) * tabWidthState.value +
-                                panelOffset.value
+                            size.width - (renderValue + 1f) * tabWidthState.value
                         }
                 }
                 .then(interactiveHighlight.gestureModifier)
