@@ -21,7 +21,14 @@ private const val COPY_BUFFER_BYTES = 1024 * 1024
  */
 class AttachmentStore(private val context: Context) {
 
-    private val dir: File = File(context.filesDir, "attachments").apply { mkdirs() }
+    /**
+     * 附件目录（`filesDir/attachments`）。
+     *
+     * 对 [AppContainer] 暴露为**附件目录的唯一事实来源**：此前 `filesDir/attachments`
+     * 这个字面量在本类与 [AppContainer.importAttachment] 各拼了一次（overview.md DAT-B3
+     * 记为两处几乎逐行相同的重复实现），现在两边都从这里取。
+     */
+    val directory: File = File(context.filesDir, "attachments").apply { mkdirs() }
 
     /**
      * 把 Uri 复制进内部目录，返回可直接当文件路径使用的绝对路径；失败返回 null。
@@ -65,14 +72,14 @@ class AttachmentStore(private val context: Context) {
     }
 
     private fun uniqueFile(name: String): File {
-        var candidate = File(dir, name)
+        var candidate = File(directory, name)
         if (!candidate.exists()) return candidate
         val dot = name.lastIndexOf('.')
         val prefix = if (dot > 0) name.substring(0, dot) else name
         val suffix = if (dot > 0) name.substring(dot) else ""
         var index = 1
         while (candidate.exists() && index < 1000) {
-            candidate = File(dir, "${prefix}_$index$suffix")
+            candidate = File(directory, "${prefix}_$index$suffix")
             index++
         }
         return candidate

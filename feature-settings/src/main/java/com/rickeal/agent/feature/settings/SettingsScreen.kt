@@ -27,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -64,6 +65,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     onOpenDiagnostics: () -> Unit,
     onOpenLegal: () -> Unit,
+    onOpenStorage: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -442,6 +444,19 @@ fun SettingsScreen(
                         trailing = {
                             Icon(
                                 imageVector = Icons.Filled.Info,
+                                contentDescription = null,
+                                tint = colors.accent,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                    )
+                    GlassSettingRow(
+                        title = "存储空间",
+                        subtitle = "查看各类数据的占用，清理可再生成的内容",
+                        onClick = onOpenStorage,
+                        trailing = {
+                            Icon(
+                                imageVector = Icons.Filled.Storage,
                                 contentDescription = null,
                                 tint = colors.accent,
                                 modifier = Modifier.size(18.dp),

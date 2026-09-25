@@ -79,9 +79,22 @@ class ModelRepository(
     private val settings: SettingsRepository? = null,
 ) {
 
-    private val modelsDir: File = File(context.filesDir, "models")
-    private val externalDir: File? = context.getExternalFilesDir(null)?.let { File(it, "models") }
-    private val store = JsonFileStore(File(context.filesDir, "model_index"))
+    /**
+     * 内部模型目录（`filesDir/models`）。
+     *
+     * 对 [AppContainer] 暴露为存储用量统计的**单一事实来源**（[StorageUsageStore]）。
+     */
+    val directory: File = File(context.filesDir, "models")
+
+    /** 外置模型目录（`getExternalFilesDir(null)/models`），可能为 null；同上，供用量统计引用。 */
+    val externalDirectory: File? = context.getExternalFilesDir(null)?.let { File(it, "models") }
+
+    /** 模型索引目录（`filesDir/model_index`，内含 `models.json`）；同上，供用量统计引用。 */
+    val indexDirectory: File = File(context.filesDir, "model_index")
+
+    private val modelsDir: File get() = directory
+    private val externalDir: File? get() = externalDirectory
+    private val store = JsonFileStore(indexDirectory)
 
     /**
      * 串行化所有「读-改-写」清单的操作。

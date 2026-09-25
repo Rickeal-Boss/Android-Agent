@@ -11,6 +11,8 @@ import com.rickeal.agent.core.data.viewModelFactory
 import com.rickeal.agent.feature.settings.memory.MemoryRoute
 import com.rickeal.agent.feature.settings.memory.MemoryScreen
 import com.rickeal.agent.feature.settings.memory.MemoryViewModel
+import com.rickeal.agent.feature.settings.storage.StorageScreen
+import com.rickeal.agent.feature.settings.storage.StorageViewModel
 import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.feature.settings.tools.ToolsScreen
 import com.rickeal.agent.feature.settings.tools.ToolsViewModel
@@ -39,6 +41,18 @@ object LegalRoute {
     fun build(): String = ROUTE
 }
 
+/**
+ * 「存储空间」页（Wave 10 Phase 2b C-2）。
+ *
+ * route 走 `settings/` 前缀：会被 `MainShell` 的 `routeTop()` 最长前缀匹配自动归到
+ * SETTINGS 页签（选中态与滑动方向零额外改动）—— 与 diagnostics / legal 同一处置。
+ */
+object StorageRoute {
+    const val ROUTE = "settings/storage"
+
+    fun build(): String = ROUTE
+}
+
 fun settingsViewModelFactory(container: AppContainer): ViewModelProvider.Factory =
     viewModelFactory { SettingsViewModel(container) }
 
@@ -52,6 +66,16 @@ fun NavGraphBuilder.settingsGraph(
             viewModel = viewModel(factory = settingsViewModelFactory(container)),
             onOpenDiagnostics = { navController.navigate(DiagnosticsRoute.build()) },
             onOpenLegal = { navController.navigate(LegalRoute.build()) },
+            onOpenStorage = { navController.navigate(StorageRoute.build()) },
+        )
+    }
+
+    composable(route = StorageRoute.ROUTE) {
+        val container = LocalAppContainer.current
+        StorageScreen(
+            viewModel = viewModel(factory = viewModelFactory { StorageViewModel(container) }),
+            onBack = { navController.popBackStack() },
+            onOpenModels = onOpenModels,
         )
     }
 

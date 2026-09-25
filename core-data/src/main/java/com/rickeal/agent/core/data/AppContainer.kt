@@ -59,6 +59,20 @@ class AppContainer(
     val conversationRepository: ConversationRepository = ConversationRepository(context)
 
     /**
+     * 附件存储器。**同时是附件目录的唯一事实来源** —— [importAttachment] 与
+     * [StorageUsageStore] 都从这里取目录，不再各自拼 `filesDir/attachments`
+     *（此前 [AttachmentStore] 与 [AppContainer.importAttachment] 各拼了一次，
+     * overview.md DAT-B3 记为两处几乎逐行相同的重复实现）。
+     */
+    val attachmentStore: AttachmentStore = AttachmentStore(context)
+
+    /** 诊断日志目录（`filesDir/diagnostics`）：[agentLogFileStore] 的落点，也是存储用量分桶之一。 */
+    val diagnosticsDir: File = File(context.filesDir, "diagnostics")
+
+    /** 设置（DataStore）落点目录（`filesDir/datastore`）：存储用量分桶之一。 */
+    private val settingsDataStoreDir: File = File(context.filesDir, "datastore")
+
+    /**
      * ERROR 级日志的「崩溃幸存」落盘（见 [AgentLogFileStore]）。
      *
      * 放在 filesDir 而不是 cacheDir：cacheDir 会被系统在存储紧张时清掉，
@@ -66,7 +80,7 @@ class AppContainer(
      * （见 AgentLogStore.sanitize）。
      */
     val agentLogFileStore: AgentLogFileStore =
-        AgentLogFileStore(File(context.filesDir, "diagnostics/last_errors.log"))
+        AgentLogFileStore(File(diagnosticsDir, "last_errors.log"))
 
     init {
         // 尽早装上报错落盘：崩溃前最后一条 ERROR 必须已经写到磁盘上，
@@ -112,9 +126,12 @@ class AppContainer(
             SegmentedHistoryStore.open(historyRoot, conversationId)
         }
 
+    /** 模型下载目录（`externalFilesDir/Download`，DownloadManager 的落盘处）。 */
+    private val downloadsDir: File? = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+
     /** 模型下载（系统 DownloadManager，落盘到 externalFilesDir/Download）。 */
     val downloadDirPath: String?
-        get() = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath
+        get() = downloadsDir?.absolutePath
 
     /** 模型下载（系统 DownloadManager，落盘到 externalFilesDir/Download）。 */
     val modelDownloader: ModelDownloader = ModelDownloader(context)
@@ -150,13 +167,19 @@ class AppContainer(
     /** 引擎加载状态流（本轮仅供观察/日志，不接 UI）。 */
     val engineInitStatus: StateFlow<EngineInitStatus> get() = engineLoadCoordinator.status
 
+    /** 长期记忆目录（`filesDir/agent_memory`）：[agentMemory] 的落点，也是存储用量分桶之一。 */
+    private val agentMemoryDir: File = File(context.filesDir, "agent_memory")
+
     /** 长期记忆（harness-memory 移植）：filesDir/agent_memory/memory.json */
-    val agentMemory: AgentMemory = AgentMemory(File(context.filesDir, "agent_memory/memory.json"))
+    val agentMemory: AgentMemory = AgentMemory(File(agentMemoryDir, "memory.json"))
+
+    /** 执行计划目录（`filesDir/agent_plans`）：[agentPlanStore] 的落点，也是存储用量分桶之一。 */
+    private val agentPlansDir: File = File(context.filesDir, "agent_plans")
 
     /** 会话级执行计划（ZCode Phase Graph 降级移植）：plan_set / plan_update 工具的落点。 */
     val agentPlanStore: AgentPlanStore = AgentPlanStore(
         // Wave3 起持久化：进程死亡后计划还在（蓝图「长程任务不丢上下文」的恢复闭环）。
-        persistDir = File(context.filesDir, "agent_plans"),
+        persistDir = agentPlansDir,
     )
 
     /**
@@ -189,9 +212,12 @@ class AppContainer(
     // ---- 子代理框架（ZCode Actor / Octop ask_agent 移植）----
     // 顺序有讲究：先建 runner，再把 ask_actor 注册进 registry（工具内部引用 runner）。
     val subagentRegistry: SubagentRegistry = SubagentRegistry().also { BuiltInSubagents.registerAll(it) }
+    /** 子代理会话目录（`filesDir/subagent_sessions`）：[subagentSessions] 的落点，也是存储用量分桶之一。 */
+    private val subagentSessionsDir: File = File(context.filesDir, "subagent_sessions")
+
     // Actor 会话持久化目录：App 被杀后子代理上下文仍在（Wave 2 对齐 ZCode 持久化 Actor）
     val subagentSessions: SubagentSessionStore = SubagentSessionStore(
-        persistDir = File(context.filesDir, "subagent_sessions"),
+        persistDir = subagentSessionsDir,
     )
     val subagentTool: AskSubagentTool = AskSubagentTool(
         subagentRegistry,
@@ -200,6 +226,126 @@ class AppContainer(
         // Wave3：白名单兜底用真实工具注册表解析「继承全部」（曾误用 Actor 注册表
         // 的名字当工具名，Markdown 自定义 Actor 实际零工具可用）。
         toolRegistry = toolRegistry,
+    )
+
+    /**
+     * 存储空间用量统计（Wave 10 Phase 2b C-2）。
+     *
+     * **路径全部来自各 Store 的 `directory` 属性**（唯一事实来源），这里只做汇总与分档：
+     * 前 7 个是**可再生成**（可清除），后 7 个是**用户资产**（只显示大小、不提供一键清）——
+     * 端侧没有云端副本，一键清资产 = 不可恢复的数据销毁（见 [StorageUsageStore] KDoc）。
+     */
+    val storageUsageStore: StorageUsageStore = StorageUsageStore(
+        listOf(
+            // ── 可再生成（可清除）────────────────────────────────────────────
+            StorageBucketSource(
+                id = "cache",
+                title = "缓存",
+                description = "临时文件，清除后相关功能会按需重建",
+                targets = listOfNotNull(context.cacheDir),
+                clearable = true,
+            ),
+            StorageBucketSource(
+                id = "journal",
+                title = "运行日志",
+                description = "推理过程的临时记录（用于进程被杀后恢复）",
+                targets = listOf(journalRoot),
+                clearable = true,
+            ),
+            StorageBucketSource(
+                id = "history",
+                title = "回合归档",
+                // 副文案要讲清「归档 ≠ 会话内容」：用户看到"归档"两个字容易以为
+                // 对话历史没了而不敢清。归档可从会话正文重建（见 SegmentedHistoryStore）。
+                description = "已完成回合的分段归档。删除后可由会话正文重建，不影响会话内容本身。",
+                targets = listOf(historyRoot),
+                clearable = true,
+            ),
+            StorageBucketSource(
+                id = "agent_plans",
+                title = "执行计划",
+                description = "长程任务的计划快照",
+                targets = listOf(agentPlansDir),
+                clearable = true,
+            ),
+            StorageBucketSource(
+                id = "subagent_sessions",
+                title = "子代理会话",
+                description = "子代理（Actor）的会话上下文",
+                targets = listOf(subagentSessionsDir),
+                clearable = true,
+            ),
+            StorageBucketSource(
+                id = "diagnostics",
+                title = "诊断日志",
+                description = "崩溃幸存的错误日志",
+                targets = listOf(diagnosticsDir),
+                clearable = true,
+            ),
+            StorageBucketSource(
+                id = "agent_sandbox",
+                title = "沙箱工作区",
+                // 这里必须写明后果：沙箱是**工具调用的产出落点**（用户可能让 agent 在
+                // 那里生成过报告 / 文件），清掉就是真丢，不能只说"沙箱数据"这种抽象词。
+                description = "Agent 执行工具时写入的工作区文件。清除后这些文件不可恢复。",
+                targets = listOf(sandboxDir),
+                clearable = true,
+            ),
+            // ── 用户资产（只显示大小，不提供一键清）──────────────────────────
+            StorageBucketSource(
+                id = "models",
+                title = "模型文件",
+                description = "已下载 / 导入的模型；请在模型库中逐个删除",
+                targets = listOfNotNull(
+                    modelRepository.directory,
+                    modelRepository.externalDirectory,
+                    downloadsDir,
+                ),
+                clearable = false,
+            ),
+            StorageBucketSource(
+                id = "model_index",
+                title = "模型索引",
+                description = "模型清单（记录已登记模型）",
+                targets = listOf(modelRepository.indexDirectory),
+                clearable = false,
+            ),
+            StorageBucketSource(
+                id = "conversations",
+                title = "会话记录",
+                description = "全部对话内容；请在对话中删除",
+                targets = listOf(conversationRepository.directory),
+                clearable = false,
+            ),
+            StorageBucketSource(
+                id = "attachments",
+                title = "附件",
+                description = "随消息发送的图片 / 音频",
+                targets = listOf(attachmentStore.directory),
+                clearable = false,
+            ),
+            StorageBucketSource(
+                id = "agent_memory",
+                title = "长期记忆",
+                description = "模型沉淀的记忆条目；可在记忆页维护",
+                targets = listOf(agentMemoryDir),
+                clearable = false,
+            ),
+            StorageBucketSource(
+                id = "wallpaper",
+                title = "壁纸",
+                description = "自定义背景图片",
+                targets = listOf(wallpaperStore.directory),
+                clearable = false,
+            ),
+            StorageBucketSource(
+                id = "settings",
+                title = "设置数据",
+                description = "主题、推理参数等偏好设置",
+                targets = listOf(settingsDataStoreDir),
+                clearable = false,
+            ),
+        ),
     )
 
     init {
@@ -241,7 +387,13 @@ class AppContainer(
             if (direct.startsWith("/") && File(direct).exists()) return@withContext direct
             runCatching {
                 val uri = Uri.parse(raw)
-                val dir = File(context.filesDir, "attachments").apply { mkdirs() }
+                // 目录从 [attachmentStore] 取（唯一事实来源），不再就地拼 filesDir/attachments。
+                // ⚠️ `mkdirs()` 必须在这里显式调用，**不能依赖 AttachmentStore 构造器里的
+                // `.apply { mkdirs() }` 副作用**：那个类现在只为暴露 directory 而存在（其自带的
+                // importAttachment 已是死代码），一旦被当作死代码清理掉，attachments 目录将永不
+                // 创建，而 `target.outputStream()` 抛出的异常会被下面的 runCatching 吞掉 ⇒
+                // **附件导入静默失败（返回 null）**。mkdirs() 幂等、零成本。
+                val dir = attachmentStore.directory.apply { mkdirs() }
                 val safeName =
                     fileName.substringAfterLast('/').ifBlank { "attachment_${System.currentTimeMillis()}" }
                 val target = File(dir, "${System.currentTimeMillis()}_$safeName")

@@ -25,7 +25,13 @@ typealias ConversationsRepository = ConversationRepository
  * 所有 IO 走 Dispatchers.IO；文件损坏时 load 返回 null，refresh 返回空列表，绝不崩溃。
  */
 class ConversationRepository(context: Context) {
-    private val store = JsonFileStore(File(context.filesDir, "conversations"))
+    /**
+     * 会话目录（`filesDir/conversations`）。
+     *
+     * 对 [AppContainer] 暴露为存储用量统计的**单一事实来源**（[StorageUsageStore]）。
+     */
+    val directory: File = File(context.filesDir, "conversations")
+    private val store = JsonFileStore(directory)
     private val _metas = MutableStateFlow<List<ConversationMeta>>(emptyList())
     val metas: StateFlow<List<ConversationMeta>> = _metas.asStateFlow()
 

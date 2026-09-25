@@ -48,7 +48,12 @@ import java.io.InputStream
  */
 class WallpaperStore(private val context: Context) {
 
-    private val wallpaperDir: File get() = File(context.filesDir, "wallpaper")
+    /**
+     * 壁纸目录（`filesDir/wallpaper`）。
+     *
+     * 对 [AppContainer] 暴露为存储用量统计的**单一事实来源**（[StorageUsageStore]）。
+     */
+    val directory: File get() = File(context.filesDir, "wallpaper")
 
     /**
      * 从 Photo Picker 的 Uri 导入壁纸：一次性读取字节 → 两遍解码（只读边界 + 降采样）
@@ -117,8 +122,8 @@ class WallpaperStore(private val context: Context) {
                 // 4) JPEG 85：视觉上与原图几乎无差，体积约为 PNG 的 1/10 ——
                 //    这张图会被玻璃节点反复采样，文件大小直接影响冷启动解码耗时。
                 // 5) 唯一文件名：保证「导入成功 ⇒ DataStore 路径变化 ⇒ 显示链重新解码」。
-                wallpaperDir.mkdirs()
-                val target = File(wallpaperDir, "wallpaper_${System.currentTimeMillis()}.jpg")
+                directory.mkdirs()
+                val target = File(directory, "wallpaper_${System.currentTimeMillis()}.jpg")
                 try {
                     target.outputStream().use { output ->
                         bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, output)
