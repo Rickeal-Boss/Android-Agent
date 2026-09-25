@@ -87,11 +87,17 @@ litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-and
 
 # ---- 测试（JVM 单测） ----
 # AGP 的 unit test task（testDebugUnitTest）默认走 JUnit4，但 AGP **不会**自动提供
-# junit 依赖 —— 在非空测试源集上不显式声明就会找不到测试框架。kotlin-test 提供
-# assertEquals / assertTrue 等断言 API（其 JVM 变体在 junit4 在场时解析到
-# kotlin-test-junit）。两者都不引入注解处理器，符合硬约束。
+# junit 依赖 —— 在非空测试源集上不显式声明就会找不到测试框架。
+# ⚠️ 必须用 **kotlin-test-junit** 而不是裸 kotlin-test（CI 实测，run 36107593044）：
+#   `kotlin.test.Test` 是指向 `org.junit.Test` 的 `actual typealias`，**只存在于框架专属
+#   构件**里；裸 `org.jetbrains.kotlin:kotlin-test` 只提供 assertEquals / assertTrue 等
+#   断言函数。KGP 的"检测到 junit4 就自动解析变体"在 **AGP 9 内置 Kotlin + 裸坐标**场景下
+#   **不生效** —— 裸坐标会报 15 条 `Unresolved reference 'Test'`（而断言函数全部解析成功，
+#   这正是"注解缺失"的指纹）。
+# catalog 键名仍保留 `kotlin-test`（访问器 `libs.kotlin.test` 不变，build.gradle.kts 无需改动）。
+# 两者都不引入注解处理器，符合硬约束。
 junit = { group = "junit", name = "junit", version.ref = "junit" }
-kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
+kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test-junit", version.ref = "kotlin" }
 
 [plugins]
 
