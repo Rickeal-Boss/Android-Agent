@@ -76,14 +76,22 @@ class DampedDragAnimation(
      *
      * ⚠️ 累积的是 `abs(dragAmount.x)`（主轴），**不是**欧氏距离 —— 纵向滑动不会累积，
      * 因此纵向永远不消费，父级 `verticalScroll` 才能正常接管滚动。
-     * 当前全仓只有 `GlassSlider` 与 `GlassSwitch` 两个调用点，都是横向控件，主轴即 x；
+     *
+     * **当前全仓 4 个调用点，全部显式传正值 8dp**（主轴均为 x，暂无纵向控件）：
+     *  - `GlassSegmented`（分段指示器拖动）
+     *  - `GlassSlider`（滑块拖动）
+     *  - `LiquidBottomTabs`（底栏页签拖动）
+     *  - `GlassSwitch`（开关，其局部变量名为 `touchSlopPx`）
+     *
+     * **为什么现在都必须传正值**：`GlassSegmented` / `GlassSlider` / `LiquidBottomTabs`
+     * 三处的手势宿主在 Wave 10 Phase 2d/2e 都从"被平移的元素节点"迁到了**静态**覆盖层
+     * （为分离坐标反馈），命中路径随之从"元素自身 bounds"扩成"整条宿主" ⇒ 若仍用默认
+     * `0f`（"横向一动就消费"），真机点击 / 点轨道跳转必然带亚像素抖动，1px 就被 consume
+     * 取消 ⇒ **"点了没反应"**。`GlassSwitch` 同理（它外层挂了 `toggleable`）。过了 slop
+     * 才消费，才能把"点击"与"拖动"这两条路径干净地分开。
+     *
+     * 默认 `0f` 仅为历史默认值，**当前无任何调用点使用**（保留它是为了不动既有构造签名）。
      * **若将来新增纵向控件（如竖向 slider），这个累加必须参数化**，否则纵向拖动会失效。
-     *
-     * 默认 0f —— 即"横向一动就消费"，滑块手感与历史行为完全一致。
-     *
-     * 开关必须传一个正的值（8dp）：它外层挂了 `toggleable`，而真机点击不可能绝对
-     * 静止，只要抖 1px 就消费 → `toggleable` 的点击被取消 → **点了没反应**。
-     * 过了 slop 才消费，才能把"点击"和"拖动"这两条路径干净地分开。
      */
     private val consumeSlopPx: Float = 0f,
     /**

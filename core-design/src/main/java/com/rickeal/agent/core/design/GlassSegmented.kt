@@ -65,16 +65,28 @@ import kotlin.math.roundToInt
  *  2. **隐形回显行** —— 同一份文字再渲染一遍，录进 [rememberLayerBackdrop]
  *     图层并整层 tint 成强调色：胶囊折射看到的"发光文字"就是这层染色的内容。
  *  3. **滑动指示胶囊** —— `fillMaxWidth(1f/count)` 的 Box，
- *     `translationX = value * itemWidth`；手势全在这层
- *     （[DampedDragAnimation.modifier]），
- *     背景折射 `combined(壁纸, 回显行)`。
+ *     `translationX = value * itemWidth`；背景折射 `combined(壁纸, 回显行)`。
+ *     ⚠️ 拖动手势**不在**这层，而在一个覆盖整条的**静态** `matchParentSize` 宿主上
+ *     （胶囊是它的子节点）—— 见下方「坐标反馈」。
  *
- * ## 手势分流（为什么胶囊的 consumeSlopPx 必须 8dp）
+ * ## 坐标反馈（Wave 10 Phase 2e）
  *
- * 胶囊叠在**选中项**正上方：一次点击同时命中胶囊手势与下层 clickable。
+ * 旧实现把 `.then(dampedDragAnimation.modifier)` 与
+ * `.graphicsLayer { translationX = value * itemWidth }` 挂在**同一个胶囊节点**上：
+ * 手势节点 == 被驱动节点 ⇒ `PointerInputChange.position`（节点局部坐标）里已扣掉
+ * 胶囊自身位移 ⇒ 一阶坐标反馈 ⇒ 胶囊恒走手指一半（与 [LiquidBottomTabs] 同根因，
+ * 真机实测斜率 0.489，n=47）。
+ *
+ * 修复：视觉平移只留在胶囊，手势宿主迁到覆盖整条的**静态** `matchParentSize`
+ * Box（不随胶囊平移）⇒ 二者彻底分离；再用 [DampedDragAnimation.canStartDrag]
+ * 门禁把抓取区收回到"胶囊实时矩形"，保行为零变化。
+ *
+ * ## 手势分流（为什么 consumeSlopPx 必须 8dp）
+ *
+ * 宿主覆盖整条，但门禁只在**胶囊实时矩形**内放行 ⇒ 按在胶囊（= 选中项）上才起手。
  * 8dp 内不 consume → 抬手时事件未被消费 → 下层 clickable 正常触发（"点了没反应"
  * 的保险丝，与 [GlassSwitch] / [LiquidBottomTabs] 同一口井）；超 8dp 才消费、
- * 进入拖动换页。点**未选中**项不经过胶囊（胶囊不在那），直达 clickable。
+ * 进入拖动换项。点**未选中**项不经胶囊矩形 ⇒ 门禁不放行 ⇒ 直达 clickable。
  *
  * 折射参数沿用 LiquidBottomTabs 指示胶囊的实测值（lens 10,14 + 色散）：胶囊面积
  * 约 1/count 栏宽 × 48dp（整屏约 2~3%），与 P1-3"大面积卡片关色散"的决策不冲突，
@@ -179,6 +191,28 @@ private fun SegmentedIndicator(
             // 48dp 的胶囊按下时放大到 60dp 高。
             pressedScale = 60f / 48f,
             consumeSlopPx = consumeSlopPx,
+            // ⚠️ 起手门禁（Wave 10 Phase 2e）：手势已迁到**静态**宿主（覆盖整条），
+            // 必须把抓取区从"整条宿主"收回到旧实现"手势挂胶囊节点 ⇒ 抓取区 = 胶囊
+            // 自身 bounds"的范围 —— 否则按任意位置都会起手拖动换项。
+            // 门禁读**胶囊实时值** `value`（不是内部 `currentIndex`：点击动画进行中
+            // 两者可能差半格）⇒ 抓取区逐帧复刻现状。这里的 `value.coerceIn(0f, n-1)`
+            // 与胶囊 `renderValue` 的钳制是**同一表达式**（复刻元素自身 bounds 的前提）。
+            // ⚠️ 只判 x：胶囊 `.fillMaxHeight()` + 宿主 `matchParentSize()` ⇒ 纵向范围
+            // 与宿主**恒等** ⇒ y 判恒真、无信息（**不是漏判**，见类 KDoc）。
+            // 入参 `pos` 是**宿主局部坐标**；宿主与胶囊同宽、同原点（都是 Start 对齐）。
+            canStartDrag = { pos ->
+                val itemWidth = itemWidthState.value
+                if (itemWidth <= 0f) {
+                    false
+                } else {
+                    val v = value.coerceIn(0f, (itemsCount - 1).toFloat())
+                    // RTL 镜像：宿主宽 = itemWidth * itemsCount（itemWidthState 即由此而来，
+                    // 无第二份宽度公式）。
+                    val width = itemWidth * itemsCount
+                    val left = if (isLtr) v * itemWidth else width - (v + 1f) * itemWidth
+                    pos.x >= left && pos.x <= left + itemWidth
+                }
+            },
             onDragStarted = {
                 // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
                 dragAccumPx = 0f
@@ -316,28 +350,43 @@ private fun SegmentedIndicator(
             }
         }
 
-        /* ── 3. 滑动指示胶囊（手势 + 折射都在这层）────────────────────────── */
-        Box(modifier = Modifier.matchParentSize()) {
+        /* ── 3. 滑动指示胶囊（视觉在这层；手势迁到**静态**宿主，见类 KDoc）────── */
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                // ⚠️ 拖动手势挂在**静态宿主**（本 Box，不随胶囊平移）上，**不**挂在被
+                // `graphicsLayer { translationX }` 平移的胶囊节点上 —— 否则手势节点与
+                // 被驱动节点是同一个 ⇒ 一阶坐标反馈 ⇒ 胶囊恒走手指一半（类 KDoc「坐标反馈」）。
+                // 禁用时不挂手势：胶囊静态显示在选中位置（"禁用态拖动完全无响应"）。
+                .then(
+                    if (enabled) {
+                        Modifier.then(dampedDragAnimation.modifier)
+                    } else {
+                        Modifier
+                    },
+                ),
+        ) {
             Box(
                 Modifier
                     .fillMaxHeight()
                     .fillMaxWidth(1f / itemsCount)
                     .graphicsLayer {
+                        // 渲染值钳制（Wave 10 Phase 2e）：把 value 限回项区间再参与定位。
+                        // 与 LiquidBottomTabs 胶囊同款**防御层**——DDA 三处动画规格（TabSwitch
+                        // 临界阻尼；animateToValue / updateValue 的 NoBouncy）与拖动路径的
+                        // snapValue(coerced) 都保证 value 恒在区间内，故正常路径是恒等变换、
+                        // 零开销；它的价值在"将来有人把规格改回欠阻尼时不越界"。
+                        // ⚠️ 与门禁 `canStartDrag` 的 `value.coerceIn(0f, n-1)` 是**同一表达式**
+                        //（门禁复刻胶囊自身 bounds，二者必须逐字一致）。
+                        val renderValue = dampedDragAnimation.value
+                            .coerceIn(0f, (itemsCount - 1).toFloat())
                         translationX =
                             if (isLtr) {
-                                dampedDragAnimation.value * itemWidthState.value
+                                renderValue * itemWidthState.value
                             } else {
-                                size.width - (dampedDragAnimation.value + 1f) * itemWidthState.value
+                                size.width - (renderValue + 1f) * itemWidthState.value
                             }
                     }
-                    .then(
-                        // 禁用时不挂手势：胶囊静态显示在选中位置。
-                        if (enabled) {
-                            Modifier.then(dampedDragAnimation.modifier)
-                        } else {
-                            Modifier
-                        },
-                    )
                     .drawBackdrop(
                         // 背景 = 壁纸 + 回显行：折射同时弯折壁纸与染色的文字。
                         backdrop = rememberCombinedBackdrop(wallpaperBackdrop, tabsBackdrop),

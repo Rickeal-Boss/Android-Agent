@@ -40,6 +40,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -69,6 +70,13 @@ import kotlin.math.abs
 import kotlinx.coroutines.flow.collectLatest
 import kotlin.math.roundToInt
 
+// ⚠️ 几何量单一来源（Wave 10 Phase 2e）：轨道高 / thumb 尺寸既驱动布局，也驱动起手
+// 门禁的"thumb 实时矩形" —— 必须共用同一常量，避免"同一几何两份字面量"漂移
+//（LiquidBottomTabs P2-1 的坑：`tabWidth` 里藏了个 `8f.dp`）。
+private val SliderTrackHeight = 6.dp
+private val SliderThumbWidth = 40.dp
+private val SliderThumbHeight = 24.dp
+
 /**
  * 参数滑块 —— 整体对齐 Kyant0 `LiquidSlider`。
  *
@@ -82,6 +90,21 @@ import kotlin.math.roundToInt
  *  - thumb 是真玻璃：`blur(8dp * (1-progress))` + `lens(10dp, 14dp, 色散开)`；
  *  - 拖动时 thumb 沿拖动方向**拉长**、垂直方向**压扁**（各向异性），松手回弹；
  *  - 点轨道任意位置会跳过去（带弹簧），不是只在 thumb 上能拖。
+ *
+ * ## 坐标反馈（Wave 10 Phase 2e）
+ *
+ * 旧实现把 `.then(dampedDragAnimation.modifier)` 与
+ * `.graphicsLayer { translationX = … trackWidth * progress … }` 挂在**同一个 thumb
+ * 节点**上：手势节点 == 被驱动节点 ⇒ `PointerInputChange.position`（节点局部坐标）里
+ * 已扣掉 thumb 自身位移 ⇒ 一阶坐标反馈 ⇒ thumb 恒走手指一半（与 [LiquidBottomTabs] /
+ * [GlassSegmented] 同根因，真机实测斜率 0.489，n=47）。
+ *
+ * 修复：视觉平移只留在 thumb，手势宿主迁到 48dp **静态**触摸容器（它同时承载
+ * `detectTapGestures`）⇒ 二者彻底分离；再用 [DampedDragAnimation.canStartDrag] 门禁
+ * 把抓取区收回到"thumb 实时矩形"（含两端 clamp，逐像素复刻），保行为零变化。
+ *
+ * ⚠️ 同时给 DDA 补 `consumeSlopPx = 8dp`（原先默认 0f）：手势迁到整条轨道后，带抖动的
+ * "点轨道跳转"可能被 consume 取消，8dp 才能把"点击"与"拖动"干净分开。
  *
  * ## 无障碍（自绘最容易丢的东西）
  *
@@ -175,6 +198,22 @@ private fun LiquidSliderTrack(
         val trackWidth = constraints.maxWidth.toFloat().coerceAtLeast(1f)
         val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
         val animationScope = rememberCoroutineScope()
+        val density = LocalDensity.current
+        // 起手门禁 / consume 阈值的像素量：组合期算一次，门禁 lambda 里读捕获值。
+        val thumbWidthPx = with(density) { SliderThumbWidth.toPx() }
+        val thumbHeightPx = with(density) { SliderThumbHeight.toPx() }
+        // thumb 纵向居中的宿主高 —— 宿主是下面那个触摸容器（`heightIn(min)`）。
+        // 宿主高 = max(内容高, minTouchTarget)：内容最高者是 thumb（24dp），仍 <
+        // minTouchTarget（48dp）⇒ 宿主高 = tokens.minTouchTarget。不硬编码 48。
+        // ⚠️ 该推导隐含 `minTouchTarget ≥ SliderThumbHeight`（48 ≥ 24）。若将来把
+        // minTouchTarget 调到 < 24dp，hostHeightPx 会偏大、门禁 y 区间错位且**不报错** ——
+        // 改这个值必须同时复核此处。（刻意**不**改成 onSizeChanged 取实时高：那会引入
+        // 首帧 size=0 的新问题，与页签那处避开的坑同类。）
+        val hostHeightPx = with(density) { tokens.minTouchTarget.toPx() }
+        // ⚠️ 滑块原本没传 consumeSlopPx（DDA 默认 0f）。手势迁到**整条轨道**的宿主后，
+        // 带抖动的"点轨道跳转"可能被 consume 取消 ⇒ 与底栏 / 分段 / 开关同口径传 8dp，
+        // 把"点击"与"拖动"干净分开（真机必须回归测"点轨道跳转"）。
+        val consumeSlopPx = with(density) { 8.dp.toPx() }
         var didDrag by remember { mutableStateOf(false) }
         // 拖动期的三条状态（按下快照 / 手势内累积 / 拖动中标记）。
         //
@@ -215,6 +254,33 @@ private fun LiquidSliderTrack(
                 visibilityThreshold = 0.001f,
                 initialScale = 1f,
                 pressedScale = 1.5f,
+                // ⚠️ 8dp：见上方 consumeSlopPx 声明处（手势迁到整条宿主后，"点轨道跳转"
+                // 与"拖动"必须靠 consume 阈值分开）。
+                consumeSlopPx = consumeSlopPx,
+                // ⚠️ 起手门禁（Wave 10 Phase 2e）：手势已迁到 48dp 静态容器，抓取区必须
+                // 收回到旧实现"手势挂 thumb 节点 ⇒ 抓取区 = thumb 自身 bounds"。
+                // 门禁读 receiver 的**实时** `progress`，x 与 thumb 的 graphicsLayer 同式
+                //（含两端 clamp）⇒ 逐像素复刻；y 由宿主高与 thumb 高推导（thumb 纵向居中）。
+                // ⚠️ enabled 的**唯一机制**是"禁用时不挂 DDA modifier"（见下方容器处）⇒
+                // 此时没有 pointerInput ⇒ 门禁 lambda 根本不会被调用。故这里**不**再判
+                // enabled（那是不可达死代码，会误导后人以为此处有额外防护）。
+                canStartDrag = { pos ->
+                    if (trackWidth <= 0f) {
+                        false
+                    } else {
+                        // 与 thumb graphicsLayer 完全同式：
+                        // base = clamp(-w/2 + trackWidth*progress, -w/4, trackWidth - 3w/4)
+                        val base = (-thumbWidthPx / 2f + trackWidth * progress)
+                            .coerceIn(-thumbWidthPx / 4f, trackWidth - thumbWidthPx * 3f / 4f)
+                        // LTR：thumb 自然左缘 = 0（CenterStart ⇒ Start）⇒ [base, base + w]。
+                        // RTL：自然左缘 = 宿主宽 - w（Start = 右）⇒ [宽 - w - base, 宽 - base]。
+                        val left = if (isLtr) base else trackWidth - thumbWidthPx - base
+                        val top = (hostHeightPx - thumbHeightPx) / 2f
+                        val bottom = (hostHeightPx + thumbHeightPx) / 2f
+                        pos.x >= left && pos.x <= left + thumbWidthPx &&
+                            pos.y >= top && pos.y <= bottom
+                    }
+                },
                 onDragStarted = {
                     // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
                     // ⚠️ 锚点用 **receiver 的实时 value**（thumb 此刻的真实位置），
@@ -382,6 +448,16 @@ private fun LiquidSliderTrack(
                 }
                 .heightIn(min = tokens.minTouchTarget)
                 .fillMaxWidth()
+                // ⚠️ 拖动手势迁到本**静态容器**（原挂 thumb 节点 ⇒ 一阶坐标反馈，见类 KDoc）。
+                // 与下面的 detectTapGestures 同节点共存，"tap 不被误触"有**两层**抑制：
+                //  ① DDA：拖动越 8dp（consumeSlopPx）即 consume → tap 经 Final 帧消费检查取消；
+                //  ② 本控件自身：`if (yieldedToParent || didDrag) return@detectTapGestures`，
+                //     而 `didDrag` 阈值仅 0.5px（比 8dp 更早触发）⇒ [0.5px, 8dp] 窗口内即便
+                //     DDA 尚未 consume，tap 也被挡掉。
+                //  ②无害：`didDrag` 只在门禁放行（= 按在 thumb 内）时才可能置真，此时跳转
+                //  目标 ≈ thumb 当前位置、近似 no-op；按在轨道其它位置时门禁不放行 ⇒ onDrag
+                //  不跑 ⇒ `didDrag` 恒 false ⇒ tap 照常跳转。
+                .then(if (enabled) dampedDragAnimation.modifier else Modifier)
                 .pointerInput(animationScope) {
                     detectTapGestures { position ->
                         // ⚠️ 两种情况抬手**都不要**当成点击跳值：
@@ -412,14 +488,14 @@ private fun LiquidSliderTrack(
                     Modifier
                         .clip(Capsule)
                         .background(trackColor)
-                        .height(6f.dp)
+                        .height(SliderTrackHeight)
                         .fillMaxWidth(),
                 )
                 Box(
                     Modifier
                         .clip(Capsule)
                         .background(accentColor)
-                        .height(6f.dp)
+                        .height(SliderTrackHeight)
                         .layout { measurable, constraints ->
                             val placeable = measurable.measure(constraints)
                             val width =
@@ -433,6 +509,10 @@ private fun LiquidSliderTrack(
         }
 
         // Thumb：真玻璃 + 跟手各向异性拉伸。
+        // ⚠️ 手势**不在**这层 —— 迁到上面的 48dp 静态容器了。若本节点同时被
+        // `graphicsLayer { translationX }` 平移又承载手势 ⇒ 手势节点 == 被驱动节点 ⇒
+        // 一阶坐标反馈 ⇒ thumb 恒走手指一半（与 LiquidBottomTabs / GlassSegmented 同根因）。
+        // 这里只留视觉平移；`.size` 与门禁共用 SliderThumbWidth/Height（几何单一来源）。
         Box(
             Modifier
                 .graphicsLayer {
@@ -441,7 +521,6 @@ private fun LiquidSliderTrack(
                             .coerceIn(-size.width / 4f, trackWidth - size.width * 3f / 4f) *
                             if (isLtr) 1f else -1f
                 }
-                .then(if (enabled) dampedDragAnimation.modifier else Modifier)
                 .drawBackdrop(
                     backdrop = rememberCombinedBackdrop(
                         backdrop,
@@ -498,7 +577,7 @@ private fun LiquidSliderTrack(
                         drawRect(Color.White.copy(alpha = 1f - progress))
                     }
                 )
-                .size(40f.dp, 24f.dp),
+                .size(SliderThumbWidth, SliderThumbHeight),
         )
     }
 }
