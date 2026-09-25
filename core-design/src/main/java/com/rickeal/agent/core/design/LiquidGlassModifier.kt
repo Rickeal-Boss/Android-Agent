@@ -161,13 +161,20 @@ fun Modifier.liquidGlass(
                 vibrancy(saturation = VibrancySaturation)
                 // 按压时**减弱**模糊：玻璃被按"实"了，对应 Kyant0 的
                 // `blur(8f.dp * (1f - progress))`。物理直觉：越实的东西越不需要磨砂。
-                blur(effectiveBlur.toPx() * (1f - press * 0.7f))
+                // ⚠️ 全局强度接线（2026-09-26 用户需求）：模糊与折射是"玻璃质感"最
+                // 直观的两项，此前 safeIntensity 只乘 alpha（底色/描边/噪点/高光），
+                // 设置页滑「玻璃质感强度」时磨砂与折射纹丝不动 —— 被真机感知成
+                // "只调了背景壁纸"。现在两项都乘 safeIntensity（0.5~1.5）：
+                // 调低 = 更透更薄，调高 = 更磨砂更弯折，全局卡片/按钮/底栏一致生效。
+                blur(effectiveBlur.toPx() * safeIntensity * (1f - press * 0.7f))
                 if (enableRefraction) {
                     // 按压时**增强**折射：对应 Kyant0 的 `lens(... * progress)`。
                     // 越用力按，玻璃形变越明显 —— 这是"液态"手感的核心。
                     lens(
-                        refractionHeight = effectiveRefractionHeight.toPx() * (1f + press * 0.4f),
-                        refractionAmount = effectiveRefractionAmount.toPx() * (1f + press * 0.25f),
+                        refractionHeight = effectiveRefractionHeight.toPx() *
+                            safeIntensity * (1f + press * 0.4f),
+                        refractionAmount = effectiveRefractionAmount.toPx() *
+                            safeIntensity * (1f + press * 0.25f),
                         chromaticAberration = enableDispersion
                     )
                 }

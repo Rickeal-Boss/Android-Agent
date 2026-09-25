@@ -18,7 +18,15 @@ data class GlassConfig(
     val enableNoise: Boolean = true,
     val enableSpecular: Boolean = true,
     val reduceMotion: Boolean = false,
-    /** 全局材质强度 0.5~1.5，设置页可调 */
+    /**
+     * 全局材质强度 0.5~1.5，设置页「玻璃质感强度」可调。
+     *
+     * 2026-09-26 接线补全（用户真机反馈"只调了背景壁纸"）：现乘入
+     *  - 玻璃底色/描边/噪点/高光的 **alpha**（LiquidGlassModifier，原有）；
+     *  - **模糊半径与折射量**（LiquidGlassModifier effects，新增 —— 最直观的两项）；
+     *  - 程序化壁纸光斑 alpha（GlassWallpaper，原有；光斑已随"纯色米白"需求移除）。
+     * 所有用玻璃的组件（卡片/按钮/底栏/滑块）经 `LocalGlassConfig` 一处生效。
+     */
     val intensity: Float = 1f,
     /**
      * 触感强度档位（[GlassHapticLevel]），设置页「触感反馈强度」驱动。
