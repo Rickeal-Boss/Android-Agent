@@ -33,6 +33,7 @@ import com.rickeal.agent.core.design.GlassIconButton
 import com.rickeal.agent.core.design.GlassIconButtonShape
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassTopBar
+import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 
@@ -97,7 +98,10 @@ fun LegalScreen(
                 .fillMaxSize()
                 .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+                // 悬浮页签占位（2026-09-26）：加在滚动内容**之内**，末尾条目能滚出
+                // 页签区；内容本体仍从玻璃页签底下穿过（见 LocalBottomBarOverlay KDoc）。
+                .padding(bottom = LocalBottomBarOverlay.current),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(

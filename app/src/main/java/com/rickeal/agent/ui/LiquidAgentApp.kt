@@ -81,6 +81,7 @@ import com.rickeal.agent.core.design.LiquidAgentTheme
 import com.rickeal.agent.core.design.LiquidBottomTabs
 import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LiquidGlassSurface
+import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
@@ -379,92 +380,103 @@ private fun MainShell() {
                         .navigationBarsPadding(),
                 )
             }
-            Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                NavHost(
-                    navController = navController,
-                    // 必须与 composable 注册的 route 同源（ChatRoute.PATTERN）。
-                    // 写 ROUTE("chat") 能启动（NavGraphNavigator 是拿 route 字符串去
-                    // findNode 匹配的），但 destination id 由 createRoute(route).hashCode()
-                    // 决定，"chat" 与 "chat?conversationId={conversationId}" 算出来是**两个 id**。
-                    // 于是 navigateTop 的 popUpTo(graph.startDestinationId) 永远匹配不到 ——
-                    // popBackStackInternal 对「栈里没有这个 id」是打一行日志然后 return false，
-                    // 一条都不 pop，回退栈就这么随切页签无限涨起来的（UI-01 的根因）。
-                    startDestination = ChatRoute.PATTERN,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    // 页签切换 = iOS push/pop **视差**：新页大幅入场（32%），旧页小幅让位（14%）。
-                    // 旧实现两侧都满屏平移（±100%）+ 双 fade + tween(300)，观感是"整块屏幕
-                    // 被拖走"，而不是"推入一层新页"—— 深度感全靠模糊硬撑。
-                    // spec 依据（写死前逐条对过）：
-                    //  - 0.32 / 0.14 视差比：新页大幅入场、旧页小幅让位（iOS push 的经典比例），
-                    //    旧页只挪 14% 就能透出"下面还有一层"的暗示；
-                    //  - 260ms **大于**底部指示胶囊的 ~120ms（Wave 6b 定下的次序：胶囊先到位、
-                    //    内容随后到 —— 若内容比胶囊快，就会看到内容先飞进来胶囊再追）；
-                    //  - fade 内外**错开**（入 180 / 出 200）：若入出同长同相，切页瞬间两页都
-                    //    半透明叠在一起，看起来是"糊"而不是"换"。
-                    // 方向仍由新旧 destination 的页签索引差决定（索引增大 → 新页从右入、旧页向左出；
-                    // 反向则相反），pop 方向取反。四个方向都显式给值，避免依赖 NavHost 各版本默认值。
-                    // reduceMotion：四个 transition 全部 tween(0) —— 近瞬时切页，保留层级变化、去掉位移。
-                    enterTransition = {
-                        val dir = slideDirection(initialState.destination.route, targetState.destination.route)
-                        slideInHorizontally(
-                            initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
-                            animationSpec = tween(
-                                if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                                easing = FastOutSlowInEasing,
-                            ),
-                        ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
-                    },
-                    exitTransition = {
-                        val dir = slideDirection(initialState.destination.route, targetState.destination.route)
-                        slideOutHorizontally(
-                            targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
-                            animationSpec = tween(
-                                if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                                easing = FastOutSlowInEasing,
-                            ),
-                        ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
-                    },
-                    popEnterTransition = {
-                        val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
-                        slideInHorizontally(
-                            initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
-                            animationSpec = tween(
-                                if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                                easing = FastOutSlowInEasing,
-                            ),
-                        ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
-                    },
-                    popExitTransition = {
-                        val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
-                        slideOutHorizontally(
-                            targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
-                            animationSpec = tween(
-                                if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                                easing = FastOutSlowInEasing,
-                            ),
-                        ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
-                    },
-                ) {
-                    chatGraph(
+            // ── Tab 悬浮叠层（2026-09-26 用户需求）────────────────────────────────
+            // 旧结构 Column{ NavHost(weight 1f); GlassNavBar } 把底栏放在**独立布局槽**，
+            // 页面内容与页签被硬性隔开（用户对照 RVE 系统监控截图："Tab 框应该叠加在
+            // UI 页面上"）。改为 Box 覆盖：NavHost 铺满全屏，页签悬浮在底部，
+            // 内容与壁纸从玻璃页签底下穿过（refraction 实时跟随）。
+            //
+            // ⚠️ 页面末尾条目的可达性由 [LocalBottomBarOverlay]（84dp = TabBarHeight 64
+            // + GlassNavBar 上下 padding 10×2 —— 与 GlassNavBar 的实际组成**强同步**，
+            // 改任一侧必须同步另一侧）下发给各屏的滚动内边距；宽屏走 GlassNavRail
+            // 无底栏，provide 0dp。
+            CompositionLocalProvider(
+                LocalBottomBarOverlay provides if (windowSize.useTwoPane) 0.dp else 84.dp,
+            ) {
+                Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    NavHost(
                         navController = navController,
-                        onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
-                        onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
-                        // 汉堡只在 COMPACT 出现：宽屏没有抽屉（Rail 就是入口），
-                        // 传 null ⇒ ChatScreen 顶栏不渲染该图标。
-                        onOpenDrawer = if (windowSize.useTwoPane) {
-                            null
-                        } else {
-                            { drawerScope.launch { drawerState.open() } }
+                        // 必须与 composable 注册的 route 同源（ChatRoute.PATTERN）。
+                        // 写 ROUTE("chat") 能启动（NavGraphNavigator 是拿 route 字符串去
+                        // findNode 匹配的），但 destination id 由 createRoute(route).hashCode()
+                        // 决定，"chat" 与 "chat?conversationId={conversationId}" 算出来是**两个 id**。
+                        // 于是 navigateTop 的 popUpTo(graph.startDestinationId) 永远匹配不到 ——
+                        // popBackStackInternal 对「栈里没有这个 id」是打一行日志然后 return false，
+                        // 一条都不 pop，回退栈就这么随切页签无限涨起来的（UI-01 的根因）。
+                        startDestination = ChatRoute.PATTERN,
+                        modifier = Modifier.fillMaxSize(),
+                        // 页签切换 = iOS push/pop **视差**：新页大幅入场（32%），旧页小幅让位（14%）。
+                        // 旧实现两侧都满屏平移（±100%）+ 双 fade + tween(300)，观感是"整块屏幕
+                        // 被拖走"，而不是"推入一层新页"—— 深度感全靠模糊硬撑。
+                        // spec 依据（写死前逐条对过）：
+                        //  - 0.32 / 0.14 视差比：新页大幅入场、旧页小幅让位（iOS push 的经典比例），
+                        //    旧页只挪 14% 就能透出"下面还有一层"的暗示；
+                        //  - 260ms **大于**底部指示胶囊的 ~120ms（Wave 6b 定下的次序：胶囊先到位、
+                        //    内容随后到 —— 若内容比胶囊快，就会看到内容先飞进来胶囊再追）；
+                        //  - fade 内外**错开**（入 180 / 出 200）：若入出同长同相，切页瞬间两页都
+                        //    半透明叠在一起，看起来是"糊"而不是"换"。
+                        // 方向仍由新旧 destination 的页签索引差决定（索引增大 → 新页从右入、旧页向左出；
+                        // 反向则相反），pop 方向取反。四个方向都显式给值，避免依赖 NavHost 各版本默认值。
+                        // reduceMotion：四个 transition 全部 tween(0) —— 近瞬时切页，保留层级变化、去掉位移。
+                        enterTransition = {
+                            val dir = slideDirection(initialState.destination.route, targetState.destination.route)
+                            slideInHorizontally(
+                                initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
+                                animationSpec = tween(
+                                    if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                    easing = FastOutSlowInEasing,
+                                ),
+                            ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
                         },
-                    )
-                    modelsGraph(navController = navController)
-                    settingsGraph(
-                        navController = navController,
-                        onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
-                    )
-                }
+                        exitTransition = {
+                            val dir = slideDirection(initialState.destination.route, targetState.destination.route)
+                            slideOutHorizontally(
+                                targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
+                                animationSpec = tween(
+                                    if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                    easing = FastOutSlowInEasing,
+                                ),
+                            ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
+                        },
+                        popEnterTransition = {
+                            val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
+                            slideInHorizontally(
+                                initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
+                                animationSpec = tween(
+                                    if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                    easing = FastOutSlowInEasing,
+                                ),
+                            ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
+                        },
+                        popExitTransition = {
+                            val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
+                            slideOutHorizontally(
+                                targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
+                                animationSpec = tween(
+                                    if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                    easing = FastOutSlowInEasing,
+                                ),
+                            ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
+                        },
+                    ) {
+                        chatGraph(
+                            navController = navController,
+                            onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
+                            onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
+                            // 汉堡只在 COMPACT 出现：宽屏没有抽屉（Rail 就是入口），
+                            // 传 null ⇒ ChatScreen 顶栏不渲染该图标。
+                            onOpenDrawer = if (windowSize.useTwoPane) {
+                                null
+                            } else {
+                                { drawerScope.launch { drawerState.open() } }
+                            },
+                        )
+                        modelsGraph(navController = navController)
+                        settingsGraph(
+                            navController = navController,
+                            onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
+                        )
+                    }
                 if (!windowSize.useTwoPane) {
                     GlassNavBar(
                         selected = selected,
@@ -472,9 +484,11 @@ private fun MainShell() {
                             if (destination != selected) navController.navigateTop(destination.route)
                         },
                         modifier = Modifier
+                            .align(Alignment.BottomCenter)
                             .fillMaxWidth()
                             .navigationBarsPadding(),
                     )
+                }
                 }
             }
         }

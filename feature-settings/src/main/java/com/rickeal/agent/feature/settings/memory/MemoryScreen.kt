@@ -41,6 +41,7 @@ import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LiquidDialog
+import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.data.LocalAppContainer
 import com.rickeal.agent.core.data.viewModelFactory
@@ -90,7 +91,11 @@ fun MemoryScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                contentPadding = PaddingValues(
+                    start = 14.dp, top = 12.dp, end = 14.dp,
+                    // + 悬浮页签占位（2026-09-26），见 LocalBottomBarOverlay KDoc。
+                    bottom = 12.dp + LocalBottomBarOverlay.current,
+                ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 item {

@@ -36,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.agent.plan.PlanStepStatus
+import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassIconButton
@@ -145,7 +146,12 @@ fun ChatScreen(
             // 上下文占用条紧贴输入框上方：它是「模型变傻」的解释，属于输入区的状态信息，
             // 不占正文空间。Column 里的 imePadding/navigationBarsPadding 仍在 ChatInputBar
             // 自己身上，键盘弹出时这一行会一起被顶到键盘上方。
-            Column(modifier = Modifier.fillMaxWidth()) {
+            // + 悬浮页签占位（2026-09-26）：输入区整体抬到玻璃页签之上 —— 消息列表
+            // 已经被 bottomBar 挡在页签上方，这里若不抬，输入框会整个压进页签区。
+            Column(modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = LocalBottomBarOverlay.current)
+            ) {
                 ChatContextMeter(
                     usedTokens = state.contextTokens,
                     limitTokens = state.config.contextLength,

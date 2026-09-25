@@ -59,6 +59,7 @@ import com.rickeal.agent.core.design.GlassSwitch
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.data.LegalDocuments
+import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassTokens
@@ -148,7 +149,12 @@ fun ModelsScreen(
             // item 级补偿只在"末尾恰好是这两项"时成立，插入新尾部 item 就会漏。
             // start/end/top/bottom 四参版：PaddingValues 只有 all / horizontal+vertical /
             // start+top+end+bottom 三个重载，horizontal 不能与 top/bottom 混用（R2 CI 红的教训）。
-            contentPadding = PaddingValues(start = 14.dp, top = 12.dp, end = 14.dp, bottom = 104.dp),
+            contentPadding = PaddingValues(
+                start = 14.dp, top = 12.dp, end = 14.dp,
+                // 104dp = FAB(56) + 20 + 16 + 12（原口径，FAB 槽位已随悬浮页签上移）
+                // + 悬浮页签占位（2026-09-26），见 LocalBottomBarOverlay KDoc。
+                bottom = 104.dp + LocalBottomBarOverlay.current,
+            ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {

@@ -41,6 +41,27 @@ val LocalWallpaperImage: ProvidableCompositionLocal<ImageBitmap?> =
     staticCompositionLocalOf { null }
 
 /**
+ * 底部悬浮页签的**占位高度**（2026-09-26「Tab 悬浮叠层」需求）。
+ *
+ * app 层 MainShell 把 [LiquidBottomTabs] 从独立布局槽改为**悬浮叠层**（Box 覆盖在
+ * NavHost 之上，对齐参考设计的"页签叠在页面上"形态）后，页面内容会延伸到页签
+ * 区域底下 —— 本地值告诉各屏：滚动内容的**内边距**（contentPadding / 尾部 padding，
+ * 在滚动容器**之内**）要加这么多，让末尾条目能滚出页签区；玻璃页签下透出的正是
+ * 滚过的内容与壁纸（refraction 实时跟随）。
+ *
+ *  - app MainShell 在 COMPACT（显示 GlassNavBar）时 provide **84.dp**
+ *    （TabBarHeight 64 + GlassNavBar 上下 padding 10×2 —— 与 GlassNavBar 的实际
+ *    组成同步，改那边必须同步这边）；
+ *  - 宽屏（GlassNavRail，无底栏）不 provide，默认 0.dp；
+ *  - [GlassScaffold] 内部也用它抬升 FAB / snackbar 槽位。
+ *
+ * ⚠️ 必须消费在**滚动内边距**上，不要挂在滚动容器自身的 layout padding 上：
+ * 后者会把视口压短，内容就不再"穿过"页签了（叠层失去意义）。
+ */
+val LocalBottomBarOverlay: ProvidableCompositionLocal<Dp> =
+    staticCompositionLocalOf { 0.dp }
+
+/**
  * 玻璃骨架。壁纸铺底 → 顶栏 → 内容 → 底栏 → FAB / Snackbar 浮层。
  * 刻意不用 material3 的 Scaffold：我们需要壁纸贯穿整个层级，且 inset 由调用方决定。
  *
@@ -71,6 +92,9 @@ fun GlassScaffold(
     // 所有 drawBackdrop 节点（即 liquidGlass）从这里取背景做模糊/折射。
     // 不下发它玻璃就拿不到壁纸，会退化成「无背景的纯色半透明面板」。
     val layerBackdrop = rememberLayerBackdrop()
+    // 悬浮页签占位（COMPACT 下 84dp，见 LocalBottomBarOverlay KDoc）：
+    // 抬升 FAB / snackbar 槽位 + 下发 content 的默认 bottom padding。
+    val overlay = LocalBottomBarOverlay.current
     CompositionLocalProvider(
         LocalBackdrop provides layerBackdrop,
     ) {
@@ -90,7 +114,7 @@ fun GlassScaffold(
             ) {
                 topBar()
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    content(PaddingValues(0.dp))
+                    content(PaddingValues(bottom = overlay))
                 }
                 bottomBar()
             }
@@ -101,8 +125,9 @@ fun GlassScaffold(
                     // 约 28dp 落进导航栏区域：视觉上被压住，点击也容易被导航栏吃掉。
                     // navigationBarsPadding() 必须在 .padding(...) 之前 —— 先让出系统
                     // 导航区，再在剩余空间里加设计给的 20dp 边距。
+                    // + overlay：悬浮页签占位（2026-09-26）—— FAB 不再压在页签底下。
                     .navigationBarsPadding()
-                    .padding(end = 20.dp, bottom = 20.dp)
+                    .padding(end = 20.dp, bottom = 20.dp + overlay)
                     .windowInsetsPadding(contentWindowInsets),
             ) {
                 floatingActionButton()
@@ -110,7 +135,7 @@ fun GlassScaffold(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 104.dp),
+                    .padding(bottom = 104.dp + overlay),
             ) {
                 snackbarHost()
             }
