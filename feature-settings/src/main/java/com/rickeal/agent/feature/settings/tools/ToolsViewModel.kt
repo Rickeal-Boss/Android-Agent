@@ -31,6 +31,21 @@ data class ToolSpecUi(
 @Immutable
 data class ToolsUiState(
     val tools: List<ToolSpecUi> = emptyList(),
+    /**
+     * 经搜索 / 分类 / 启用筛选后要展示的列表（[tools] 的子集）。
+     *
+     * 派生字段集中在 ViewModel 里重算（见文件末尾的 `refiltered()`），UI 只读不算 ——
+     * 避免筛选逻辑散落在组合函数里、与状态更新脱节。
+     */
+    val visibleTools: List<ToolSpecUi> = emptyList(),
+    /** 当前**实际存在**的分类（规范顺序，见 [TOOL_CATEGORY_ORDER]）。 */
+    val categories: List<String> = emptyList(),
+    /** 搜索关键词：匹配工具名 / 描述，大小写不敏感。 */
+    val query: String = "",
+    /** 选中的分类；null = 全部分类。 */
+    val category: String? = null,
+    /** 只看已启用的工具（顶部分段「已启用」）。 */
+    val enabledOnly: Boolean = false,
     val testName: String? = null,
     val testArgs: String = "{}",
     val testResult: String? = null,
@@ -65,8 +80,22 @@ class ToolsViewModel(
                         parameters = tool.spec.parameters,
                     )
                 },
-            )
+                // 重算派生列表：工具增删 / 启停后，筛选结果与分类集合都要跟着更新。
+            ).refiltered()
         }
+    }
+
+    fun onQueryChange(text: String) {
+        _uiState.update { it.copy(query = text).refiltered() }
+    }
+
+    /** [category] 传 null 表示「全部分类」。 */
+    fun onCategoryChange(category: String?) {
+        _uiState.update { it.copy(category = category).refiltered() }
+    }
+
+    fun onEnabledOnlyChange(enabledOnly: Boolean) {
+        _uiState.update { it.copy(enabledOnly = enabledOnly).refiltered() }
     }
 
     fun onToggle(name: String, enabled: Boolean) {
@@ -142,4 +171,30 @@ class ToolsViewModel(
     fun onDismissError() {
         _uiState.update { it.copy(error = null) }
     }
+}
+
+/**
+ * 依据当前筛选态重算派生列表（[ToolsUiState.visibleTools] / [ToolsUiState.categories]）。
+ *
+ * 派生字段只在**这一处**重算：`tools` 变化（reload）与任一筛选态变化（query / category /
+ * enabledOnly）都汇入这里，杜绝「筛选态改了但列表没跟着变」这类分散更新的漏洞。
+ *
+ * 分类集合 = 规范顺序中**存在**的那些 + 表外分类（按字典序追加，防止将来新增分类
+ * 因不在 [TOOL_CATEGORY_ORDER] 里而漏出 chip 行）。
+ */
+private fun ToolsUiState.refiltered(): ToolsUiState {
+    val present = tools.map { it.category }.toSet()
+    val ordered = TOOL_CATEGORY_ORDER.filter { it in present } +
+        present.filterNot { it in TOOL_CATEGORY_ORDER }.sorted()
+    val keyword = query.trim()
+    val visible = tools.filter { tool ->
+        (category == null || tool.category == category) &&
+            (!enabledOnly || tool.enabled) &&
+            (
+                keyword.isEmpty() ||
+                    tool.name.contains(keyword, ignoreCase = true) ||
+                    tool.description.contains(keyword, ignoreCase = true)
+                )
+    }
+    return copy(visibleTools = visible, categories = ordered)
 }

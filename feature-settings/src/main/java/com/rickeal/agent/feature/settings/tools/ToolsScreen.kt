@@ -1,5 +1,6 @@
 package com.rickeal.agent.feature.settings.tools
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +29,7 @@ import com.rickeal.agent.core.design.GlassEmptyState
 import com.rickeal.agent.core.design.GlassIconButton
 import com.rickeal.agent.core.design.GlassIconButtonShape
 import com.rickeal.agent.core.design.GlassScaffold
+import com.rickeal.agent.core.design.GlassSegmented
 import com.rickeal.agent.core.design.GlassSettingRow
 import com.rickeal.agent.core.design.GlassSwitch
 import com.rickeal.agent.core.design.GlassTextField
@@ -85,8 +87,52 @@ fun ToolsScreen(
                     title = "没有已注册的工具",
                     subtitle = "内置工具在 AppContainer 启动时装配",
                 )
+            } else {
+                // 搜索框：匹配工具名 / 描述（大小写不敏感，逻辑在 ViewModel）。
+                GlassTextField(
+                    value = state.query,
+                    onValueChange = viewModel::onQueryChange,
+                    placeholder = "搜索工具",
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                // 顶部分段：全部 / 已启用。分段是二值切换，selectedIndex 由 enabledOnly 决定。
+                GlassSegmented(
+                    items = listOf("全部", "已启用"),
+                    selectedIndex = if (state.enabledOnly) 1 else 0,
+                    onSelected = { index -> viewModel.onEnabledOnlyChange(index == 1) },
+                )
+                // 分类 chip 行：横向滚动 —— 分类多时换行会把工具列表整体顶下去。
+                // 「全部」是 `category == null` 的显式入口（点击即清除分类筛选）。
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    GlassChip(
+                        text = "全部",
+                        selected = state.category == null,
+                        onClick = { viewModel.onCategoryChange(null) },
+                    )
+                    for (category in state.categories) {
+                        GlassChip(
+                            text = toolCategoryLabel(category),
+                            selected = state.category == category,
+                            onClick = { viewModel.onCategoryChange(category) },
+                        )
+                    }
+                }
             }
-            for (tool in state.tools) {
+
+            // 有工具但被筛没了：给一句可行动的提示，别让页面看起来"坏了"。
+            if (state.tools.isNotEmpty() && state.visibleTools.isEmpty()) {
+                GlassEmptyState(
+                    title = "没有匹配的工具",
+                    subtitle = "换个关键词或分类试试",
+                )
+            }
+            for (tool in state.visibleTools) {
                 GlassSettingRow(
                     title = tool.name,
                     subtitle = tool.description,

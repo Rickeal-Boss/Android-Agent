@@ -13,6 +13,7 @@ import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.ModelCapabilities
 import com.rickeal.agent.core.model.ModelDescriptor
+import com.rickeal.agent.core.model.ModelFamily
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -191,6 +192,18 @@ data class GemmaTermsBlock(
 @Immutable
 data class ModelsUiState(
     val models: List<ModelDescriptor> = emptyList(),
+    /**
+     * 经搜索 / 分类筛选后要展示的模型（[models] 的子集）。
+     *
+     * 派生字段集中在 ViewModel 里重算（见文件末尾的 `refiltered()`），UI 只读不算。
+     */
+    val visibleModels: List<ModelDescriptor> = emptyList(),
+    /** 当前**实际存在**的模型家族（按 [ModelFamily] 声明顺序）。 */
+    val families: List<ModelFamily> = emptyList(),
+    /** 搜索关键词：匹配模型显示名 / 文件名，大小写不敏感。 */
+    val query: String = "",
+    /** 选中的家族分类；null = 全部。 */
+    val family: ModelFamily? = null,
     val activeModelId: String? = null,
     val config: InferenceConfig = InferenceConfig(),
     val backend: InferenceBackend = InferenceBackend.CPU,
@@ -263,7 +276,8 @@ class ModelsViewModel(
         }
         viewModelScope.launch {
             container.modelRepository.models.collect { list ->
-                _uiState.update { it.copy(models = list) }
+                // 重算派生列表：模型增删 / 扫描后，筛选结果与家族集合都要跟着更新。
+                _uiState.update { it.copy(models = list).refiltered() }
             }
         }
         viewModelScope.launch {
@@ -616,6 +630,16 @@ class ModelsViewModel(
 
     fun setAllowMeteredDownload(allow: Boolean) {
         viewModelScope.launch { container.settingsRepository.setAllowMeteredDownload(allow) }
+    }
+
+    /** 模型库搜索关键词变化（匹配显示名 / 文件名，大小写不敏感）。 */
+    fun onQueryChange(text: String) {
+        _uiState.update { it.copy(query = text).refiltered() }
+    }
+
+    /** 模型家族分类变化；[family] 传 null 表示「全部」。 */
+    fun onFamilyChange(family: ModelFamily?) {
+        _uiState.update { it.copy(family = family).refiltered() }
     }
 
     fun onCancelDownload() {
@@ -1127,4 +1151,28 @@ class ModelsViewModel(
         val raw = ((weights * factor + overhead) * tail).toLong()
         return maxOf(raw, MIN_REQUIRED_RAM_BYTES)
     }
+}
+
+/**
+ * 依据当前筛选态重算派生列表（[ModelsUiState.visibleModels] / [ModelsUiState.families]）。
+ *
+ * 派生字段只在**这一处**重算：`models` 变化（collect）与筛选态变化（query / family）
+ * 都汇入这里，杜绝「筛选态改了但列表没跟着变」这类分散更新的漏洞。
+ *
+ * 家族集合按 [ModelFamily] 的**声明顺序**排列（用 `values()` 而不是「按出现顺序去重」）：
+ * 顺序稳定，用户记住的 chip 位置不会因为模型增删而变。
+ */
+private fun ModelsUiState.refiltered(): ModelsUiState {
+    val present = models.map { it.family }.toSet()
+    val ordered = ModelFamily.values().filter { it in present }
+    val keyword = query.trim()
+    val visible = models.filter { model ->
+        (family == null || model.family == family) &&
+            (
+                keyword.isEmpty() ||
+                    model.displayName.contains(keyword, ignoreCase = true) ||
+                    model.fileName.contains(keyword, ignoreCase = true)
+                )
+    }
+    return copy(visibleModels = visible, families = ordered)
 }

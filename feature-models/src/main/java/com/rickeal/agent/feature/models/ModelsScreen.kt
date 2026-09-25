@@ -3,7 +3,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import com.rickeal.agent.core.design.GlassChip
-import androidx.compose.foundation.lazy.items
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -23,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.GlassCard
+import com.rickeal.agent.core.design.GlassEmptyState
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassFab
 import com.rickeal.agent.core.design.GlassIconButton
@@ -60,6 +61,7 @@ import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.rememberGlassHaptics
 import com.rickeal.agent.core.model.ModelCapabilities
+import com.rickeal.agent.core.model.ModelFamily
 import java.util.Locale
 
 @Composable
@@ -129,7 +131,11 @@ fun ModelsScreen(
         },
     ) { _ ->
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 320.dp),
+            // 双列固定（Wave 10 Phase 2b）：手机上 Adaptive(minSize = 320.dp) 只会排出一列
+            // （屏宽普遍 < 640dp），与参考设计的双列卡片形态不符。改成固定 2 列。
+            // 整行内容（下载卡 / 引导卡 / 说明卡 / 提示条 / 筛选头）用 span = maxLineSpan
+            // 单独占满，见下方各 item —— 否则会被压成半宽。
+            columns = GridCells.Fixed(2),
             modifier = Modifier
                 .fillMaxSize()
                 .navigationBarsPadding(),
@@ -143,7 +149,22 @@ fun ModelsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
+            // 搜索 + 分类 chip 行：整行占满，双列不影响它。只在有模型时出现 ——
+            // 空库时搜索没有意义，避免在引导卡上方压一条没用的搜索框。
+            if (state.models.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    ModelsFilterHeader(
+                        query = state.query,
+                        onQueryChange = viewModel::onQueryChange,
+                        families = state.families,
+                        selectedFamily = state.family,
+                        onFamilyChange = viewModel::onFamilyChange,
+                    )
+                }
+            }
+            // 以下整行内容必须 span = maxLineSpan：双列会把下载卡的输入框、引导文案、
+            // 说明文字全挤成半宽。只有 ModelCard 保持单格（每行 2 张）。
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 ModelDownloadCard(
                     downloadName = state.downloadName,
                     downloadPercent = state.downloadPercent,
@@ -157,14 +178,22 @@ fun ModelsScreen(
                 )
             }
             if (state.models.isEmpty()) {
-                item {
+                item(span = { GridItemSpan(maxLineSpan) }) {
                     BeginnerImportCard(
                         onGetModel = { showPresetDialog = true },
                         onPickFile = { picker.launch(arrayOf("*/*")) },
                     )
                 }
+            } else if (state.visibleModels.isEmpty()) {
+                // 有模型但被搜索 / 分类筛没了：给一句可行动的提示，别让页面看起来"坏了"。
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    GlassEmptyState(
+                        title = "没有匹配的模型",
+                        subtitle = "换个关键词或分类试试",
+                    )
+                }
             }
-            items(items = state.models, key = { it.id }) { model ->
+            items(items = state.visibleModels, key = { it.id }) { model ->
                 ModelCard(
                     model = model,
                     isActive = model.id == state.activeModelId,
@@ -179,12 +208,12 @@ fun ModelsScreen(
                     onBackendChange = viewModel::onBackendChange,
                 )
             }
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 HowToGetModelsCard(
                     importDirPath = state.importDirPath,
                 )
             }
-            item {
+            item(span = { GridItemSpan(maxLineSpan) }) {
                 val notice = state.error ?: state.message ?: state.capabilitiesText
                 if (notice != null) {
                     Text(
@@ -426,6 +455,68 @@ private fun guessCapabilities(fileName: String): ModelCapabilities {
         toolCalling = lower.contains("3n") || lower.contains("qwen"),
         thinking = lower.contains("qwen3") || lower.contains("thinking") || lower.contains("-r1"),
     )
+}
+
+/**
+ * 模型库的搜索 + 分类行（双列网格里整行占满的一条）。
+ *
+ * 分类维度取 [ModelFamily]（Gemma / Qwen / Llama / Phi …）：它是持久化字段、由文件名
+ * 启发式推得，比「能力位」可靠得多（能力位多数模型还没探测过，恒为默认值）。
+ * 中文名映射放本模块 —— `core-design` 必须零业务依赖（arch-guard 第 2 条）。
+ */
+@Composable
+private fun ModelsFilterHeader(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    families: List<ModelFamily>,
+    selectedFamily: ModelFamily?,
+    onFamilyChange: (ModelFamily?) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        GlassTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            placeholder = "搜索模型",
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        // 分类 chip 行：横向滚动 —— 家族多时换行会把网格整体顶下去。
+        // 「全部」= `family == null` 的显式入口（点击即清除分类筛选）。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            GlassChip(
+                text = "全部",
+                selected = selectedFamily == null,
+                onClick = { onFamilyChange(null) },
+            )
+            for (family in families) {
+                GlassChip(
+                    text = modelFamilyLabel(family),
+                    selected = selectedFamily == family,
+                    onClick = { onFamilyChange(family) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * [ModelFamily] 的中文展示名。穷举全部 7 个家族（无 `else` 分支）—— 将来新增家族时
+ * 这里会**编译报错**，强制补映射，而不是静默漏掉一个分类。
+ */
+private fun modelFamilyLabel(family: ModelFamily): String = when (family) {
+    ModelFamily.GEMMA_3N -> "Gemma 3n"
+    ModelFamily.GEMMA_3 -> "Gemma 3"
+    ModelFamily.GEMMA_4 -> "Gemma 4"
+    ModelFamily.QWEN_3 -> "Qwen 3"
+    ModelFamily.LLAMA -> "Llama"
+    ModelFamily.PHI -> "Phi"
+    ModelFamily.OTHER -> "其他"
 }
 
 /** 从直链下载模型的卡片：交给系统 DownloadManager，支持后台与断点续传。 */

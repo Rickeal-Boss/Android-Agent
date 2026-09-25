@@ -9,22 +9,27 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassBottomBar
+import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassChip
 import com.rickeal.agent.core.design.GlassIconButton
 import com.rickeal.agent.core.design.GlassMaterial
+import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.liquidGlass
@@ -47,6 +52,9 @@ fun ChatInputBar(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val canSend = draft.isNotBlank() || attachments.isNotEmpty()
+    // 附件面板显隐。用 rememberSaveable：旋转 / 折叠展开重建 Activity 时面板不该自己关掉
+    //（与 ModelsScreen 的 showPresetDialog 同一处置）。
+    var showAttachmentPanel by rememberSaveable { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxWidth()) {
         if (attachments.isNotEmpty()) {
@@ -72,20 +80,14 @@ fun ChatInputBar(
             }
         }
         GlassBottomBar(modifier = Modifier.fillMaxWidth()) {
-            if (supportsImages) {
-                // 输入区图标原本 24dp（48dp 触摸区 + 12dp 内边距），尺寸原样保留。
-                GlassIconButton(
-                    icon = Icons.Filled.Image,
-                    contentDescription = "添加图片",
-                    onClick = onPickImage,
-                    contentColor = colors.onGlassMuted,
-                    iconSize = 24.dp,
-                )
-            }
+            // 附件入口收编（Wave 10 Phase 2b）：原来的「图片 / 音频」两个按钮合并成一个「+」，
+            // 点开附件面板再选类型 —— 与参考设计一致，也给输入框让出更多宽度。
+            // 回调仍是现成的 onPickImage / onPickAudio ⇒ ChatScreen / ChatViewModel 零改动。
+            // 尺寸口径沿用原图标：24dp 图标 + 默认 48dp 触摸区（不因换组件而偷偷改大小）。
             GlassIconButton(
-                icon = Icons.Filled.Audiotrack,
-                contentDescription = "添加音频",
-                onClick = onPickAudio,
+                icon = Icons.Filled.Add,
+                contentDescription = "添加附件",
+                onClick = { showAttachmentPanel = true },
                 contentColor = colors.onGlassMuted,
                 iconSize = 24.dp,
             )
@@ -125,6 +127,41 @@ fun ChatInputBar(
                 enabled = canSend,
                 onSend = onSend,
                 onStop = onStop,
+            )
+        }
+        // 附件面板：模态选择「图片 / 音频」。两个选项放在 LiquidDialog 的**动作区** ——
+        // 动作区回调拿到的 `dismiss` 会先播完出场动画再真正关闭（见 LiquidDialog KDoc）；
+        // 若在内容区直接翻转 showAttachmentPanel，弹窗会"瞬间消失"。
+        // supportsImages 为 false（当前模型不吃图片）时不列出图片项；音频不受此门控。
+        if (showAttachmentPanel) {
+            LiquidDialog(
+                onDismissRequest = { showAttachmentPanel = false },
+                title = "添加附件",
+                subtitle = "选择要添加的内容类型",
+                actions = { dismiss ->
+                    if (supportsImages) {
+                        GlassButton(
+                            text = "图片",
+                            onClick = { onPickImage(); dismiss() },
+                            material = GlassMaterial.THIN,
+                        )
+                    }
+                    GlassButton(
+                        text = "音频",
+                        onClick = { onPickAudio(); dismiss() },
+                    )
+                },
+                content = {
+                    Text(
+                        text = if (supportsImages) {
+                            "图片和音频会随下一条消息一起发送。"
+                        } else {
+                            "当前模型不支持图片输入，只能添加音频。"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onGlassMuted,
+                    )
+                },
             )
         }
     }
