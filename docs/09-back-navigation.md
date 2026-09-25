@@ -223,6 +223,21 @@ private fun isChatRoute(route: String): Boolean =
 `LocalContext.current as? Activity` —— 后者解析失败时 `activity?.finish()` 会**静默什么都不做**，
 用户按返回没反应且无迹可寻。显式判空 + `Log.w` 让这件事有线索。
 
+### 5.5 切会话（抽屉）后：栈底即对话页，按返回 = 退出应用
+
+`navigateConversation()` 走 `popUpTo(startDestinationId, inclusive = true)`，之后栈里
+**只剩新的 chat 条目** —— 栈底就是对话页 ⇒ **切完会话按返回会直接退出应用**。
+
+这是**刻意保留**的：**栈不增长**优先（UI-01 的教训正是回退栈随切换无限涨）。
+
+⚠️ **不要"反向修"成 `inclusive = false`**：目标与栈底是**同一个 `destination.id`**，
+弹不掉（找不到"另一个" chat 条目）⇒ 反而变成栈增长、退出要按多次，正是本文通篇在防的
+静默退化。要改只能整体重做会话切换的栈策略，不是改一个布尔值的事。
+
+（顺带：切会话 / 新建会销毁旧 `ChatViewModel`，而 `onCleared()` **不走 `onStop()` 的收尾
+路径** ⇒ 半截回答不落库。抽屉侧已加 `engineBusy` 门禁；顶栏「新对话」是同类的**既有缺陷**，
+尚未收敛。详见 `LiquidAgentApp.kt` 里 `navigateConversation` 的 KDoc。）
+
 ---
 
 ## 6. `BackHandler` 的注册顺序
@@ -249,6 +264,9 @@ private fun isChatRoute(route: String): Boolean =
 | 对话 → 模型 → 按返回 | 回对话页；再按一次退出 |
 | 设置 → 任意子页 → 按返回 | **直接回对话页**（不是先回设置页）；再按一次退出 |
 | 连续切页签 10 次 | 按 2 次返回即退出（栈没有增长） |
+| 抽屉切会话后 → 按返回 | **直接退出应用**（栈底即对话页，见 §5.5） |
+| 生成中 → 抽屉里切会话 / 新建 | 会话行与「新建任务」禁用 + 列表顶部提示「正在生成，暂不可切换会话」 |
+| 抽屉打开 → 按返回 | **先关抽屉**（不是回对话页）；抽屉关着时才是两段式 |
 | 设置页顶栏返回箭头 | 仍是「返回上一级」语义，**不与系统返回键合并** |
 | 对话页输入一半草稿 → 切到模型 → 返回 | 草稿仍在（若走了 `restoreState`） |
 

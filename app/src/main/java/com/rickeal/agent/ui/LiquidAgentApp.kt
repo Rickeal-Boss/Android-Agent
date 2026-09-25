@@ -33,9 +33,13 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material3.DrawerState
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -69,11 +73,13 @@ import com.rickeal.agent.core.data.DarkMode
 import com.rickeal.agent.core.data.LocalAppContainer
 import com.rickeal.agent.core.data.ThemeState
 import com.rickeal.agent.core.design.GlassBackdropBlurOverride
+import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassConfig
 import com.rickeal.agent.core.design.GlassHapticLevel
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LiquidAgentTheme
 import com.rickeal.agent.core.design.LiquidBottomTabs
+import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassConfig
@@ -94,13 +100,16 @@ import com.rickeal.agent.feature.chat.chatGraph
 import com.rickeal.agent.feature.models.ModelsRoute
 import com.rickeal.agent.feature.models.modelsGraph
 import com.rickeal.agent.feature.settings.SettingsRoute
+import com.rickeal.agent.feature.settings.StorageRoute
 import com.rickeal.agent.feature.settings.memory.MemoryRoute
 import com.rickeal.agent.feature.settings.settingsGraph
 import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.onboarding.FirstRunGate
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val TAG = "LiquidAgentApp"
@@ -266,6 +275,23 @@ private fun MainShell() {
         else -> routeTop(currentRoute) ?: TopDestination.CHAT
     }
 
+    // ── 左侧抽屉（Wave 10 Phase 2b C-3）──────────────────────────────────────
+    // 只在 COMPACT 使用（见下面 ModalNavigationDrawer 的 gesturesEnabled）：MEDIUM/EXPANDED
+    // 保持常驻 GlassNavRail 的双栏形态，抽屉在那里既没有入口（无汉堡按钮），也不该被
+    // 边缘手势误触出来。
+    val container = LocalAppContainer.current
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val drawerScope = rememberCoroutineScope()
+    val conversationMetas by container.conversationRepository.metas.collectAsState()
+    var sandboxInfoOpen by remember { mutableStateOf(false) }
+    // 引擎忙（有在途生成）—— 抽屉「切会话 / 新建」的门禁判据。
+    // 与 C-2 存储空间页同一真值源：AgentRunner.isBusy 是全应用唯一的忙态真值
+    // （与 runMutex 同源，见那里的 KDoc）。
+    val engineBusy by container.agentRunner.isBusy.collectAsState(initial = false)
+    // 当前正在看的会话 id。[backStackEntry] 已经是 State，读它是响应式的。
+    // 用途：抽屉点选**当前正在看**的会话时只关抽屉、不重建 VM（P2-1）。
+    val currentConversationId = backStackEntry?.arguments?.getString(ChatRoute.ARG_CONVERSATION_ID)
+
     // ── 壳层圆形揭示（2026-09-24 Wave 6）：首启闸门放行后，整个主界面从中心 ──
     // 圆形展开（700ms FastOutSlowIn），这是"液态壳体成型"的签名瞬间。
     // 进程级一次性（shellRevealPlayed）：旋转 / 主题内重组一律走 progress=1 的
@@ -285,119 +311,171 @@ private fun MainShell() {
         revealState.expand(Offset(shellSize.width / 2f, shellSize.height / 2f))
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxSize()
-            .onSizeChanged { shellSize = it }
-            .circularReveal(
-                progress = { revealState.progress.value },
-                origin = { revealState.origin },
-            ),
-    ) {
-        if (windowSize.useTwoPane) {
-            GlassNavRail(
-                selected = selected,
-                onSelect = { destination ->
-                    if (destination != selected) navController.navigateTop(destination.route)
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        // 只在 COMPACT 允许侧滑开抽屉：宽屏没有汉堡入口，若仍允许边缘手势，
+        // 会在 Rail 旁"擦"出一块抽屉，属无谓回归。
+        gesturesEnabled = !windowSize.useTwoPane,
+        drawerContent = {
+            // 宽屏也照常 compose（只是永远关着、且禁用侧滑）：ModalNavigationDrawer 内部
+            // 要 measure 它的 drawerContent，给空内容会在取首个子项时炸；而为了宽屏不 compose
+            // 就得把整个 Row/NavHost 复制一份，得不偿失。offscreen 的代价可以忽略。
+            ConversationDrawerContent(
+                metas = conversationMetas,
+                engineBusy = engineBusy,
+                // 「新建任务」与对话页顶栏「新对话」**结果态一致**（空会话、
+                // conversationId=null），但**实现路径不同** —— 本处重建 VM、
+                // 顶栏原地 reset。见 navigateConversation 的 KDoc。
+                onNewConversation = {
+                    // 权威闸门：忙时不新建（UI 那侧已禁用 + 顶部有提示，这里再判一次）。
+                    // ⚠️ 读**真源** `.value` 而非上面的 `engineBusy`（collectAsState 快照，
+                    // 滞后一次派发）—— 与 C-2 存储空间页「权威闸门读真源」同一口径。
+                    if (!container.agentRunner.isBusy.value) {
+                        navController.navigateConversation(null)
+                        drawerScope.launch { drawerState.close() }
+                    }
                 },
-                windowSize = windowSize,
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .statusBarsPadding()
-                    // Wave4 审查（B-P1-1）：Rail 此前缺导航栏避让 —— 5 项变高后
-                    // 底部页签会被手势导航条压住，必须补。
-                    .navigationBarsPadding(),
+                onOpenConversation = { id ->
+                    when {
+                        // 权威闸门：忙时不切（提示已在抽屉列表顶部常驻）。读真源，口径同上。
+                        container.agentRunner.isBusy.value -> Unit
+                        // 已经在看这个会话 ⇒ 只关抽屉，不重建 VM
+                        // （重建会丢草稿 / 滚动位置，还会有一段默认 config 窗口，P2-1）。
+                        id == currentConversationId -> drawerScope.launch { drawerState.close() }
+                        else -> {
+                            navController.navigateConversation(id)
+                            drawerScope.launch { drawerState.close() }
+                        }
+                    }
+                },
+                onOpenSandbox = {
+                    sandboxInfoOpen = true
+                    drawerScope.launch { drawerState.close() }
+                },
             )
-        }
-        Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-            NavHost(
-                navController = navController,
-                // 必须与 composable 注册的 route 同源（ChatRoute.PATTERN）。
-                // 写 ROUTE("chat") 能启动（NavGraphNavigator 是拿 route 字符串去
-                // findNode 匹配的），但 destination id 由 createRoute(route).hashCode()
-                // 决定，"chat" 与 "chat?conversationId={conversationId}" 算出来是**两个 id**。
-                // 于是 navigateTop 的 popUpTo(graph.startDestinationId) 永远匹配不到 ——
-                // popBackStackInternal 对「栈里没有这个 id」是打一行日志然后 return false，
-                // 一条都不 pop，回退栈就这么随切页签无限涨起来的（UI-01 的根因）。
-                startDestination = ChatRoute.PATTERN,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                // 页签切换 = iOS push/pop **视差**：新页大幅入场（32%），旧页小幅让位（14%）。
-                // 旧实现两侧都满屏平移（±100%）+ 双 fade + tween(300)，观感是"整块屏幕
-                // 被拖走"，而不是"推入一层新页"—— 深度感全靠模糊硬撑。
-                // spec 依据（写死前逐条对过）：
-                //  - 0.32 / 0.14 视差比：新页大幅入场、旧页小幅让位（iOS push 的经典比例），
-                //    旧页只挪 14% 就能透出"下面还有一层"的暗示；
-                //  - 260ms **大于**底部指示胶囊的 ~120ms（Wave 6b 定下的次序：胶囊先到位、
-                //    内容随后到 —— 若内容比胶囊快，就会看到内容先飞进来胶囊再追）；
-                //  - fade 内外**错开**（入 180 / 出 200）：若入出同长同相，切页瞬间两页都
-                //    半透明叠在一起，看起来是"糊"而不是"换"。
-                // 方向仍由新旧 destination 的页签索引差决定（索引增大 → 新页从右入、旧页向左出；
-                // 反向则相反），pop 方向取反。四个方向都显式给值，避免依赖 NavHost 各版本默认值。
-                // reduceMotion：四个 transition 全部 tween(0) —— 近瞬时切页，保留层级变化、去掉位移。
-                enterTransition = {
-                    val dir = slideDirection(initialState.destination.route, targetState.destination.route)
-                    slideInHorizontally(
-                        initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
-                        animationSpec = tween(
-                            if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                            easing = FastOutSlowInEasing,
-                        ),
-                    ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
-                },
-                exitTransition = {
-                    val dir = slideDirection(initialState.destination.route, targetState.destination.route)
-                    slideOutHorizontally(
-                        targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
-                        animationSpec = tween(
-                            if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                            easing = FastOutSlowInEasing,
-                        ),
-                    ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
-                },
-                popEnterTransition = {
-                    val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
-                    slideInHorizontally(
-                        initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
-                        animationSpec = tween(
-                            if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                            easing = FastOutSlowInEasing,
-                        ),
-                    ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
-                },
-                popExitTransition = {
-                    val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
-                    slideOutHorizontally(
-                        targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
-                        animationSpec = tween(
-                            if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                            easing = FastOutSlowInEasing,
-                        ),
-                    ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
-                },
-            ) {
-                chatGraph(
-                    navController = navController,
-                    onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
-                    onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
-                )
-                modelsGraph(navController = navController)
-                settingsGraph(
-                    navController = navController,
-                    onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
-                )
-            }
-            if (!windowSize.useTwoPane) {
-                GlassNavBar(
+        },
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { shellSize = it }
+                .circularReveal(
+                    progress = { revealState.progress.value },
+                    origin = { revealState.origin },
+                ),
+        ) {
+            if (windowSize.useTwoPane) {
+                GlassNavRail(
                     selected = selected,
                     onSelect = { destination ->
                         if (destination != selected) navController.navigateTop(destination.route)
                     },
+                    windowSize = windowSize,
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .fillMaxHeight()
+                        .statusBarsPadding()
+                        // Wave4 审查（B-P1-1）：Rail 此前缺导航栏避让 —— 5 项变高后
+                        // 底部页签会被手势导航条压住，必须补。
                         .navigationBarsPadding(),
                 )
+            }
+            Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                NavHost(
+                    navController = navController,
+                    // 必须与 composable 注册的 route 同源（ChatRoute.PATTERN）。
+                    // 写 ROUTE("chat") 能启动（NavGraphNavigator 是拿 route 字符串去
+                    // findNode 匹配的），但 destination id 由 createRoute(route).hashCode()
+                    // 决定，"chat" 与 "chat?conversationId={conversationId}" 算出来是**两个 id**。
+                    // 于是 navigateTop 的 popUpTo(graph.startDestinationId) 永远匹配不到 ——
+                    // popBackStackInternal 对「栈里没有这个 id」是打一行日志然后 return false，
+                    // 一条都不 pop，回退栈就这么随切页签无限涨起来的（UI-01 的根因）。
+                    startDestination = ChatRoute.PATTERN,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    // 页签切换 = iOS push/pop **视差**：新页大幅入场（32%），旧页小幅让位（14%）。
+                    // 旧实现两侧都满屏平移（±100%）+ 双 fade + tween(300)，观感是"整块屏幕
+                    // 被拖走"，而不是"推入一层新页"—— 深度感全靠模糊硬撑。
+                    // spec 依据（写死前逐条对过）：
+                    //  - 0.32 / 0.14 视差比：新页大幅入场、旧页小幅让位（iOS push 的经典比例），
+                    //    旧页只挪 14% 就能透出"下面还有一层"的暗示；
+                    //  - 260ms **大于**底部指示胶囊的 ~120ms（Wave 6b 定下的次序：胶囊先到位、
+                    //    内容随后到 —— 若内容比胶囊快，就会看到内容先飞进来胶囊再追）；
+                    //  - fade 内外**错开**（入 180 / 出 200）：若入出同长同相，切页瞬间两页都
+                    //    半透明叠在一起，看起来是"糊"而不是"换"。
+                    // 方向仍由新旧 destination 的页签索引差决定（索引增大 → 新页从右入、旧页向左出；
+                    // 反向则相反），pop 方向取反。四个方向都显式给值，避免依赖 NavHost 各版本默认值。
+                    // reduceMotion：四个 transition 全部 tween(0) —— 近瞬时切页，保留层级变化、去掉位移。
+                    enterTransition = {
+                        val dir = slideDirection(initialState.destination.route, targetState.destination.route)
+                        slideInHorizontally(
+                            initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
+                            animationSpec = tween(
+                                if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                easing = FastOutSlowInEasing,
+                            ),
+                        ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
+                    },
+                    exitTransition = {
+                        val dir = slideDirection(initialState.destination.route, targetState.destination.route)
+                        slideOutHorizontally(
+                            targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
+                            animationSpec = tween(
+                                if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                easing = FastOutSlowInEasing,
+                            ),
+                        ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
+                    },
+                    popEnterTransition = {
+                        val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
+                        slideInHorizontally(
+                            initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
+                            animationSpec = tween(
+                                if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                easing = FastOutSlowInEasing,
+                            ),
+                        ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
+                    },
+                    popExitTransition = {
+                        val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
+                        slideOutHorizontally(
+                            targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
+                            animationSpec = tween(
+                                if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                easing = FastOutSlowInEasing,
+                            ),
+                        ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
+                    },
+                ) {
+                    chatGraph(
+                        navController = navController,
+                        onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
+                        onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
+                        // 汉堡只在 COMPACT 出现：宽屏没有抽屉（Rail 就是入口），
+                        // 传 null ⇒ ChatScreen 顶栏不渲染该图标。
+                        onOpenDrawer = if (windowSize.useTwoPane) {
+                            null
+                        } else {
+                            { drawerScope.launch { drawerState.open() } }
+                        },
+                    )
+                    modelsGraph(navController = navController)
+                    settingsGraph(
+                        navController = navController,
+                        onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
+                    )
+                }
+                if (!windowSize.useTwoPane) {
+                    GlassNavBar(
+                        selected = selected,
+                        onSelect = { destination ->
+                            if (destination != selected) navController.navigateTop(destination.route)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding(),
+                    )
+                }
             }
         }
     }
@@ -412,42 +490,123 @@ private fun MainShell() {
     // 而 NavHost 内部自己注册了 PredictiveBackHandler（栈 > 1 时接管返回键）。
     // 放在 NavHost 之前，返回键会被导航层先吃掉，本回调一次都不会执行，
     // 而且**不报错**——是最容易踩空、又最难发现的一类错误。所以必须写在 NavHost 之后。
-    BackHandler(enabled = true) {
-        val route = navController.currentBackStackEntry?.destination?.route
-        if (route != null && isChatRoute(route) && navController.previousBackStackEntry == null) {
-            // 第二步：已经在对话页，且栈里只剩它 → 退出应用。
-            // 显式判空而不是 `activity?.finish()`：解析不到 Activity 时什么都不做
-            // 会让用户「按返回没反应」且无迹可寻，这条日志就是唯一的线索。
-            if (activity != null) {
-                activity.finish()
+    //
+    // ── C-3：抽屉优先 ────────────────────────────────────────────────────────
+    // 抽屉打开时，返回键必须先**关抽屉**，而不是"回对话页"。两个回调的 enabled 条件相反，
+    // 任一时刻只有一个生效，因此与注册顺序无关。注意：不能只把两段式那个改成
+    // `enabled = !drawerState.isOpen` 就完事 —— Material3 的 ModalNavigationDrawer
+    // **不会**自己处理返回键，那样会让抽屉打开时的返回键落空 / 退回对话页，
+    // 正是本次要修的 bug。所以抽屉的关闭必须由我们自己接。
+    //
+    // 整段（含打开时刷新会话列表）抽进 [DrawerBackHandler] —— 原因见它的 KDoc：
+    // `isOpen` 拖拽期间每帧变化，不能在 MainShell 里直接读。
+    DrawerBackHandler(
+        drawerState = drawerState,
+        drawerScope = drawerScope,
+        refreshConversations = { container.conversationRepository.refresh() },
+        onTwoStageBack = {
+            val route = navController.currentBackStackEntry?.destination?.route
+            if (route != null && isChatRoute(route) && navController.previousBackStackEntry == null) {
+                // 第二步：已经在对话页，且栈里只剩它 → 退出应用。
+                // 显式判空而不是 `activity?.finish()`：解析不到 Activity 时什么都不做
+                // 会让用户「按返回没反应」且无迹可寻，这条日志就是唯一的线索。
+                if (activity != null) {
+                    activity.finish()
+                } else {
+                    Log.w(TAG, "返回键退出失败：LocalActivity 为 null，无法调用 finish()")
+                }
             } else {
-                Log.w(TAG, "返回键退出失败：LocalActivity 为 null，无法调用 finish()")
+                // 第一步：无论当前在哪个页签、哪个子页，一律先回到对话页。
+                navController.navigateTop(ChatRoute.ROUTE)
+                // 兜底收敛：navigateTop 依赖 graph.startDestinationId 命中对话页，
+                // 一旦将来又被人改坏（就是 UI-01 的根因），popUpTo 会静默失败、栈继续增长。
+                // 这里强制 pop 到只剩栈底的对话页，让「再按一次就退出」不依赖 popUpTo 是否生效。
+                //
+                // 用**固定次数上限**而不是 while(true)：收敛性不该押在「popBackStack 是否
+                // 同步移除 backQueue」这类 Navigation 内部实现上（2.8 起走 popWithTransition，
+                // 条目在过渡中时 pop 会被忽略 —— 见 NavigatorState.popWithTransition 的早退分支）。
+                // 收敛失败也必须留下 Log，而不是静默退化成「多按几次才退出」。
+                for (i in 0 until MAX_BACK_STACK_DRAIN) {
+                    if (navController.previousBackStackEntry == null) break
+                    if (!navController.popBackStack()) break
+                }
+                if (navController.previousBackStackEntry != null) {
+                    Log.w(
+                        TAG,
+                        "返回键兜底收敛失败：$MAX_BACK_STACK_DRAIN 次 pop 后回退栈仍不止一条。" +
+                            "优先检查 startDestination 与 composable 注册的 route 是否同源" +
+                            "（UI-01 的根因，见 docs/09-back-navigation.md）。",
+                    )
+                }
             }
-        } else {
-            // 第一步：无论当前在哪个页签、哪个子页，一律先回到对话页。
-            navController.navigateTop(ChatRoute.ROUTE)
-            // 兜底收敛：navigateTop 依赖 graph.startDestinationId 命中对话页，
-            // 一旦将来又被人改坏（就是 UI-01 的根因），popUpTo 会静默失败、栈继续增长。
-            // 这里强制 pop 到只剩栈底的对话页，让「再按一次就退出」不依赖 popUpTo 是否生效。
-            //
-            // 用**固定次数上限**而不是 while(true)：收敛性不该押在「popBackStack 是否
-            // 同步移除 backQueue」这类 Navigation 内部实现上（2.8 起走 popWithTransition，
-            // 条目在过渡中时 pop 会被忽略 —— 见 NavigatorState.popWithTransition 的早退分支）。
-            // 收敛失败也必须留下 Log，而不是静默退化成「多按几次才退出」。
-            for (i in 0 until MAX_BACK_STACK_DRAIN) {
-                if (navController.previousBackStackEntry == null) break
-                if (!navController.popBackStack()) break
-            }
-            if (navController.previousBackStackEntry != null) {
-                Log.w(
-                    TAG,
-                    "返回键兜底收敛失败：$MAX_BACK_STACK_DRAIN 次 pop 后回退栈仍不止一条。" +
-                        "优先检查 startDestination 与 composable 注册的 route 是否同源" +
-                        "（UI-01 的根因，见 docs/09-back-navigation.md）。",
+        },
+    )
+
+    // ── 沙箱工作区（抽屉底部入口）：露出 Agent 工具产出的落点目录 ──────────────
+    // WorkBuddy 的「空间(N)」在端侧没有对应物 —— 不编造计数，只把真实的 `sandboxDir`
+    // 露出来，并给一条去「存储空间」看占用 / 清理的路。
+    if (sandboxInfoOpen) {
+        val colors = LocalGlassColors.current
+        LiquidDialog(
+            onDismissRequest = { sandboxInfoOpen = false },
+            title = "沙箱工作区",
+            subtitle = "Agent 执行工具时写入的工作区目录",
+            actions = { dismiss ->
+                GlassButton(text = "关闭", onClick = dismiss, material = GlassMaterial.THIN)
+                GlassButton(
+                    text = "存储空间",
+                    onClick = {
+                        navController.navigateTop(StorageRoute.ROUTE)
+                        dismiss()
+                    },
                 )
-            }
-        }
+            },
+            content = {
+                Text(
+                    text = container.sandboxDir.absolutePath,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onGlassSubtle,
+                )
+            },
+        )
     }
+}
+
+/**
+ * 抽屉的返回键 + 打开时刷新会话列表（C-3 P2-5）。
+ *
+ * ⚠️ **刻意单独抽成一个小 composable，而不是写在 `MainShell` 里**：
+ * `drawerState.isOpen` 派生自锚点偏移状态，**拖拽 / 开合动画期间每帧都会变**。
+ * 直接在 `MainShell` 里读它，失效范围就是整个 `MainShell` —— 连带 NavHost 与整屏
+ * 每帧重组（本批唯一的性能项）。抽出来之后每帧失效的**只有这个函数本身**，
+ * 而它不产出任何布局节点（只注册两个回调 + 起一个 LaunchedEffect）。
+ *
+ * 两个 `BackHandler` 的 `enabled` 条件相反，任一时刻只有一个生效，因此**与注册顺序无关**：
+ * 抽屉开着走「关抽屉」、关着走两段式。之所以要自己接「关抽屉」，是因为 Material3 的
+ * `ModalNavigationDrawer` **不会**处理返回键 —— 只把两段式那个改成
+ * `enabled = !isOpen` 会让抽屉打开时的返回键落空（正是 C-3 要修的 bug）。
+ *
+ * 注册顺序仍须在 `NavHost` **之后**（LIFO，见 docs/09-back-navigation.md §6）——
+ * 所以本函数必须在 `MainShell` 里 `ModalNavigationDrawer` 之后调用。
+ *
+ * @param refreshConversations 抽屉**打开时**补刷一次会话列表（挂起函数）。平时不轮询：
+ *   `ConversationRepository.save()` 会实时更新 `metas`，这里只保证「打开即最新」。
+ * @param onTwoStageBack 抽屉关闭时的两段式逻辑（先回对话页、再退出）。
+ */
+@Composable
+private fun DrawerBackHandler(
+    drawerState: DrawerState,
+    drawerScope: CoroutineScope,
+    refreshConversations: suspend () -> Unit,
+    onTwoStageBack: () -> Unit,
+) {
+    LaunchedEffect(drawerState.isOpen) {
+        if (drawerState.isOpen) refreshConversations()
+    }
+    BackHandler(enabled = drawerState.isOpen) {
+        drawerScope.launch { drawerState.close() }
+    }
+    BackHandler(enabled = !drawerState.isOpen, onBack = onTwoStageBack)
 }
 
 /**
@@ -483,6 +642,57 @@ private fun NavHostController.navigateTop(route: String) {
         }
         launchSingleTop = true
         restoreState = true
+    }
+}
+
+/**
+ * 打开 / 切换会话（抽屉点选 + 「新建任务」共用）。
+ *
+ * **必须把当前 chat 条目（含）弹掉再压入新条目**：新条目 = 新 `ViewModelStore` =
+ * 新的 `ChatViewModel(container, conversationId)`。若只改参数而复用旧条目
+ * （`launchSingleTop` 命中同 destination 时的行为），`ChatViewModel` 会保留旧
+ * conversationId，切会话就成了「点了没反应」—— 这是本方法存在的全部理由。
+ *
+ * `conversationId == null` 即「新建任务」。
+ *
+ * ## 与顶栏「新对话」的关系（别写成"同一个动作"）
+ *
+ * 两处**结果态一致**（空会话、conversationId=null），但**实现路径不同**，别混为一谈：
+ *  - 顶栏 `ChatViewModel.onNewConversation()`：**原地 reset**，继承内存里的 config；
+ *  - 本方法：**重建 VM**，由 `init` 异步读回会话与 config ⇒ 有一段
+ *    `activeModel == null` / 默认 config 的窗口（与冷启动同级）。
+ *
+ * ## ⚠️ 中断生成：门禁只加在抽屉这一侧（P1-1）
+ *
+ * 切会话 / 新建都会销毁旧的 `ChatViewModel`，而它的 `onCleared()` **只 cancel、
+ * 不走 `onStop()` 那套收尾**（flushNow → 取消 → archiveTurnNow → commitAssistant(partial)）
+ * ⇒ 半截回答**既不显示也不落库，界面与日志零报错**。端侧生成慢，代价很大。
+ * （`onCleared` 里**不能** launch 协程去补写：VM 正在销毁，scope 会被取消。）
+ *
+ * 因此抽屉侧加了 `engineBusy` 门禁（禁用 + 提示，UI 便利层 + 回调里再判一次的权威闸门）。
+ * 但**顶栏「新对话」是既有缺陷、同样会中断生成**，本轮**未改**（不在 C-3 范围）。
+ * ⇒ 「中断生成」目前有**两个入口，只有抽屉侧加了门禁**。建议后续波次把「中断生成」
+ *   收敛为单一入口并统一走 `onStop()` 的收尾路径。**不要以为已经根治。**
+ *
+ * ## 栈形态：切完会话按返回 = 退出应用（P2-2，刻意如此）
+ *
+ * `popUpTo(startDestinationId, inclusive = true)` 之后栈里**只剩新的 chat 条目**，
+ * 栈底就是对话页 ⇒ **此时按返回会直接退出应用**。这是刻意保留的：**栈不增长**优先
+ * （UI-01 的教训正是回退栈随切页签无限涨）。
+ *
+ * ⚠️ **不要"反向修"成 `inclusive = false`**：目标与栈底是**同一个 `destination.id`**，
+ * 弹不掉（找不到"另一个" chat 条目）⇒ 反而变成栈增长、退出要按多次，正是 UI-01 要防的
+ * 退化。要改只能整体重做会话切换的栈策略，不是改一个布尔值的事。
+ */
+private fun NavHostController.navigateConversation(conversationId: String?) {
+    navigate(ChatRoute.build(conversationId)) {
+        // 把当前 chat 条目连同其上的子页一起弹掉（inclusive），再压入**新**条目。
+        popUpTo(graph.startDestinationId) { inclusive = true }
+        // 刻意**不**用 launchSingleTop：目标与栈顶同 destination 时它可能复用条目
+        // （→ 复用 ViewModelStore → ChatViewModel 保留旧 conversationId），
+        // 恰好是这里要避免的。popUpTo inclusive 已经保证栈顶不会重复。
+        // 不复用旧状态：切会话要的是"干净的这份会话"，不是上一份的草稿 / 滚动位置。
+        restoreState = false
     }
 }
 

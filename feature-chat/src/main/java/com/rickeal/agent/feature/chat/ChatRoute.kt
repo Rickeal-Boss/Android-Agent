@@ -22,6 +22,7 @@ fun NavGraphBuilder.chatGraph(
     navController: NavController,
     onOpenModels: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenDrawer: (() -> Unit)?,
 ) {
     composable(
         route = ChatRoute.PATTERN,
@@ -42,6 +43,7 @@ fun NavGraphBuilder.chatGraph(
             viewModel = vm,
             onOpenModels = onOpenModels,
             onOpenSettings = onOpenSettings,
+            onOpenDrawer = onOpenDrawer,
         )
     }
 }

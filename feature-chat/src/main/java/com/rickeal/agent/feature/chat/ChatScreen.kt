@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +54,7 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     onOpenModels: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenDrawer: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -87,13 +89,34 @@ fun ChatScreen(
                 navigationIcon = {
                     // pressOnly：顶栏图标位于 GlassTopBar 自己的玻璃之上，
                     // 再叠一层玻璃会浑浊，也会复现高光溢出盖住标题的问题。
-                    GlassIconButton(
-                        icon = Icons.Filled.Storage,
-                        contentDescription = "模型",
-                        onClick = onOpenModels,
-                        contentColor = colors.onGlassMuted,
-                        pressOnly = true,
-                    )
+                    //
+                    // 两态**互斥**（任一时刻只渲染一个）⇒ 本槽宽度恒为 48dp，与「加汉堡之前」
+                    // 完全一致 —— 标题可用宽度不受影响（GlassTopBar 的标题在 weight(1f) 里，
+                    // 槽一宽就挤标题）。用户设备宽 ≈320dp，属最窄档，这点余量不能丢。
+                    //
+                    // ⚠️ 反面记录：曾把两个图标在 Row 里**并排**（槽宽 96dp），窄屏 + 生成中时
+                    // 把标题挤到 ≈0（右侧 actions 已带「轮次 + 参数 + 新对话」）。**不要改回并排。**
+                    if (onOpenDrawer != null) {
+                        // COMPACT：有抽屉 ⇒ 汉堡占位。抽屉在这一档是**唯一**的工作区 / 会话入口；
+                        // 而「模型」在本档是**重复入口** —— 底栏 5 个页签里就有「模型」，窄屏常驻可见。
+                        GlassIconButton(
+                            icon = Icons.Filled.Menu,
+                            contentDescription = "打开抽屉",
+                            onClick = onOpenDrawer,
+                            contentColor = colors.onGlassMuted,
+                            pressOnly = true,
+                        )
+                    } else {
+                        // 宽屏（MEDIUM/EXPANDED）：没有抽屉（GlassNavRail 就是入口）⇒
+                        // 保留原来的「模型」快捷入口，零改动。
+                        GlassIconButton(
+                            icon = Icons.Filled.Storage,
+                            contentDescription = "模型",
+                            onClick = onOpenModels,
+                            contentColor = colors.onGlassMuted,
+                            pressOnly = true,
+                        )
+                    }
                 },
                 actions = {
                     if (state.isGenerating) {
