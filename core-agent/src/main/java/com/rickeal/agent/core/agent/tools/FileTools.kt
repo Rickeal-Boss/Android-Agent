@@ -124,9 +124,10 @@ class FileReadTool(context: ToolContext) : SandboxedFileTool(context) {
             } else {
                 val scale = if (overCountCap) "超过 $COUNT_CAP_CHARS" else "约 $totalChars"
                 val marker = "…（文件共$scale 字符，仅载入前 $limit 字符，其余未读）"
-                // 标记预算：内容只保留「限量 − 标记长度」，保证总长恒 ≤ 限量 ——
+                // 标记预算：内容只保留「限量 − 标记长度 − 1（拼接换行）」，保证总长恒 ≤ 限量 ——
                 // 否则 Runner 会按 maxToolOutputChars 把标记本身砍掉，两层标记语义打架。
-                val keep = (limit - marker.length).coerceAtLeast(0)
+                // （keep 落点可能切开 UTF-16 代理对，尾部个别 emoji 显示为占位乱码，纯修饰性，不处理。）
+                val keep = (limit - marker.length - 1).coerceAtLeast(0)
                 String(head, 0, keep) + "\n" + marker
             }
             ToolResult(name = spec.name, ok = true, output = text)
