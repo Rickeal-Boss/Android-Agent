@@ -111,8 +111,14 @@ fun LiquidDialog(
 
     // 进场：0 → 1。弹簧规格从 LocalLiquidMotion 取（此前写死 Default，
     // reduceMotion / 动效档位在这里会"失灵"——弹窗是高频模态入口，必须跟随主题）。
-    LaunchedEffect(Unit) {
-        appear.animateTo(1f, LiquidMotion.floatSpring(LocalLiquidMotion.current))
+    // ⚠️ `CompositionLocal.current` 是 @Composable getter，**只能在组合期读**：
+    //    直接在 LaunchedEffect 协程里读会编译红（@Composable 调用不允许出现在
+    //    协程上下文）—— 先在组合期取值再进协程（全仓其余读取点同此写法）。
+    //    key 用 motion：弹窗开着时动效档位变了会重启入场动画（从当前值继续，
+    //    无视觉跳变），比写死 Unit 多一层正确性。
+    val enterMotion = LocalLiquidMotion.current
+    LaunchedEffect(enterMotion) {
+        appear.animateTo(1f, LiquidMotion.floatSpring(enterMotion))
     }
 
     // 统一的关闭入口：先播完出场动画，再真正 dismiss。
