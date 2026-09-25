@@ -349,7 +349,8 @@ private fun LiquidSliderTrack(
                         // 值没变不回调：掐掉同一档位内亚像素抖动造成的无意义重入
                         // （回调 → StateFlow → 重组 → 回显，一整条链只为重复同一个值）。
                         if (snapped != currentValue) {
-                            snapValue(snapped)
+                            // followValue = 弹簧跟随（果冻位移），上游 updateValue 同款。
+                            followValue(snapped)
                             currentOnChange(snapped)
                             // 只有**离散**滑块才逐档震（HIG：走过一格给一次可分辨的反馈）。
                             // 连续滑块绝不能接在这里：steps <= 0 时 snapToStep 原值返回，

@@ -274,8 +274,9 @@ private fun SegmentedIndicator(
                     val raw =
                         dragStartValue + dragAccumPx / itemWidth * (if (isLtr) 1f else -1f)
                     val coerced = raw.coerceIn(0f, (itemsCount - 1).toFloat())
-                    // 值没变不重复 snapValue：掐掉亚像素抖动造成的无意义协程启动。
-                    if (coerced != targetValue) snapValue(coerced)
+                    // 值没变不重复下发：掐掉亚像素抖动造成的无意义协程启动。
+                    // followValue = 弹簧跟随（果冻位移），见 DampedDragAnimation KDoc。
+                    if (coerced != targetValue) followValue(coerced)
                 }
             },
         )
