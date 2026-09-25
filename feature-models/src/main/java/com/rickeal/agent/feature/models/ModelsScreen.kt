@@ -1,6 +1,9 @@
 package com.rickeal.agent.feature.models
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import com.rickeal.agent.core.design.GlassChip
 
@@ -537,6 +540,9 @@ private fun ModelDownloadCard(
     // 这张卡在 LazyColumn 里：用 remember 的话滑出屏幕被回收后，用户填了一半的
     // 下载 URL 就清空了。rememberSaveable 在 Lazy 布局里按 item key 保住状态。
     var url by rememberSaveable { mutableStateOf("") }
+    // 预设选择弹窗（Wave 12）：随卡片本地化。卡片被 LazyColumn 回收时弹窗连同关闭，
+    // 语义合理 —— 用户回滚回来重新打开即可，不产生孤儿 Dialog 窗口。
+    var showPresetSelectDialog by rememberSaveable { mutableStateOf(false) }
 
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -561,21 +567,24 @@ private fun ModelDownloadCard(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(modifier = Modifier.height(tokens.gapSm))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(tokens.gapSm),
-            ) {
-                ModelPresets.all.forEach { preset ->
-                    GlassChip(
-                        text = "${preset.label} · ${preset.sizeText} · ${preset.ramText}",
-                        // 换到镜像源后 url 不再等于 preset.url，但仍是同一个预设 —— 用 ownsUrl。
-                        selected = preset.ownsUrl(url),
-                        onClick = { url = preset.url },
+            // 预设选择入口（Wave 12 需求）：此前是全部预设的横向滚动 chips，13 个预设
+            // 挤在一行里只能拖动盲扫、无法全览。改为收进 [PresetSelectDialog] 纵向滚动
+            // 全览，这里只留一个入口行展示当前选择。选中归回用 findByUrl：镜像直链
+            // 也能落到所属预设（Wave 6 的 ownsUrl 兼容口径）。
+            GlassSettingRow(
+                title = "选择预设模型",
+                subtitle = ModelPresets.findByUrl(url)?.let { preset ->
+                    "${preset.label} · ${preset.sizeText} · 建议可用内存 ${preset.ramText}"
+                } ?: "从 ${ModelPresets.all.size} 个预设中选择，或直接粘贴下载链接",
+                onClick = { showPresetSelectDialog = true },
+                trailing = {
+                    Text(
+                        text = "›",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.onGlassMuted,
                     )
-                }
-            }
+                },
+            )
             if (url.isNotBlank()) {
                 val activePreset = ModelPresets.findByUrl(url)
                 Text(
@@ -660,6 +669,100 @@ private fun ModelDownloadCard(
             )
         }
     }
+
+    if (showPresetSelectDialog) {
+        PresetSelectDialog(
+            selectedUrl = url,
+            onSelect = { preset ->
+                url = preset.url
+                showPresetSelectDialog = false
+            },
+            onDismiss = { showPresetSelectDialog = false },
+        )
+    }
+}
+
+/**
+ * 预设全览选择弹窗（Wave 12 需求）：把下载卡里原来横向滚动的全部预设 chips 收进
+ * [LiquidDialog]，纵向滚动一屏全览 —— 每个预设一行：名称 + 体积/内存 + 能力注记，
+ * 当前选中行高亮（镜像直链经 ownsUrl 归回所属预设，与入口行同口径）。
+ *
+ * 选定即关：与 [RecommendedModelDialog] 的 onPick 同一口径 —— 父层翻状态直接关闭，
+ * 不走 LiquidDialog actions 的动画收尾（那会"瞬间消失"，见 LiquidDialog KDoc 的申报；
+ * 弹窗式选择器统一用最短路径，换源行等轻量选择仍留在卡内 chips）。
+ */
+@Composable
+private fun PresetSelectDialog(
+    selectedUrl: String,
+    onSelect: (ModelPreset) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
+    val haptics = rememberGlassHaptics()
+
+    LiquidDialog(
+        onDismissRequest = onDismiss,
+        title = "选择预设模型",
+        subtitle = "共 ${ModelPresets.all.size} 个 · 体积与内存需求仅供选型参考",
+        content = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(tokens.gapSm),
+            ) {
+                ModelPresets.all.forEach { preset ->
+                    // 选中归回用 ownsUrl：换到镜像源后 url 不再等于 preset.url，
+                    // 但仍是同一个预设（与 Wave 6 的预设 chip 选中口径一致）。
+                    val selected = preset.ownsUrl(selectedUrl)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                color = if (selected) colors.accent.copy(alpha = 0.14f) else colors.glassTint.copy(alpha = 0.06f),
+                                shape = RoundedCornerShape(tokens.radiusMd),
+                            )
+                            .clickable {
+                                haptics.tick()
+                                onSelect(preset)
+                            }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = preset.label,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (selected) colors.accent else colors.onGlass,
+                            )
+                            Text(
+                                text = "体积 ${preset.sizeText} · 建议可用内存 ${preset.ramText}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassMuted,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                            Text(
+                                text = preset.note,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        if (selected) {
+                            Text(
+                                text = "已选",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = colors.accent,
+                                modifier = Modifier.padding(start = 8.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+    )
 }
 
 /**
