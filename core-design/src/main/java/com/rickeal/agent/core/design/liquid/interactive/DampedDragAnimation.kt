@@ -1,5 +1,6 @@
 package com.rickeal.agent.core.design.liquid.interactive
 
+import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.Spring
@@ -11,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -171,6 +173,36 @@ class DampedDragAnimation(
     private val valueAnimatable = Animatable(initialValue, visibilityThreshold)
     private val pressAnimatable = Animatable(0f)
 
+    // ── 回弹恢复（2026-09-26，对齐上游 Kyant0 catalog/utils/DampedDragAnimation）────
+    // 上游的 scale 是**独立的欠阻尼弹簧**（scaleX dampingRatio=0.6 / scaleY=0.7、
+    // stiffness=250），不是 pressProgress 的纯函数 —— 按下微过冲、松手**回弹数拍**
+    //（iOS Liquid Glass 的标志性 squash & stretch）。本仓移植时把 scale 写成了
+    // `initialScale + (pressedScale - initialScale) * pressProgress`，pressProgress
+    // 又是 NoBouncy 临界阻尼 ⇒ 回弹整条丢失（用户以上游 demo 录屏对比实锤）。
+    // 规格逐字取自上游（0.6/0.7/250），initialThreshold 上游用 0.001f。
+    private val scaleXAnimatable = Animatable(initialScale, 0.001f)
+    private val scaleYAnimatable = Animatable(initialScale, 0.001f)
+
+    /**
+     * scale 弹簧规格（上游逐字）：欠阻尼 = 松手回弹的来源。
+     * X 轴 0.6 / Y 轴 0.7：松手时横向先弹过头再收，纵向略收窄，两轴相位差
+     * 产生"果冻"观感。**不要**改成 NoBouncy —— 那正是被丢掉的回弹。
+     */
+    private val scaleXAnimationSpec =
+        spring(dampingRatio = 0.6f, stiffness = 250f, visibilityThreshold = 0.001f)
+    private val scaleYAnimationSpec =
+        spring(dampingRatio = 0.7f, stiffness = 250f, visibilityThreshold = 0.001f)
+
+    // 上游同款：独立的速度动画（spring(0.5f, 300f)，欠阻尼），由 VelocityTracker
+    // 对 **value**（页签序号量纲）逐帧采样驱动，而不是直接读 valueAnimatable.velocity
+    // —— 拖动路径是 snapValue（瞬时到位，Animatable.velocity 恒 ≈0），直接读它
+    // 等于拖动中没有任何拉伸（Wave 10 已申报的取舍）。逐帧 animateTo 一个
+    // 欠阻尼弹簧：拖动中真实跟手拉伸 + 松手后速度带过冲衰减 = 上游的弹性拖尾。
+    private val velocityAnimatable = Animatable(0f, 5f)
+    private val velocityAnimationSpec =
+        spring(dampingRatio = 0.5f, stiffness = 300f, visibilityThreshold = 0.01f)
+    private val velocityTracker = VelocityTracker()
+
     // 刻意不用 `by mutableFloatStateOf(...)` 委托：MutableFloatState 的
     // getValue/setValue 是 androidx.compose.runtime 的扩展运算符，必须显式 import 才生效，
     // 漏了 import 会报 "Type 'MutableFloatState' has no method 'getValue(...)'"（CI 实测踩过）。
@@ -185,8 +217,11 @@ class DampedDragAnimation(
     /** 当前实际值（弹簧跟随 [targetValue]，所以会"慢半拍"——这就是阻尼）。 */
     val value: Float get() = valueAnimatable.value
 
-    /** 当前速度（px/s 量纲的数值速度）。用于各向异性拉伸。 */
-    val velocity: Float get() = valueAnimatable.velocity
+    /**
+     * 当前速度（value 量纲 / s，来自独立速度弹簧——见 [velocityAnimatable] 注释）。
+     * 用于各向异性拉伸。
+     */
+    val velocity: Float get() = velocityAnimatable.value
 
     /** 按压进度 0~1。 */
     val pressProgress: Float get() = pressAnimatable.value
@@ -240,11 +275,15 @@ class DampedDragAnimation(
             }
         }
 
-    /** 按下时放大的 X 缩放（[initialScale] → [pressedScale]）。 */
-    val scaleX: Float get() = initialScale + (pressedScale - initialScale) * pressProgress
+    /**
+     * 按下时放大的 X 缩放（[initialScale] → [pressedScale]）。
+     * 2026-09-26 起读**独立欠阻尼弹簧**（不再随 pressProgress 线性走）——
+     * 按下微过冲、松手回弹，见 [scaleXAnimatable] 处注释。
+     */
+    val scaleX: Float get() = scaleXAnimatable.value
 
-    /** 按下时放大的 Y 缩放（[initialScale] → [pressedScale]）。 */
-    val scaleY: Float get() = initialScale + (pressedScale - initialScale) * pressProgress
+    /** 同 [scaleX]，Y 轴（阻尼比 0.7，回弹相位与 X 略异 = 果冻感）。 */
+    val scaleY: Float get() = scaleYAnimatable.value
 
     /**
      * 手势入口。必须挂在**需要被拖的节点**上，且顺序上放在 `drawBackdrop(...)` **之后**
@@ -456,6 +495,27 @@ class DampedDragAnimation(
                             // onDrag 会彻底不再触发 → 滑块值卡住、开关拖到一半松手失效。
                             // 改动前它就是每个 move 无条件回调的，这里保持该语义。
                             onDrag(this@DampedDragAnimation, valueAnimatable.value, dragAmount)
+
+                            // ── 速度采样（2026-09-26 回弹恢复，上游 updateValue 同款）────
+                            // 对 value（页签/进度量纲）按时间采样，目标速度 = tracker 速度
+                            // ÷ valueRange 跨度（归一化成"每秒走完多少比例的量程"），
+                            // 交给欠阻尼速度弹簧跟随 —— 拖动中各向异性拉伸有真实来源，
+                            // 松手后速度带过冲衰减（弹性拖尾）。上游逐帧 animateTo 的
+                            // 模式照搬；snapValue 让 valueAnimatable.velocity 恒 ≈0，
+                            // 那条路已经没有速度可读（Wave 10 申报的取舍由此真正解决）。
+                            velocityTracker.addPosition(
+                                SystemClock.elapsedRealtime(),
+                                Offset(valueAnimatable.value, 0f),
+                            )
+                            val span = valueRange.endInclusive - valueRange.start
+                            val trackedVelocity = velocityTracker.calculateVelocity().x /
+                                if (span > 0f) span else 1f
+                            animationScope.launch {
+                                velocityAnimatable.animateTo(
+                                    trackedVelocity,
+                                    velocityAnimationSpec,
+                                )
+                            }
                         }
                     }
                 }
@@ -466,6 +526,15 @@ class DampedDragAnimation(
                 // 更糟的是 onDragStopped 不触发 —— 滑块的 onValueChangeFinished
                 // 永远不来，设置页改完温度**不落盘**。
                 setPressed(false)
+                // 速度弹簧终点归零（防御性，覆盖全部手势终点）：正常松手后消费方会在
+                // onDragStopped 里 animateToValue 收敛 value，但速度弹簧的目标若不显式
+                // 归零，会停在最后一次采样值上 —— layerBlock 的各向异性拉伸将永久卡住。
+                // 欠阻尼弹簧从当前速度带过冲衰减到 0 = 松手的弹性拖尾（上游经
+                // animateToValue 里的 velocity→0 达成同款观感，这里收口更严）。
+                // 让位 / 事件流断路径同样走到这里（finally 语义），不会残留拉伸。
+                animationScope.launch {
+                    velocityAnimatable.animateTo(0f, velocityAnimationSpec)
+                }
                 // ⚠️ 顺序不能换：onDragStopped 必须**先**执行、且能读到 true，
                 // 它才能据此跳过提交（让位场景）。清标志必须放在它之后。
                 onDragStopped(this@DampedDragAnimation)
@@ -556,15 +625,40 @@ class DampedDragAnimation(
         }
     }
 
+    /**
+     * 按压 / 释放的三路弹簧：pressProgress（临界阻尼，NoBouncy 与上游一致）+
+     * scaleX / scaleY（欠阻尼 0.6/0.7 —— 回弹来源）。
+     *
+     * ⚠️ 影响面（2026-09-26 回弹恢复申报）：scaleX/scaleY 从 pressProgress 的纯函数
+     * 改为独立弹簧，消费方 = LiquidBottomTabs 胶囊 layerBlock、GlassSlider thumb、
+     * GlassSwitch thumb —— 三者的按压/松手都会获得上游同款的微过冲与回弹；
+     * pressProgress 本身（effects 的模糊/折射/阴影）仍走原 NoBouncy 路径，观感不变。
+     */
     private fun setPressed(pressed: Boolean) {
+        // 按下即重置速度采样（上游 press() 同款）：上一段手势的速度不得污染本次。
+        velocityTracker.resetTracking()
         animationScope.launch {
-            pressAnimatable.animateTo(
-                targetValue = if (pressed) 1f else 0f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMedium
+            launch {
+                pressAnimatable.animateTo(
+                    targetValue = if (pressed) 1f else 0f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMedium
+                    )
                 )
-            )
+            }
+            launch {
+                scaleXAnimatable.animateTo(
+                    targetValue = if (pressed) pressedScale else initialScale,
+                    animationSpec = scaleXAnimationSpec
+                )
+            }
+            launch {
+                scaleYAnimatable.animateTo(
+                    targetValue = if (pressed) pressedScale else initialScale,
+                    animationSpec = scaleYAnimationSpec
+                )
+            }
         }
     }
 }

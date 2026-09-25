@@ -917,16 +917,15 @@ fun LiquidBottomTabs(
                                 InnerShadow(radius = 8f.dp * progress, alpha = progress)
                             },
                             layerBlock = {
-                                // 按压缩放（DampedDragAnimation 的 scaleX/scaleY）
-                                // + 速度各向异性：拖得快沿运动方向拉长、垂直方向压扁。
+                                // 按压缩放（DampedDragAnimation 的 scaleX/scaleY，独立
+                                // 欠阻尼弹簧 —— 松手回弹）+ 速度各向异性：拖得快沿运动方向
+                                // 拉长、垂直方向压扁。
                                 //
-                                // ⚠️ 已知取舍（本轮 P0 拖动跟手改造引入）：拖动改用 snapValue
-                                //（瞬时到位）后，`valueAnimatable` 不再保留"未走完的弹簧速度"，
-                                // `velocity` 会偏小 → 这里的各向异性拉伸在**拖动中**会减弱
-                                //（松手回弹那一段仍有速度，拉伸还在）。换取的是胶囊**严格跟手**
-                                //（真机"不跟手/越远越偏差"的根治）——跟手优先。
-                                // 若真机确认拉伸观感缺失，再单独调 velocity 的来源，
-                                // **不为此回退绝对映射**。
+                                // ✅ 回弹恢复（2026-09-26）：velocity 来源已改为 VelocityTracker
+                                // 对 value 逐帧采样 + 独立欠阻尼速度弹簧（见 DDA 内注释），
+                                // 拖动中拉伸有真实来源、松手带弹性拖尾 —— 早前"snapValue 后
+                                // velocity 偏小、拖动中拉伸减弱"的取舍就此作废（绝对映射
+                                // / 严格跟手不受影响，那改的是 value 本身，不是速度来源）。
                                 scaleX = dampedDragAnimation.scaleX
                                 scaleY = dampedDragAnimation.scaleY
                                 val velocity = dampedDragAnimation.velocity / 10f
