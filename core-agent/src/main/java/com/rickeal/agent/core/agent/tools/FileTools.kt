@@ -1,5 +1,6 @@
 package com.rickeal.agent.core.agent.tools
 
+import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.Tool
 import com.rickeal.agent.core.agent.ToolContext
 import com.rickeal.agent.core.model.ToolParameter
@@ -51,6 +52,21 @@ abstract class SandboxedFileTool(protected val context: ToolContext) : Tool {
 }
 
 class FileReadTool(context: ToolContext) : SandboxedFileTool(context) {
+
+    companion object {
+        /**
+         * 读取限量：与 [AgentPolicy.maxToolOutputChars] **同源**（取其默认值）。
+         * Runner 对工具输出的截断上限就是它 —— file_read 在源头只读这么多，
+         * 省掉「读 20 万字符进内存、再被 Runner 砍到 4000」的纯浪费（三线审查 Wave10）。
+         * 顺带保证本工具输出恒 ≤ 限量：Runner 的「…(已截断)」标记对 file_read
+         * **永不触发**，两层截断标记不会叠加出现（见 invoke 内的标记预算注释）。
+         */
+        private val READ_LIMIT_CHARS = AgentPolicy().maxToolOutputChars
+
+        /** 剩余字符计数上限：超过就放弃精确计数、改报「超过 N」，不再继续读盘。 */
+        private const val COUNT_CAP_CHARS = 5_000_000L
+    }
+
     override val spec: ToolSpec = ToolSpec(
         name = "file_read",
         description = "读取沙箱目录内的文本文件",
@@ -64,12 +80,54 @@ class FileReadTool(context: ToolContext) : SandboxedFileTool(context) {
             val file = resolveSafe(path)
             if (!file.exists()) return ToolResult(name = spec.name, ok = false, errorMessage = "文件不存在：$path")
             if (!file.isFile) return ToolResult(name = spec.name, ok = false, errorMessage = "不是文件：$path")
-            // 必须流式只读前 N 个字符：`readText().take()` 会先把整个文件读成 String。
-            // 100MB 的文件 → UTF-16 下约 200MB 字符数组 → 直接 OOM（端侧可用内存本就被 4B 模型吃掉大半）。
-            val text = file.bufferedReader().use { reader ->
-                val buffer = CharArray(200_000)
-                val read = reader.read(buffer)
-                if (read <= 0) "" else String(buffer, 0, read)
+            // 流式限量读，三态输出（三线审查 Wave10）：
+            //  1. 完整读毕（EOF 在限量内达到）→ 原文，无标记；
+            //  2. 因限量截断 → 内容 + 「共约 N / 仅载入前 M」显式标记 —— 4000 字符外的
+            //     信息不再在 file_read 层静默丢失，模型至少知道文件有多大、读到了哪；
+            //  3. 空文件 → 空输出，与旧行为一致。
+            // 循环填缓冲而非单次 read(buffer)：单次 read 不保证填满（流式语义允许
+            // 提前返回），旧实现会把「网络盘 / 大文件慢读」误判成 EOF。
+            val limit = READ_LIMIT_CHARS
+            val head = CharArray(limit)
+            var filled = 0
+            // -1 = 未截断；否则 = 全文件字符总数（超出计数上限时走 overCountCap 分支）
+            var totalChars = -1L
+            var overCountCap = false
+            file.bufferedReader().use { reader ->
+                while (filled < limit) {
+                    val r = reader.read(head, filled, limit - filled)
+                    if (r < 0) break
+                    filled += r
+                }
+                if (filled == limit) {
+                    // 缓冲填满 ≠ 一定还有剩余（文件恰好等于限量）：再探一个字符定性。
+                    if (reader.read() >= 0) {
+                        // 截断成立。剩余字符只计数不保留（O(1) 内存）—— 「共约 N 字符」
+                        // 的规模感对模型决定「换工具 / 分批 / 放弃」至关重要。
+                        var rest = 1L
+                        val sink = CharArray(8192)
+                        count@ while (true) {
+                            val r = reader.read(sink)
+                            if (r < 0) break
+                            rest += r
+                            if (rest > COUNT_CAP_CHARS) {
+                                overCountCap = true
+                                break@count
+                            }
+                        }
+                        totalChars = limit + rest
+                    }
+                }
+            }
+            val text = if (totalChars < 0L) {
+                String(head, 0, filled)
+            } else {
+                val scale = if (overCountCap) "超过 $COUNT_CAP_CHARS" else "约 $totalChars"
+                val marker = "…（文件共$scale 字符，仅载入前 $limit 字符，其余未读）"
+                // 标记预算：内容只保留「限量 − 标记长度」，保证总长恒 ≤ 限量 ——
+                // 否则 Runner 会按 maxToolOutputChars 把标记本身砍掉，两层标记语义打架。
+                val keep = (limit - marker.length).coerceAtLeast(0)
+                String(head, 0, keep) + "\n" + marker
             }
             ToolResult(name = spec.name, ok = true, output = text)
         } catch (t: Throwable) {
