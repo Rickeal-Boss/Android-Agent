@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -418,9 +420,18 @@ private fun ThinkingBlock(
     }
 }
 
+// FlowRow 在 foundation 1.10.3 仍是 @ExperimentalLayoutApi（BOM 2026.02.00 核实），
+// 必须显式 OptIn —— 这类"实验 API 转正与否"不能赌，编译器说了算。
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AttachmentStrip(attachments: List<GlassBubbleAttachment>) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    // 裸 Row 在窄屏会横向溢出被裁（三线审查 Wave10）：附件 chips 是信息展示，
+    // 换行是正确 affordance（对比 ModelsScreen 预设 chips 的 horizontalScroll「主动横滑」）。
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        // 换行后的行间距沿用同一节奏：不设的话两行 chips 会贴死。
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         for (attachment in attachments) {
             AttachmentItem(attachment = attachment)
         }

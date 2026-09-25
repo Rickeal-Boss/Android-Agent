@@ -2,6 +2,8 @@ package com.rickeal.agent.feature.models
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,6 +42,8 @@ import com.rickeal.agent.core.data.DeviceCapability
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.ModelDescriptor
 
+// FlowRow 在 foundation 1.10.3 仍是 @ExperimentalLayoutApi（BOM 2026.02.00），显式 OptIn。
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ModelCard(
     model: ModelDescriptor,
@@ -105,9 +109,13 @@ fun ModelCard(
                 }
             }
 
-            Row(
+            // 裸 Row 在窄屏（长文件名 / 全能力位开启）会横向溢出被裁（三线审查 Wave10）。
+            // chips 是信息展示不是操作入口，自动换行才是正确 affordance —— 不要学
+            // ModelsScreen 预设 chips 的 horizontalScroll（那是「主动横滑」语义）。
+            FlowRow(
                 modifier = Modifier.padding(top = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 GlassChip(text = model.sizeText())
                 GlassChip(text = model.quantization.name)
@@ -117,9 +125,10 @@ fun ModelCard(
                 }
             }
 
-            Row(
+            FlowRow(
                 modifier = Modifier.padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 if (model.capabilities.image) GlassChip(text = "图片")
                 if (model.capabilities.audio) GlassChip(text = "音频")
