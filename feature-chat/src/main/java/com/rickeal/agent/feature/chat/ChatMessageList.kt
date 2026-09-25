@@ -110,10 +110,17 @@ fun ChatMessageList(
         }
     }
 
-    // 新消息必滚到底（messages.size 变化 = 有消息增删）。
+    // 新消息滚动（条件化，三线审查 Wave10）：仅当用户已贴着底部才跟随 ——
+    // 回看历史时收到新消息不再被强行拽到底。判定源与流式分支同一条
+    // derivedStateOf(atBottom)（同一个 LazyListState），不引入第二套「是否在底部」。
+    // 例外：最新一条是用户自己发的 —— 发消息的人必然想看到它出现，无条件滚。
+    // 进入会话 / 空列表时 atBottom 恒 true（lastVisible == null），首次载入照常滚底。
     LaunchedEffect(messages.size) {
         val index = messages.lastIndex
-        if (index >= 0) listState.animateScrollToItem(index, scrollOffset = SCROLL_TO_TAIL_SLACK)
+        if (index < 0) return@LaunchedEffect
+        if (atBottom || messages[index].role == Role.USER) {
+            listState.animateScrollToItem(index, scrollOffset = SCROLL_TO_TAIL_SLACK)
+        }
     }
 
     // 流式跟随（A 项节流改造）：key 在低频的 isStreaming / toolTraces.size 上
