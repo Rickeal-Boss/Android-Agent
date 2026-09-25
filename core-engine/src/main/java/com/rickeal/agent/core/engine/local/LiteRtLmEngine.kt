@@ -45,6 +45,15 @@ import kotlinx.coroutines.withContext
 internal const val THOUGHT_CHANNEL = "thought"
 
 /**
+ * 模型文件预检的体积下限（64MB）。
+ *
+ * 低于它视为「下载中断的残片」：内置最小的预设（450M 视觉模型）也有 ~0.25GB，
+ * 而 DownloadManager 中断/被清理后常留下几 MB 的半截文件、或下载源返回的错误页
+ * （几 KB~几十 KB）。取 64MB 既不会误伤任何真实模型，也能拦住绝大多数残片。
+ */
+private const val MODEL_MIN_BYTES: Long = 64L * 1024L * 1024L
+
+/**
  * LiteRT-LM 本地引擎。
  *
  * 桥接要点（架构文档 §3.4 说明 1~4）：
@@ -151,8 +160,18 @@ class LiteRtLmEngine(
                 // 两者必须同源（`EngineConfig` 也用这两个值），否则判据与事实脱节：
                 // 模型不支持视觉时原始配置可能是 null 也可能是用户随手设的 GPU，
                 // 但引擎实际拿到的一定是 null —— 拿原始值去比会得出「没变」的错误结论。
+                // 视觉后端**跟随主后端**（2026-09-26 真机实锤根修）：旧默认 GPU 是从
+                // gallery 样例抄来的（Gemma 3n 要求 GPU 视觉），无差别套用后，主后端选
+                // CPU 的设备视觉仍走 GPU —— 真机表现：CPU 模式 LLM executor 创建成功、
+                // vision executor 的 CompiledModel::Create 失败（报错定位
+                // vision_litert_compiled_model_executor.cc:273）。GPU 不可用的设备上
+                // 这等于「CPU 模式也永远加载失败」。NPU 不支持视觉编码器（上游 vision
+                // executor 对非 CPU/GPU 后端直接 InvalidArgument），强制落回 CPU。
                 val resolvedVisionBackend = if (wantsVision) {
-                    config.config.visionBackend ?: InferenceBackend.GPU
+                    config.config.visionBackend ?: when (config.config.backend) {
+                        InferenceBackend.NPU -> InferenceBackend.CPU
+                        else -> config.config.backend
+                    }
                 } else {
                     null
                 }
@@ -201,51 +220,124 @@ class LiteRtLmEngine(
                 }
                 releaseInternal()
 
-                val backend = toBackend(config.config.backend, config.nativeLibraryDir)
-
-                val engineConfig = EngineConfig(
-                    modelPath = modelPath,
-                    backend = backend,
-                    // 复用上面算好的解析值：默认值只在这一处落地，判据与引擎不会各写一份而走偏。
-                    visionBackend = resolvedVisionBackend?.let {
-                        toBackend(it, config.nativeLibraryDir)
-                    },
-                    audioBackend = resolvedAudioBackend?.let {
-                        toBackend(it, config.nativeLibraryDir)
-                    },
-                    maxNumTokens = config.config.maxTokens,
-                    cacheDir = config.externalFilesDir ?: config.cacheDir,
-                )
-
-                try {
-                    val created = Engine(engineConfig)
-                    try {
-                        created.initialize()
-                    } catch (t: Throwable) {
-                        runCatching { created.close() }
-                        throw EngineException("LiteRT-LM: initialize 失败 (${t.message})", t)
+                // ── 模型文件预检（2026-09-26）──────────────────────────────────────
+                // 「initialize 失败」里最常见的一类真因是文件本身坏了/没了（DownloadManager
+                // 中断留下的半截文件、被系统清理、下载源返回了 HTML 错误页），这类问题到
+                // native 层才炸出来时用户完全读不懂。用 Kotlin 侧就能查的三件事先拦，
+                // 把「引擎加载失败」换成可操作的文案：
+                //  1、不存在 → 明说「重新下载」；
+                //  2、体积 < [MODEL_MIN_BYTES] → 下载几乎必然中断（最小的预设也有 ~0.25GB）；
+                //  3、.litertlm/.task 都是 zip 容器（PK 魔数）→ 魔数不对 = 下到的不是模型。
+                val modelFile = java.io.File(modelPath)
+                if (!modelFile.exists()) {
+                    throw EngineException(
+                        "模型文件不存在：${modelFile.name} —— 可能已被系统清理，请在模型页重新下载"
+                    )
+                }
+                if (modelFile.length() < MODEL_MIN_BYTES) {
+                    throw EngineException(
+                        "模型文件不完整（仅 ${modelFile.length() / (1024L * 1024L)}MB）—— " +
+                            "下载很可能已中断，请删除后重新下载"
+                    )
+                }
+                val modelExt = modelFile.extension.lowercase()
+                if (modelExt == "litertlm" || modelExt == "task") {
+                    val magic = ByteArray(2)
+                    java.io.FileInputStream(modelFile).use { ins ->
+                        val read = ins.read(magic)
+                        if (read != 2 || magic[0] != 'P'.code.toByte() || magic[1] != 'K'.code.toByte()) {
+                            throw EngineException(
+                                "模型文件格式异常（不是 .$modelExt 容器）—— " +
+                                    "下载源可能返回了错误页，请换源后重新下载"
+                            )
+                        }
                     }
+                }
+                // 缓存目录必须真实存在：GPU 权重/编译缓存写不进去时，CompiledModel::Create
+                // 会以同一种 INTERNAL 报错炸掉（vision executor 的 GetGpuModelCacheData /
+                // SetGpuCacheOptions 就在编译前取缓存文件路径）。getExternalFilesDir 返回的
+                // 目录通常已存在，但「存储未挂载时返回 null → 回退 cacheDir」的路径不保证。
+                val effectiveCacheDir = (config.externalFilesDir ?: config.cacheDir)?.let { path ->
+                    java.io.File(path).apply { runCatching { mkdirs() } }.absolutePath
+                }
 
-                    engine = created
-                    loadedModelPath = modelPath
-                    // 真实能力探测：官方 API 直接读模型文件，比按文件名猜可靠得多。
-                    // 失败不影响加载（getOrNull 回退到启发式）。
-                    probedSpeculativeDecoding = runCatching {
-                        Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
-                    }.getOrNull()
-                    loadedMaxTokens = config.config.maxTokens
-                    loadedBackend = config.config.backend
-                    loadedSampling = config.config.sampling
-                    // 记**解析后的值**，与 sameEngine 判据同源；记原始配置会让
-                    // 「能力位从 false 改 true」时两侧都是同一个原始值而误判为可复用。
-                    loadedVisionBackend = resolvedVisionBackend
-                    loadedAudioBackend = resolvedAudioBackend
-                    loadConfig = config
-                    loaded = true
-                } catch (t: Throwable) {
-                    // 任何失败路径都必须彻底复位（engine 置空 / loaded 置 false / 参数记忆与水印清空）。
-                    // 否则下一次 load() 会拿残留状态误判为「可复用」，引擎就永久卡在坏状态里。
-                    releaseInternal()
+                // ── 创建引擎：GPU 不可用自动降级 CPU（2026-09-26）────────────────────
+                // 真机实锤：Manifest 未声明 libOpenCL.so（Android 12+ 访问厂商非 NDK 库
+                // 必须 <uses-native-library>）时，GPU 委托 dlopen 失败 → CompiledModel::
+                // Create 抛 INTERNAL（llm_litert_compiled_model_executor.cc:1928）。
+                // 上游 issue #1860 的结论就是「SDK 没有预检 API，调用方自己降级重试 CPU」。
+                // 这里做成同一次 load() 内的二段尝试：主配置失败且涉及 GPU → 直接换
+                // CPU/CPU 再试一次，用户无感。复用判据仍记**用户请求的**解析值 ——
+                // 降级是运行时事实、不是新配置，否则「请求 GPU 实际 CPU」会在下次
+                // load() 被判成配置变化而整引擎重建（重新加载权重，纯浪费；降级结果
+                // 在进程生命周期内是稳定的）。
+                val attempts = buildList {
+                    add(config.config.backend to resolvedVisionBackend)
+                    if (config.config.backend == InferenceBackend.GPU ||
+                        resolvedVisionBackend == InferenceBackend.GPU
+                    ) {
+                        add(InferenceBackend.CPU to if (wantsVision) InferenceBackend.CPU else null)
+                    }
+                }
+
+                var lastError: Throwable? = null
+                for ((index, attempt) in attempts.withIndex()) {
+                    if (index > 0) {
+                        AgentLogStore.warn(
+                            "LiteRT-LM GPU 后端不可用（${lastError?.message?.take(160) ?: "未知错误"}），" +
+                                "自动降级 CPU 重试"
+                        )
+                    }
+                    val engineConfig = EngineConfig(
+                        modelPath = modelPath,
+                        backend = toBackend(attempt.first, config.nativeLibraryDir),
+                        visionBackend = attempt.second?.let { toBackend(it, config.nativeLibraryDir) },
+                        audioBackend = resolvedAudioBackend?.let { toBackend(it, config.nativeLibraryDir) },
+                        maxNumTokens = config.config.maxTokens,
+                        cacheDir = effectiveCacheDir,
+                    )
+                    try {
+                        val created = Engine(engineConfig)
+                        try {
+                            created.initialize()
+                        } catch (t: Throwable) {
+                            runCatching { created.close() }
+                            throw EngineException("LiteRT-LM: initialize 失败 (${t.message})", t)
+                        }
+
+                        engine = created
+                        loadedModelPath = modelPath
+                        // 真实能力探测：官方 API 直接读模型文件，比按文件名猜可靠得多。
+                        // 失败不影响加载（getOrNull 回退到启发式）。
+                        probedSpeculativeDecoding = runCatching {
+                            Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
+                        }.getOrNull()
+                        loadedMaxTokens = config.config.maxTokens
+                        loadedBackend = config.config.backend
+                        loadedSampling = config.config.sampling
+                        // 记**解析后的值**，与 sameEngine 判据同源；记原始配置会让
+                        // 「能力位从 false 改 true」时两侧都是同一个原始值而误判为可复用。
+                        loadedVisionBackend = resolvedVisionBackend
+                        loadedAudioBackend = resolvedAudioBackend
+                        loadConfig = config
+                        loaded = true
+                        if (index > 0) {
+                            AgentLogStore.warn(
+                                "LiteRT-LM 已以 CPU 后端完成加载（本次会话 GPU 不可用，" +
+                                    "请求的后端：${config.config.backend}）"
+                            )
+                        }
+                        lastError = null
+                        break
+                    } catch (t: Throwable) {
+                        // 任何失败路径都必须彻底复位（engine 置空 / loaded 置 false /
+                        // 参数记忆与水印清空），否则下一次 load() 会拿残留状态误判为
+                        // 「可复用」，引擎就永久卡在坏状态里。
+                        releaseInternal()
+                        lastError = t
+                    }
+                }
+                lastError?.let { t ->
                     if (t is EngineException) throw t
                     throw EngineException("LiteRT-LM: 创建 Engine 失败 (${t.message})", t)
                 }

@@ -59,6 +59,24 @@
         android:theme="@style/Theme.LiquidAgent"
         tools:targetApi="31">
 
+        <!-- LiteRT-LM GPU 后端的原生库声明（2026-09-26，真机实锤的引擎加载失败根修）：
+             GPU 委托（libLiteRtClGlAccelerator.so，随 litertlm-android AAR 打包）需要
+             dlopen 厂商提供的 OpenCL 库 —— 它是**非 NDK 库**，targetSdk ≥ 31 时应用
+             必须在清单里逐个声明才能访问（Android 12 行为变更），否则 dlopen 直接失败，
+             CompiledModel::Create 抛 INTERNAL（真机报错定位
+             llm_litert_compiled_model_executor.cc:1928）。官方 getting-started 文档
+             要求的就是这三条声明（LiteRT-LM issue #1860 同款案例）。required=false：
+             设备没有 OpenCL（如 Tensor G3）时不阻止安装，引擎侧另有 GPU→CPU 自动降级。 -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL-car.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL-pixel.so"
+            android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
