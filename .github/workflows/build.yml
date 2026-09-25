@@ -9,7 +9,10 @@ name: Build
 #   2. 本地没有 JDK / Android SDK，唯一的验证通道就是 CI，
 #      因此工作流需要自愈：用 setup-gradle 安装 Gradle、自动接受 SDK 许可、
 #      缓存依赖、失败时输出可读日志。
-#   3. 只跑 assembleDebug，不跑 lint / 测试任务，避免无关任务拖垮首次开荒。
+#   3. Build job 出 debug 包；unit-tests job 跑 JVM 单测（当前全仓测试源集
+#      为空 —— `test` 聚合 task 在零测试源集的模块上是 NO-SOURCE，直接跳过、
+#      exit 0，即「空集点火」：先把「测试必须绿」的门禁位立起来，后续补
+#      JVM 单测无需再改流水线）。不跑 lint，避免无关任务拖垮构建。
 #   4. 【绝不下载模型】4B 模型 > 2GB，CI 只产出 APK/AAR，模型由用户自行导入。
 #
 # 已知回退路径（禁止提前自行改动，完整版见 docs/02-ci.md §3.2.3 / §5.2-C）：
@@ -301,3 +304,120 @@ jobs:
               echo "> 详见 \`docs/02-ci.md\` §5.2-C。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # JVM 单测门禁位（空集点火）
+  #
+  # 当前全仓没有任何测试源集：`test` 聚合 task 在零测试源集的模块上被标为
+  # NO-SOURCE 并直接跳过，整体 exit 0 —— 本 job 今天就该绿，且绿得有意义
+  # （它证明「测试必须绿」这条门禁是通的）。后续补 JVM 单测时零改动生效。
+  #
+  # 工具链与 Build job 完全同源（JDK 21 temurin / Gradle 9.7.1 via
+  # setup-gradle / 同一份 ci-gradle.properties），保证两个 job 共享同一套
+  # Gradle 缓存口径，不会出现双 job 双缓存前缀互不命中的浪费。
+  # -----------------------------------------------------------------------
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          # 缓存交给下面的 gradle/actions/setup-gradle，与 Build job 同款约定。
+
+      - name: Bootstrap Android SDK and accept licenses
+        # 即使只跑 JVM 单测，AGP 在 configuration 阶段也需要 SDK 可用；
+        # 「许可证未接受」会让 SDK 自动下载直接失败，所以照抄 Build job 的预处理。
+        run: |
+          sdk_root="${ANDROID_HOME:-}"
+          if [ -z "$sdk_root" ] || [ ! -d "$sdk_root" ]; then
+            for candidate in "$HOME/android-sdk" "/usr/local/lib/android/sdk" "$HOME/Android/Sdk" "/opt/android-sdk"; do
+              if [ -d "$candidate" ]; then sdk_root="$candidate"; break; fi
+            done
+          fi
+          if [ -z "$sdk_root" ]; then sdk_root="$HOME/android-sdk"; fi
+
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          echo "::notice::Android SDK root = $sdk_root"
+
+          mkdir -p "$sdk_root/licenses"
+          printf '%s\n%s\n' \
+            '24333f8a63b6825ea9c5514f83c2829b004d1fee' \
+            '8933bad161af4178b1185d1a37fbf41ea5269c55' \
+            > "$sdk_root/licenses/android-sdk-license"
+          printf '%s\n' '84831b9409646a7e0bab842799117058b6a3a0a6' \
+            > "$sdk_root/licenses/android-sdk-preview-license"
+          printf '%s\n' 'd975f751698a77b662f1254ddbeed3901e976f5a' \
+            > "$sdk_root/licenses/intel-android-extra-license"
+          printf '%s\n' '601085b94cd77f0b54ff86406957099beebea79f5' \
+            > "$sdk_root/licenses/android-googletv-license"
+
+          # 若镜像里带 cmdline-tools，再跑一次官方 license 流程做兜底
+          if [ -x "$sdk_root/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$sdk_root/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
+
+          ls -la "$sdk_root/licenses" || true
+
+      - name: Install CI Gradle properties
+        run: |
+          mkdir -p "$HOME/.gradle"
+          if [ -f .github/ci-gradle.properties ]; then
+            cat .github/ci-gradle.properties > "$HOME/.gradle/gradle.properties"
+            echo "::group::Effective CI gradle.properties"
+            cat "$HOME/.gradle/gradle.properties"
+            echo "::endgroup::"
+          else
+            echo "::warning::.github/ci-gradle.properties not found, using project defaults"
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          # 与 Build job 同版本、同参数：两个 job 的 Gradle User Home 缓存
+          # 由同一 action 以相同输入生成 key，天然共享前缀、互相命中。
+          gradle-version: '9.7.1'
+          validate-wrappers: false
+          cache-cleanup: on-success
+          add-job-summary: 'on-failure'
+
+      - name: Verify Gradle
+        run: |
+          if ! command -v gradle > /dev/null 2>&1; then
+            echo "::error::'gradle' is not on PATH — gradle/actions/setup-gradle failed to install it."
+            exit 1
+          fi
+          gradle --version
+
+      - name: Run unit tests
+        # 【只用 setup-gradle 安装的 gradle，与 Build job 同款】不调 ./gradlew。
+        # `test` 是聚合 task：对所有模块生效，空集模块 NO-SOURCE 跳过；
+        # 不用 testDebugUnitTest —— 写死变体将来加纯 Kotlin 模块时会漏。
+        # --continue：某模块红了也把其余模块跑完，一轮看清全部红点。
+        run: |
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
+            test --continue
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports-${{ github.sha }}
+          path: |
+            **/build/reports/tests/**
+            **/build/test-results/**
+          retention-days: 14
+          if-no-files-found: warn
