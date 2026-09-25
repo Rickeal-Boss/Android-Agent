@@ -219,9 +219,15 @@ fun StorageScreen(
                         color = colors.onGlass,
                         modifier = Modifier.padding(top = tokens.gapSm),
                     )
-                    if (detail.path != null) {
+                    // ⚠️ `path` 是 **core-data 模块的 public API 属性** —— 跨模块的 `val` 可能被
+                    // 自定义 getter 覆盖，Kotlin **不允许**对它做 smart cast
+                    // （编译错误：Smart cast to 'String' is impossible, because 'path' is a
+                    // public API property declared in different module）。
+                    // 必须先取到**局部** val 再判空 —— 局部 val 才可 smart cast。
+                    val detailPath = detail.path
+                    if (detailPath != null) {
                         Text(
-                            text = detail.path,
+                            text = detailPath,
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.onGlassSubtle,
                             modifier = Modifier.padding(top = 2.dp),
