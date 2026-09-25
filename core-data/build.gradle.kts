@@ -51,4 +51,10 @@ dependencies {
     // ViewModelFactory.kt（架构文档 §7.4）需要 ViewModel / ViewModelProvider
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
+
+    // JVM 单测（src/test/java，AGP 默认源集）。AGP 不自动提供 junit，必须显式声明；
+    // kotlin-test 提供断言 API。测试只覆盖纯函数（sampleSizeFor / classifyImportFailure），
+    // 不触任何 Android 类，因此无需 Robolectric / returnDefaultValues。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }

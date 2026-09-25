@@ -39,6 +39,9 @@ datastore = "1.1.7"
 # 端侧推理（仅 :core-engine 依赖）
 litertlm = "0.11.0"
 
+# 测试（JVM 单测；AGP 不自动提供 junit，需显式声明，见 [libraries] 注释）
+junit = "4.13.2"
+
 [libraries]
 
 # ---- AndroidX 基础 ----
@@ -81,6 +84,14 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 
 # ---- 端侧推理 ----
 litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertlm" }
+
+# ---- 测试（JVM 单测） ----
+# AGP 的 unit test task（testDebugUnitTest）默认走 JUnit4，但 AGP **不会**自动提供
+# junit 依赖 —— 在非空测试源集上不显式声明就会找不到测试框架。kotlin-test 提供
+# assertEquals / assertTrue 等断言 API（其 JVM 变体在 junit4 在场时解析到
+# kotlin-test-junit）。两者都不引入注解处理器，符合硬约束。
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
 
 [plugins]
 
