@@ -35,11 +35,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.rickeal.agent.core.agent.memory.MemorySection
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
-import com.rickeal.agent.core.design.GlassDialog
 import com.rickeal.agent.core.design.GlassIconButton
+import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassTopBar
+import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.data.LocalAppContainer
 import com.rickeal.agent.core.data.viewModelFactory
@@ -62,7 +63,7 @@ fun memoryViewModelFactory(container: com.rickeal.agent.core.data.AppContainer):
  * 记忆条目由模型经 memory_write 沉淀，也可由用户在此人工维护：
  *  - 查看：全部条目按更新时间排列（AgentMemory 侧 takeLast 淘汰，最新在后）；
  *  - 新增 / 编辑：同一弹窗，按标题幂等（与 memory_write 工具同语义）；
- *  - 删除：二次确认（GlassDialog），防误触。
+ *  - 删除：二次确认（LiquidDialog），防误触。
  */
 @Composable
 fun MemoryScreen(
@@ -161,15 +162,16 @@ fun MemoryScreen(
     }
 
     deleting?.let { target ->
-        GlassDialog(
+        LiquidDialog(
             onDismissRequest = { deleting = null },
             title = "删除记忆",
-            confirmLabel = "删除",
-            onConfirm = {
-                viewModel.remove(target.title)
-                deleting = null
+            actions = { dismiss ->
+                GlassButton(text = "取消", onClick = dismiss, material = GlassMaterial.THIN)
+                GlassButton(text = "删除", onClick = {
+                    viewModel.remove(target.title)
+                    dismiss()
+                })
             },
-            dismissLabel = "取消",
         ) {
             Text(
                 text = "确定删除「${target.title}」？该条目会从模型的长期记忆中移除，不可恢复。",
@@ -250,12 +252,19 @@ private fun MemoryEditDialog(
     var content by remember(initial) { mutableStateOf(initial?.content ?: "") }
     val valid = title.isNotBlank() && content.isNotBlank()
 
-    GlassDialog(
+    LiquidDialog(
         onDismissRequest = onDismiss,
         title = if (initial == null) "新增记忆" else "编辑记忆",
-        confirmLabel = "保存",
-        onConfirm = if (valid) ({ onConfirm(title.trim(), content.trim()) }) else null,
-        dismissLabel = "取消",
+        actions = { dismiss ->
+            GlassButton(text = "取消", onClick = dismiss, material = GlassMaterial.THIN)
+            // 旧 confirmLabel/onConfirm 的条件签名（valid 才可保存）映射为条件确认按钮。
+            if (valid) {
+                GlassButton(text = "保存", onClick = {
+                    onConfirm(title.trim(), content.trim())
+                    dismiss()
+                })
+            }
+        },
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             GlassTextField(

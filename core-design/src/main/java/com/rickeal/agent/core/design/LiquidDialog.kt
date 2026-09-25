@@ -39,8 +39,9 @@ import com.rickeal.agent.core.design.liquid.shadow.Shadow
 import kotlinx.coroutines.launch
 
 /**
- * 液态弹窗。与 [GlassDialog] **并存**（后者继续服务既有调用点），本组件是"真·液态"版：
- * 自绘 `drawBackdrop` 结构 + 进出场动画，观感与 LiquidBottomTabs / GlassSegmented 同源。
+ * 液态弹窗。本仓库**唯一**的对话框组件（Wave 9 需求 6A 起，旧 GlassDialog 门面
+ * 已删除、9 处调用点全部迁到这里）：自绘 `drawBackdrop` 结构 + 进出场动画，
+ * 观感与 LiquidBottomTabs / GlassSegmented 同源。
  *
  * ## 为什么必须自绘而不是复用 LiquidGlassSurface
  *
@@ -50,9 +51,17 @@ import kotlinx.coroutines.launch
  * ## 独立窗口 → 背景恒退化（关键约束）
  *
  * Dialog 跑在**独立窗口**里，主窗口录制的壁纸层在这里既对不齐也用不上。因此：
- *  - [LocalBackdrop] 提供 [EmptyBackdrop] —— 与 [GlassDialog] 完全一致的写法；
+ *  - [LocalBackdrop] 提供 [EmptyBackdrop] —— 旧 GlassDialog 完全一致的写法；
  *  - 背景恒为 [EmptyBackdrop] → **恒走退化路径**（采样不到壁纸，blur / lens 无意义）：
  *    常驻 THICK 底色 + accent 描边 + 常驻高光。不依赖 `enableBackdropBlur` 开关。
+ *
+ * ## 宽度与遮罩（scrim）
+ *
+ *  - `DialogProperties(usePlatformDefaultWidth = false)` 关掉平台默认宽度上限，
+ *    宽度完全自管：`fillMaxWidth()` + 左右各 20dp 边距。平台上限在平板 / 横屏 /
+ *    桌面形态会把弹窗压成一条窄带，与「玻璃是全屏级模态面」的定位不符；
+ *  - **不绘制自定义 scrim**：弹窗压暗靠系统 Dialog 自带的 dim。独立窗口里自绘
+ *    scrim 只能盖住一块与壁纸对不齐的纯色矩形，观感是"糊了一层灰"，比不用更差。
  *
  * ## 进出场动画（不能"瞬间消失"）
  *
@@ -73,6 +82,7 @@ import kotlinx.coroutines.launch
  * @param dismissOnClickOutside 点击弹窗外部是否关闭。返回键恒可关闭。
  * @param actions 动作区。**回调参数 `dismiss` 必须用它关闭**（它先播完出场动画再
  *   真正 dismiss），否则调用方直接翻转自己的显隐 state 会让弹窗"瞬间消失"。
+ *   动作区已被包进右对齐 Row（间距 10dp）—— 直接平铺按钮，不要再嵌套 Row。
  */
 @Composable
 fun LiquidDialog(
@@ -99,9 +109,10 @@ fun LiquidDialog(
     val appear = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
 
-    // 进场：0 → 1（略带弹性的 Default 规格）。
+    // 进场：0 → 1。弹簧规格从 LocalLiquidMotion 取（此前写死 Default，
+    // reduceMotion / 动效档位在这里会"失灵"——弹窗是高频模态入口，必须跟随主题）。
     LaunchedEffect(Unit) {
-        appear.animateTo(1f, LiquidMotion.floatSpring(LiquidMotion.Default))
+        appear.animateTo(1f, LiquidMotion.floatSpring(LocalLiquidMotion.current))
     }
 
     // 统一的关闭入口：先播完出场动画，再真正 dismiss。
@@ -120,7 +131,12 @@ fun LiquidDialog(
 
     Dialog(
         onDismissRequest = { requestDismiss() },
-        properties = DialogProperties(dismissOnClickOutside = dismissOnClickOutside),
+        // usePlatformDefaultWidth = false：宽度自管（fillMaxWidth + 左右 20dp），
+        // 摆脱平台默认宽度上限（平板/横屏会把弹窗压成窄带）。见 KDoc「宽度与遮罩」。
+        properties = DialogProperties(
+            dismissOnClickOutside = dismissOnClickOutside,
+            usePlatformDefaultWidth = false,
+        ),
     ) {
         // 独立窗口：主窗口的 LayerBackdrop 在这里既对不齐也用不上，
         // 降级为 EmptyBackdrop（见类 KDoc）。

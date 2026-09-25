@@ -44,7 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassButton
-import com.rickeal.agent.core.design.GlassDialog
+import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.GlassFab
@@ -218,12 +218,16 @@ fun ModelsScreen(
     // 一句没有信息量的「内存不足」——用户需要知道继续的代价是闪退和可能的会话丢失。
     val memoryGateBlock = state.memoryGateBlock
     if (memoryGateBlock != null) {
-        GlassDialog(
+        LiquidDialog(
             onDismissRequest = viewModel::dismissMemoryGate,
             title = "内存可能不足",
-            confirmLabel = "仍要加载",
-            onConfirm = viewModel::onLoadIgnoringMemoryGate,
-            dismissLabel = "先不加载",
+            actions = { dismiss ->
+                GlassButton(text = "先不加载", onClick = dismiss, material = GlassMaterial.THIN)
+                GlassButton(text = "仍要加载", onClick = {
+                    viewModel.onLoadIgnoringMemoryGate()
+                    dismiss()
+                })
+            },
             content = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -240,12 +244,16 @@ fun ModelsScreen(
     // 代价不是崩溃，而是下载中途失败、白白耗掉几 GB（用移动数据则流量照常扣）。
     val storageGateBlock = state.storageGateBlock
     if (storageGateBlock != null) {
-        GlassDialog(
+        LiquidDialog(
             onDismissRequest = viewModel::dismissStorageGate,
             title = "存储空间可能不够",
-            confirmLabel = "仍要下载",
-            onConfirm = viewModel::onDownloadIgnoringStorageGate,
-            dismissLabel = "先清理空间",
+            actions = { dismiss ->
+                GlassButton(text = "先清理空间", onClick = dismiss, material = GlassMaterial.THIN)
+                GlassButton(text = "仍要下载", onClick = {
+                    viewModel.onDownloadIgnoringStorageGate()
+                    dismiss()
+                })
+            },
             content = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -262,12 +270,16 @@ fun ModelsScreen(
     val meteredUrl = state.meteredConfirmUrl
     if (meteredUrl != null) {
         val meteredPreset = ModelPresets.findByUrl(meteredUrl)
-        GlassDialog(
+        LiquidDialog(
             onDismissRequest = viewModel::dismissMeteredConfirm,
             title = "正在使用移动数据",
-            confirmLabel = "仍然下载",
-            onConfirm = viewModel::confirmMeteredDownload,
-            dismissLabel = "先用 Wi-Fi",
+            actions = { dismiss ->
+                GlassButton(text = "先用 Wi-Fi", onClick = dismiss, material = GlassMaterial.THIN)
+                GlassButton(text = "仍然下载", onClick = {
+                    viewModel.confirmMeteredDownload()
+                    dismiss()
+                })
+            },
             content = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -319,7 +331,7 @@ fun ModelsScreen(
 /**
  * Gemma 授权闸门的确认框：讲清「为哪个模型同意哪份条款」，并给出官方原文入口。
  *
- * 用 [GlassDialog] 而不是整屏页面，是为了和本页已有的三个闸门（内存 / 存储 / 流量）
+ * 用 [LiquidDialog] 而不是整屏页面，是为了和本页已有的三个闸门（内存 / 存储 / 流量）
  * 保持同一种交互形态 —— 用户在这里已经习惯了「被拦下 → 看清代价 → 决定」。
  *
  * 正文来自 [LegalDocuments]（`:core-data`），与首启引导、设置页回看用的是**同一份文本**；
@@ -339,15 +351,18 @@ private fun GemmaTermsGateDialog(
     // 与那边「稍后再说」同一口径）。
     val haptics = rememberGlassHaptics()
 
-    GlassDialog(
+    LiquidDialog(
         onDismissRequest = onDismiss,
         title = LegalDocuments.GEMMA_TERMS_TITLE,
-        confirmLabel = "同意并继续",
-        onConfirm = {
-            haptics.confirm()
-            onAccept()
+        actions = { dismiss ->
+            // 「暂不」= 推迟决定，不发拒绝触感（与 ConsentScreens「稍后再说」同一口径）。
+            GlassButton(text = "暂不", onClick = dismiss, material = GlassMaterial.THIN)
+            GlassButton(text = "同意并继续", onClick = {
+                haptics.confirm()
+                onAccept()
+                dismiss()
+            })
         },
-        dismissLabel = "暂不",
         content = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(

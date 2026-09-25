@@ -18,15 +18,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
-import com.rickeal.agent.core.design.GlassDialog
 import com.rickeal.agent.core.design.GlassMaterial
+import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 
 /**
  * 列表区最大高度。
  *
- * 限高是**防御性**的：`GlassDialog` 底层是 `androidx.compose.ui.window.Dialog`，
+ * 限高是**防御性**的：`LiquidDialog` 底层是 `androidx.compose.ui.window.Dialog`，
  * 它给 content 的高度约束是否无界取决于平台实现，而 foundation 的滚动容器在
  * `maxHeight == Infinity` 时会抛 `IllegalStateException: Vertically scrollable component
  * was measured with an infinity maximum height constraints` —— 编译期看不出来。
@@ -55,10 +55,12 @@ fun RecommendedModelDialog(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
 
-    GlassDialog(
+    LiquidDialog(
         onDismissRequest = onDismiss,
         title = "选择要下载的模型",
-        dismissLabel = "关闭",
+        actions = { dismiss ->
+            GlassButton(text = "关闭", onClick = dismiss, material = GlassMaterial.THIN)
+        },
         content = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(

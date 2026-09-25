@@ -10,9 +10,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassChip
-import com.rickeal.agent.core.design.GlassDialog
+import com.rickeal.agent.core.design.GlassMaterial
+import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.model.ModelCapabilities
 
@@ -29,12 +31,16 @@ fun ModelImportDialog(
     onConfirm: () -> Unit,
 ) {
     val colors = LocalGlassColors.current
-    GlassDialog(
+    LiquidDialog(
         onDismissRequest = onDismiss,
         title = "导入模型",
-        confirmLabel = "导入",
-        onConfirm = onConfirm,
-        dismissLabel = "取消",
+        actions = { dismiss ->
+            GlassButton(text = "取消", onClick = dismiss, material = GlassMaterial.THIN)
+            GlassButton(text = "导入", onClick = {
+                onConfirm()
+                dismiss()
+            })
+        },
     ) {
         Column {
             Text(

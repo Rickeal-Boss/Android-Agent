@@ -31,9 +31,9 @@ import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassChip
-import com.rickeal.agent.core.design.GlassDialog
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.GlassSegmented
+import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.data.DeviceCapability
@@ -232,15 +232,17 @@ fun ModelCard(
 
     if (confirmDelete) {
         var deleteFileToo by remember { mutableStateOf(false) }
-        GlassDialog(
+        LiquidDialog(
             onDismissRequest = { confirmDelete = false },
             title = "删除模型",
-            confirmLabel = "删除",
-            onConfirm = {
-                confirmDelete = false
-                onDelete(deleteFileToo)
+            actions = { dismiss ->
+                GlassButton(text = "取消", onClick = dismiss, material = GlassMaterial.THIN)
+                GlassButton(text = "删除", onClick = {
+                    // 业务动作先行，再走动画式关闭（dismiss → 出场动画 → onDismissRequest 清状态）。
+                    onDelete(deleteFileToo)
+                    dismiss()
+                })
             },
-            dismissLabel = "取消",
         ) {
             Column {
                 Text(

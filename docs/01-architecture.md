@@ -4556,15 +4556,23 @@ fun GlassChip(
 )
 
 @Composable
-fun GlassDialog(
+fun LiquidDialog(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     title: String? = null,
-    confirmLabel: String? = null,
-    onConfirm: (() -> Unit)? = null,
-    dismissLabel: String? = null,
+    subtitle: String? = null,
+    icon: ImageVector? = null,
+    material: GlassMaterial = GlassMaterial.THICK,
+    dismissOnClickOutside: Boolean = true,
+    actions: (@Composable (dismiss: () -> Unit) -> Unit)? = null,
     content: @Composable () -> Unit,
 )
+
+// Wave 9 需求 6A：旧 GlassDialog 门面（confirmLabel/onConfirm/dismissLabel 签名）
+// 已删除，9 处调用点全部迁移到上面的 LiquidDialog。迁移映射：取消按钮 = dismiss
+// 参数（保住出场动画），确认按钮 = { 业务回调; dismiss() }（业务先行）。
+// 弹窗窗口 usePlatformDefaultWidth=false，宽度自管（fillMaxWidth + 左右 20dp）；
+// 不绘制自定义 scrim（独立窗口与主窗口壁纸对不齐，压暗交给系统 dim）。
 
 /** 思考中的三点呼吸指示器。 */
 @Composable
