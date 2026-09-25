@@ -4990,7 +4990,7 @@ dependencies {
 | B16 | `core-design/.../design/GlassTextField.kt` | 输入框 |
 | B17 | `core-design/.../design/GlassSwitch.kt` | 开关 |
 | B18 | `core-design/.../design/GlassChip.kt` | 标签 |
-| B19 | `core-design/.../design/GlassDialog.kt` | 对话框 |
+| B19 | `core-design/.../design/LiquidDialog.kt` | 液态对话框（唯一；Wave 9 起 GlassDialog 门面已退役，9 处调用点迁移至此） |
 | B20 | `core-design/.../design/GlassIndicators.kt` | GlassThinkingIndicator / GlassEmptyState（含 GlassEmptyStateAction） |
 | B21 | `core-design/.../design/GlassSettingRow.kt` | 设置行 |
 | B22 | `core-design/.../design/WindowSizeClass.kt` | 自适应断点 |

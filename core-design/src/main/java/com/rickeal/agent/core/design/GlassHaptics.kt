@@ -51,8 +51,8 @@ enum class GlassHapticLevel {
  *    - `GestureEnd`(13) / `Confirm`(16) / `Reject`(17)：**API 30**，minSdk 31 全版本必响。
  *    - `SegmentTick`(26) / `ToggleOn`(21) / `ToggleOff`(22)：**API 34**，Android 12/13
  *      （API 31–33）上**静默**。
- *    - LIGHT 档的 `TextHandleMove`(29) 与 STRONG 档的 `ContextClick`(23) / `LongPress`(3)
- *      都低于 31 ⇒ **这两档在 Android 12/13 上也能响**，反而是 STANDARD 的
+ *    - LIGHT 档的 `TextHandleMove`(9，API 27) 与 STRONG 档的 `ContextClick`(6，API 23) /
+ *      `LongPress`(0，API 1) 都低于 31 ⇒ **这两档在 Android 12/13 上也能响**，反而是 STANDARD 的
  *      SegmentTick 有静默窗口 —— 这是 LIGHT/STRONG 在旧机上的隐藏收益，不是缺陷。
  *    ⇒ 看到"12 上开关不震"不要以为是接线漏了，那是平台常量未定义。
  * 4. **只能在**用户动作位点**发**（Wave 6c 确立，与 [GlassSegmented] /

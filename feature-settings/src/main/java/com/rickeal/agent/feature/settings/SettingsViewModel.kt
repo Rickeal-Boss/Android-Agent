@@ -72,6 +72,10 @@ class SettingsViewModel(
      */
     fun onGenerationNotificationChange(enabled: Boolean) {
         _uiState.update { it.copy(generationNotification = enabled) }
+        if (!enabled) {
+            // 关闭即撤（审查 P2-2）：当次生成还没到终态时，通知不该继续挂到终态才消失。
+            container.generationNotifier.stop()
+        }
         viewModelScope.launch { container.settingsRepository.setGenerationNotification(enabled) }
     }
 

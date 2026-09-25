@@ -47,6 +47,10 @@ class LiquidAgentApplication : Application() {
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(channel)
         }
+        // 进程死亡兜底（审查 P2-1）：冷启动时界面上不可能有合法的「生成中」，
+        // 任何残留通知都是脏数据 —— 且 ongoing 通知在 Android 13 及以下用户划不掉，
+        // 不能指望用户手动清理。stop() 幂等，无残留时 no-op。
+        container.generationNotifier.stop()
         applicationScope.launch {
             // 绝不裸吞：`bootstrap()` 内部虽然已把三个仓库各自隔离（见 AppContainer），
             // 但它自己并不覆盖「三个都成功、却在别处炸了」以及协程被取消之外的异常。

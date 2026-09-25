@@ -42,7 +42,7 @@ import androidx.compose.ui.unit.dp
  * ## ⚠️ 同档材质**嵌套**时，层次信号来自描边 / 高光，不是底色
  *
  * ThinkingBlock 抬到 THIN 后，它外层那条 AI 气泡也是 THIN（气泡是
- * `isUser ? REGULAR : THIN`）⇒ 两者 `backgroundAlpha` **完全相同**（0.18），
+ * `isUser ? REGULAR : THIN`）⇒ 两者 `backgroundAlpha` **完全相同**（0.21），
  * 底色不提供任何层次。接缝靠的是 `borderAlpha` / `specularAlpha` —— 这俩才是真正的
  * 档位信号（THIN 0.44 / 0.28 → REGULAR 0.58 / 0.36，逐档递增）。
  *

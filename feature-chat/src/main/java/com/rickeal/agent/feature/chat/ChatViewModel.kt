@@ -212,10 +212,11 @@ class ChatViewModel(
         runStartedAtMillis = null
         firstTokenAtMillis = null
         _streaming.value = StreamingState(role = role, isStreaming = isStreaming)
-        // 终态收口（Wave 9 需求 5）：role=null 且不再流式 = run 结束/取消/失败，
-        // 通知必须撤掉，不能让「端侧生成中」残留在状态栏。
-        // 放在 resetStreaming 里而不是散在各调用点：全仓 4 处终态调用（onNewConversation、
-        // TERMINATED、CANCELLED、run 异常收尾）语义完全一致，散写必漏；stop() 本身幂等。
+        // 终态收口（Wave 9 需求 5）：role=null 且不再流式 = **常规终态**（完成 /
+        // onNewConversation / TERMINATED / CANCELLED），通知必须撤掉，不能让
+        // 「端侧生成中」残留在状态栏。注意失败/异常/ViewModel 清理**不走**这条
+        // 条件（Failed 分支走 resetStreamingText；collect 的 onFailure 与 onCleared
+        // 不经 resetStreaming）—— 由各自的显式 stop() 覆盖（审查 P1-1 补的 5 处）。
         // run 启动路径（role=MODEL, isStreaming=true）不经过这个分支，不会误撤新通知。
         if (role == null && !isStreaming) {
             container.generationNotifier.stop()

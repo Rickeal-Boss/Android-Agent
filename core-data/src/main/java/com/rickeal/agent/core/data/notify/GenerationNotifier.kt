@@ -39,7 +39,9 @@ interface GenerationNotifier {
  *
  * 同一个 `NOTIFICATION_ID` 反复 `notify()` 是**覆盖**语义：通知栏上始终只有一条，
  * 内容随速度刷新 —— 这就是"吐字速度"的实现方式，不需要前台服务
- * （推理在进程内进行，进程活着通知就有效；进程死了通知残留可由用户划掉）。
+ * （推理在进程内进行，进程活着通知就有效；进程死亡后的残留由
+ * `LiquidAgentApplication.onCreate` 的兜底 `stop()` 清理 —— ongoing 通知在
+ * Android 13 及以下用户划不掉，不能依赖用户手动清理）。
  *
  * @param smallIconRes 状态栏小图标。**必须由 app 层传入**（core-data 不能引 app 的 R），
  *   状态栏小图标要求纯白 + alpha 的单色矢量。
