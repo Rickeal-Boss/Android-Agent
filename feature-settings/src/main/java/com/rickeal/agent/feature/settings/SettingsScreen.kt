@@ -164,6 +164,41 @@ fun SettingsScreen(
                             },
                         )
                     }
+                    // 触感反馈强度（Wave 9）：四档分段，写回 ThemeState.hapticLevel（String）。
+                    // onThemeChange 既有、零改动；app 层 valueOf 解析失败回退 STANDARD。
+                    // 副文案点明「系统开关是总闸」——这里选什么，系统关了都不震，
+                    // 免得用户把"App 选了标准却没震"当成 bug 报上来。
+                    Text(
+                        text = "触感反馈强度",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onGlass,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                    Text(
+                        text = "系统设置里关闭触感反馈时，这里选任何档位都不会震动",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                    )
+                    GlassSegmented(
+                        items = listOf("关", "轻", "标准", "强"),
+                        selectedIndex = when (state.theme.hapticLevel) {
+                            "OFF" -> 0
+                            "LIGHT" -> 1
+                            "STRONG" -> 3
+                            // 脏值（枚举改名 / 老版本残留）归到标准档，与 app 层回退口径一致。
+                            else -> 2
+                        },
+                        onSelected = { index ->
+                            val level = when (index) {
+                                0 -> "OFF"
+                                1 -> "LIGHT"
+                                2 -> "STANDARD"
+                                else -> "STRONG"
+                            }
+                            viewModel.onThemeChange(state.theme.copy(hapticLevel = level))
+                        },
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

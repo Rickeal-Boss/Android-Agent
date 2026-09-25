@@ -24,4 +24,13 @@ data class ThemeState(
     val reduceMotion: Boolean = false,
     val glassIntensity: Float = 1f,
     val enableNoise: Boolean = true,
+    /**
+     * 触感反馈强度档位名（"OFF"/"LIGHT"/"STANDARD"/"STRONG"）。
+     *
+     * 存 **String** 不存枚举：:core-data 不能 import :core-design（依赖方向倒置，
+     * 见架构 §1.4）—— 与 [darkMode] 不同，DarkMode 定义在 core-data 侧所以能用枚举，
+     * 而 GlassHapticLevel 定义在 core-design 侧，这里只能拿名字，由 app 层
+     * `GlassHapticLevel.valueOf(...)` 还原（解析失败回退 STANDARD）。
+     */
+    val hapticLevel: String = "STANDARD",
 )

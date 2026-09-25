@@ -20,6 +20,13 @@ data class GlassConfig(
     val reduceMotion: Boolean = false,
     /** 全局材质强度 0.5~1.5，设置页可调 */
     val intensity: Float = 1f,
+    /**
+     * 触感强度档位（[GlassHapticLevel]），设置页「触感反馈强度」驱动。
+     * 默认 STANDARD：保证尚未接线时行为与旧版完全一致 —— 所有
+     * `rememberGlassHaptics()` 调用点零改动。系统「触感反馈」开关是总闸，
+     * 这里的档位只在总闸开启时生效 —— 见 [GlassHaptics] KDoc。
+     */
+    val hapticLevel: GlassHapticLevel = GlassHapticLevel.STANDARD,
 )
 
 val LocalGlassTokens: ProvidableCompositionLocal<GlassTokens> =

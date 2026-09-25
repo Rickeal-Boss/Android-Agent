@@ -31,6 +31,9 @@ class SettingsRepository(private val context: Context) {
         val GLASS_INTENSITY = floatPreferencesKey("glass_intensity")
         val ENABLE_NOISE = booleanPreferencesKey("enable_noise")
         val ALLOW_METERED_DOWNLOAD = booleanPreferencesKey("allow_metered_download")
+        // 触感强度：存 String（枚举名），因为 GlassHapticLevel 定义在 :core-design，
+        // :core-data 不能 import 它（依赖方向倒置）。解析失败一律回退 STANDARD。
+        val HAPTIC_LEVEL = stringPreferencesKey("haptic_level")
 
         // ---- 首启合规：引导与条款接受 ----
         // 三项刻意**分开**存：应用服务条款与 Gemma 授权条款的法律主体不同
@@ -62,6 +65,8 @@ class SettingsRepository(private val context: Context) {
                 reduceMotion = prefs[Keys.REDUCE_MOTION] ?: false,
                 glassIntensity = prefs[Keys.GLASS_INTENSITY] ?: 1f,
                 enableNoise = prefs[Keys.ENABLE_NOISE] ?: true,
+                // 枚举名非法（改名 / 脏数据 / 老版本）时回退 STANDARD，不让坏值毒化整个 flow。
+                hapticLevel = prefs[Keys.HAPTIC_LEVEL] ?: "STANDARD",
             )
         }
 
@@ -182,6 +187,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.REDUCE_MOTION] = state.reduceMotion
             prefs[Keys.GLASS_INTENSITY] = state.glassIntensity
             prefs[Keys.ENABLE_NOISE] = state.enableNoise
+            prefs[Keys.HAPTIC_LEVEL] = state.hapticLevel
         }
     }
 

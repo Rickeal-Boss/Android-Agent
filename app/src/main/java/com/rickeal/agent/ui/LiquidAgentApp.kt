@@ -67,6 +67,7 @@ import com.rickeal.agent.core.data.LocalAppContainer
 import com.rickeal.agent.core.data.ThemeState
 import com.rickeal.agent.core.design.GlassBackdropBlurOverride
 import com.rickeal.agent.core.design.GlassConfig
+import com.rickeal.agent.core.design.GlassHapticLevel
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LiquidAgentTheme
 import com.rickeal.agent.core.design.LiquidBottomTabs
@@ -170,6 +171,10 @@ fun LiquidAgentApp() {
         enableSpecular = true,
         reduceMotion = themeState.reduceMotion,
         intensity = themeState.glassIntensity,
+        // 触感档位：ThemeState 存的是 String（core-data 不能 import core-design 的枚举），
+        // 在这里还原。脏值 / 枚举改名 / 老版本一律回退 STANDARD，不让坏值毒化整个设置。
+        hapticLevel = runCatching { GlassHapticLevel.valueOf(themeState.hapticLevel) }
+            .getOrDefault(GlassHapticLevel.STANDARD),
     )
 
     LiquidAgentTheme(darkTheme = darkTheme, glassConfig = glassConfig) {
