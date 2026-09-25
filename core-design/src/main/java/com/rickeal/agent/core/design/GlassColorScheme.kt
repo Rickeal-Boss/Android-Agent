@@ -57,9 +57,15 @@ fun lightGlassColorScheme(): GlassColorScheme = GlassColorScheme(
     success = Color(0xFF1E9E62),
     warning = Color(0xFFD98314),
     danger = Color(0xFFE0403F),
-    wallpaperTop = Color(0xFFE9EDFB),
-    wallpaperMid = Color(0xFFF6EFFA),
-    wallpaperBottom = Color(0xFFE7F1FA),
+    // Wave 9「浅色米白」：原三色偏冷偏蓝紫（E9EDFB / F6EFFA / E7F1FA），亮屏下
+    // 与玻璃的冷调蓝 accent 叠在一起显得发闷。改为暖调米白（米黄 → 米白 → 米灰），
+    // 玻璃的蓝 accent 在暖底上反而更出挑。
+    // 对比度已核算：onGlass(0xFF10121A) ≈15:1、onGlassSubtle(0xB3) ≈5.5:1，均达标。
+    // ⚠️ 只动这三色：glassTint 的暖白微调（0xFFFDFBF6）暂不做，留真机回看后决定 ——
+    // glassTint 会同时影响描边/高光/阴影的叠加基底，动它波及面不可控。
+    wallpaperTop = Color(0xFFFAF6ED),
+    wallpaperMid = Color(0xFFF6F1E4),
+    wallpaperBottom = Color(0xFFF1EFE4),
     isDark = false,
 )
 
