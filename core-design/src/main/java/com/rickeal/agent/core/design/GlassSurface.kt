@@ -264,7 +264,11 @@ fun GlassBubble(
             if (isUser) {
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
+                        // matchParentSize（BoxScope 专用）而非 fillMaxSize：
+                        // fillMaxSize 会把 wrap-content 的父 Box 撑到 widthIn(max) 上限，
+                        // 用户发「好」也是 340dp 满宽气泡（三线审查 UI#1，测量语义已独立复核）；
+                        // matchParentSize 不参与父 Box 的子测量 pass，父 Box 依内容定尺寸后铺满。
+                        .matchParentSize()
                         .background(
                             Brush.verticalGradient(
                                 listOf(

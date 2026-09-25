@@ -17,7 +17,7 @@ UI 采用 iOS 27 / iPadOS 27 的 Liquid Glass 视觉语言。
 | 依赖策略 | 零注解处理器：无 KSP / Room / Hilt / Koin / Nav3 / Retrofit / Coil | 本地无 JDK/SDK 无法预演，CI 是唯一验证通道，依赖越少编译不确定性越低 |
 | 持久化 | DataStore Preferences + JSON 文件（手写 JsonFileStore） | 替代 Room，规避 KSP |
 | DI | 手写 `AppContainer` + `LocalAppContainer` | 替代 Hilt |
-| UI | 自研 Liquid Glass 设计系统（`:core-design`，零项目依赖） | 用户点名的 `Kyant0/AndroidLiquidGlass` 走 JitPack 且 API 面无法核对，引入等于引入编译不确定性；自研可完全控制质感与降级 |
+| UI | Liquid Glass 设计系统（`:core-design`，零项目依赖）：引擎原语**移植自** [`Kyant0/AndroidLiquidGlass`](https://github.com/Kyant0/AndroidLiquidGlass)（Apache-2.0，见根目录 NOTICE），材质分级/中文排版/业务组件为增量自研 | 直接依赖上游走 JitPack 且 API 面无法核对，引入等于引入编译不确定性；移植后自持可完全控制质感与降级 |
 | 玻璃实现 | 程序化光斑伪模糊（默认）+ 可选真实 `RenderEffect` 背景模糊（API 31+） | 默认路径零风险，真实模糊按需开启且可一键摘除 |
 
 ## 架构（9 个扁平模块）

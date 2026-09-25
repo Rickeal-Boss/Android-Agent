@@ -119,8 +119,6 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | Android SDK | `compileSdk 36`，AGP 会自动下载缺失组件 |
 | Gradle | **用仓库自带的 wrapper**，不要用系统 gradle |
 
-> JDK 口径消歧：CI 工具链是 JDK 21，字节码目标 17（jvmTarget 17 是正常组合，不是版本冲突）。
-
 ### 构建
 
 ```bash
@@ -133,13 +131,6 @@ cd Android-Agent
 # 产物
 # app/build/outputs/apk/debug/app-debug.apk
 ```
-
-> **没有 Gradle wrapper 怎么办？** 本仓库可能不提交 `gradle/wrapper/gradle-wrapper.properties`
-> （见 [`docs/01-architecture.md`](docs/01-architecture.md) §1.2）。此时改用系统 Gradle **9.7.1**：
-> ```bash
-> gradle :app:assembleDebug
-> ```
-> CI 侧的等价处理见 [`docs/02-ci.md`](docs/02-ci.md) —— 工作流会自动探测并回退，不会因此失败。
 
 安装到设备：
 
@@ -315,8 +306,8 @@ Android-Agent/
 
 - [`google-ai-edge/gallery`](https://github.com/google-ai-edge/gallery) —— 端侧模型部署的能力面参考与 LiteRT-LM 用法基线。
 - [Google LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM)（`com.google.ai.edge.litertlm`）—— 本项目采用的核心推理引擎。
-- [`Kyant0/AndroidLiquidGlass`](https://github.com/Kyant0/AndroidLiquidGlass) —— Liquid Glass 视觉语言的灵感来源。
-  UI 设计灵感归功于作者；**本项目未直接依赖该库**，而是基于其设计思想在 `core/design` 中自研实现。若你希望直接使用原库，只需替换 `core:design` 中的 `GlassSurface` 实现即可，上层 API 保持不变。
+- [`Kyant0/AndroidLiquidGlass`](https://github.com/Kyant0/AndroidLiquidGlass) —— `core/design/liquid/` 的**移植与深度改造基底**（Apache-2.0，见根目录 [`NOTICE`](NOTICE)）。
+  引擎原语（backdrop 录制 / lens 折射 / InteractiveHighlight / DampedDragAnimation 等）移植自该库并保留其版权头；材质分级体系、中文排版适配与业务组件在其上增量实现。此前"自研"的表述不准确，已更正。
 - [`android/nowinandroid`](https://github.com/android/nowinandroid) —— 构建配置与 CI 实践参考。
 - 模型提供方：Google（Gemma 3n / Gemma 3）、Qwen 团队（Qwen 3），以及 Hugging Face 上做端侧转换的 [`litert-community`](https://huggingface.co/litert-community)。
 

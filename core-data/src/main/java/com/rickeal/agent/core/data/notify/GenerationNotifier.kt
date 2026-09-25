@@ -29,8 +29,9 @@ interface GenerationNotifier {
     /** 撤掉通知（run 终态 / 会话销毁）。幂等：没有在显示的通知时调用是无害 no-op。 */
     fun stop()
 
-    /** 总开关。关闭时 [onTick] 必须是纯 no-op（连时间戳都不更新）。 */
-    @Volatile
+    /** 总开关。关闭时 [onTick] 必须是纯 no-op（连时间戳都不更新）。
+     *  注意：`@Volatile` 只能标在**有 backing field 的实现属性**上（接口属性没有，
+     *  标在接口上会编译红 —— R3 的教训），实现类负责跨线程可见性。 */
     var enabled: Boolean
 }
 

@@ -23,9 +23,6 @@ java -version        # 应包含 21
 #    app/build/outputs/apk/debug/app-debug.apk
 ```
 
-> **没有 Gradle wrapper？** 若仓库未提交 `gradle/wrapper/gradle-wrapper.properties`，
-> 改用系统 Gradle **9.7.1** 执行 `gradle :app:assembleDebug`。CI 会自动探测并回退，不受影响。
->
 > 没有本地 JDK / SDK 也能参与：直接开 PR，GitHub Actions 的 **Build** 工作流会给出生死结论。
 > CI 设计参见 [`docs/02-ci.md`](docs/02-ci.md)。
 
