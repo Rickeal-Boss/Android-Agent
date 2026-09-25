@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -413,6 +414,19 @@ fun LiquidBottomTabs(
             val haptics = rememberGlassHaptics()
             val currentHaptics by rememberUpdatedState(haptics)
 
+            // ⚠️ holder 回填（2026-09-26 按压高光复活）：interactiveHighlight 声明在
+            // DDA **之后**（其 position lambda 读 dampedDragAnimation.value —— 二者
+            // 互相前向引用，谁上移谁就编译红），而 DDA 的 onDragStarted / onDragStopped
+            // 闭包创建于 DDA 构造处、需要驱动按压高光 ⇒ 用本 holder + SideEffect 回填。
+            //
+            // 为什么**不违反** DampedDragAnimation.canStartDrag KDoc 对"remember{}
+            // 之后用 holder 回填实例"的批判：那条批判针对的是 canStartDrag 的
+            // **组合期求值**场景 —— 若门禁闭包在组合期就要读实例，就必须带"首帧
+            // holder 尚为 null"的分支，等于把时序炸弹埋进正常路径。此处 setPressed
+            // 只在**手势事件回调**里调用：触摸事件派发时组合必已完成至少一帧，
+            // SideEffect 必已回填，holder 不可能还是 null（`?.` 只是防御性写法）。
+            val highlightPressDriver = remember { mutableStateOf<InteractiveHighlight?>(null) }
+
             val dampedDragAnimation = remember(animationScope) {
                 DampedDragAnimation(
                     animationScope = animationScope,
@@ -504,6 +518,12 @@ fun LiquidBottomTabs(
                         // （真机录屏 6.060s/6.193s 帧"首尾乱飘"的来源之一）。
                         dragAccumPx = 0f
                         dragStartValue = this.value
+                        // 按压高光（白色径向）点亮：手势源被静态宿主独占命中后，胶囊上的
+                        // InteractiveHighlight.gestureModifier 收不到指针事件，改由门禁
+                        // 通过路径驱动（与 DDA 自身 setPressed 双路幂等，同目标 animateTo）。
+                        // 只有门禁通过（按在胶囊格）才走到这里 ⇒ 与 Phase 2d 之前的
+                        // "只有按在胶囊格才亮高光"语义一致。
+                        highlightPressDriver.value?.setPressed(true)
                     },
                     onDragStopped = {
                         // 松手：四舍五入到最近页签，内部态收敛，面板拉伸弹回 0。
@@ -540,6 +560,10 @@ fun LiquidBottomTabs(
                                 ) { value, _ -> panelOffsetPx.value = value }
                             }
                         }
+                        // 按压高光归位：onDragStopped 在手势循环的 finally 里执行，协程取消
+                        // 路径（旋转 / 导航 / 页面销毁）也会走到 —— 防御性归位，无害。
+                        //（让位路径不存在：本控件 canYieldToParent = false。）
+                        highlightPressDriver.value?.setPressed(false)
                     },
                     onDrag = { _, dragAmount ->
                         // 面板拉伸：**同步累加**（当帧完成），不再每帧 launch。
@@ -558,8 +582,8 @@ fun LiquidBottomTabs(
                 )
             }
 
-            // 外部选中态变化（导航返回 / 程序化切换）→ 写回内部态。
-            // ⚠️ 2026-09-24 Wave 6b 门禁：**拖拽进行中绝不回写**。拖拽期手势（snapValue）
+            // ⚠️ 外部选中态变化（导航返回 / 程序化切换）→ 写回内部态。
+            // 2026-09-24 Wave 6b 门禁：**拖拽进行中绝不回写**。拖拽期手势（snapValue）
             // 是胶囊位置的唯一事实来源；导航回压（navigateTop 落地晚于手势开始）此刻写
             // currentIndex，会经收集器触发一次 animateToValue 旧页签，与 snapValue 逐帧
             // 互搏 —— 真机录屏实证的"胶囊两端自激振荡"（手指按住对话、胶囊在对话/设置
@@ -607,6 +631,10 @@ fun LiquidBottomTabs(
                     },
                 )
             }
+
+            // holder 回填：组合提交后把实例交给手势回调使用（为什么合法见声明处 KDoc）。
+            // 必须在 interactiveHighlight 声明**之后**（前向引用会编译红）。
+            SideEffect { highlightPressDriver.value = interactiveHighlight }
 
             // 拖动期可见行高亮跟随**胶囊当前位置**（而不是 currentIndex）。
             // ⚠️ **本波有意引入的拖动期视觉变更**（**不属于**"行为零变化"范畴 —— 勿误判为

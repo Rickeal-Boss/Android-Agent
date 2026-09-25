@@ -244,7 +244,19 @@ class InteractiveHighlight(
         }
     }
 
-    private fun setPressed(pressed: Boolean) {
+    /**
+     * 驱动按压进度（2026-09-26 由 private 公开）：供"手势源被静态宿主独占命中"的
+     * 调用点从**门禁通过路径**驱动按压进度 —— 典型是 LiquidBottomTabs：compose-ui
+     * 1.10.3 `InnerNodeCoordinator.hitTestChild` 的兄弟命中独占语义下，胶囊上的
+     * [gestureModifier] 收不到指针事件，按压高光改由 DampedDragAnimation 的
+     * onDragStarted / onDragStopped 回调驱动（见 LiquidBottomTabs 的
+     * `highlightPressDriver`）。
+     *
+     * 与 [gestureModifier] 的驱动**幂等**：两边都是对同一个 pressAnimatable
+     * `animateTo` 同一目标值（按压 1f / 归位 0f），谁先谁后、单路还是双路都收敛到
+     * 同一状态，不会打架。其余 7 个消费点不受影响（纯增量公开，函数体未动）。
+     */
+    fun setPressed(pressed: Boolean) {
         animationScope.launch {
             pressAnimatable.animateTo(
                 targetValue = if (pressed) 1f else 0f,
