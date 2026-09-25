@@ -210,22 +210,26 @@ private val LocalLiquidBottomTabScale = staticCompositionLocalOf<(Boolean) -> Fl
  * 而本组件的 `interactiveHighlight` 是**单实例**（见下方 `remember(animationScope)`）——
  * 第 3 层胶囊的 `gestureModifier`（见胶囊 Modifier 链）驱动的就是**同一个** `pressAnimatable`。
  * 因此它驱动的按压进度是**全层共享**的：
- *  - **第 1 层（可见玻璃条）必须保留 `.then(interactiveHighlight.modifier)`**：
- *    它绘制的白色径向高光（`InteractiveHighlight.kt:109-128`，半径 `min(w,h)*0.9`，
- *    圆心 = 胶囊中心 `position(nodeSize, touchOffset)`）是**可见效果**，删掉即真实视觉变更，
- *    违反「零视觉风险」裁决。
- *  - **第 2 层（回显行）那一处已删除**：该层 `.alpha(0f)`，屏幕上本就不可见，删它是
- *    **真正的零视觉变更**。附带收益：`nodeSize` 从「64dp / 56dp 两节点交替写同一个 state」
- *    变成**单写者**（只剩第 1 层），消除了状态抖动 —— 这才是这处改动真正的价值。
+ *  - **第 1 层（可见玻璃条）保留 `.then(interactiveHighlight.modifier)`**：
+ *    它绘制的白色径向高光是**可见效果**，删掉即真实视觉变更，违反「零视觉风险」裁决。
+ *  - **第 2 层（回显行）也已恢复挂载（2026-09-26 回归上游 L221）**：Wave 10 曾以
+ *    「该层 alpha(0f) 不可见，删掉是零视觉变更」为由删除——那个论证是**错的**：
+ *    `.alpha(0f)` 挂在 `layerBackdrop` 外层，只影响本节点合成到父级；`layerBackdrop`
+ *    录制的是整条下游绘制链，**高光照样被录进 tabsBackdrop**，胶囊折射里能看到它
+ *    跟着胶囊滑动（上游胶囊折射内容 = 壁纸 + 染色页签 + 滑动光晕，删掉就少一环，
+ *    用户真机反馈「滑动时的高光晕移动缺失」）。当初真正的动机——`nodeSize` 被两个
+ *    尺寸不同的节点交替写——已从根上消除：InteractiveHighlight 改用 DrawScope 的
+ *    `size`（上游同款），`onSizeChanged` 缓存整个删除，多节点挂载天然安全。
  *
  * 📌 曾误判为「第 1 / 2 层 pressProgress 恒为 0 的死代码」：错在把 `pressAnimatable`
- * 当成按节点隔离的状态；它是**单实例共享**的。第 1 层的 modifier 是活的，不要再删。
+ * 当成按节点隔离的状态；它是**单实例共享**的。两层的 modifier 都是活的，不要再删。
  *
  * ## 与 Kyant0 原版的 API 差异（全部是等价替换，结构不变）
  *
- *  - 原版 `backdrop: Backdrop` 入参 → 读 [LocalBackdrop]（GlassScaffold 在最外层
- *    提供的壁纸录制层），并尊重 [GlassConfig.enableBackdropBlur]（UI-07 性能开关：
- *    用户关掉背景模糊后，这里退化为底色 + 高光，与 `liquidGlass` 门面行为一致）。
+ *  - 原版 `backdrop: Backdrop` 入参 → 读 [LocalBackdrop]（宿主提供的背景录制层；
+ *    本组件不知道也不关心背景是壁纸还是页面内容），并尊重 [GlassConfig.enableBackdropBlur]
+ *    （UI-07 性能开关：用户关掉背景模糊后，这里退化为底色 + 高光，与 `liquidGlass`
+ *    门面行为一致）。
  *  - 原版 `content: RowScope.() -> Unit` 自由内容 → `tabs: List<TabSpec>` 强类型页签，
  *    内部生成内容（两行共用同一个 lambda，保证逐帧一致）。
  *  - 玻璃底色用 [GlassMaterial.THICK] 的 `backgroundAlpha`（0.34）—— 真机反馈
@@ -847,6 +851,15 @@ fun LiquidBottomTabs(
                                     }
                                 },
                             )
+                            // 回显行高光（2026-09-26 回归上游 L221）：这圈白色径向光被
+                            // layerBackdrop **录进 tabsBackdrop**（录制发生在 alpha(0f) 的
+                            // 内层，alpha 只作用于本节点合成到父级），于是胶囊折射里能看到
+                            // 「跟着胶囊滑动的白色光晕」—— 上游胶囊折射内容的第三成分
+                            //（壁纸 + 染色页签 + 滑动光晕），此前缺失（用户真机反馈
+                            // 「滑动时的高光晕移动」）。纯 drawWithContent，零指针事件，
+                            // 对宿主独占命中零影响。nodeSize 缓存已删（见 InteractiveHighlight
+                            // 的 KDoc），同一实例多节点挂载安全。
+                            .then(interactiveHighlight.modifier)
                             .height(TabCapsuleHeight)
                             .fillMaxWidth()
                             .padding(horizontal = TabPad)

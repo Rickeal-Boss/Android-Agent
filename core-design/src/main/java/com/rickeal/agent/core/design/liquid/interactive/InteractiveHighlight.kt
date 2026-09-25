@@ -17,7 +17,6 @@ import androidx.compose.ui.graphics.Brush
 import kotlin.math.abs
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
@@ -112,7 +111,6 @@ class InteractiveHighlight(
     private var rawOffsetX = 0f
     private var rawOffsetY = 0f
 
-    private var nodeSize by mutableStateOf(Size.Zero)
     private var touchOffset by mutableStateOf(Offset.Zero)
 
     /** 按压进度 0~1。 */
@@ -122,13 +120,17 @@ class InteractiveHighlight(
     val offset: Offset get() = Offset(offsetXAnimatable.value, offsetYAnimatable.value)
 
     /**
-     * 视觉层：跟踪尺寸 + 在触摸点画一圈柔和的镜面高光。
+     * 视觉层：在触摸点/指定中心画一圈柔和的镜面高光。
      *
      * 必须放在 `drawBackdrop(...)` **之后**（Kyant0 原序），这样它是玻璃节点的子节点，
      * 高光会被胶囊形状裁剪，不会溢出到玻璃外面。
+     *
+     * ⚠️ 尺寸来源（2026-09-26 回归上游口径）：**直接用 DrawScope 自带的 `size`**（绘制时
+     * 实时取），**不做** `onSizeChanged` 缓存。上游本来就没有 onSizeChanged —— 缓存版是
+     * 本仓自创，曾引发「同一实例挂到多个节点、nodeSize 双写者抖动」（Wave 10 为此删掉了
+     * 回显行的挂载），删缓存后同一实例可安全挂在任意多个节点上，回显行的高光得以回归。
      */
     val modifier: Modifier = Modifier
-        .onSizeChanged { nodeSize = Size(it.width.toFloat(), it.height.toFloat()) }
         .drawWithContent {
             val progress = pressAnimatable.value
             if (progress > 0.001f) {
@@ -140,13 +142,21 @@ class InteractiveHighlight(
                     color = Color.White.copy(alpha = 0.08f * progress),
                     blendMode = BlendMode.Plus,
                 )
-                val center = position?.invoke(nodeSize, touchOffset) ?: touchOffset
+                val center = position?.invoke(size, touchOffset) ?: touchOffset
                 val radius = minOf(size.width, size.height) * 1.5f
+                // 径向衰减复刻上游 AGSL 的 `smoothstep(radius, radius * 0.5, dist)`：
+                // 圆心 → 0.5R 是「满亮平台」，0.5R → R 按 S 曲线衰减到 0。旧实现从圆心
+                // 就线性衰减（无平台区），等效光通量约只有上游一半 —— 真机观感"光晕
+                // 发不起来/发虚"。用 colorStops 近似 smoothstep（R_brush = 1.5·minDim，
+                // 0.5R = 0.333·R_brush；smoothstep 中点 t=0.5 → 0.5、t=0.75 → 0.156）。
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = 0.15f * progress),
-                            Color.Transparent
+                        colorStops = arrayOf(
+                            0f to Color.White.copy(alpha = 0.15f * progress),
+                            0.333f to Color.White.copy(alpha = 0.15f * progress),
+                            0.5f to Color.White.copy(alpha = 0.075f * progress),
+                            0.875f to Color.White.copy(alpha = 0.023f * progress),
+                            1f to Color.Transparent,
                         ),
                         center = center,
                         radius = radius
