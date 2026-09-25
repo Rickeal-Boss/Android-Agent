@@ -314,7 +314,7 @@ internal fun classifyImportFailure(cause: Throwable?): WallpaperImportFailure = 
     is SecurityException -> WallpaperImportFailure.Permission(cause)
     is FileNotFoundException -> WallpaperImportFailure.NotFound(cause)
     is IOException -> WallpaperImportFailure.Io(cause)
-    else -> WallpaperImportFailure.DecodeFailed
+    else -> WallpaperImportFailure.DecodeFailed()
 }
 
 /**
