@@ -116,13 +116,32 @@ data class TabSpec(
 )
 
 /**
- * 页签内容的按压缩放（1f → 1.2f），由主组件按 [DampedDragAnimation.pressProgress] 下发。
+ * 页签内容的按压缩放下发通道，由主组件按 [DampedDragAnimation.pressProgress] 驱动。
  *
- * ⚠️ 与 Kyant0 一致，这个缩放**只作用于回显行**（第 2 层）：可见行保持原样，
- * "图标被按大"的观感来自选中胶囊（第 3 层）对回显行的折射放大 —— 这正是
- * Liquid Glass "内容在玻璃里" 的关键错觉，把两层都缩放反而会让图标跳两次。
+ * 入参是该页签**是否处于选中格**（2026-09-26 双影注册修复新增；旧版"只作用于回显行"
+ * 的表述作废 —— 可见行现在也消费它，见下）。
+ *
+ * ## 注册原理（为什么可见行选中格也要缩放）
+ *
+ * 按压态的折射采样存在**复合放大**：回显行（第 2 层）按 `lerp(1f, 1.2f, p)` 缩放，
+ * 胶囊（第 3 层）layerBlock 的 scaleY = `1 + (78/56 − 1)·p = 1 + 0.3929p`，
+ * 两者相乘 = 折射采样复合放大（p=0.4 时 ≈1.25x）。胶囊表面极透
+ *（onDrawSurface 只压白 0.10 / 黑 0.03 的薄对比色），第 1 层可见行的真实内容会从
+ * 胶囊下透出 ⇒ 同一个选中图标出现"折射拷贝大、真实内容小"两份（真机报告的双影）。
+ * 让可见行**选中格**以同一 compound（`lerp(1f, 1.2f, p) × scaleY`）缩放注册，
+ * 两份拷贝逐帧对齐，双影消失。
+ *
+ *  - **非选中格恒 1f**：透出的内容与折射无关（折射素材是回显行的选中格）。
+ *  - **p→1 裁剪边界残余错位（申报）**：两行的 `.clip(Capsule)` 都在 graphicsLayer
+ *    **之前** ⇒ 缩放被未缩放的胶囊边界裁剪；可见格是 56dp 边界，折射拷贝等效
+ *    ~78dp 边界，p→1 时两份内容在边界处有残余错位（按压鼓包最大时刻）。
+ *  - **拖动期高亮格膨胀（申报）**：selected 由 highlightIndex 驱动，拖动中它跟随
+ *    胶囊最近格 —— 高亮格会随按压进度膨胀，与回显行（tabsContent 共用同一
+ *    selected 判定）逐帧一致。
+ *  - 可见行刻意**不含** velocity 各向异性项（那是胶囊 layerBlock 里额外的乘除）：
+ *    双影只在按压（含点住）时可见，拖动期注册无意义。
  */
-private val LocalLiquidBottomTabScale = staticCompositionLocalOf<() -> Float> { { 1f } }
+private val LocalLiquidBottomTabScale = staticCompositionLocalOf<(Boolean) -> Float> { { _ -> 1f } }
 
 /**
  * 真·LiquidBottomTabs：**选中指示胶囊随选中项横向滑动**的底部页签。
@@ -137,7 +156,9 @@ private val LocalLiquidBottomTabScale = staticCompositionLocalOf<() -> Float> { 
  *     `value * tabWidth`；**只挂** [InteractiveHighlight.gestureModifier]（按压高光）；
  *     拖动手势（[DampedDragAnimation.modifier]）**已迁到静态宿主**（见下「坐标反馈」）。
  *     lens(10,14) + 色散 + 按压缩放 + 速度各向异性拉伸。
- *  4. **选中项图标随按压缩放** —— 由 [LocalLiquidBottomTabScale] 下发（见上）。
+ *  4. **选中格图标随按压复合缩放** —— 两行（可见 / 回显）共用 [LocalLiquidBottomTabScale]
+ *     下发：回显行按 `lerp(1f, 1.2f, p)`，可见行选中格按同款 compound
+ *    （`lerp(1f, 1.2f, p) × scaleY`）注册对齐折射拷贝（双影修复，见其 KDoc）。
  *
  * ## 拖动拉伸偏移（panelOffset）只挂一层（Wave 10）
  *
@@ -642,72 +663,89 @@ fun LiquidBottomTabs(
                 contentAlignment = Alignment.CenterStart,
             ) {
 
-                /* ── 第 1 层：滑动指示面板（可见玻璃条）────────────────────────────── */
-                Row(
-                    Modifier
-                        // 无障碍分组（三线审查 Wave10）：TalkBack 把整行当一组页签播报，
-                        // 配合每个页签的 selected 才有「第 N 项，已选中，共 M 项」的语义。
-                        .selectableGroup()
-                        .drawBackdrop(
-                            backdrop = wallpaperBackdrop,
-                            shape = { Capsule },
-                            effects = {
-                                if (config.enableBackdropBlur) {
-                                    vibrancy(saturation = VibrancySaturation)
-                                    blur(8f.dp.toPx())
-                                    // 导航栏比按钮大，折射带要给足（Kyant0 Tabs：24,24）。
-                                    lens(refractionHeight = 24f.dp.toPx(), refractionAmount = 24f.dp.toPx())
-                                }
-                            },
-                            layerBlock = {
-                                // 按压时整条面板微微放大（相对宽度归一化，避免宽屏拉过头）。
-                                val progress = dampedDragAnimation.pressProgress
-                                val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
-                                scaleX = scale
-                                scaleY = scale
-                            },
-                            onDrawSurface = {
-                                if (config.enableBackdropBlur) {
-                                    // 正常路径：THICK 底色上亮下暗垂直渐变，与 liquidGlass 同一配方。
-                                    val baseAlpha = thick.backgroundAlpha
-                                    drawRect(
-                                        Brush.verticalGradient(
-                                            colors = listOf(
-                                                colors.glassTint.copy(alpha = baseAlpha),
-                                                colors.glassTintElevated
-                                                    .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
-                                            ),
-                                            startY = 0f,
-                                            endY = size.height,
+                /* ── 第 1 层：滑动指示面板（可见玻璃条）──────────────────────────────
+                 * ⚠️ 双影注册（2026-09-26）：可见行也消费 [LocalLiquidBottomTabScale] ——
+                 * 选中格以与折射拷贝同一 compound 缩放注册（lerp(1,1.2,p) × scaleY），
+                 * 真实内容与回显行折射拷贝逐帧对齐（见该 CompositionLocal 的 KDoc）。
+                 */
+                CompositionLocalProvider(
+                    LocalLiquidBottomTabScale provides { selected ->
+                        if (selected) {
+                            lerp(1f, 1.2f, dampedDragAnimation.pressProgress) *
+                                dampedDragAnimation.scaleY
+                        } else {
+                            1f
+                        }
+                    }
+                ) {
+                    Row(
+                        Modifier
+                            // 无障碍分组（三线审查 Wave10）：TalkBack 把整行当一组页签播报，
+                            // 配合每个页签的 selected 才有「第 N 项，已选中，共 M 项」的语义。
+                            .selectableGroup()
+                            .drawBackdrop(
+                                backdrop = wallpaperBackdrop,
+                                shape = { Capsule },
+                                effects = {
+                                    if (config.enableBackdropBlur) {
+                                        vibrancy(saturation = VibrancySaturation)
+                                        blur(8f.dp.toPx())
+                                        // 导航栏比按钮大，折射带要给足（Kyant0 Tabs：24,24）。
+                                        lens(refractionHeight = 24f.dp.toPx(), refractionAmount = 24f.dp.toPx())
+                                    }
+                                },
+                                layerBlock = {
+                                    // 按压时整条面板微微放大（相对宽度归一化，避免宽屏拉过头）。
+                                    val progress = dampedDragAnimation.pressProgress
+                                    val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
+                                    scaleX = scale
+                                    scaleY = scale
+                                },
+                                onDrawSurface = {
+                                    if (config.enableBackdropBlur) {
+                                        // 正常路径：THICK 底色上亮下暗垂直渐变，与 liquidGlass 同一配方。
+                                        val baseAlpha = thick.backgroundAlpha
+                                        drawRect(
+                                            Brush.verticalGradient(
+                                                colors = listOf(
+                                                    colors.glassTint.copy(alpha = baseAlpha),
+                                                    colors.glassTintElevated
+                                                        .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
+                                                ),
+                                                startY = 0f,
+                                                endY = size.height,
+                                            )
                                         )
-                                    )
-                                } else {
-                                    // 退化路径（背景模糊关）：常驻底色，不读任何动画状态 ——
-                                    // 与 liquidGlass 门面「底色 + 高光」的退化承诺对齐。
-                                    drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
-                                }
-                            },
-                        )
-                        .then(interactiveHighlight.modifier)
-                        .height(TabBarHeight)
-                        .fillMaxWidth()
-                        .padding(
-                            // ⚠️ 纵向必须**推导**，不能写 TabPad：内容高 = TabBarHeight − 2×纵向内边距
-                            // 必须恒等于 TabCapsuleHeight（第 2/3 层就是按它显式定高的）。
-                            // 写死 TabPad 会留下一个无人保证的隐式不变量（今天 64−8=56 成立，把
-                            // TabBarHeight 改成 72 就悄悄变成 64）⇒ 可见行与回显行纵向错位、
-                            // 胶囊折射素材整体偏移，且**不报错**。用 * 0.5f 而非 Dp.div(Int)：
-                            // Dp.times(Float) 是确定存在的运算符，编译风险为零。
-                            horizontal = TabPad,
-                            vertical = (TabBarHeight - TabCapsuleHeight) * 0.5f,
-                        ),
-                    verticalAlignment = Alignment.CenterVertically,
-                    content = tabsContent,
-                )
+                                    } else {
+                                        // 退化路径（背景模糊关）：常驻底色，不读任何动画状态 ——
+                                        // 与 liquidGlass 门面「底色 + 高光」的退化承诺对齐。
+                                        drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
+                                    }
+                                },
+                            )
+                            .then(interactiveHighlight.modifier)
+                            .height(TabBarHeight)
+                            .fillMaxWidth()
+                            .padding(
+                                // ⚠️ 纵向必须**推导**，不能写 TabPad：内容高 = TabBarHeight − 2×纵向内边距
+                                // 必须恒等于 TabCapsuleHeight（第 2/3 层就是按它显式定高的）。
+                                // 写死 TabPad 会留下一个无人保证的隐式不变量（今天 64−8=56 成立，把
+                                // TabBarHeight 改成 72 就悄悄变成 64）⇒ 可见行与回显行纵向错位、
+                                // 胶囊折射素材整体偏移，且**不报错**。用 * 0.5f 而非 Dp.div(Int)：
+                                // Dp.times(Float) 是确定存在的运算符，编译风险为零。
+                                horizontal = TabPad,
+                                vertical = (TabBarHeight - TabCapsuleHeight) * 0.5f,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = tabsContent,
+                    )
+                }
 
                 /* ── 第 2 层：隐形回显行（录进 tabsBackdrop，供胶囊折射）───────────── */
                 CompositionLocalProvider(
-                    LocalLiquidBottomTabScale provides {
+                    // 签名随 (Boolean) -> Float 走：回显行所有格统一按 1.2p 缩放
+                    //（不管 selected —— 回显行本来就是折射素材，行为逐帧不变）。
+                    LocalLiquidBottomTabScale provides { _ ->
                         lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
                     }
                 ) {
@@ -948,7 +986,9 @@ private fun RowScope.LiquidBottomTab(
             .fillMaxHeight()
             .weight(1f)
             .graphicsLayer {
-                val s = scale()
+                // 入参 selected（函数参数，非 this.selected —— 遮蔽语义见上方 semantics 块）：
+                // 只有选中格做 compound 注册缩放，非选中格恒 1f（见 CompositionLocal KDoc）。
+                val s = scale(selected)
                 scaleX = s
                 scaleY = s
             },
