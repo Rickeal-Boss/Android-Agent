@@ -90,6 +90,9 @@ import com.rickeal.agent.core.design.LocalWallpaperImage
 import com.rickeal.agent.core.design.TabSpec
 import com.rickeal.agent.core.design.WindowSizeClass
 import com.rickeal.agent.core.design.WindowWidthClass
+import com.rickeal.agent.core.design.liquid.LocalBackdrop
+import com.rickeal.agent.core.design.liquid.backdrops.layerBackdrop
+import com.rickeal.agent.core.design.liquid.backdrops.rememberLayerBackdrop
 import com.rickeal.agent.core.design.liquid.interactive.InteractiveHighlight
 import com.rickeal.agent.core.design.liquidGlass
 import com.rickeal.agent.core.design.motion.circularReveal
@@ -394,6 +397,26 @@ private fun MainShell() {
             CompositionLocalProvider(
                 LocalBottomBarOverlay provides if (windowSize.useTwoPane) 0.dp else 84.dp,
             ) {
+                // ── Tab 长条的「动态模糊」内容源（2026-09-26，根因修复）───────────────
+                // 真因比「壁纸是纯色」更底层：壁纸由**每个 feature 屏自己的 GlassScaffold**
+                // 绘制并各发一份 LocalBackdrop（都在 NavHost 内部），而 GlassNavBar 是
+                // NavHost 的**兄弟悬浮层** —— 它子树里的 `LocalBackdrop.current` 一直是
+                // 默认 `EmptyBackdrop`，页签玻璃的 vibrancy/blur/lens 全部采样「空」，
+                // 所以长条上什么都看不出来（GlassSegmented 的 8 个调用点在屏幕内部，
+                // 采样的是各自屏的壁纸层，不受影响）。
+                //
+                // 修复：把 NavHost 整体录进一张 LayerBackdrop（各屏的壁纸 + 页面内容
+                // 都在其中），页签玻璃的背景源换成它 —— 滚动内容从页签底下穿过时磨砂
+                // 与折射实时跟随（iOS 工具栏同款行为）。**不需要**恢复任何彩色光斑，
+                // 用户「默认纯色壁纸」的裁定不受影响。
+                //
+                // 性能：整页内容录进 GraphicsLayer 属逐帧录制（滚动/转场时重录），与
+                // 屏内录壁纸同机制。挂在 enableBackdropBlur（UI-07 性能开关）与
+                // 非宽屏两个条件下 —— 关掉背景模糊时连录制一起停（玻璃本来就退化为
+                // 底色 + 高光），宽屏没有底部页签，录了也没人消费。
+                val recordContent = glassCfg.enableBackdropBlur && !windowSize.useTwoPane
+                val contentBackdrop = rememberLayerBackdrop()
+                val navBarBackdrop = if (recordContent) contentBackdrop else LocalBackdrop.current
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     NavHost(
                         navController = navController,
@@ -405,7 +428,15 @@ private fun MainShell() {
                         // popBackStackInternal 对「栈里没有这个 id」是打一行日志然后 return false，
                         // 一条都不 pop，回退栈就这么随切页签无限涨起来的（UI-01 的根因）。
                         startDestination = ChatRoute.PATTERN,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(
+                                if (recordContent) {
+                                    Modifier.layerBackdrop(contentBackdrop)
+                                } else {
+                                    Modifier
+                                },
+                            ),
                         // 页签切换 = iOS push/pop **视差**：新页大幅入场（32%），旧页小幅让位（14%）。
                         // 旧实现两侧都满屏平移（±100%）+ 双 fade + tween(300)，观感是"整块屏幕
                         // 被拖走"，而不是"推入一层新页"—— 深度感全靠模糊硬撑。
@@ -479,16 +510,20 @@ private fun MainShell() {
                         )
                     }
                 if (!windowSize.useTwoPane) {
-                    GlassNavBar(
-                        selected = selected,
-                        onSelect = { destination ->
-                            if (destination != selected) navController.navigateTop(destination.route)
-                        },
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .navigationBarsPadding(),
-                    )
+                    // 页签玻璃的背景源 = NavHost 录制层（各屏壁纸 + 页面内容，见上方
+                    // recordContent 注释）。只包住导航栏子树，不影响屏幕内部的玻璃采样。
+                    CompositionLocalProvider(LocalBackdrop provides navBarBackdrop) {
+                        GlassNavBar(
+                            selected = selected,
+                            onSelect = { destination ->
+                                if (destination != selected) navController.navigateTop(destination.route)
+                            },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .navigationBarsPadding(),
+                        )
+                    }
                 }
                 }
             }
