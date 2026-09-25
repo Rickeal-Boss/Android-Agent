@@ -120,14 +120,52 @@ class DampedDragAnimation(
      * "元素自身 bounds"扩成"整条宿主"。为了让行为**零变化**，调用方传入逐轴复刻原抓取区
      * 的门禁（**宿主矩形 ∩ 元素实时矩形**）。
      *
-     * 返回 false 时：直接 `return@awaitEachGesture` —— **不** `setPressed`、**不**置
-     * [isDragging]、**不**走 [onDragStarted] / [onDragStopped]，且**不消费**事件
-     * （外层 `clickable` / 页签点击照常生效）。门禁在 `awaitFirstDown` 之后、
-     * `setPressed(true)` 之前求值，因此被挡下的按下对控件**完全无副作用**。
+     * 返回 false 时：**不** `setPressed`、**不**置 [isDragging]、**不**走
+     * [onDragStarted] / [onDragStopped]，且**不消费**事件。后续分流看 [onTap]：
+     *  - [onTap] == null（GlassSlider / GlassSwitch 等既有调用点）：维持原语义，直接
+     *    `return@awaitEachGesture`，本次手势到此为止（外层 `clickable` /
+     *    `toggleable` 照常生效）；
+     *  - [onTap] != null（静态宿主独占命中的调用点）：进**观察循环**，跟踪这根手指
+     *    到抬手，按 [onTap] 的语义决定是否回调点按。
+     * 门禁在 `awaitFirstDown` 之后、`setPressed(true)` 之前求值，因此被挡下的按下
+     * 对控件**完全无副作用**。
      *
      * 默认 `null` = 不设门禁（开关等既有行为完全不变）。
      */
     private val canStartDrag: (DampedDragAnimation.(Offset) -> Boolean)? = null,
+    /**
+     * 可选点按观察通道（2026-09-26 新增）：**门禁不过**时的补救路径。
+     *
+     * ⚠️ 背景（为什么需要它）：compose-ui 1.10.3 `InnerNodeCoordinator.hitTestChild`
+     * 的兄弟命中语义 —— 兄弟节点按 z 序**逆序**命中，顶部兄弟命中后若不与兄弟共享
+     * 指针输入（默认），**下层兄弟全部不再参与命中**。当手势宿主是 `matchParentSize`
+     * 覆盖整条的**静态**顶层节点（Wave 10 Phase 2d/2e 的坐标反馈修复）时，宿主下层
+     * 的 `clickable`（底栏页签 / 分段项）收不到任何指针事件 —— 真机表现为
+     * **"点击死亡"**（点击无响应，只能拖动换页）。这类调用点传 [onTap]，由本类的
+     * 手势循环代为观察点按。
+     *
+     * 语义（**只在门禁不过时**走；门禁通过路径完全不经过这里）：
+     *  - 观察手势至抬手：净位移（与主循环同款 reach 公式
+     *    `Offset(abs(accumulatedX), abs(accumulatedY)).getDistance()`，有符号净位移
+     *    逐轴取 abs 再求欧氏距离 —— 不是路径长度，来回抖动不会顶过阈值）未越过
+     *    touchSlop（循环外快照 `slop`，观察循环内**绝不**读 `viewConfiguration`）
+     *    且事件流未断（tracked change 一直在）⇒ 以**宿主局部坐标**的按下点
+     *    `down.position` 回调；
+     *  - 净位移越过 slop ⇒ 判定为拖动意图、tap 取消，但仍**继续观察到 up、不
+     *    break、不消费** —— 观察分支只回答"是不是 tap"这一个问题，不改变任何
+     *    事件走向；
+     *  - **全程零副作用**：不消费任何事件、不 `setPressed`、不置 [isDragging]、
+     *    不碰 [yieldedToParent] / [finishedNormally] 任何状态字段 —— [isDragging]
+     *    被调用方的回显门禁（`LaunchedEffect(selectedIndex)`）读取，观察分支碰它
+     *    会引发回写互搏。
+     *
+     * 入参与 [canStartDrag] 同一坐标系（宿主局部坐标），调用方按同一套几何常量
+     * 换算目标项序号（LiquidBottomTabs 需 TabPad 边界守卫 —— Kotlin `toInt()` 向零
+     * 截断，`(-0.5).toInt() == 0`，否则左 pad 带会被静默映射到第 0 格）。
+     *
+     * 默认 `null` = 既有调用点（GlassSlider / GlassSwitch）零变化。
+     */
+    private val onTap: (DampedDragAnimation.(Offset) -> Unit)? = null,
 ) {
 
     private val valueAnimatable = Animatable(initialValue, visibilityThreshold)
@@ -259,6 +297,47 @@ class DampedDragAnimation(
             // 智能转换 / receiver 调用歧义。
             canStartDrag?.let { gate ->
                 if (!gate.invoke(this@DampedDragAnimation, down.position)) {
+                    // 门禁不过：分流看 onTap。
+                    //  - onTap == null（既有调用点）：维持原语义，直接交回 awaitEachGesture。
+                    //  - onTap != null（静态宿主独占命中的补救）：进**观察循环**，跟踪这根
+                    //    手指到抬手，"净位移未过 slop 的完整点按"回调 onTap。
+                    // ⚠️ 观察循环**只读事件、不写任何状态**：不 setPressed、不置
+                    // isDraggingState、不碰 yieldedToParentState / finishedNormallyState
+                    // —— isDragging 被调用方的回显门禁读取，观察分支碰它会引发回写互搏。
+                    // ⚠️ 全程不 consume、不改事件走向；slop 用循环外的既有快照
+                    //（上面那行 `val slop = viewConfiguration.touchSlop`），
+                    // 观察循环内绝不读 viewConfiguration。
+                    if (onTap != null) {
+                        var tapPrevious = down.position
+                        var tapAccumX = 0f
+                        var tapAccumY = 0f
+                        var tapCandidate = true
+                        while (true) {
+                            val tapEvent = awaitPointerEvent()
+                            val tapChange = tapEvent.changes.firstOrNull { it.id == down.id }
+                                ?: break // 事件流断（change 被移除）⇒ 无 tap，静默放弃
+                            if (!tapChange.pressed) {
+                                // 抬手：全程净位移未越过 slop 才算一次 tap。
+                                if (tapCandidate) {
+                                    onTap.invoke(this@DampedDragAnimation, down.position)
+                                }
+                                break
+                            }
+                            val tapCurrent = tapChange.position
+                            val tapDelta = tapCurrent - tapPrevious
+                            tapPrevious = tapCurrent
+                            if (tapDelta != Offset.Zero) {
+                                // 与主循环同款 reach 公式（有符号净位移 → 逐轴 abs → 欧氏距离）。
+                                tapAccumX += tapDelta.x
+                                tapAccumY += tapDelta.y
+                                if (Offset(abs(tapAccumX), abs(tapAccumY)).getDistance() >= slop) {
+                                    // 判定为拖动意图：取消 tap 候选，但**继续观察到 up、
+                                    // 不 break、不消费** —— 观察分支不改变任何事件走向。
+                                    tapCandidate = false
+                                }
+                            }
+                        }
+                    }
                     return@awaitEachGesture
                 }
             }

@@ -84,9 +84,15 @@ import kotlin.math.roundToInt
  * ## 手势分流（为什么 consumeSlopPx 必须 8dp）
  *
  * 宿主覆盖整条，但门禁只在**胶囊实时矩形**内放行 ⇒ 按在胶囊（= 选中项）上才起手。
- * 8dp 内不 consume → 抬手时事件未被消费 → 下层 clickable 正常触发（"点了没反应"
- * 的保险丝，与 [GlassSwitch] / [LiquidBottomTabs] 同一口井）；超 8dp 才消费、
- * 进入拖动换项。点**未选中**项不经胶囊矩形 ⇒ 门禁不放行 ⇒ 直达 clickable。
+ * 8dp 内不 consume → 抬手时事件未被消费；超 8dp 才消费、进入拖动换项。
+ *
+ * ⚠️ 静态宿主独占命中（2026-09-26，机制见 [LiquidBottomTabs] 类 KDoc「静态宿主独占
+ * 命中」一节）：宿主 z 序最顶，下层可见行 [SegmentItem] 的 clickable 收不到指针事件
+ * ⇒ 点**未选中**项不再"直达 clickable"，而是走宿主的 [DampedDragAnimation.onTap]
+ * 观察通道（净位移未过 touchSlop 且事件流未断时，按宿主局部坐标落点换算序号、走与
+ * onClick 同款同序的三件套）。本控件宿主与格区同宽、无横向 pad ⇒ **无边界守卫需求**
+ *（对比 LiquidBottomTabs 的 TabPad 守卫）。`enabled = false` 时手势 modifier 不挂
+ *（见下方条件链）⇒ onTap 天然不存在，禁用态点击零响应，无需额外判断。
  *
  * 折射参数沿用 LiquidBottomTabs 指示胶囊的实测值（lens 10,14 + 色散）：胶囊面积
  * 约 1/count 栏宽 × 48dp（整屏约 2~3%），与 P1-3"大面积卡片关色散"的决策不冲突，
@@ -212,6 +218,27 @@ private fun SegmentedIndicator(
                     val left = if (isLtr) v * itemWidth else width - (v + 1f) * itemWidth
                     pos.x >= left && pos.x <= left + itemWidth
                 }
+            },
+            // ⚠️ onTap（2026-09-26 点击死亡修复）：静态宿主独占命中（见类 KDoc
+            // 「手势分流」一节），可见行 SegmentItem 的 clickable 收不到指针事件 ⇒
+            // 点未选中项改由宿主代观察后回调到这里，走与 onClick **完全同款同序**的
+            // 三件套（currentIndex → onSelected → tick，见 SegmentItem 的 onClick）。
+            // 宿主与格区同宽、无横向 pad ⇒ 无边界守卫需求（落点 x 直接除以 itemWidth）。
+            // 收集器仍会经 currentIndex 回流再发一次 onSelected —— 与既有 clickable
+            // 路径完全同一条双发链（幂等），本波不改行为。
+            onTap = { pos ->
+                val itemWidth = itemWidthState.value
+                if (itemWidth <= 0f) {
+                    return@DampedDragAnimation
+                }
+                val index = ((if (isLtr) {
+                    pos.x
+                } else {
+                    itemWidth * itemsCount - pos.x
+                }) / itemWidth).toInt().coerceIn(0, itemsCount - 1)
+                currentIndex = index
+                onSelectedCallback(index)
+                currentHaptics.tick()
             },
             onDragStarted = {
                 // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。

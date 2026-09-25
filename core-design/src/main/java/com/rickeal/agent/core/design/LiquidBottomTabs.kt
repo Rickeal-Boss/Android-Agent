@@ -215,6 +215,32 @@ private val LocalLiquidBottomTabScale = staticCompositionLocalOf<() -> Float> { 
  * （Phase 2d 起拖动手势挂在静态宿主上、并由 `canStartDrag` 门禁限定起手区域为胶囊格；
  *  门禁不过的按下**不消费**，非当前页签的点击照常。）
  *
+ * ## ⚠️ 静态宿主独占命中 → 页签点击死亡（onTap 补救，2026-09-26）
+ *
+ * compose-ui 1.10.3 `InnerNodeCoordinator.hitTestChild` 的命中语义：兄弟节点按 z 序
+ * **逆序**命中，顶部兄弟命中后若其 `shouldSharePointerInputWithSiblings()` 为 false
+ * （默认），**下层兄弟全部不再参与命中**。Wave 10 Phase 2d/2e 把拖动手势迁到
+ * `matchParentSize` 覆盖整条的**静态宿主**（z 序最顶，见下方"必须是最后一个兄弟"）
+ * 之后，第 1 层可见行的 clickable、胶囊上的 [InteractiveHighlight.gestureModifier]、
+ * 回显行等下层兄弟**全部收不到指针事件** —— 真机表现为"底栏页签点击失效，只能拖动
+ * 换页"（拖动挂在宿主上所以幸存）。
+ *
+ * 补救：给 [DampedDragAnimation] 新增 `onTap` 观察通道 —— 门禁（`canStartDrag`）不过
+ * 时，手势循环改为**观察**至抬手（全程不消费事件、不触碰任何状态字段），净位移未越过
+ * touchSlop 且事件流未断时，以**宿主局部坐标**按下点回调 onTap；本组件在 onTap 里按
+ * `TabPad` 边界守卫 + 格宽换算出页签序号，走与 clickable **完全同款同序**的三件套
+ * （`currentIndex = index` + `onSelectedCallback(index)` + `currentHaptics.tick()`）。
+ *
+ *  - **触达扩大申报**：onTap 命中区是整条 64dp 高的宿主（含胶囊上/下各 4dp 纵向带），
+ *    比旧实现（手势挂胶囊节点、56dp 格内）略大；横向 `TabPad`（4dp）左右带**不可点**
+ *    （边界守卫剔除 —— Kotlin `toInt()` 向零截断，`(-0.5).toInt() == 0`，否则左带
+ *    会被静默映射到第 0 格）。
+ *  - **双发去重**：onTap 与"外部回显 → 收集器"可能双发 onSelected —— 由 MainShell 的
+ *    `destination != selected` 守卫去重（与页签 clickable 路径同一条链），本组件不重复
+ *    设防（GlassSegmented 侧的既有口径：重复调用幂等，收集器照发）。
+ *  - **按压高光复活**：胶囊上的 gestureModifier 同样被宿主挡死，按压白色径向高光改由
+ *    onDragStarted / onDragStopped 经 `highlightPressDriver` 驱动（见该处注释）。
+ *
  * ## 页签切换的数据流（2026-09-24 Wave 6b 重构：**onSelected 只在用户位点发**）
  *
  *  - 单击页签 → `currentIndex = index` + **直接** `onSelected(index)`
@@ -416,6 +442,35 @@ fun LiquidBottomTabs(
                             pos.x >= left && pos.x <= left + tabWidth &&
                                 pos.y >= top && pos.y <= bottom
                         }
+                    },
+                    // ⚠️ onTap（2026-09-26 点击死亡修复）：静态宿主 z 序最顶、独占命中
+                    //（compose-ui 1.10.3 InnerNodeCoordinator.hitTestChild —— 见类 KDoc
+                    // 「静态宿主独占命中」一节），第 1 层可见行的 clickable 收不到指针
+                    // 事件 ⇒ "点页签换页"改由宿主代观察后回调到这里，走与 clickable
+                    // **完全同款同序**的三件套（currentIndex → onSelected → tick，见
+                    // tabsContent 的 onClick）。双发由 MainShell 的
+                    // `destination != selected` 守卫去重（与 clickable 路径同一条链）。
+                    onTap = { pos ->
+                        val tabWidth = tabWidthState.value
+                        val width = containerWidthState.value
+                        if (tabWidth <= 0f || width <= 0f) {
+                            return@DampedDragAnimation
+                        }
+                        // 边界守卫（必须保留）：Kotlin `toInt()` 向零截断，
+                        // `(-0.5).toInt() == 0` —— 若不先剔除左 pad 带，落点 x ∈ [0, padPx）
+                        // 会被静默映射到第 0 格（右带同理）。横向 pad 带**不可点**是申报过的语义。
+                        val padPx = with(density) { TabPad.toPx() }
+                        if (pos.x < padPx || pos.x > width - padPx) {
+                            return@DampedDragAnimation
+                        }
+                        val index = (if (isLtr) {
+                            (pos.x - padPx) / tabWidth
+                        } else {
+                            (width - padPx - pos.x) / tabWidth
+                        }).toInt().coerceIn(0, tabsCount - 1)
+                        currentIndex = index
+                        onSelectedCallback(index)
+                        currentHaptics.tick()
                     },
                     onDragStarted = {
                         // 新一次拖动：取消在途回弹，避免它与拖动同时写 panelOffsetPx。
