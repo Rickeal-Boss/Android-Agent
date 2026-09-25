@@ -4,6 +4,7 @@ import android.app.Activity
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -281,36 +282,58 @@ private fun MainShell() {
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
-                // 页签切换 = fade + 水平位移：方向由新旧 destination 的页签索引差决定
-                // （索引增大 → 新页从右入、旧页向左出；反向则相反）。pop 方向取反。
-                // 四个方向都显式给值，避免依赖 NavHost 各版本不同的默认值。
+                // 页签切换 = iOS push/pop **视差**：新页大幅入场（32%），旧页小幅让位（14%）。
+                // 旧实现两侧都满屏平移（±100%）+ 双 fade + tween(300)，观感是"整块屏幕
+                // 被拖走"，而不是"推入一层新页"—— 深度感全靠模糊硬撑。
+                // spec 依据（写死前逐条对过）：
+                //  - 0.32 / 0.14 视差比：新页大幅入场、旧页小幅让位（iOS push 的经典比例），
+                //    旧页只挪 14% 就能透出"下面还有一层"的暗示；
+                //  - 260ms **大于**底部指示胶囊的 ~120ms（Wave 6b 定下的次序：胶囊先到位、
+                //    内容随后到 —— 若内容比胶囊快，就会看到内容先飞进来胶囊再追）；
+                //  - fade 内外**错开**（入 180 / 出 200）：若入出同长同相，切页瞬间两页都
+                //    半透明叠在一起，看起来是"糊"而不是"换"。
+                // 方向仍由新旧 destination 的页签索引差决定（索引增大 → 新页从右入、旧页向左出；
+                // 反向则相反），pop 方向取反。四个方向都显式给值，避免依赖 NavHost 各版本默认值。
+                // reduceMotion：四个 transition 全部 tween(0) —— 近瞬时切页，保留层级变化、去掉位移。
                 enterTransition = {
                     val dir = slideDirection(initialState.destination.route, targetState.destination.route)
                     slideInHorizontally(
-                        initialOffsetX = { fullWidth -> dir * fullWidth },
-                        animationSpec = tween(TOP_NAV_TRANSITION_MS),
-                    ) + fadeIn(tween(TOP_NAV_TRANSITION_MS))
+                        initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
+                        animationSpec = tween(
+                            if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                            easing = FastOutSlowInEasing,
+                        ),
+                    ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
                 },
                 exitTransition = {
                     val dir = slideDirection(initialState.destination.route, targetState.destination.route)
                     slideOutHorizontally(
-                        targetOffsetX = { fullWidth -> -dir * fullWidth },
-                        animationSpec = tween(TOP_NAV_TRANSITION_MS),
-                    ) + fadeOut(tween(TOP_NAV_TRANSITION_MS))
+                        targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
+                        animationSpec = tween(
+                            if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                            easing = FastOutSlowInEasing,
+                        ),
+                    ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
                 },
                 popEnterTransition = {
                     val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
                     slideInHorizontally(
-                        initialOffsetX = { fullWidth -> dir * fullWidth },
-                        animationSpec = tween(TOP_NAV_TRANSITION_MS),
-                    ) + fadeIn(tween(TOP_NAV_TRANSITION_MS))
+                        initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
+                        animationSpec = tween(
+                            if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                            easing = FastOutSlowInEasing,
+                        ),
+                    ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
                 },
                 popExitTransition = {
                     val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
                     slideOutHorizontally(
-                        targetOffsetX = { fullWidth -> -dir * fullWidth },
-                        animationSpec = tween(TOP_NAV_TRANSITION_MS),
-                    ) + fadeOut(tween(TOP_NAV_TRANSITION_MS))
+                        targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
+                        animationSpec = tween(
+                            if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                            easing = FastOutSlowInEasing,
+                        ),
+                    ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
                 },
             ) {
                 chatGraph(
@@ -423,12 +446,20 @@ private fun NavHostController.navigateTop(route: String) {
 }
 
 /**
- * 顶层页签切换的过渡时长（ms）。160ms 看不出过渡（真机反馈"切换太快、看不见液态"），
- * 700ms 又拖沓 —— 300ms 给内容层 slide+fade；指示胶囊的 TabSwitch 弹簧（2026-09-24
- * 真机修正后 ≈120ms 临界阻尼收敛）先于内容层到位：点哪儿、哪儿先亮，指示器快于
- * 内容层是正确次序。
+ * 顶层页签切换的 iOS push/pop 视差参数（替代原满屏平移 + 双 fade + 300ms 的旧配方）。
+ *
+ * 视差比：新页入场 32%、旧页退场 14% —— 新页"推入"、旧页"让位"，而不是两页等速
+ * 把整块屏幕拖走。slide 统一 260ms（FastOutSlowIn）：必须**大于**底部指示胶囊的
+ * TabSwitch（≈120ms 临界阻尼收敛，Wave 6b 真机定标）—— 点哪儿、哪儿先亮，指示器
+ * 快于内容层是正确次序；内容层若比胶囊快，就会看到内容先飞进来、胶囊再追。
+ * fade 内外错开（入 180 / 出 200）：同长同相会让切页瞬间两页都半透明叠在一起，
+ * 看起来是"糊"而不是"换"。
  */
-private const val TOP_NAV_TRANSITION_MS = 300
+private const val PUSH_ENTER_PARALLAX = 0.32f
+private const val PUSH_EXIT_PARALLAX = 0.14f
+private const val PUSH_SLIDE_MS = 260
+private const val PUSH_FADE_IN_MS = 180
+private const val PUSH_FADE_OUT_MS = 200
 
 /**
  * route → 顶层页签的**最长前缀**匹配（六路审查 B-P0-1/P1-4 的单一事实来源改造）。
