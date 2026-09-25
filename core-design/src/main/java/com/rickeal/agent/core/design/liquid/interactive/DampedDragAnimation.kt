@@ -626,6 +626,47 @@ class DampedDragAnimation(
     }
 
     /**
+     * **弹簧跟随**（2026-09-26 果冻回弹恢复，对齐上游 `updateValue`）：拖动期专用。
+     *
+     * ⚠️ 与 [snapValue] 的分工：[snapValue] 是**瞬时到位**（回显门禁 / 外部状态强同步
+     * 用，值必须是权威的）；本函数是**弹簧追随**（手指路径专用）。
+     *
+     * ## 为什么拖动期必须用弹簧而不是瞬时
+     *
+     * 上游 Kyant0 `catalog/utils/DampedDragAnimation` 的 `updateValue` 走的是
+     * `valueAnimatable.animateTo(target, spring(1f, 1000f, visibilityThreshold))` ——
+     * 手指每帧把弹簧目标挪一格，值**追着手指跑**：快速拖动时胶囊略微滞后、松手后
+     * 带着惯性收敛 —— 这就是**果冻般的弹动位移**（squash & stretch 之外的另一半）。
+     *
+     * 本仓 Wave 10 为了根治"不跟手"把拖动期改成 `snapValue`（瞬时），位移变成**刚性**：
+     * 手指到哪胶囊到哪、零滞后零拖尾 —— 跟手是跟手了，但果冻位移没了（用户以上游
+     * demo 录屏对比实锤）。
+     *
+     * ⚠️ 现在改回弹簧是**安全**的：当年"不跟手"的真因是**坐标反馈**（手势宿主与被
+     * 平移节点同体，斜率 0.489），已由"宿主迁静态节点"根治；Wave 10 顺带改的
+     * `UNDISPATCHED`（消派发延迟）这里**保留**，所以是「有弹性的跟手」而不是
+     * 「慢半拍的跟手」—— 与当年的故障不是一回事，KDoc 留证据。
+     *
+     * 规格逐字取上游：dampingRatio=1f（临界阻尼，不过冲）、stiffness=1000f。
+     * 每帧 animateTo 会取消上一条在途动画并从**当前值**继续追新目标（与上游同款，
+     * 不是累加漂移）。
+     */
+    fun followValue(value: Float) {
+        val coerced = value.coerceIn(valueRange)
+        targetValue = coerced
+        animationScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            valueAnimatable.animateTo(
+                targetValue = coerced,
+                animationSpec = spring(
+                    dampingRatio = 1f,
+                    stiffness = 1000f,
+                    visibilityThreshold = 0.001f,
+                ),
+            )
+        }
+    }
+
+    /**
      * 按压 / 释放的三路弹簧：pressProgress（临界阻尼，NoBouncy 与上游一致）+
      * scaleX / scaleY（欠阻尼 0.6/0.7 —— 回弹来源）。
      *
@@ -641,9 +682,13 @@ class DampedDragAnimation(
             launch {
                 pressAnimatable.animateTo(
                     targetValue = if (pressed) 1f else 0f,
+                    // 上游 pressProgressAnimationSpec = spring(1f, 1000f, 0.001f)
+                    //（临界阻尼、高刚度 —— 与 value 弹簧同规格）。本仓旧值
+                    // NoBouncy/StiffnessMedium(1500) 阻尼比一致但刚度偏高，对齐上游。
                     animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMedium
+                        dampingRatio = 1f,
+                        stiffness = 1000f,
+                        visibilityThreshold = 0.001f,
                     )
                 )
             }

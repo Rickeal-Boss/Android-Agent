@@ -1,7 +1,6 @@
 package com.rickeal.agent.core.design.liquid.interactive
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -13,12 +12,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import kotlin.math.abs
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 
 /*
@@ -37,10 +38,32 @@ import kotlinx.coroutines.launch
    limitations under the License.
  */
 
-/** 拖拽时"跟手偏移"的弹簧：偏软，让位移跟手但不生硬。 */
-private val DragFollowSpring = spring<Float>(
-    dampingRatio = Spring.DampingRatioNoBouncy,
-    stiffness = Spring.StiffnessLow
+/**
+ * 按压进度弹簧：上游规格 `spring(0.5f, 300f, 0.001f)` —— **欠阻尼**。
+ *
+ * 2026-09-26 果冻回弹恢复：本仓此前写成 NoBouncy/StiffnessMedium（临界阻尼），
+ * "按实"程度是单调到位的，一按下去没有"先过一点再回"的弹动。上游 0.5 阻尼比会
+ * 让按压进度在 1 附近小幅过冲收敛 —— 这是果冻手感的第一个来源。
+ */
+private val PressSpring = spring<Float>(
+    dampingRatio = 0.5f,
+    stiffness = 300f,
+    visibilityThreshold = 0.001f,
+)
+
+/**
+ * 跟手偏移的**归位**弹簧：上游规格 `spring(0.5f, 300f)` —— **欠阻尼**。
+ *
+ * 拖动中是瞬时跟手（上游 `snapTo`），松手才走这条弹簧回零 —— 回零路上欠阻尼
+ * 过冲 ⇒ 元素"弹回去再稳住"，这是果冻手感的第二个来源。
+ *
+ * ⚠️ 拖动中**不**用它：本仓旧实现拖动中也走弹簧（且是 NoBouncy + StiffnessLow
+ * = 又软又无弹动），结果是"位移迟钝"而不是"果冻"。上游口径：拖动手起手落、松手才弹。
+ */
+private val OffsetSettleSpring = spring<Float>(
+    dampingRatio = 0.5f,
+    stiffness = 300f,
+    visibilityThreshold = 0.001f,
 )
 
 /**
@@ -107,24 +130,33 @@ class InteractiveHighlight(
     val modifier: Modifier = Modifier
         .onSizeChanged { nodeSize = Size(it.width.toFloat(), it.height.toFloat()) }
         .drawWithContent {
-            drawContent()
             val progress = pressAnimatable.value
             if (progress > 0.001f) {
+                // 上游口径（2026-09-26 对齐）：先整片轻微提亮（0.08p，Plus 叠加），
+                // 再在触摸点叠一圈柔和径向光（0.15p，半径 minDimension × 1.5）。
+                // 本仓旧实现只有后半段、且用普通 SourceOver 混合 + 0.9 倍半径 ——
+                // 按压时"光"起不来，果冻形变少了光泽那半边。
+                drawRect(
+                    color = Color.White.copy(alpha = 0.08f * progress),
+                    blendMode = BlendMode.Plus,
+                )
                 val center = position?.invoke(nodeSize, touchOffset) ?: touchOffset
-                val radius = minOf(size.width, size.height) * 0.9f
+                val radius = minOf(size.width, size.height) * 1.5f
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            Color.White.copy(alpha = 0.16f * progress),
+                            Color.White.copy(alpha = 0.15f * progress),
                             Color.Transparent
                         ),
                         center = center,
                         radius = radius
                     ),
                     radius = radius,
-                    center = center
+                    center = center,
+                    blendMode = BlendMode.Plus,
                 )
             }
+            drawContent()
         }
 
     /**
@@ -221,9 +253,14 @@ class InteractiveHighlight(
                         // 跟手位移与是否消费无关，照常累加 —— 手感不受影响。
                         rawOffsetX += dragAmount.x
                         rawOffsetY += dragAmount.y
-                        animationScope.launch {
-                            offsetXAnimatable.animateTo(rawOffsetX, DragFollowSpring)
-                            offsetYAnimatable.animateTo(rawOffsetY, DragFollowSpring)
+                        // ⚠️ 拖动中**瞬时**跟手（上游 `snapTo`），不是弹簧跟随。
+                        // 果冻来自**松手**的欠阻尼归零（见 [OffsetSettleSpring]），
+                        // 拖动中走弹簧只会变成"位移迟钝"（本仓旧实现就是这条错路：
+                        // NoBouncy + StiffnessLow，又软又没弹动）。
+                        // UNDISPATCHED：与 snapValue 同一口径，当帧生效、不慢半拍。
+                        animationScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                            offsetXAnimatable.snapTo(rawOffsetX)
+                            offsetYAnimatable.snapTo(rawOffsetY)
                         }
                     }
                 }
@@ -236,9 +273,12 @@ class InteractiveHighlight(
                 setPressed(false)
                 rawOffsetX = 0f
                 rawOffsetY = 0f
+                // 松手归零走**欠阻尼**弹簧（上游 `animateTo(startPosition, spring(0.5,300))`）：
+                // 元素从手指位置弹回原位、带一次轻微过冲 —— 果冻手感的第二个来源。
+                // 本仓旧实现用默认 spec（临界阻尼）= 单调归零，没有弹动。
                 animationScope.launch {
-                    offsetXAnimatable.animateTo(0f)
-                    offsetYAnimatable.animateTo(0f)
+                    offsetXAnimatable.animateTo(0f, OffsetSettleSpring)
+                    offsetYAnimatable.animateTo(0f, OffsetSettleSpring)
                 }
             }
         }
@@ -260,10 +300,8 @@ class InteractiveHighlight(
         animationScope.launch {
             pressAnimatable.animateTo(
                 targetValue = if (pressed) 1f else 0f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMedium
-                )
+                // 欠阻尼（上游 0.5/300）：按下/松手都带过冲收敛 —— 果冻手感来源之一。
+                animationSpec = PressSpring
             )
         }
     }
