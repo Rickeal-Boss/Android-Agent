@@ -119,8 +119,9 @@ data class TabSpec(
 /**
  * 页签内容的按压缩放下发通道，由主组件按 [DampedDragAnimation.pressProgress] 驱动。
  *
- * 入参是该页签**是否处于选中格**（2026-09-26 双影注册修复新增；旧版"只作用于回显行"
- * 的表述作废 —— 可见行现在也消费它，见下）。
+ * 入参是该页签**是否参与注册缩放**（scaleWithPress；2026-09-26 二次收紧：从
+ * "是否处于选中/高亮格"改为"真选中格且胶囊压在其上"——回显行调用点恒传 true，
+ * 可见行只有选中格在胶囊下时为 true）。
  *
  * ## 注册原理（为什么可见行选中格也要缩放）
  *
@@ -129,16 +130,16 @@ data class TabSpec(
  * 两者相乘 = 折射采样复合放大（p=0.4 时 ≈1.25x）。胶囊表面极透
  *（onDrawSurface 只压白 0.10 / 黑 0.03 的薄对比色），第 1 层可见行的真实内容会从
  * 胶囊下透出 ⇒ 同一个选中图标出现"折射拷贝大、真实内容小"两份（真机报告的双影）。
- * 让可见行**选中格**以同一 compound（`lerp(1f, 1.2f, p) × scaleY`）缩放注册，
- * 两份拷贝逐帧对齐，双影消失。
+ * 让可见行**选中格**（仅当胶囊压在其上）以同一 compound
+ *（`lerp(1f, 1.2f, p) × scaleY`）缩放注册，两份拷贝逐帧对齐，双影消失。
  *
- *  - **非选中格恒 1f**：透出的内容与折射无关（折射素材是回显行的选中格）。
+ *  - **其余格恒 1f（2026-09-26 真机裁定）**：拖动经过未选中格时可见行**不缩放**
+ *    ——黑色图标/文字永远保持相同的大小与位置；折射蓝拷贝与真实内容的瞬时错位
+ *    是上游同款观感（上游可见行从不缩放），不是缺陷。此前"selected = highlightIndex"
+ *    的宽条件会让拖动经过的深色格被 compound 放大 ~1.25x（真机录屏 22:55 实锤）。
  *  - **p→1 裁剪边界残余错位（申报）**：两行的 `.clip(Capsule)` 都在 graphicsLayer
  *    **之前** ⇒ 缩放被未缩放的胶囊边界裁剪；可见格是 56dp 边界，折射拷贝等效
  *    ~78dp 边界，p→1 时两份内容在边界处有残余错位（按压鼓包最大时刻）。
- *  - **拖动期高亮格膨胀（申报）**：selected 由 highlightIndex 驱动，拖动中它跟随
- *    胶囊最近格 —— 高亮格会随按压进度膨胀，与回显行（tabsContent 共用同一
- *    selected 判定）逐帧一致。
  *  - 可见行刻意**不含** velocity 各向异性项（那是胶囊 layerBlock 里额外的乘除）：
  *    双影只在按压（含点住）时可见，拖动期注册无意义。
  */
@@ -157,9 +158,11 @@ private val LocalLiquidBottomTabScale = staticCompositionLocalOf<(Boolean) -> Fl
  *     `value * tabWidth`；**只挂** [InteractiveHighlight.gestureModifier]（按压高光）；
  *     拖动手势（[DampedDragAnimation.modifier]）**已迁到静态宿主**（见下「坐标反馈」）。
  *     lens(10,14) + 色散 + 按压缩放 + 速度各向异性拉伸。
- *  4. **选中格图标随按压复合缩放** —— 两行（可见 / 回显）共用 [LocalLiquidBottomTabScale]
- *     下发：回显行按 `lerp(1f, 1.2f, p)`，可见行选中格按同款 compound
- *    （`lerp(1f, 1.2f, p) × scaleY`）注册对齐折射拷贝（双影修复，见其 KDoc）。
+ *  4. **选中格图标随按压复合缩放（条件注册）** —— 两行（可见 / 回显）共用
+ *     [LocalLiquidBottomTabScale] 下发：回显行**全格**按 `lerp(1f, 1.2f, p)` 缩放
+ *    （整行都是折射素材）；可见行只有「真选中格且胶囊压在其上」按同款 compound
+ *    （`lerp(1f, 1.2f, p) × scaleY`）注册对齐折射拷贝（双影修复；拖动经过未选中格
+ *    不缩放，黑色内容恒定 —— 见其 KDoc 与 LiquidBottomTab.scaleWithPress）。
  *
  * ## 拖动拉伸偏移（panelOffset）只挂一层（Wave 10）
  *
@@ -656,7 +659,11 @@ fun LiquidBottomTabs(
             }
 
             // 两行共用同一份内容 lambda：保证可见行与回显行逐帧一致。
-            val tabsContent: @Composable RowScope.() -> Unit = {
+            // ⚠️ 带一个 Boolean 参数（isEchoRow）：两行对 [LiquidBottomTab.scaleWithPress]
+            // 的取值不同 —— 回显行**全格**参与折射缩放（整行都是折射素材，上游同款）；
+            // 可见行只有「真选中格且胶囊压在其上」参与（黑色内容恒定，见该参数 KDoc）。
+            // 颜色 / 语义的 selected 两行同源（highlightIndex / 由 tint 层染色）。
+            val tabsContent: @Composable RowScope.(Boolean) -> Unit = { isEchoRow ->
                 tabs.forEachIndexed { index, tab ->
                     LiquidBottomTab(
                         tab = tab,
@@ -671,6 +678,14 @@ fun LiquidBottomTabs(
                             currentHaptics.tick()
                         },
                         showLabel = !compactTabs,
+                        scaleWithPress = if (isEchoRow) {
+                            true
+                        } else {
+                            // 注册条件 = 真选中格 **且** 胶囊压在其上（非拖动时
+                            // highlightIndex == currentIndex，按压选中页签即成立）；
+                            // 拖动经过未选中格 ⇒ 不缩放（黑色内容恒定，2026-09-26 裁定）。
+                            index == currentIndex && index == highlightIndex
+                        },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -692,13 +707,16 @@ fun LiquidBottomTabs(
             ) {
 
                 /* ── 第 1 层：滑动指示面板（可见玻璃条）──────────────────────────────
-                 * ⚠️ 双影注册（2026-09-26）：可见行也消费 [LocalLiquidBottomTabScale] ——
-                 * 选中格以与折射拷贝同一 compound 缩放注册（lerp(1,1.2,p) × scaleY），
-                 * 真实内容与回显行折射拷贝逐帧对齐（见该 CompositionLocal 的 KDoc）。
+                 * ⚠️ 双影注册（2026-09-26，条件已按真机裁定收紧）：可见行也消费
+                 * [LocalLiquidBottomTabScale] —— 但**只有「真选中格且胶囊压在其上」**
+                 * 以折射拷贝同一 compound 缩放注册（lerp(1,1.2,p) × scaleY），按压选中
+                 * 页签时真实内容与回显行折射拷贝逐帧对齐；拖动经过未选中格时可见行
+                 * **一格都不缩放**（黑色内容恒定，用户 2026-09-26 裁定；见
+                 * LiquidBottomTab.scaleWithPress 的 KDoc）。
                  */
                 CompositionLocalProvider(
-                    LocalLiquidBottomTabScale provides { selected ->
-                        if (selected) {
+                    LocalLiquidBottomTabScale provides { registered ->
+                        if (registered) {
                             lerp(1f, 1.2f, dampedDragAnimation.pressProgress) *
                                 dampedDragAnimation.scaleY
                         } else {
@@ -765,7 +783,7 @@ fun LiquidBottomTabs(
                                 vertical = (TabBarHeight - TabCapsuleHeight) * 0.5f,
                             ),
                         verticalAlignment = Alignment.CenterVertically,
-                        content = tabsContent,
+                        content = { tabsContent(false) },
                     )
                 }
 
@@ -834,7 +852,7 @@ fun LiquidBottomTabs(
                             // 整层 tint 成强调色：胶囊折射看到的"发光页签"就是这层染色的内容。
                             .graphicsLayer(colorFilter = ColorFilter.tint(colors.accent)),
                         verticalAlignment = Alignment.CenterVertically,
-                        content = tabsContent,
+                        content = { tabsContent(true) },
                     )
                 }
 
@@ -989,6 +1007,19 @@ private fun RowScope.LiquidBottomTab(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     showLabel: Boolean = true,
+    /**
+     * 是否参与「按压注册缩放」（吃 [LocalLiquidBottomTabScale]）。
+     *
+     * ⚠️ 与 [selected] **必须是两个布尔**（2026-09-26 用户真机裁定）：
+     *  - [selected] 驱动**颜色 / 语义**（accent 高亮、TalkBack）——拖动中跟随胶囊
+     *    （highlightIndex），让高亮随胶囊走；
+     *  - [scaleWithPress] 驱动**几何缩放**——只允许「真选中格且胶囊压在其上」为 true。
+     *    若沿用 selected（= highlightIndex），拖动经过未选中格时其深色图标/文字会被
+     *    compound 放大 ~1.25x（真机录屏 22:55 实锤："黑色字体 icon 异常放大"）——
+     *    用户裁定：**黑色内容永远恒定大小与位置**。折射蓝拷贝与真实内容的瞬时错位
+     *    是上游同款观感（上游可见行从不缩放），不再是注册缺口。
+     */
+    scaleWithPress: Boolean = false,
 ) {
     val colors = LocalGlassColors.current
     val scale = LocalLiquidBottomTabScale.current
@@ -1014,9 +1045,9 @@ private fun RowScope.LiquidBottomTab(
             .fillMaxHeight()
             .weight(1f)
             .graphicsLayer {
-                // 入参 selected（函数参数，非 this.selected —— 遮蔽语义见上方 semantics 块）：
-                // 只有选中格做 compound 注册缩放，非选中格恒 1f（见 CompositionLocal KDoc）。
-                val s = scale(selected)
+                // 入参 scaleWithPress（非 selected！两个布尔的分工见其 KDoc）：
+                // 只有「真选中格且胶囊压在其上」做 compound 注册缩放，其余格恒 1f。
+                val s = scale(scaleWithPress)
                 scaleX = s
                 scaleY = s
             },
