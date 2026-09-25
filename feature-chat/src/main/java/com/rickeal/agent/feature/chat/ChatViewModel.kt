@@ -621,6 +621,9 @@ class ChatViewModel(
                             ?: "生成失败",
                     )
                 }
+                // 异常也是终态，必须撤通知（Wave 9 审查修正）：此路径不经过
+                // resetStreaming(role=null)，漏掉就会残留 ongoing 通知。stop() 幂等。
+                container.generationNotifier.stop()
             }
         }
     }
@@ -775,6 +778,10 @@ class ChatViewModel(
                             ?: "生成失败",
                     )
                 }
+                // 异常也是终态，必须撤通知（Wave 9 审查修正）：这两条 onSend/onRetry
+                // 的 onFailure 路径不经过 resetStreaming(role=null)，漏掉就会在状态栏
+                // 留一条 ongoing、用户划不掉的「端侧生成中」。stop() 幂等。
+                container.generationNotifier.stop()
             }
         }
     }
@@ -860,6 +867,10 @@ class ChatViewModel(
                             ?: "生成失败",
                     )
                 }
+                // 异常也是终态，必须撤通知（Wave 9 审查修正）：这两条 onSend/onRetry
+                // 的 onFailure 路径不经过 resetStreaming(role=null)，漏掉就会在状态栏
+                // 留一条 ongoing、用户划不掉的「端侧生成中」。stop() 幂等。
+                container.generationNotifier.stop()
             }
         }
     }
@@ -1020,6 +1031,12 @@ class ChatViewModel(
                     )
                 }
                 _streaming.update { it.copy(isStreaming = false) }
+                // 失败也是终态，必须撤通知（Wave 9 审查修正）：Failed 分支走的是
+                // resetStreamingText() 而不是 resetStreaming(role=null)，终态收口
+                // 的 `role == null && !isStreaming` 条件在这里不成立 —— 不补这一句，
+                // 一次引擎失败就会在状态栏留一条 ongoing、划不掉的「端侧生成中」，
+                // 直到下一次成功终态或重启。stop() 幂等，通知不存在时是 no-op。
+                container.generationNotifier.stop()
                 // 回合归档（D 项）：失败也是终态（settled("Failed") 已落 journal）。
                 archiveTurnNow(
                     com.rickeal.agent.core.agent.history.TurnState.FAILED,
@@ -1124,6 +1141,11 @@ class ChatViewModel(
 
     override fun onCleared() {
         runJob?.cancel()
+        // VM 销毁 = 界面已不存在，正在显示的「生成中」通知必须撤掉：run 协程的
+        // CancellationException 被 onFailure 静默吞掉（取消不是错误），不会走到任何
+        // 终态收口 —— 不补这一句，生成中退出 App 会残留一条 ongoing、划不掉的通知，
+        // 直到下次进聊天页跑完一轮或进程被杀。stop() 幂等。
+        container.generationNotifier.stop()
         super.onCleared()
     }
 }

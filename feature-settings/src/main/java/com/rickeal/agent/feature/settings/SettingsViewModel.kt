@@ -10,6 +10,7 @@ import com.rickeal.agent.core.model.InferenceConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -111,10 +112,13 @@ class SettingsViewModel(
      * 自定义壁纸（Wave 9 需求 3b）：Photo Picker 选中后走这里。
      * 导入（降采样 + JPEG 压缩落盘）成功**才**写路径 —— 失败时旧壁纸原样保留，
      * 路径流不动、LiquidAgentApp 不重新解码，UI 自然无感。
+     * 旧路径一并传入：导入成功后由 [WallpaperStore] 删旧文件（唯一文件名方案，
+     * 路径每次导入都变 —— 固定名覆盖写会同值写回 DataStore，换图永远不刷新）。
      */
     fun onWallpaperImport(uri: Uri) {
         viewModelScope.launch {
-            container.wallpaperStore.import(uri)
+            val previousPath = container.settingsRepository.wallpaperPath.first()
+            container.wallpaperStore.import(uri, previousPath = previousPath)
                 .onSuccess { path -> container.settingsRepository.setWallpaperPath(path) }
                 .onFailure {
                     _uiState.update { s ->
@@ -124,10 +128,11 @@ class SettingsViewModel(
         }
     }
 
-    /** 恢复默认壁纸：先删文件再清路径（顺序反了会留孤儿文件，见 setWallpaperPath 注释）。 */
+    /** 恢复默认壁纸：先删当前文件再清路径（顺序反了会留孤儿文件，见 setWallpaperPath 注释）。 */
     fun onWallpaperReset() {
         viewModelScope.launch {
-            container.wallpaperStore.delete()
+            val currentPath = container.settingsRepository.wallpaperPath.first()
+            container.wallpaperStore.delete(currentPath)
             container.settingsRepository.setWallpaperPath("")
         }
     }
