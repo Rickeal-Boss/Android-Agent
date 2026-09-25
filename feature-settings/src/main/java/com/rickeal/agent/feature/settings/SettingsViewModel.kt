@@ -16,6 +16,8 @@ import kotlinx.coroutines.launch
 data class SettingsUiState(
     val config: InferenceConfig = InferenceConfig(),
     val theme: ThemeState = ThemeState(),
+    /** 「生成速度通知」开关（与 theme 分开存：它要运行时权限，语义不是主题）。 */
+    val generationNotification: Boolean = false,
     val message: String? = null,
     val error: String? = null,
 )
@@ -38,6 +40,11 @@ class SettingsViewModel(
                 _uiState.update { it.copy(theme = theme) }
             }
         }
+        viewModelScope.launch {
+            container.settingsRepository.generationNotification.collect { enabled ->
+                _uiState.update { it.copy(generationNotification = enabled) }
+            }
+        }
     }
 
     /**
@@ -52,6 +59,18 @@ class SettingsViewModel(
     fun onThemeChange(theme: ThemeState) {
         _uiState.update { it.copy(theme = theme) }
         viewModelScope.launch { container.settingsRepository.setThemeState(theme) }
+    }
+
+    /**
+     * 「生成速度通知」开关落盘。
+     *
+     * ⚠️ **只在拿到通知权限后调用**（UI 侧先请求权限）：用户拒绝时调用方必须**不落盘**，
+     * 否则下次启动开关是开的、通知却永远出不来，用户会以为功能坏了。
+     * 拒绝路径由 UI 直接回弹开关（不落 true），权限文案展示在行内副文案。
+     */
+    fun onGenerationNotificationChange(enabled: Boolean) {
+        _uiState.update { it.copy(generationNotification = enabled) }
+        viewModelScope.launch { container.settingsRepository.setGenerationNotification(enabled) }
     }
 
     /**

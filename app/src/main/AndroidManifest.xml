@@ -18,6 +18,13 @@
          会在 Wi-Fi 下也命中，用户每次下载都被误弹流量确认。 -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- 本地通知（Wave 9 需求 5「生成速度通知」）：通知内容由端侧推理速度
+         （token/s 与首字延迟）渲染于系统 UI，无任何网络传输 —— 内容全部产自本机
+         模型运行时的计时器，不携带会话正文。用户拒绝授权时**静默降级**：
+         不持久化开关、不出通知，端侧推理功能本身完全不受影响。
+         API 33+ 为运行时权限，仅在用户显式打开 App 内开关时才请求。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- 存储权限：本应用**刻意不申请任何存储权限**。
          模型与附件的读取全部走系统文件选择器（ACTION_OPEN_DOCUMENT），由用户显式授权，
          既不需要运行时权限，也不会触发应用商店对敏感权限的审核。

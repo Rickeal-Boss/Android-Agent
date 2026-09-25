@@ -193,6 +193,9 @@ class ChatViewModel(
         val estimatedTokens = _streaming.value.text.length / 2
         val tps = estimatedTokens * 1000f / decodeMs
         _streaming.update { it.copy(usage = StreamingUsage(ttftMillis = first - started, tokensPerSecond = tps)) }
+        // 通知侧「吐字速度」（Wave 9 需求 5）：notifier 内部有 1s 节流、enabled=false 时纯 no-op，
+        // 这里可以无脑喂。这条 flush 循环只在缓冲非空时跑 ⇒ 工具阶段（无 token）自然不报速度。
+        container.generationNotifier.onTick(tps, ttftMillis = first - started)
     }
 
     /** 清空流式文本与缓冲（Retrying/Failed：失败尝试不落库，重新来）。 */
@@ -209,6 +212,14 @@ class ChatViewModel(
         runStartedAtMillis = null
         firstTokenAtMillis = null
         _streaming.value = StreamingState(role = role, isStreaming = isStreaming)
+        // 终态收口（Wave 9 需求 5）：role=null 且不再流式 = run 结束/取消/失败，
+        // 通知必须撤掉，不能让「端侧生成中」残留在状态栏。
+        // 放在 resetStreaming 里而不是散在各调用点：全仓 4 处终态调用（onNewConversation、
+        // TERMINATED、CANCELLED、run 异常收尾）语义完全一致，散写必漏；stop() 本身幂等。
+        // run 启动路径（role=MODEL, isStreaming=true）不经过这个分支，不会误撤新通知。
+        if (role == null && !isStreaming) {
+            container.generationNotifier.stop()
+        }
     }
 
     private var runJob: Job? = null

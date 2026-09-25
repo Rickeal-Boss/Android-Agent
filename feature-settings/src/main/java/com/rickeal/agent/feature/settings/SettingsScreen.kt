@@ -1,5 +1,9 @@
 package com.rickeal.agent.feature.settings
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,7 +30,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationManagerCompat
 import com.rickeal.agent.core.design.GlassBackdropBlurOverride
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassScaffold
@@ -53,6 +59,21 @@ fun SettingsScreen(
     val state by viewModel.uiState.collectAsState()
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
+    val context = LocalContext.current
+
+    // 「生成速度通知」的运行时权限（API 33+）。
+    // 只在用户**显式打开**开关且尚未授权时才请求 —— 反过来（关开关、或已授权）都
+    // 不该弹系统权限框。授予后才落盘 true；拒绝时**不落盘**，开关由 state 回弹
+    // （state.generationNotification 没变），副文案切到权限提示。
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) viewModel.onGenerationNotificationChange(true)
+        // 拒绝：什么都不做 —— onGenerationNotificationChange 不被调用，
+        // DataStore 里仍是 false，开关自然弹回，避免「开着却永远不出通知」。
+    }
+    val needNotificationPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        !NotificationManagerCompat.from(context).areNotificationsEnabled()
 
     GlassScaffold(
         modifier = modifier,
@@ -361,6 +382,55 @@ fun SettingsScreen(
                             )
                         },
                     )
+                }
+            }
+
+            /* ---------------------------------------------------- 通知 */
+            GlassCard(
+                modifier = Modifier.staggeredPageItem(itemIndex = 3),
+                contentPadding = PaddingValues(14.dp),
+            ) {
+                Column {
+                    GroupTitle("通知")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "生成速度通知",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.onGlass,
+                            )
+                            Text(
+                                // 权限被拒（或尚未授予）时换行内文案，指路系统设置 ——
+                                // 此时开关是弹回的，光说「已开启时显示速度」会让人困惑。
+                                text = if (needNotificationPermission) {
+                                    "需要通知权限，可在系统设置中开启"
+                                } else {
+                                    "生成时在通知栏实时显示 token/s 与首字延迟"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                            )
+                        }
+                        GlassSwitch(
+                            checked = state.generationNotification,
+                            onCheckedChange = { want ->
+                                when {
+                                    // 关闭不需要任何权限，直接落盘 false 并撤通知。
+                                    !want -> viewModel.onGenerationNotificationChange(false)
+                                    // API 33+ 且尚未授权：先请求，授予回调里才落盘 true。
+                                    needNotificationPermission ->
+                                        notificationPermissionLauncher.launch(
+                                            Manifest.permission.POST_NOTIFICATIONS,
+                                        )
+                                    // API 31/32 无运行时权限，或已授予过：直接开。
+                                    else -> viewModel.onGenerationNotificationChange(true)
+                                }
+                            },
+                        )
+                    }
                 }
             }
 

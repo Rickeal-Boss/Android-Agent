@@ -29,6 +29,8 @@ import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
 import com.rickeal.agent.core.engine.EngineInitStatus
 import com.rickeal.agent.core.engine.EngineLoadCoordinator
+import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
+import com.rickeal.agent.core.data.notify.GenerationNotifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
@@ -42,7 +44,15 @@ private const val ATTACHMENT_COPY_BUFFER_BYTES = 1024 * 1024
  *
  * 由 `LiquidAgentApplication` 持有，通过 `LocalAppContainer` 提供给整个 Compose 树。
  */
-class AppContainer(private val context: Context) {
+class AppContainer(
+    private val context: Context,
+    /**
+     * 「生成速度通知」的状态栏小图标 res id。由 app 层传入（`R.drawable.ic_stat_generation`）
+     * —— core-data 不能引 app 的 R 类，而状态栏小图标又必须是 app 自己的资源。
+     * 默认 0 = 不配通知图标，此时 notifier 的 notify 会静默失败（通知是观测窗口不是能力）。
+     */
+    val generationIconRes: Int = 0,
+) {
 
     val settingsRepository: SettingsRepository = SettingsRepository(context)
     val modelRepository: ModelRepository = ModelRepository(context, settingsRepository)
@@ -108,6 +118,13 @@ class AppContainer(private val context: Context) {
 
     /** 模型下载（系统 DownloadManager，落盘到 externalFilesDir/Download）。 */
     val modelDownloader: ModelDownloader = ModelDownloader(context)
+
+    /**
+     * 「生成速度通知」出口（Wave 9 需求 5）。默认 disabled：由设置页的开关
+     * （collect 到 [SettingsRepository.generationNotification]）驱动 [GenerationNotifier.enabled]。
+     * 先例：[ModelDownloader] 同样在 core-data 里用系统服务（DownloadManager）。
+     */
+    val generationNotifier: GenerationNotifier = AndroidGenerationNotifier(context, generationIconRes)
 
     val engineEnvironment: EngineEnvironment = EngineEnvironment(
         cacheDir = context.cacheDir?.absolutePath,

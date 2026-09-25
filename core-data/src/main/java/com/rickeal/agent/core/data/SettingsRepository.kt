@@ -35,6 +35,11 @@ class SettingsRepository(private val context: Context) {
         // :core-data 不能 import 它（依赖方向倒置）。解析失败一律回退 STANDARD。
         val HAPTIC_LEVEL = stringPreferencesKey("haptic_level")
 
+        // 「生成速度通知」开关（Wave 9 需求 5）。默认 false：
+        // 通知是观测窗口不是能力，且 API 33+ 要运行时权限 —— 默认关掉，
+        // 不在用户没表达意愿时去请求权限。
+        val GENERATION_NOTIFICATION = booleanPreferencesKey("generation_notification")
+
         // ---- 首启合规：引导与条款接受 ----
         // 三项刻意**分开**存：应用服务条款与 Gemma 授权条款的法律主体不同
         // （前者是我们自己，后者是 Google），必须能独立表达「接受其一、未接受其二」。
@@ -78,6 +83,14 @@ class SettingsRepository(private val context: Context) {
     val allowMeteredDownload: Flow<Boolean> = context.settingsDataStore.data
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
         .map { it[Keys.ALLOW_METERED_DOWNLOAD] ?: false }
+
+    /**
+     * 「生成速度通知」开关。默认 **false**：通知要 API 33+ 的运行时权限，
+     * 且它是观测窗口不是能力 —— 必须由用户显式打开，App 才有资格去请求权限。
+     */
+    val generationNotification: Flow<Boolean> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { it[Keys.GENERATION_NOTIFICATION] ?: false }
 
     /**
      * **整段首启流程**是否已走完（引导 → TOS → Gemma 全部过完）。默认 false。
@@ -162,6 +175,14 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setAllowMeteredDownload(allow: Boolean) {
         context.settingsDataStore.edit { it[Keys.ALLOW_METERED_DOWNLOAD] = allow }
+    }
+
+    /**
+     * 「生成速度通知」开关落盘。**只在拿到权限后调用**（UI 侧负责）：
+     * 用户拒绝权限时不落 true，否则下次启动开关是开的却永远不出通知。
+     */
+    suspend fun setGenerationNotification(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.GENERATION_NOTIFICATION] = enabled }
     }
 
     suspend fun setHasSeenOnboarding(seen: Boolean) {

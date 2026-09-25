@@ -137,6 +137,15 @@ fun LiquidAgentApp() {
     } ?: return
 
     val themeState by container.settingsRepository.themeState.collectAsState(initial = ThemeState())
+
+    // 「生成速度通知」开关 → notifier 总开关（Wave 9 需求 5）。
+    // 用 collect 而不是一次性赋值：设置页改开关要**立刻**生效（正在生成时也能开/关），
+    // 不必等重启。notifier 的 enabled 关闭时 onTick 是纯 no-op（连时间戳都不动）。
+    LaunchedEffect(container) {
+        container.settingsRepository.generationNotification.collect { enabled ->
+            container.generationNotifier.enabled = enabled
+        }
+    }
     val systemDark = isSystemInDarkTheme()
     val darkTheme = when (themeState.darkMode) {
         DarkMode.DARK -> true

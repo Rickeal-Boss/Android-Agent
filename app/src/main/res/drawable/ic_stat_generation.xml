@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- =============================================================================
+     生成速度通知的状态栏小图标（Wave 9 需求 5）。
+     状态栏小图标必须是「纯白 + alpha」的单色矢量：系统只取 alpha 通道再染色，
+     彩色小图标在 API 24+ 会被渲染成一个灰方块。放 app 模块而非 core-data，
+     是因为 core-data 不能引 app 的 R 类（GenerationNotifier 的 smallIconRes 由
+     AppContainer 构造参数传入）。
+     造型 = 脉冲折线（吞吐曲线的极简抽象）：一段平线 → 尖峰 → 回落 → 平线。
+     ============================================================================= -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M2,13 L6,13 L8.5,6 L11.5,18 L14,13 L22,13"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+</vector>
