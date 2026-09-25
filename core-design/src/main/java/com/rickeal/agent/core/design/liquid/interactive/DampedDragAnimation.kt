@@ -97,6 +97,29 @@ class DampedDragAnimation(
      * 之一）。这类调用点必须传 false。
      */
     private val canYieldToParent: Boolean = true,
+    /**
+     * 可选起手门禁：**带接收者**的 lambda，入参是**手势宿主节点的局部坐标**按下点，
+     * 返回 true 才允许本次手势起手。
+     *
+     * ⚠️ 为什么带接收者（`DampedDragAnimation.(Offset) -> Boolean`，Wave 10 Phase 2d）：
+     * 调用点需要按**被拖元素的实时位置**判定抓取区（页签 = 胶囊实时 `value`、滑块 =
+     * thumb 实时 `progress`）。带接收者后门禁里可直接读 `value` / `progress` —— 既
+     * **不需要**在 `remember{}` 之后用 holder 回填实例（那是"组合期写 MutableState"的
+     * 反模式），也**没有**"首帧实例未就绪"分支（恒可用）。若用无接收者的
+     * `(Offset) -> Boolean`，调用方只能退而求其次读"内部选中态"（动画窗口内会偏半格）。
+     *
+     * ⚠️ 用途：把「手势宿主」从被平移的胶囊 / thumb 节点迁到**静态**覆盖层后，手势区会从
+     * "元素自身 bounds"扩成"整条宿主"。为了让行为**零变化**，调用方传入逐轴复刻原抓取区
+     * 的门禁（**宿主矩形 ∩ 元素实时矩形**）。
+     *
+     * 返回 false 时：直接 `return@awaitEachGesture` —— **不** `setPressed`、**不**置
+     * [isDragging]、**不**走 [onDragStarted] / [onDragStopped]，且**不消费**事件
+     * （外层 `clickable` / 页签点击照常生效）。门禁在 `awaitFirstDown` 之后、
+     * `setPressed(true)` 之前求值，因此被挡下的按下对控件**完全无副作用**。
+     *
+     * 默认 `null` = 不设门禁（开关等既有行为完全不变）。
+     */
+    private val canStartDrag: (DampedDragAnimation.(Offset) -> Boolean)? = null,
 ) {
 
     private val valueAnimatable = Animatable(initialValue, visibilityThreshold)
@@ -215,6 +238,22 @@ class DampedDragAnimation(
             // 所以循环内一律用这里的 `slop`，不许再出现 viewConfiguration。
             val slop = viewConfiguration.touchSlop
             yieldedToParentState = false
+            // ⚠️ 起手门禁：必须在 `yieldedToParentState / finishedNormallyState` 复位**之后**、
+            // `setPressed(true)` **之前**求值 ——
+            //  · 放在复位之后：被挡下的手势不残留任何本次标志（下一轮 awaitEachGesture 干净）；
+            //  · 放在 setPressed 之前：门禁不过 ⇒ 按压态从不置位 ⇒ 胶囊不会在"按非当前页签"
+            //    时鼓包（pressProgress 驱动的 56→78dp 弹簧），事件也不消费 ⇒ 页签点击照常。
+            // 控制流直接交回 awaitEachGesture（它会在 block 返回后 awaitAllPointersUp，
+            // 等全部手指抬起才进下一轮，不会反复触发）。
+            //
+            // ⚠️ 用 `?.let` + `invoke`：`let` 是 inline ⇒ `return@awaitEachGesture` 非局部
+            // 返回合法；`invoke` 显式传接收者，避免"带接收者 lambda"在可空属性上的
+            // 智能转换 / receiver 调用歧义。
+            canStartDrag?.let { gate ->
+                if (!gate.invoke(this@DampedDragAnimation, down.position)) {
+                    return@awaitEachGesture
+                }
+            }
             setPressed(true)
             isDraggingState.value = true
             onDragStarted(this@DampedDragAnimation)
@@ -402,9 +441,12 @@ class DampedDragAnimation(
      * **首个挂起点之前同步执行**：`snapTo` 在没有在途动画竞争时会同步把 value 写完，
      * 当帧即生效、严格跟手。
      *
-     * 📌 与真机录屏里那次"胶囊在 1.6↔3.2 页签间以 ≈5.9Hz 振荡"**不是一回事**：
-     * 那次是双写者互搏（外部回显写 + 手势写），已由 `bf2bed4` 的回显门禁切断；
-     * 本处改的是残留的**派发延迟**。两者都已消除，但成因不同。
+     * 📌 与真机录屏里那次"胶囊在 1.6↔3.2 页签间以 ≈5.9Hz 振荡"**不是一回事** ——
+     * **修正（Wave 10 Phase 2d）**：早前曾断言那次振荡是"双写者互搏、已由 `bf2bed4`
+     * 的回显门禁切断"，这是**错的**。2026-09-25 15:01 录屏（tip `53656a5`，已含
+     * `bf2bed4`）里振荡仍在，真因是**坐标反馈**（手势宿主与被平移节点是同一个 ⇒ 一阶
+     * 反馈，斜率 ≈0.489）叠加**本处的派发延迟**（`v_{t+1} = v_{t-1}` 二周期）。坐标反馈
+     * 由 `LiquidBottomTabs` 的 R1（手势宿主迁静态节点）修复；本处只负责消掉派发延迟那半边。
      *
      * ⚠️ **影响面申报（Wave 10）**：`snapValue` 是全仓共享 API，改动 `launch` →
      * `UNDISPATCHED` 会同时影响**全部 3 个调用点**，且它们**都在拖动路径**上：

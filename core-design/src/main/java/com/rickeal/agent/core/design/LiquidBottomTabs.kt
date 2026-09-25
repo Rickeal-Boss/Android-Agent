@@ -86,6 +86,26 @@ import kotlin.math.sign
 private const val VibrancySaturation = 1.22f
 
 /**
+ * 页签几何的**单一来源**（Wave 10 Phase 2d 纠正轮）。
+ *
+ * ⚠️ 前三个量在**布局**（玻璃条 / 回显行 / 胶囊的 `.height()`、`.padding()`）与
+ * **起手门禁**（`canStartDrag` 的 x / y 判据）两处使用。若各写一份字面量，改一处忘
+ * 另一处会让门禁**静默错位**（不报错、行为错）—— 必须共用这里的常量。
+ *  · [TabBarHeight]：玻璃条（第 1 层）高，也是**静态手势宿主的纵向范围**。
+ *  · [TabCapsuleHeight]：胶囊（第 3 层）高，也是回显行（第 2 层）高。
+ *  · [TabPad]：左右内边距 —— 胶囊格相对容器左右各内缩这么多，也是
+ *    `tabWidth` 计算里那个"两侧共 2×"的来源。
+ *  · [TabPressedHeight]：胶囊按下时的高度；`pressedScale` 由它与 [TabCapsuleHeight]
+ *    求比值 —— 改胶囊高时按压比例自动跟随，不留"分母与胶囊高脱钩"的第二份来源。
+ */
+private val TabBarHeight = 64.dp
+private val TabCapsuleHeight = 56.dp
+private val TabPad = 4.dp
+
+/** 胶囊按下时的高度 —— Kyant0 BottomTabs 实测值（56dp → 78dp）。 */
+private val TabPressedHeight = 78.dp
+
+/**
  * 单个页签的声明式描述。图标 + 文本，由调用方（app 模块）从自己的导航模型映射而来
  * （`:core-design` 不依赖任何导航库，见架构 §1.4）。
  */
@@ -114,29 +134,56 @@ private val LocalLiquidBottomTabScale = staticCompositionLocalOf<() -> Float> { 
  *     但被 `layerBackdrop` 录进 [tabsBackdrop] 图层，并整体 tint 成强调色。
  *     它是第 3 层折射的素材：胶囊里看到的"发光页签"就是它。
  *  3. **滑动指示胶囊** —— `fillMaxWidth(1f/tabsCount)` 的 Box，横向平移
- *     `value * tabWidth`；手势（[InteractiveHighlight.gestureModifier]
- *     + [DampedDragAnimation.modifier]）挂在这一层；lens(10,14) + 色散 +
- *     按压缩放 + 速度各向异性拉伸。
+ *     `value * tabWidth`；**只挂** [InteractiveHighlight.gestureModifier]（按压高光）；
+ *     拖动手势（[DampedDragAnimation.modifier]）**已迁到静态宿主**（见下「坐标反馈」）。
+ *     lens(10,14) + 色散 + 按压缩放 + 速度各向异性拉伸。
  *  4. **选中项图标随按压缩放** —— 由 [LocalLiquidBottomTabScale] 下发（见上）。
  *
  * ## 拖动拉伸偏移（panelOffset）只挂一层（Wave 10）
  *
- * 拖动时整条玻璃朝拖动方向最长拉 4dp（EaseOut），松手弹簧归零。该偏移**只在
- * `BoxWithConstraints` 的外层 `graphicsLayer` 上挂一次** —— 原先三层各自平移同一个
+ * 拖动时整条玻璃朝拖动方向最长拉 4dp（EaseOut），松手弹簧归零。该偏移**只在只包视觉
+ * 三层的内层 wrapper 的 `graphicsLayer` 上挂一次** —— 原先三层各自平移同一个
  * panelOffset、胶囊再自己 `+ panelOffset.value`，等价于"整体平移"；收敛到一层后
  * 语义一致，但每帧只有 1 个 layer 失效而不是 3 个。
  *
  * 差异口径：**≤4dp 不可辨差异** —— 第 2 层的 `layerBackdrop` 录制帧在旧代码里不随
- * `panelOffset` 平移、新代码里随外层一起平移（录制内容本身同源、位移量 ≤4dp，肉眼不可辨）。
+ * `panelOffset` 平移、新代码里随 wrapper 一起平移（录制内容本身同源、位移量 ≤4dp，肉眼不可辨）。
  * 功能无回归。机制依据：`drawBackdrop` 通过 `GlobalPositionAwareModifierNode.onGloballyPositioned`
  * 拿**全局坐标**采样背景（`DrawBackdropModifier.kt`），祖先层平移会一并计入子节点窗口
  * 坐标 ⇒ 采样区域不变，只是位移量同源。
+ *
+ * ## ⚠️ 坐标反馈：手势宿主必须与"被平移的视觉节点"分离（Wave 10 Phase 2d）
+ *
+ * 真机回归（2026-09-25 15:01 录屏，commit `53656a5`）实测：胶囊位移对指示点位移的
+ * 斜率 ≈ **0.489**（n=47）—— 手指移动 1 个 tabWidth，胶囊只走约半个。根因：
+ *  - 旧实现把 `.then(dampedDragAnimation.modifier)` 与
+ *    `.graphicsLayer { translationX = renderValue*tabWidth + … }` 挂在**同一个胶囊节点**上；
+ *  - `PointerInputChange.position` 是**该节点的局部坐标** ⇒ 节点每帧右移 Δ胶囊，手指的
+ *    局部 x 就少 Δ胶囊 ⇒ `Δ胶囊 = Δ(dragAccumPx)` ⇒ `dragAccumPx = 手指 − dragAccumPx`
+ *    ⇒ 胶囊恒走手指一半（一阶反馈，斜率 0.5）；
+ *  - 叠加 `snapValue` 的派发延迟 1 帧 ⇒ `v_{t+1} = v_{t-1}` 二周期振荡（中途回退/抽搐）；
+ *  - 落点错误是其下游（targetValue 偏小 → roundToInt 落错页签）。
+ *
+ * 修复（R1）：手势宿主迁到**静态**节点（`matchParentSize()` 覆盖整条、放最上层），
+ * 胶囊只保留视觉平移；`panelOffset` 从 BoxWithConstraints 下移到只包视觉三层的内层
+ * wrapper（仍是 1 层）。三者（静态宿主 / 被平移的 wrapper / 胶囊）分属不同节点 ⇒
+ * 坐标反馈的因果链被切断。
+ *
+ * ⚠️ 迁移带来的两个**必须**的配套：
+ *  1. `DampedDragAnimation.canStartDrag` 门禁：手势区从"胶囊那一格"扩到整条底栏，
+ *     必须逐轴复刻旧抓取区（**宿主矩形 ∩ 胶囊实时矩形**）。门禁读胶囊**实时** `value`
+ *     与 `panelOffset`，并判 x（左右边）**与 y**（宿主高 64dp、胶囊高 56dp 居中 ⇒
+ *     `[4dp, 60dp]`）⇒ 与旧实现（胶囊节点自身 bounds）**逐帧、逐轴一致，无已知偏离**；
+ *     否则"按任意页签"都会触发 56→78dp 按压鼓包 + 拖动（行为变更）。
+ *  2. 高光手势（[InteractiveHighlight.gestureModifier]）**留在胶囊上**、**不**放静态宿主：
+ *     静态宿主无门禁，若把高光手势也放上去，高光 pressAnimatable 会在"按任意页签"时被
+ *     点亮（高光画在胶囊处）—— 同样破坏「行为零变化」。
  *
  * ## 关于 `interactiveHighlight.modifier` 的分层（Wave 10 修正）
  *
  * ⚠️ `InteractiveHighlight.pressAnimatable` 是**实例字段**（`InteractiveHighlight.kt:84`），
  * 而本组件的 `interactiveHighlight` 是**单实例**（见下方 `remember(animationScope)`）——
- * 第 3 层胶囊的 `gestureModifier`（`:561`）驱动的就是**同一个** `pressAnimatable`。
+ * 第 3 层胶囊的 `gestureModifier`（见胶囊 Modifier 链）驱动的就是**同一个** `pressAnimatable`。
  * 因此它驱动的按压进度是**全层共享**的：
  *  - **第 1 层（可见玻璃条）必须保留 `.then(interactiveHighlight.modifier)`**：
  *    它绘制的白色径向高光（`InteractiveHighlight.kt:109-128`，半径 `min(w,h)*0.9`，
@@ -161,10 +208,12 @@ private val LocalLiquidBottomTabScale = staticCompositionLocalOf<() -> Float> { 
  *
  * ## 为什么 8dp consumeSlopPx 是**必须**的
  *
- * 指示胶囊叠在选中的页签上面，一次点击会**同时**命中胶囊的拖动手势和页签的
- * `clickable`。若手势一有位移就 `consume()`，真机点击的亚像素抖动就会取消
- * clickable 的按压 → **点击选中页签没反应**（GlassSwitch 踩过的同一口井）。
+ * 静态手势宿主（覆盖整条底栏）与选中页签的 `clickable` 在同一区域叠着，一次点击会
+ * **同时**命中拖动手势和页签的 `clickable`。若手势一有位移就 `consume()`，真机点击的
+ * 亚像素抖动就会取消 clickable 的按压 → **点击选中页签没反应**（GlassSwitch 踩过的同一口井）。
  * 越过 8dp slop 才消费，"点击"与"拖动换页"两条路径干净分开。
+ * （Phase 2d 起拖动手势挂在静态宿主上、并由 `canStartDrag` 门禁限定起手区域为胶囊格；
+ *  门禁不过的按下**不消费**，非当前页签的点击照常。）
  *
  * ## 页签切换的数据流（2026-09-24 Wave 6b 重构：**onSelected 只在用户位点发**）
  *
@@ -225,12 +274,13 @@ fun LiquidBottomTabs(
     // 再加各自的 delta，谁最后写谁生效 → 累加丢帧 → 面板 ±4dp 抽搐（真机反馈）。
     // 同步累加在 onDrag 当帧完成，没有任何在途协程读旧值。
     //
-    // ⚠️ Wave 10：这两个 State **刻意声明在 BoxWithConstraints 之外**，平移只挂到最外层
-    // 一个 graphicsLayer 上（见下方 BoxWithConstraints 的 modifier）。原先三层各自
-    // `.graphicsLayer { translationX = panelOffset.value }`、胶囊再自己 `+ panelOffset.value`
-    // —— 三层平移同一个 panelOffset 等价于"整体平移"；外层挂一次语义完全一致，但每帧
-    // 只有 1 个 layer 失效（原先是 3 个）。BoxWithConstraints 自身无背景绘制，
-    // 所以"移动整体"不引入任何视觉差异。
+    // ⚠️ Wave 10：这两个 State **刻意声明在 BoxWithConstraints 之外**，平移只挂到
+    // **只包视觉三层的内层 wrapper** 一个 graphicsLayer 上（见下方 wrapper 的 modifier）。
+    // 原先三层各自 `.graphicsLayer { translationX = panelOffset.value }`、胶囊再自己
+    // `+ panelOffset.value` —— 三层平移同一个 panelOffset 等价于"整体平移"；收敛到一层
+    // 语义完全一致，但每帧只有 1 个 layer 失效（原先是 3 个）。
+    // ⚠️ Phase 2d：平移**不再**挂在 BoxWithConstraints 上 —— 必须留在内层 wrapper，
+    // 这样静态手势宿主（BoxWithConstraints 的另一个子节点）才不被平移（见类 KDoc「坐标反馈」）。
     val panelOffsetPx = remember { mutableStateOf(0f) }
     val panelOffset = remember(density) {
         derivedStateOf {
@@ -246,442 +296,562 @@ fun LiquidBottomTabs(
         }
     }
 
-    BoxWithConstraints(
-        modifier = modifier.graphicsLayer { translationX = panelOffset.value },
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        // 容器左右各 4dp 内边距（下面三层都带同一 4dp），可用宽度 = maxWidth - 8dp。
-        val tabWidth = with(density) {
-            (constraints.maxWidth.toFloat() - 8f.dp.toPx()) / tabsCount
-        }
-        // Wave4 审查（B-P0-3/P1-3）：5 项后窄容器（分屏 / 自由窗口可低至 ~206dp）单项
-        // 宽度跌破 48dp 触摸标准且文字被 Clip 成半个字。完整修法（横向滚动 + 宽度同源）
-        // 需要联动改 4 处几何，本轮不做；先用「窄容器退化为纯图标」缓解拥挤与截字 ——
-        // 触摸目标问题的根治方案连同 4 处联动清单记入蓝图 §4 backlog。
-        val compactTabs = with(density) { (tabWidth.toDp()) < 56.dp }
-        // 带守卫的写入：值没变不触发失效，不会造成"组合期写状态"的重组循环。
-        if (tabWidthState.value != tabWidth) tabWidthState.value = tabWidth
-        val maxWidthPx = constraints.maxWidth.toFloat()
-        if (containerWidthState.value != maxWidthPx) containerWidthState.value = maxWidthPx
-
-        // 面板拉伸偏移（panelOffsetPx / panelOffset）已上移到 BoxWithConstraints 之外
-        // （见该处注释：平移只在最外层挂一次 graphicsLayer）。
-        // 松手回弹的在途协程。新一次拖动开始要先取消它 —— 否则回弹一边归零、拖动一边
-        // 累加，两者对同一个 State 互相覆盖，面板又抖。
-        val panelReboundJob = remember { mutableStateOf<Job?>(null) }
-
-        // 内部选中态：单击页签与拖动胶囊都只改它，由它统一驱动动画与回调。
-        var currentIndex by remember { mutableStateOf(safeSelectedIndex) }
-
-        // ⚠️ consumeSlopPx 必须 8dp（见类 KDoc）——"点击选中页签没反应"的保险丝。
-        val consumeSlopPx = with(density) { 8.dp.toPx() }
-
-        // 拖动期的绝对映射基准（按下快照 / 手势内累积）。
-        //
-        // ⚠️ 拖动唯一的事实来源是**手势本身**，不是异步回显链：旧实现把
-        //「当前目标值 + 本帧位移增量」交给 `updateValue`，而 `updateValue` 内部是
-        // `animateTo(spring)`（**收敛动画，不是瞬时**），拖动期每帧重启弹簧 → 弹簧永远
-        // 追不上每帧前移的目标 → 胶囊恒定滞后手指（"不跟手"）；单帧只走"一步"而目标走
-        // "一个手指增量" → 误差随拖动距离单调累积（"越远越偏差"）；速度快时弹簧速度反向
-        // 打架 → 抽搐。绝对映射 + snapValue（瞬时到位）彻底解耦，与 GlassSlider 同一套修法。
-        //
-        // ⚠️ 锚点 = receiver 的实时 `value`（onDragStarted 已带 receiver，见
-        // DampedDragAnimation）——不能用 currentIndex：点击动画进行中按住胶囊时
-        // 两者可能差出数个页签，旧锚点的第一帧 snapValue 会把胶囊瞬移到 currentIndex
-        //（真机录屏"首尾乱飘"的来源之一）。
-        var dragAccumPx by remember { mutableStateOf(0f) }
-        var dragStartValue by remember { mutableStateOf(0f) }
-
-        // onSelected 的最新引用：onDragStopped / 页签 onClick 两个**用户动作位点**
-        // 直接回调（见各处注释——绝不能挂回 snapshotFlow 收集器）。必须声明在
-        // dampedDragAnimation 之前：onDragStopped 闭包要捕获它。
-        val onSelectedCallback by rememberUpdatedState(onSelected)
-        // 触感用同一条纪律：只发在 onDragStopped 与页签 onClick 两个用户动作位点。
-        // 绝不进 LaunchedEffect(selectedIndex) 或 snapshotFlow 收集器 ——
-        // 导航返回 / 程序化切换都会触达那里，会变成"返回上一页也震"。
-        val haptics = rememberGlassHaptics()
-        val currentHaptics by rememberUpdatedState(haptics)
-
-        val dampedDragAnimation = remember(animationScope) {
-            DampedDragAnimation(
-                animationScope = animationScope,
-                initialValue = safeSelectedIndex.toFloat(),
-                valueRange = 0f..(tabsCount - 1).toFloat(),
-                visibilityThreshold = 0.001f,
-                initialScale = 1f,
-                // 56dp 的胶囊按下时放大到 78dp 高 —— Kyant0 BottomTabs 的实测值。
-                pressedScale = 78f / 56f,
-                consumeSlopPx = consumeSlopPx,
-                // ⚠️ 底栏**没有纵向滚动父级**（MainShell 的 Column 上下都无
-                // verticalScroll），让位锁在这里是纯害：拖页签时手指的自然弧线会让
-                // net-vertical 越过 tan30° 阈值 → 拖拽**中途冻结**（2026-09-24 真机
-                // 录屏"拉越远越偏移"的来源之一）。必须关掉。
-                canYieldToParent = false,
-                onDragStarted = {
-                    // 新一次拖动：取消在途回弹，避免它与拖动同时写 panelOffsetPx。
-                    panelReboundJob.value?.cancel()
-                    panelReboundJob.value = null
-                    // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
-                    // ⚠️ 锚点必须用 **receiver 的实时 value**（胶囊此刻的真实位置），
-                    // 不能用 currentIndex：点击动画进行中按住胶囊时两者可能差半个
-                    // 屏 —— 旧锚点会让第一帧 snapValue 把胶囊**瞬移**到 currentIndex
-                    // （真机录屏 6.060s/6.193s 帧"首尾乱飘"的来源之一）。
-                    dragAccumPx = 0f
-                    dragStartValue = this.value
-                },
-                onDragStopped = {
-                    // 松手：四舍五入到最近页签，内部态收敛，面板拉伸弹回 0。
-                    val targetIndex = targetValue.roundToInt().coerceIn(0, tabsCount - 1)
-                    currentIndex = targetIndex
-                    animateToValue(targetIndex.toFloat())
-                    // ⚠️ onSelected 只在**用户完成动作**的两个位点（这里与页签单击）
-                    // 直接回调 —— 绝不能挂回 snapshotFlow 收集器：外部回显写
-                    // currentIndex 也会触达收集器，若在那里再发 onSelected →
-                    // navigateTop → selectedIndex 回压 → 再写 currentIndex，
-                    // 就是真机录屏实证的"胶囊两端自激振荡"（2026-09-24 Wave 6b）。
-                    onSelectedCallback(targetIndex)
-                    // 拖动换页提交 → 一次 tick（页签是离散档位）。
-                    //
-                    // ⚠️ 只认 `finishedNormally`：onDragStopped 在 `finally` 里执行，
-                    // pointerInput 协程被取消（旋转 / 导航 / 页面销毁）时也会走到这里，
-                    // 那时并不是一次用户提交。（本控件 `canYieldToParent = false`，
-                    // 没有"让位给滚动"这条路径，故不判 yieldedToParent —— 与
-                    // GlassSegmented 的门禁口径差异就来自这个开关。）
-                    if (finishedNormally) currentHaptics.tick()
-                    // 面板拉伸弹回：从当前累加值出发做一次弹簧（**单个**协程，非每帧）。
-                    val start = panelOffsetPx.value
-                    if (start != 0f) {
-                        panelReboundJob.value?.cancel()
-                        panelReboundJob.value = animationScope.launch {
-                            animate(
-                                initialValue = start,
-                                targetValue = 0f,
-                                animationSpec = spring(
-                                    dampingRatio = 1f,
-                                    stiffness = 300f,
-                                    visibilityThreshold = 0.5f,
-                                ),
-                            ) { value, _ -> panelOffsetPx.value = value }
-                        }
-                    }
-                },
-                onDrag = { _, dragAmount ->
-                    // 面板拉伸：**同步累加**（当帧完成），不再每帧 launch。
-                    panelOffsetPx.value += dragAmount.x
-                    // 胶囊位置：手势内累积 → 绝对映射（每移动一个 tabWidth 前进一页），
-                    // 与异步回显完全解耦。
-                    dragAccumPx += dragAmount.x
-                    val tabWidth = tabWidthState.value
-                    if (tabWidth > 0f) {
-                        val raw = dragStartValue + dragAccumPx / tabWidth * if (isLtr) 1f else -1f
-                        val coerced = raw.coerceIn(0f, (tabsCount - 1).toFloat())
-                        // 值没变不重复 snapValue：掐掉亚像素抖动造成的无意义协程启动。
-                        if (coerced != targetValue) snapValue(coerced)
-                    }
-                },
-            )
-        }
-
-        // 外部选中态变化（导航返回 / 程序化切换）→ 写回内部态。
-        // ⚠️ 2026-09-24 Wave 6b 门禁：**拖拽进行中绝不回写**。拖拽期手势（snapValue）
-        // 是胶囊位置的唯一事实来源；导航回压（navigateTop 落地晚于手势开始）此刻写
-        // currentIndex，会经收集器触发一次 animateToValue 旧页签，与 snapValue 逐帧
-        // 互搏 —— 真机录屏实证的"胶囊两端自激振荡"（手指按住对话、胶囊在对话/设置
-        // 间逐帧横跳 1.6 秒）。拖拽结束后 onDragStopped 提交用户的选择，这里错过的
-        // 回写由那次提交覆盖（onSelected 已把导航带到用户要的页签）。
-        LaunchedEffect(selectedIndex) {
-            if (!dampedDragAnimation.isDragging) currentIndex = safeSelectedIndex
-        }
-        // 内部态变化 → 弹簧动画到位。drop(1)：初始组合不回调。
-        // ⚠️ onSelected **不在收集器里发**：收集器也会被外部回显写触达，若在那里
-        // 发 onSelected → navigateTop → selectedIndex 回压 → 再写 currentIndex →
-        // 再进收集器 —— 反馈环闭合，任何一次回显都能自激振荡。用户动作的两个
-        // 位点（onClick / onDragStopped）直接回调，环被切断。
-        // key 只留 dampedDragAnimation：调用方的 lambda 字面量每次重组都是新实例，
-        // 用 rememberUpdatedState 让闭包始终读最新 lambda（见上方声明处）。
-        LaunchedEffect(dampedDragAnimation) {
-            snapshotFlow { currentIndex }
-                .drop(1)
-                .collectLatest { index ->
-                    // 点击切换（及外部选中态回流）走 TabSwitch 规格 —— 2026-09-24
-                    // 真机修正后与上游一致（临界阻尼快弹簧，≈120ms 收敛，无过冲）。
-                    dampedDragAnimation.animateToValue(
-                        index.toFloat(),
-                        LiquidMotion.floatSpring(LiquidMotion.TabSwitch),
-                    )
-                }
-        }
-
-        // 高光中心跟随"胶囊当前位置"而不是手指落点 —— 手指在哪不重要，
-        // 玻璃胶囊滑到哪，高光就在哪。
-        val interactiveHighlight = remember(animationScope) {
-            InteractiveHighlight(
-                animationScope = animationScope,
-                position = { size, _ ->
-                    // 与胶囊 translationX 同一套钳制（见下方 renderValue 注释）。
-                    val v = dampedDragAnimation.value.coerceIn(0f, (tabsCount - 1).toFloat())
-                    Offset(
-                        if (isLtr) {
-                            (v + 0.5f) * tabWidthState.value
-                        } else {
-                            size.width - (v + 0.5f) * tabWidthState.value
-                        },
-                        size.height / 2f,
-                    )
-                },
-            )
-        }
-
-        // 两行共用同一份内容 lambda：保证可见行与回显行逐帧一致。
-        val tabsContent: @Composable RowScope.() -> Unit = {
-            tabs.forEachIndexed { index, tab ->
-                LiquidBottomTab(
-                    tab = tab,
-                    selected = index == currentIndex,
-                    // ⚠️ onSelected 在用户动作位点直发（非收集器）——见收集器处注释。
-                    // 点当前页签时 currentIndex 不变、onSelected 照发，由调用方的
-                    // "destination != selected" 守卫去重（MainShell 的 onSelect）。
-                    onClick = {
-                        currentIndex = index
-                        onSelectedCallback(index)
-                        // 点击换页 → 一次 tick（与拖动换页同规格）。
-                        currentHaptics.tick()
-                    },
-                    showLabel = !compactTabs,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-
-        /* ── 第 1 层：滑动指示面板（可见玻璃条）────────────────────────────── */
-        Row(
-            Modifier
-                // 无障碍分组（三线审查 Wave10）：TalkBack 把整行当一组页签播报，
-                // 配合每个页签的 selected 才有「第 N 项，已选中，共 M 项」的语义。
-                .selectableGroup()
-                .drawBackdrop(
-                    backdrop = wallpaperBackdrop,
-                    shape = { Capsule },
-                    effects = {
-                        if (config.enableBackdropBlur) {
-                            vibrancy(saturation = VibrancySaturation)
-                            blur(8f.dp.toPx())
-                            // 导航栏比按钮大，折射带要给足（Kyant0 Tabs：24,24）。
-                            lens(refractionHeight = 24f.dp.toPx(), refractionAmount = 24f.dp.toPx())
-                        }
-                    },
-                    layerBlock = {
-                        // 按压时整条面板微微放大（相对宽度归一化，避免宽屏拉过头）。
-                        val progress = dampedDragAnimation.pressProgress
-                        val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
-                        scaleX = scale
-                        scaleY = scale
-                    },
-                    onDrawSurface = {
-                        if (config.enableBackdropBlur) {
-                            // 正常路径：THICK 底色上亮下暗垂直渐变，与 liquidGlass 同一配方。
-                            val baseAlpha = thick.backgroundAlpha
-                            drawRect(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        colors.glassTint.copy(alpha = baseAlpha),
-                                        colors.glassTintElevated
-                                            .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
-                                    ),
-                                    startY = 0f,
-                                    endY = size.height,
-                                )
-                            )
-                        } else {
-                            // 退化路径（背景模糊关）：常驻底色，不读任何动画状态 ——
-                            // 与 liquidGlass 门面「底色 + 高光」的退化承诺对齐。
-                            drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
-                        }
-                    },
-                )
-                .then(interactiveHighlight.modifier)
-                .height(64.dp)
-                .fillMaxWidth()
-                .padding(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            content = tabsContent,
-        )
-
-        /* ── 第 2 层：隐形回显行（录进 tabsBackdrop，供胶囊折射）───────────── */
-        CompositionLocalProvider(
-            LocalLiquidBottomTabScale provides {
-                lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
-            }
+    // 外层 Box：只承载调用方 modifier，**静态**（不随 panelOffset 平移）。
+    // ⚠️ Wave 10 Phase 2d 坐标反馈修复：手势宿主必须是**静态**节点 —— 旧实现把
+    // `dampedDragAnimation.modifier` 挂在被 `graphicsLayer { translationX }` 平移的胶囊
+    // 节点上 ⇒ 手势节点与被驱动节点是同一个 ⇒ `PointerInputChange.position`（节点局部
+    // 坐标）里已扣掉胶囊自身位移 ⇒ `dragAccumPx = 手指 − dragAccumPx` ⇒ 胶囊恒走手指
+    // 一半（真机实测斜率 0.489，n=47）。修复：视觉平移只留在内层 wrapper，手势宿主迁到
+    // 下方**静态**覆盖层，二者彻底分离（见类 KDoc「坐标反馈」）。
+    Box(modifier = modifier) {
+        BoxWithConstraints(
+            contentAlignment = Alignment.CenterStart,
         ) {
-            Row(
-                Modifier
-                    // 回显行不参与无障碍 / 触摸（真实交互在第 1 层与第 3 层）。
-                    .clearAndSetSemantics {}
-                    // alpha(0f) 挂在 layerBackdrop **之前**：录制时拿到的是不透明内容，
-                    // 上屏时整层透明 —— "屏幕上看不见、玻璃里看得见"。
-                    .alpha(0f)
-                    .layerBackdrop(tabsBackdrop)
-                    .drawBackdrop(
-                        backdrop = wallpaperBackdrop,
-                        shape = { Capsule },
-                        effects = {
-                            val progress = dampedDragAnimation.pressProgress
-                            if (config.enableBackdropBlur) {
-                                vibrancy(saturation = VibrancySaturation)
-                                blur(8f.dp.toPx())
-                                lens(
-                                    refractionHeight = 24f.dp.toPx() * progress,
-                                    refractionAmount = 24f.dp.toPx() * progress,
-                                )
-                            }
-                        },
-                        highlight = {
-                            if (config.enableBackdropBlur) {
-                                val progress = dampedDragAnimation.pressProgress
-                                Highlight.Default.copy(alpha = progress)
-                            } else {
-                                // 退化路径：高光是门面退化承诺的一半，不能被 progress=0 关死。
-                                Highlight.Default
-                            }
-                        },
-                        onDrawSurface = {
-                            if (config.enableBackdropBlur) {
-                                val baseAlpha = thick.backgroundAlpha
-                                drawRect(
-                                    Brush.verticalGradient(
-                                        colors = listOf(
-                                            colors.glassTint.copy(alpha = baseAlpha),
-                                            colors.glassTintElevated
-                                                .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
-                                        ),
-                                        startY = 0f,
-                                        endY = size.height,
-                                    )
-                                )
-                            } else {
-                                // 退化路径：常驻底色，不读任何动画状态。
-                                drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
-                            }
-                        },
-                    )
-                    .height(56.dp)
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp)
-                    // 整层 tint 成强调色：胶囊折射看到的"发光页签"就是这层染色的内容。
-                    .graphicsLayer(colorFilter = ColorFilter.tint(colors.accent)),
-                verticalAlignment = Alignment.CenterVertically,
-                content = tabsContent,
-            )
-        }
+            // 容器左右各 TabPad 内边距（下面三层都带同一内衬），可用宽度 = maxWidth − 2×TabPad。
+            // ⚠️ 必须写成 `TabPad * 2f` 而不是字面量 `8f.dp`：这个 tabWidth 同时喂给**起手门禁**
+            // 与**胶囊 translationX**，而真实格宽由 `.padding(horizontal = TabPad)` 决定 ——
+            // 若这里另有一份字面量来源，改 TabPad 时两者会一起**静默漂移**且不报错
+            //（正是本轮引入常量要消除的失败模式，审查 P2-1）。
+            val tabWidth = with(density) {
+                (constraints.maxWidth.toFloat() - (TabPad * 2f).toPx()) / tabsCount
+            }
+            // Wave4 审查（B-P0-3/P1-3）：5 项后窄容器（分屏 / 自由窗口可低至 ~206dp）单项
+            // 宽度跌破 48dp 触摸标准且文字被 Clip 成半个字。完整修法（横向滚动 + 宽度同源）
+            // 需要联动改 4 处几何，本轮不做；先用「窄容器退化为纯图标」缓解拥挤与截字 ——
+            // 触摸目标问题的根治方案连同 4 处联动清单记入蓝图 §4 backlog。
+            // ⚠️ 这里的 `56.dp` 是**单项最小宽度**阈值（宽度量），与 [TabCapsuleHeight]
+            // （高度量，同为 56dp）只是**数值巧合、语义无关** —— 勿"顺手清理"合并为同一常量：
+            // 合并后"改胶囊高度"会连带改掉"窄容器退化阈值"，且不报错。
+            val compactTabs = with(density) { (tabWidth.toDp()) < 56.dp }
+            // 带守卫的写入：值没变不触发失效，不会造成"组合期写状态"的重组循环。
+            if (tabWidthState.value != tabWidth) tabWidthState.value = tabWidth
+            val maxWidthPx = constraints.maxWidth.toFloat()
+            if (containerWidthState.value != maxWidthPx) containerWidthState.value = maxWidthPx
 
-        /* ── 第 3 层：滑动指示胶囊（手势 + 折射都在这层）───────────────────── */
-        Box(
-            Modifier
-                .padding(horizontal = 4.dp)
-                .graphicsLayer {
-                    // 渲染值钳制（2026-09-24 Wave 6）：把 value 限回页签区间再参与定位。
-                    // TabSwitch 改临界阻尼后弹簧本身不再过冲，这是**防御层**——将来若有
-                    // 人把规格改回欠阻尼（或引入带初速的重定向），钳制保证胶囊永不画出
-                    // 玻璃条两端（真机录屏 6.060s / 6.193s 帧的"漂移越界"）。拖动路径的
-                    // snapValue 与点击路径的 animateToValue 目标都已 coerce，钳制在正常
-                    // 路径是恒等变换，零开销。
-                    val renderValue = dampedDragAnimation.value
-                        .coerceIn(0f, (tabsCount - 1).toFloat())
-                    translationX =
-                        if (isLtr) {
-                            renderValue * tabWidthState.value
+            // 面板拉伸偏移（panelOffsetPx / panelOffset）已上移到 BoxWithConstraints 之外，
+            // 平移只在**内层 wrapper** 挂一次 graphicsLayer（见该处注释）。
+            // 松手回弹的在途协程。新一次拖动开始要先取消它 —— 否则回弹一边归零、拖动一边
+            // 累加，两者对同一个 State 互相覆盖，面板又抖。
+            val panelReboundJob = remember { mutableStateOf<Job?>(null) }
+
+            // 内部选中态：单击页签与拖动胶囊都只改它，由它统一驱动动画与回调。
+            var currentIndex by remember { mutableStateOf(safeSelectedIndex) }
+
+            // ⚠️ consumeSlopPx 必须 8dp（见类 KDoc）——"点击选中页签没反应"的保险丝。
+            val consumeSlopPx = with(density) { 8.dp.toPx() }
+
+            // 拖动期的绝对映射基准（按下快照 / 手势内累积）。
+            //
+            // ⚠️ 拖动唯一的事实来源是**手势本身**，不是异步回显链：旧实现把
+            //「当前目标值 + 本帧位移增量」交给 `updateValue`，而 `updateValue` 内部是
+            // `animateTo(spring)`（**收敛动画，不是瞬时**），拖动期每帧重启弹簧 → 弹簧永远
+            // 追不上每帧前移的目标 → 胶囊恒定滞后手指（"不跟手"）；单帧只走"一步"而目标走
+            // "一个手指增量" → 误差随拖动距离单调累积（"越远越偏差"）；速度快时弹簧速度反向
+            // 打架 → 抽搐。绝对映射 + snapValue（瞬时到位）彻底解耦，与 GlassSlider 同一套修法。
+            //
+            // ⚠️ 锚点 = receiver 的实时 `value`（onDragStarted 已带 receiver，见
+            // DampedDragAnimation）——不能用 currentIndex：点击动画进行中按住胶囊时
+            // 两者可能差出数个页签，旧锚点的第一帧 snapValue 会把胶囊瞬移到 currentIndex
+            //（真机录屏"首尾乱飘"的来源之一）。
+            var dragAccumPx by remember { mutableStateOf(0f) }
+            var dragStartValue by remember { mutableStateOf(0f) }
+
+            // onSelected 的最新引用：onDragStopped / 页签 onClick 两个**用户动作位点**
+            // 直接回调（见各处注释——绝不能挂回 snapshotFlow 收集器）。必须声明在
+            // dampedDragAnimation 之前：onDragStopped 闭包要捕获它。
+            val onSelectedCallback by rememberUpdatedState(onSelected)
+            // 触感用同一条纪律：只发在 onDragStopped 与页签 onClick 两个用户动作位点。
+            // 绝不进 LaunchedEffect(selectedIndex) 或 snapshotFlow 收集器 ——
+            // 导航返回 / 程序化切换都会触达那里，会变成"返回上一页也震"。
+            val haptics = rememberGlassHaptics()
+            val currentHaptics by rememberUpdatedState(haptics)
+
+            val dampedDragAnimation = remember(animationScope) {
+                DampedDragAnimation(
+                    animationScope = animationScope,
+                    initialValue = safeSelectedIndex.toFloat(),
+                    valueRange = 0f..(tabsCount - 1).toFloat(),
+                    visibilityThreshold = 0.001f,
+                    initialScale = 1f,
+                    // 56dp 的胶囊按下时放大到 78dp 高 —— Kyant0 BottomTabs 的实测值。
+                    // 写成两个常量求比值（审查 P2-2）：改 [TabCapsuleHeight] 时按压比例自动跟随，
+                    // 不会留下"分母与胶囊高脱钩"的第二份来源。
+                    pressedScale = TabPressedHeight.value / TabCapsuleHeight.value,
+                    consumeSlopPx = consumeSlopPx,
+                    // ⚠️ 底栏**没有纵向滚动父级**（MainShell 的 Column 上下都无
+                    // verticalScroll），让位锁在这里是纯害：拖页签时手指的自然弧线会让
+                    // net-vertical 越过 tan30° 阈值 → 拖拽**中途冻结**（2026-09-24 真机
+                    // 录屏"拉越远越偏移"的来源之一）。必须关掉。
+                    canYieldToParent = false,
+                    // ⚠️ 起手门禁（Wave 10 Phase 2d）：拖动手势已迁到**静态**宿主（覆盖整
+                    // 条底栏），必须逐轴复刻旧实现"手势挂在胶囊节点上 ⇒ 抓取区 = 胶囊自身
+                    // bounds"的命中区 —— 否则"按任意页签"都会触发 56→78dp 按压鼓包 + 拖动
+                    //（Ruling 1）。
+                    // 门禁读**胶囊实时位置**：`value`（胶囊动画值）+ `panelOffset`（内层
+                    // wrapper 的平移）⇒ 抓取区与旧实现**逐帧、逐轴一致，无已知偏离**
+                    //（不再用 currentIndex，也就没有"动画窗口内偏半格"那类偏离）。
+                    // 入参 `pos` 是**宿主局部坐标**（宿主 = matchParentSize 覆盖整条，与
+                    // 内层 wrapper 同原点、同宽度）。
+                    canStartDrag = { pos ->
+                        val tabWidth = tabWidthState.value
+                        val width = containerWidthState.value
+                        if (tabWidth <= 0f || width <= 0f) {
+                            false
                         } else {
-                            size.width - (renderValue + 1f) * tabWidthState.value
-                        }
-                }
-                .then(interactiveHighlight.gestureModifier)
-                .then(dampedDragAnimation.modifier)
-                .drawBackdrop(
-                    // 背景 = 壁纸 + 回显行：折射同时弯折壁纸与染色的页签内容。
-                    backdrop = rememberCombinedBackdrop(wallpaperBackdrop, tabsBackdrop),
-                    shape = { Capsule },
-                    effects = {
-                        val progress = dampedDragAnimation.pressProgress
-                        // 胶囊小（1/tabsCount 宽），7 次采样扛得住 —— 色散开。
-                        // 这是 Kyant0 在指示胶囊上唯一开色散的位置。
-                        if (config.enableBackdropBlur) {
-                            lens(
-                                refractionHeight = 10f.dp.toPx() * progress,
-                                refractionAmount = 14f.dp.toPx() * progress,
-                                chromaticAberration = true,
-                            )
+                            // 胶囊左缘（含 panelOffset —— 胶囊实际位于被平移的 wrapper 内）。
+                            // LTR = 内边距 + 平移 + 值*格宽；RTL 镜像（平移同为正向）。
+                            val padPx = with(density) { TabPad.toPx() }
+                            val v = value.coerceIn(0f, (tabsCount - 1).toFloat())
+                            val left = if (isLtr) {
+                                padPx + panelOffset.value + v * tabWidth
+                            } else {
+                                width - padPx - (v + 1) * tabWidth + panelOffset.value
+                            }
+                            // 纵向：宿主高 = 玻璃条高（64dp）、胶囊 56dp 居中
+                            // ⇒ 旧实现（手势挂胶囊节点）的纵向命中区 [4dp, 60dp]。
+                            val hostH = with(density) { TabBarHeight.toPx() }
+                            val capsuleH = with(density) { TabCapsuleHeight.toPx() }
+                            val top = (hostH - capsuleH) / 2f
+                            val bottom = (hostH + capsuleH) / 2f
+                            pos.x >= left && pos.x <= left + tabWidth &&
+                                pos.y >= top && pos.y <= bottom
                         }
                     },
-                    highlight = {
-                        if (config.enableBackdropBlur) {
-                            val progress = dampedDragAnimation.pressProgress
-                            Highlight.Default.copy(alpha = progress)
-                        } else {
-                            // 退化路径：高光常驻，不随按压（与回显行同一处理）。
-                            Highlight.Default
-                        }
+                    onDragStarted = {
+                        // 新一次拖动：取消在途回弹，避免它与拖动同时写 panelOffsetPx。
+                        panelReboundJob.value?.cancel()
+                        panelReboundJob.value = null
+                        // 按下瞬间快照：本次手势的一切增量都从它出发（绝对映射）。
+                        // ⚠️ 锚点必须用 **receiver 的实时 value**（胶囊此刻的真实位置），
+                        // 不能用 currentIndex：点击动画进行中按住胶囊时两者可能差半个
+                        // 屏 —— 旧锚点会让第一帧 snapValue 把胶囊**瞬移**到 currentIndex
+                        // （真机录屏 6.060s/6.193s 帧"首尾乱飘"的来源之一）。
+                        dragAccumPx = 0f
+                        dragStartValue = this.value
                     },
-                    shadow = {
-                        val progress = dampedDragAnimation.pressProgress
-                        Shadow(alpha = progress)
-                    },
-                    innerShadow = {
-                        val progress = dampedDragAnimation.pressProgress
-                        InnerShadow(radius = 8f.dp * progress, alpha = progress)
-                    },
-                    layerBlock = {
-                        // 按压缩放（DampedDragAnimation 的 scaleX/scaleY）
-                        // + 速度各向异性：拖得快沿运动方向拉长、垂直方向压扁。
+                    onDragStopped = {
+                        // 松手：四舍五入到最近页签，内部态收敛，面板拉伸弹回 0。
+                        val targetIndex = targetValue.roundToInt().coerceIn(0, tabsCount - 1)
+                        currentIndex = targetIndex
+                        animateToValue(targetIndex.toFloat())
+                        // ⚠️ onSelected 只在**用户完成动作**的两个位点（这里与页签单击）
+                        // 直接回调 —— 绝不能挂回 snapshotFlow 收集器：外部回显写
+                        // currentIndex 也会触达收集器，若在那里再发 onSelected →
+                        // navigateTop → selectedIndex 回压 → 再写 currentIndex，
+                        // 就是真机录屏实证的"胶囊两端自激振荡"（2026-09-24 Wave 6b）。
+                        onSelectedCallback(targetIndex)
+                        // 拖动换页提交 → 一次 tick（页签是离散档位）。
                         //
-                        // ⚠️ 已知取舍（本轮 P0 拖动跟手改造引入）：拖动改用 snapValue
-                        //（瞬时到位）后，`valueAnimatable` 不再保留"未走完的弹簧速度"，
-                        // `velocity` 会偏小 → 这里的各向异性拉伸在**拖动中**会减弱
-                        //（松手回弹那一段仍有速度，拉伸还在）。换取的是胶囊**严格跟手**
-                        //（真机"不跟手/越远越偏差"的根治）——跟手优先。
-                        // 若真机确认拉伸观感缺失，再单独调 velocity 的来源，
-                        // **不为此回退绝对映射**。
-                        scaleX = dampedDragAnimation.scaleX
-                        scaleY = dampedDragAnimation.scaleY
-                        val velocity = dampedDragAnimation.velocity / 10f
-                        scaleX /= 1f - (velocity * 0.75f).coerceIn(-0.2f, 0.2f)
-                        scaleY *= 1f - (velocity * 0.25f).coerceIn(-0.2f, 0.2f)
+                        // ⚠️ 只认 `finishedNormally`：onDragStopped 在 `finally` 里执行，
+                        // pointerInput 协程被取消（旋转 / 导航 / 页面销毁）时也会走到这里，
+                        // 那时并不是一次用户提交。（本控件 `canYieldToParent = false`，
+                        // 没有"让位给滚动"这条路径，故不判 yieldedToParent —— 与
+                        // GlassSegmented 的门禁口径差异就来自这个开关。）
+                        if (finishedNormally) currentHaptics.tick()
+                        // 面板拉伸弹回：从当前累加值出发做一次弹簧（**单个**协程，非每帧）。
+                        val start = panelOffsetPx.value
+                        if (start != 0f) {
+                            panelReboundJob.value?.cancel()
+                            panelReboundJob.value = animationScope.launch {
+                                animate(
+                                    initialValue = start,
+                                    targetValue = 0f,
+                                    animationSpec = spring(
+                                        dampingRatio = 1f,
+                                        stiffness = 300f,
+                                        visibilityThreshold = 0.5f,
+                                    ),
+                                ) { value, _ -> panelOffsetPx.value = value }
+                            }
+                        }
                     },
-                    onDrawSurface = {
-                        // ⚠️ 正常路径刻意**不用** THICK 底色：面板（第 1 层）已经是 THICK，
-                        // 胶囊再叠一层厚底色会把回显行的强调色盖掉、"发光"就没了。
-                        // 这里只压一层薄对比色把胶囊从面板里衬出来（Kyant0 原配方），
-                        // 按下时淡出、换成阴影表达"被按住"。
-                        val progress = dampedDragAnimation.pressProgress
-                        if (config.enableBackdropBlur) {
-                            drawRect(
-                                if (colors.isDark) {
-                                    Color.White.copy(alpha = 0.10f)
-                                } else {
-                                    Color.Black.copy(alpha = 0.10f)
-                                },
-                                alpha = 1f - progress,
-                            )
-                            drawRect(Color.Black.copy(alpha = 0.03f * progress))
-                        } else {
-                            // 退化路径：折射没了，"选中"信号改由**常驻底色 + accent 描边**
-                            // 承担（描边即选中，不依赖折射链，也不读 pressProgress ——
-                            // 常驻层不引入逐帧重绘）。
-                            // 描边用 drawRoundRect + Stroke（qa-review 认可的等价方案）：
-                            // 半径 = min(w,h)/2，与 Capsule.createOutline 的公式完全一致，
-                            // 避免 drawOutline 的引用解析问题（CI 实测 Unresolved）。
-                            drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
-                            val capsuleRadius = minOf(size.width, size.height) / 2f
-                            drawRoundRect(
-                                color = colors.accent.copy(alpha = 0.35f),
-                                cornerRadius = CornerRadius(capsuleRadius, capsuleRadius),
-                                style = Stroke(width = 1.dp.toPx()),
-                            )
+                    onDrag = { _, dragAmount ->
+                        // 面板拉伸：**同步累加**（当帧完成），不再每帧 launch。
+                        panelOffsetPx.value += dragAmount.x
+                        // 胶囊位置：手势内累积 → 绝对映射（每移动一个 tabWidth 前进一页），
+                        // 与异步回显完全解耦。
+                        dragAccumPx += dragAmount.x
+                        val tabWidth = tabWidthState.value
+                        if (tabWidth > 0f) {
+                            val raw = dragStartValue + dragAccumPx / tabWidth * if (isLtr) 1f else -1f
+                            val coerced = raw.coerceIn(0f, (tabsCount - 1).toFloat())
+                            // 值没变不重复 snapValue：掐掉亚像素抖动造成的无意义协程启动。
+                            if (coerced != targetValue) snapValue(coerced)
                         }
                     },
                 )
-                .height(56.dp)
-                .fillMaxWidth(1f / tabsCount),
-        )
+            }
+
+            // 外部选中态变化（导航返回 / 程序化切换）→ 写回内部态。
+            // ⚠️ 2026-09-24 Wave 6b 门禁：**拖拽进行中绝不回写**。拖拽期手势（snapValue）
+            // 是胶囊位置的唯一事实来源；导航回压（navigateTop 落地晚于手势开始）此刻写
+            // currentIndex，会经收集器触发一次 animateToValue 旧页签，与 snapValue 逐帧
+            // 互搏 —— 真机录屏实证的"胶囊两端自激振荡"（手指按住对话、胶囊在对话/设置
+            // 间逐帧横跳 1.6 秒）。拖拽结束后 onDragStopped 提交用户的选择，这里错过的
+            // 回写由那次提交覆盖（onSelected 已把导航带到用户要的页签）。
+            LaunchedEffect(selectedIndex) {
+                if (!dampedDragAnimation.isDragging) currentIndex = safeSelectedIndex
+            }
+            // 内部态变化 → 弹簧动画到位。drop(1)：初始组合不回调。
+            // ⚠️ onSelected **不在收集器里发**：收集器也会被外部回显写触达，若在那里
+            // 发 onSelected → navigateTop → selectedIndex 回压 → 再写 currentIndex →
+            // 再进收集器 —— 反馈环闭合，任何一次回显都能自激振荡。用户动作的两个
+            // 位点（onClick / onDragStopped）直接回调，环被切断。
+            // key 只留 dampedDragAnimation：调用方的 lambda 字面量每次重组都是新实例，
+            // 用 rememberUpdatedState 让闭包始终读最新 lambda（见上方声明处）。
+            LaunchedEffect(dampedDragAnimation) {
+                snapshotFlow { currentIndex }
+                    .drop(1)
+                    .collectLatest { index ->
+                        // 点击切换（及外部选中态回流）走 TabSwitch 规格 —— 2026-09-24
+                        // 真机修正后与上游一致（临界阻尼快弹簧，≈120ms 收敛，无过冲）。
+                        dampedDragAnimation.animateToValue(
+                            index.toFloat(),
+                            LiquidMotion.floatSpring(LiquidMotion.TabSwitch),
+                        )
+                    }
+            }
+
+            // 高光中心跟随"胶囊当前位置"而不是手指落点 —— 手指在哪不重要，
+            // 玻璃胶囊滑到哪，高光就在哪。
+            val interactiveHighlight = remember(animationScope) {
+                InteractiveHighlight(
+                    animationScope = animationScope,
+                    position = { size, _ ->
+                        // 与胶囊 translationX 同一套钳制（见下方 renderValue 注释）。
+                        val v = dampedDragAnimation.value.coerceIn(0f, (tabsCount - 1).toFloat())
+                        Offset(
+                            if (isLtr) {
+                                (v + 0.5f) * tabWidthState.value
+                            } else {
+                                size.width - (v + 0.5f) * tabWidthState.value
+                            },
+                            size.height / 2f,
+                        )
+                    },
+                )
+            }
+
+            // 拖动期可见行高亮跟随**胶囊当前位置**（而不是 currentIndex）。
+            // ⚠️ **本波有意引入的拖动期视觉变更**（**不属于**"行为零变化"范畴 —— 勿误判为
+            // 回归）：拖动中 currentIndex 要到松手才更新，可见行的选中高亮会留在旧格、而
+            // 胶囊已滑到新格 ⇒ 用户报的"双重叠加态"（两处高亮同时亮）。改用 highlightIndex
+            //（拖动中 = 胶囊最近格）后可见行高亮随胶囊走，松手由 currentIndex 接管。
+            // 非拖动期恒等于 currentIndex ⇒ 与旧行为逐帧一致（derivedStateOf 只在
+            // roundToInt 跨格时变化，不是每帧重组）。
+            // 📌 只改**显示**用的 selected；onClick / onSelected / 导航不受影响。
+            // 📌 真机验收项：拖动时可见行高亮是否随胶囊走、松手是否无跳变。
+            val highlightIndex by remember(dampedDragAnimation) {
+                derivedStateOf {
+                    if (dampedDragAnimation.isDragging) {
+                        dampedDragAnimation.value.roundToInt().coerceIn(0, tabsCount - 1)
+                    } else {
+                        currentIndex
+                    }
+                }
+            }
+
+            // 两行共用同一份内容 lambda：保证可见行与回显行逐帧一致。
+            val tabsContent: @Composable RowScope.() -> Unit = {
+                tabs.forEachIndexed { index, tab ->
+                    LiquidBottomTab(
+                        tab = tab,
+                        selected = index == highlightIndex,
+                        // ⚠️ onSelected 在用户动作位点直发（非收集器）——见收集器处注释。
+                        // 点当前页签时 currentIndex 不变、onSelected 照发，由调用方的
+                        // "destination != selected" 守卫去重（MainShell 的 onSelect）。
+                        onClick = {
+                            currentIndex = index
+                            onSelectedCallback(index)
+                            // 点击换页 → 一次 tick（与拖动换页同规格）。
+                            currentHaptics.tick()
+                        },
+                        showLabel = !compactTabs,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            /* ── 内层 wrapper：只承载 panelOffset 平移，把视觉三层整体平移 ──────────
+             * ⚠️ Wave 10 Phase 2d：panelOffset 从 BoxWithConstraints 下移到这一层（原先挂在
+             * BoxWithConstraints 上）。语义完全一致（"整体平移"），且**手势宿主不再是它** ——
+             * 手势宿主已迁到下方静态覆盖层，与被平移的视觉节点分离，从根上消除坐标反馈
+             *（见类 KDoc「坐标反馈」）。每帧仍只有 1 个 layer 失效。
+             * `contentAlignment = Alignment.CenterStart` **必须保留**：胶囊是
+             * `fillMaxWidth(1/tabsCount) × 56dp`，不居起点会贴顶。
+             */
+            Box(
+                modifier = Modifier
+                    .graphicsLayer { translationX = panelOffset.value }
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+
+                /* ── 第 1 层：滑动指示面板（可见玻璃条）────────────────────────────── */
+                Row(
+                    Modifier
+                        // 无障碍分组（三线审查 Wave10）：TalkBack 把整行当一组页签播报，
+                        // 配合每个页签的 selected 才有「第 N 项，已选中，共 M 项」的语义。
+                        .selectableGroup()
+                        .drawBackdrop(
+                            backdrop = wallpaperBackdrop,
+                            shape = { Capsule },
+                            effects = {
+                                if (config.enableBackdropBlur) {
+                                    vibrancy(saturation = VibrancySaturation)
+                                    blur(8f.dp.toPx())
+                                    // 导航栏比按钮大，折射带要给足（Kyant0 Tabs：24,24）。
+                                    lens(refractionHeight = 24f.dp.toPx(), refractionAmount = 24f.dp.toPx())
+                                }
+                            },
+                            layerBlock = {
+                                // 按压时整条面板微微放大（相对宽度归一化，避免宽屏拉过头）。
+                                val progress = dampedDragAnimation.pressProgress
+                                val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
+                                scaleX = scale
+                                scaleY = scale
+                            },
+                            onDrawSurface = {
+                                if (config.enableBackdropBlur) {
+                                    // 正常路径：THICK 底色上亮下暗垂直渐变，与 liquidGlass 同一配方。
+                                    val baseAlpha = thick.backgroundAlpha
+                                    drawRect(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                colors.glassTint.copy(alpha = baseAlpha),
+                                                colors.glassTintElevated
+                                                    .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
+                                            ),
+                                            startY = 0f,
+                                            endY = size.height,
+                                        )
+                                    )
+                                } else {
+                                    // 退化路径（背景模糊关）：常驻底色，不读任何动画状态 ——
+                                    // 与 liquidGlass 门面「底色 + 高光」的退化承诺对齐。
+                                    drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
+                                }
+                            },
+                        )
+                        .then(interactiveHighlight.modifier)
+                        .height(TabBarHeight)
+                        .fillMaxWidth()
+                        .padding(
+                            // ⚠️ 纵向必须**推导**，不能写 TabPad：内容高 = TabBarHeight − 2×纵向内边距
+                            // 必须恒等于 TabCapsuleHeight（第 2/3 层就是按它显式定高的）。
+                            // 写死 TabPad 会留下一个无人保证的隐式不变量（今天 64−8=56 成立，把
+                            // TabBarHeight 改成 72 就悄悄变成 64）⇒ 可见行与回显行纵向错位、
+                            // 胶囊折射素材整体偏移，且**不报错**。用 * 0.5f 而非 Dp.div(Int)：
+                            // Dp.times(Float) 是确定存在的运算符，编译风险为零。
+                            horizontal = TabPad,
+                            vertical = (TabBarHeight - TabCapsuleHeight) * 0.5f,
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = tabsContent,
+                )
+
+                /* ── 第 2 层：隐形回显行（录进 tabsBackdrop，供胶囊折射）───────────── */
+                CompositionLocalProvider(
+                    LocalLiquidBottomTabScale provides {
+                        lerp(1f, 1.2f, dampedDragAnimation.pressProgress)
+                    }
+                ) {
+                    Row(
+                        Modifier
+                            // 回显行不参与无障碍 / 触摸（真实交互在第 1 层与第 3 层）。
+                            .clearAndSetSemantics {}
+                            // alpha(0f) 挂在 layerBackdrop **之前**：录制时拿到的是不透明内容，
+                            // 上屏时整层透明 —— "屏幕上看不见、玻璃里看得见"。
+                            .alpha(0f)
+                            .layerBackdrop(tabsBackdrop)
+                            .drawBackdrop(
+                                backdrop = wallpaperBackdrop,
+                                shape = { Capsule },
+                                effects = {
+                                    val progress = dampedDragAnimation.pressProgress
+                                    if (config.enableBackdropBlur) {
+                                        vibrancy(saturation = VibrancySaturation)
+                                        blur(8f.dp.toPx())
+                                        lens(
+                                            refractionHeight = 24f.dp.toPx() * progress,
+                                            refractionAmount = 24f.dp.toPx() * progress,
+                                        )
+                                    }
+                                },
+                                highlight = {
+                                    if (config.enableBackdropBlur) {
+                                        val progress = dampedDragAnimation.pressProgress
+                                        Highlight.Default.copy(alpha = progress)
+                                    } else {
+                                        // 退化路径：高光是门面退化承诺的一半，不能被 progress=0 关死。
+                                        Highlight.Default
+                                    }
+                                },
+                                onDrawSurface = {
+                                    if (config.enableBackdropBlur) {
+                                        val baseAlpha = thick.backgroundAlpha
+                                        drawRect(
+                                            Brush.verticalGradient(
+                                                colors = listOf(
+                                                    colors.glassTint.copy(alpha = baseAlpha),
+                                                    colors.glassTintElevated
+                                                        .copy(alpha = (baseAlpha * 0.72f).coerceIn(0f, 1f)),
+                                                ),
+                                                startY = 0f,
+                                                endY = size.height,
+                                            )
+                                        )
+                                    } else {
+                                        // 退化路径：常驻底色，不读任何动画状态。
+                                        drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
+                                    }
+                                },
+                            )
+                            .height(TabCapsuleHeight)
+                            .fillMaxWidth()
+                            .padding(horizontal = TabPad)
+                            // 整层 tint 成强调色：胶囊折射看到的"发光页签"就是这层染色的内容。
+                            .graphicsLayer(colorFilter = ColorFilter.tint(colors.accent)),
+                        verticalAlignment = Alignment.CenterVertically,
+                        content = tabsContent,
+                    )
+                }
+
+                /* ── 第 3 层：滑动指示胶囊（高光手势 + 折射在这层；拖动手势在静态宿主）─── */
+                Box(
+                    Modifier
+                        .padding(horizontal = TabPad)
+                        .graphicsLayer {
+                            // 渲染值钳制（2026-09-24 Wave 6）：把 value 限回页签区间再参与定位。
+                            // TabSwitch 改临界阻尼后弹簧本身不再过冲，这是**防御层**——将来若有
+                            // 人把规格改回欠阻尼（或引入带初速的重定向），钳制保证胶囊永不画出
+                            // 玻璃条两端（真机录屏 6.060s / 6.193s 帧的"漂移越界"）。拖动路径的
+                            // snapValue 与点击路径的 animateToValue 目标都已 coerce，钳制在正常
+                            // 路径是恒等变换，零开销。
+                            val renderValue = dampedDragAnimation.value
+                                .coerceIn(0f, (tabsCount - 1).toFloat())
+                            translationX =
+                                if (isLtr) {
+                                    renderValue * tabWidthState.value
+                                } else {
+                                    size.width - (renderValue + 1f) * tabWidthState.value
+                                }
+                        }
+                        // ⚠️ Wave 10 Phase 2d：这里**只保留** interactiveHighlight.gestureModifier
+                        //（按压高光），**删掉** `.then(dampedDragAnimation.modifier)` —— 拖动手势
+                        // 已迁到下方静态宿主（坐标反馈修复：胶囊被平移，不能自己当手势节点）。
+                        // 高光手势留在胶囊上是**有意的**：胶囊当前所在格 = 旧实现的抓取区域，
+                        // 保证"按当前页签才出高光"与旧行为一致（高光 pressAnimatable 全层共享，
+                        // 由 Layer 1 的 `.then(interactiveHighlight.modifier)` 绘制）。
+                        .then(interactiveHighlight.gestureModifier)
+                        .drawBackdrop(
+                            // 背景 = 壁纸 + 回显行：折射同时弯折壁纸与染色的页签内容。
+                            backdrop = rememberCombinedBackdrop(wallpaperBackdrop, tabsBackdrop),
+                            shape = { Capsule },
+                            effects = {
+                                val progress = dampedDragAnimation.pressProgress
+                                // 胶囊小（1/tabsCount 宽），7 次采样扛得住 —— 色散开。
+                                // 这是 Kyant0 在指示胶囊上唯一开色散的位置。
+                                if (config.enableBackdropBlur) {
+                                    lens(
+                                        refractionHeight = 10f.dp.toPx() * progress,
+                                        refractionAmount = 14f.dp.toPx() * progress,
+                                        chromaticAberration = true,
+                                    )
+                                }
+                            },
+                            highlight = {
+                                if (config.enableBackdropBlur) {
+                                    val progress = dampedDragAnimation.pressProgress
+                                    Highlight.Default.copy(alpha = progress)
+                                } else {
+                                    // 退化路径：高光常驻，不随按压（与回显行同一处理）。
+                                    Highlight.Default
+                                }
+                            },
+                            shadow = {
+                                val progress = dampedDragAnimation.pressProgress
+                                Shadow(alpha = progress)
+                            },
+                            innerShadow = {
+                                val progress = dampedDragAnimation.pressProgress
+                                InnerShadow(radius = 8f.dp * progress, alpha = progress)
+                            },
+                            layerBlock = {
+                                // 按压缩放（DampedDragAnimation 的 scaleX/scaleY）
+                                // + 速度各向异性：拖得快沿运动方向拉长、垂直方向压扁。
+                                //
+                                // ⚠️ 已知取舍（本轮 P0 拖动跟手改造引入）：拖动改用 snapValue
+                                //（瞬时到位）后，`valueAnimatable` 不再保留"未走完的弹簧速度"，
+                                // `velocity` 会偏小 → 这里的各向异性拉伸在**拖动中**会减弱
+                                //（松手回弹那一段仍有速度，拉伸还在）。换取的是胶囊**严格跟手**
+                                //（真机"不跟手/越远越偏差"的根治）——跟手优先。
+                                // 若真机确认拉伸观感缺失，再单独调 velocity 的来源，
+                                // **不为此回退绝对映射**。
+                                scaleX = dampedDragAnimation.scaleX
+                                scaleY = dampedDragAnimation.scaleY
+                                val velocity = dampedDragAnimation.velocity / 10f
+                                scaleX /= 1f - (velocity * 0.75f).coerceIn(-0.2f, 0.2f)
+                                scaleY *= 1f - (velocity * 0.25f).coerceIn(-0.2f, 0.2f)
+                            },
+                            onDrawSurface = {
+                                // ⚠️ 正常路径刻意**不用** THICK 底色：面板（第 1 层）已经是 THICK，
+                                // 胶囊再叠一层厚底色会把回显行的强调色盖掉、"发光"就没了。
+                                // 这里只压一层薄对比色把胶囊从面板里衬出来（Kyant0 原配方），
+                                // 按下时淡出、换成阴影表达"被按住"。
+                                val progress = dampedDragAnimation.pressProgress
+                                if (config.enableBackdropBlur) {
+                                    drawRect(
+                                        if (colors.isDark) {
+                                            Color.White.copy(alpha = 0.10f)
+                                        } else {
+                                            Color.Black.copy(alpha = 0.10f)
+                                        },
+                                        alpha = 1f - progress,
+                                    )
+                                    drawRect(Color.Black.copy(alpha = 0.03f * progress))
+                                } else {
+                                    // 退化路径：折射没了，"选中"信号改由**常驻底色 + accent 描边**
+                                    // 承担（描边即选中，不依赖折射链，也不读 pressProgress ——
+                                    // 常驻层不引入逐帧重绘）。
+                                    // 描边用 drawRoundRect + Stroke（qa-review 认可的等价方案）：
+                                    // 半径 = min(w,h)/2，与 Capsule.createOutline 的公式完全一致，
+                                    // 避免 drawOutline 的引用解析问题（CI 实测 Unresolved）。
+                                    drawRect(colors.glassTint.copy(alpha = thick.backgroundAlpha * 0.8f))
+                                    val capsuleRadius = minOf(size.width, size.height) / 2f
+                                    drawRoundRect(
+                                        color = colors.accent.copy(alpha = 0.35f),
+                                        cornerRadius = CornerRadius(capsuleRadius, capsuleRadius),
+                                        style = Stroke(width = 1.dp.toPx()),
+                                    )
+                                }
+                            },
+                        )
+                        .height(TabCapsuleHeight)
+                        .fillMaxWidth(1f / tabsCount),
+                )
+            }
+
+            /* ── 静态手势宿主（Wave 10 Phase 2d）──────────────────────────────────
+             * 覆盖整条底栏的**静态**（不随 panelOffset / 胶囊平移）节点，承载拖动手势：
+             *  - 它与被平移的视觉三层**不是同一个节点** ⇒ `PointerInputChange.position`
+             *    是宿主局部坐标、不随胶囊移动 ⇒ 消除"胶囊走手指一半"的坐标反馈
+             *   （真机实测斜率 0.489 → 修复后应 ≈1.0，n=47）；
+             *  - `canStartDrag` 门禁逐轴复刻旧实现"只有按在胶囊**实时矩形**内才起手"
+             *   （x / y 两轴，读胶囊实时 `value` + `panelOffset`），
+             *    保证"按非当前页签不鼓包、点击照常"（见 DampedDragAnimation.canStartDrag）。
+             * ⚠️ 必须是**最后一个兄弟**（z 序最上）：手势宿主在最上层才能稳定接管整条
+             * 底栏的按下。它不绘制任何内容 ⇒ 对视觉零影响；不设语义 ⇒ 不影响 TalkBack。
+             * ⚠️ 刻意**不**在这层挂 `interactiveHighlight.gestureModifier`：那会让高光
+             * pressAnimatable 在"按任意页签"时被点亮（高光画在胶囊处），而旧实现只有按在
+             * 胶囊格才亮 —— 会破坏「行为零变化」。高光手势保留在胶囊上（见胶囊处注释）。
+             */
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .then(dampedDragAnimation.modifier)
+            )
+        }
     }
 }
 
