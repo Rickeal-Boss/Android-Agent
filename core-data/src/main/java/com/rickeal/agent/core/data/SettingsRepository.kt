@@ -40,6 +40,10 @@ class SettingsRepository(private val context: Context) {
         // 不在用户没表达意愿时去请求权限。
         val GENERATION_NOTIFICATION = booleanPreferencesKey("generation_notification")
 
+        // 自定义壁纸（Wave 9 需求 3b）：存 WallpaperStore 的相对路径，"" = 程序化壁纸。
+        // 刻意不存绝对路径 —— filesDir 随设备迁移 / 备份恢复会变。
+        val WALLPAPER_PATH = stringPreferencesKey("wallpaper_path")
+
         // ---- 首启合规：引导与条款接受 ----
         // 三项刻意**分开**存：应用服务条款与 Gemma 授权条款的法律主体不同
         // （前者是我们自己，后者是 Google），必须能独立表达「接受其一、未接受其二」。
@@ -91,6 +95,14 @@ class SettingsRepository(private val context: Context) {
     val generationNotification: Flow<Boolean> = context.settingsDataStore.data
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
         .map { it[Keys.GENERATION_NOTIFICATION] ?: false }
+
+    /**
+     * 自定义壁纸的相对路径（相对 filesDir，由 [WallpaperStore] 写入）。默认 "" = 程序化壁纸。
+     * 只存路径不存图：图片字节归 [WallpaperStore]，这里只做「指向哪张图」的单一事实来源。
+     */
+    val wallpaperPath: Flow<String> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { it[Keys.WALLPAPER_PATH] ?: "" }
 
     /**
      * **整段首启流程**是否已走完（引导 → TOS → Gemma 全部过完）。默认 false。
@@ -183,6 +195,14 @@ class SettingsRepository(private val context: Context) {
      */
     suspend fun setGenerationNotification(enabled: Boolean) {
         context.settingsDataStore.edit { it[Keys.GENERATION_NOTIFICATION] = enabled }
+    }
+
+    /**
+     * 壁纸路径落盘。传 "" = 恢复默认（落盘前应由调用方先删 [WallpaperStore] 的文件，
+     * 否则会出现「路径为空但文件还在」的孤儿文件）。
+     */
+    suspend fun setWallpaperPath(path: String) {
+        context.settingsDataStore.edit { it[Keys.WALLPAPER_PATH] = path }
     }
 
     suspend fun setHasSeenOnboarding(seen: Boolean) {

@@ -3,7 +3,10 @@ package com.rickeal.agent.feature.settings
 import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,7 +20,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
@@ -30,11 +35,15 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import com.rickeal.agent.core.design.GlassBackdropBlurOverride
+import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
+import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassSegmented
 import com.rickeal.agent.core.design.GlassSettingRow
@@ -45,6 +54,7 @@ import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.data.DarkMode
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.LocalWallpaperImage
 import com.rickeal.agent.core.design.motion.staggeredPageItem
 import com.rickeal.agent.core.model.ThinkingMode
 import java.util.Locale
@@ -74,6 +84,14 @@ fun SettingsScreen(
     }
     val needNotificationPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
         !NotificationManagerCompat.from(context).areNotificationsEnabled()
+
+    // 自定义壁纸（Wave 9 需求 3b）：Photo Picker（系统进程内运行，零权限、拿不到
+    // 照片真实路径，只有一个一次性 content:// Uri）。取消选择返回 null —— 不动现有壁纸。
+    val wallpaperPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) viewModel.onWallpaperImport(uri)
+    }
 
     GlassScaffold(
         modifier = modifier,
@@ -244,6 +262,67 @@ fun SettingsScreen(
                                 viewModel.onThemeChange(state.theme.copy(reduceMotion = it))
                             },
                         )
+                    }
+                    // 自定义壁纸（Wave 9 需求 3b）。缩略图直接复用根组合已解码的
+                    // LocalWallpaperImage —— 再单独 decode 一份 40dp 小图纯属浪费，
+                    // 缓存位图本来就是 ≤2048px 的成品，一次 Image 零额外成本。
+                    val currentWallpaper = LocalWallpaperImage.current
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (currentWallpaper != null) {
+                            Image(
+                                bitmap = currentWallpaper,
+                                contentDescription = "当前壁纸预览",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(8.dp)),
+                            )
+                        } else {
+                            // 程序化壁纸的占位块：与预览同尺寸，避免行高跳变。
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(colors.onGlassSubtle.copy(alpha = 0.12f)),
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "背景图片",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.onGlass,
+                            )
+                            Text(
+                                text = "选一张照片铺在玻璃下面，折射会实时跟着它变",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                            )
+                        }
+                        GlassButton(
+                            text = "更换",
+                            onClick = {
+                                wallpaperPickerLauncher.launch(
+                                    PickVisualMediaRequest(
+                                        ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                    ),
+                                )
+                            },
+                            material = GlassMaterial.THIN,
+                        )
+                        if (currentWallpaper != null) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            GlassButton(
+                                text = "恢复默认",
+                                onClick = { viewModel.onWallpaperReset() },
+                                material = GlassMaterial.THIN,
+                            )
+                        }
                     }
                 }
             }

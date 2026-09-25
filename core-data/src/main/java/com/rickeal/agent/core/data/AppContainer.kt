@@ -126,6 +126,12 @@ class AppContainer(
      */
     val generationNotifier: GenerationNotifier = AndroidGenerationNotifier(context, generationIconRes)
 
+    /**
+     * 自定义壁纸（Wave 9 需求 3b）的导入 / 解码 / 删除。设置页选图走它，
+     * LiquidAgentApp 按路径解码后经 `LocalWallpaperImage` 下发给玻璃层。
+     */
+    val wallpaperStore: WallpaperStore = WallpaperStore(context)
+
     val engineEnvironment: EngineEnvironment = EngineEnvironment(
         cacheDir = context.cacheDir?.absolutePath,
         nativeLibraryDir = context.applicationInfo.nativeLibraryDir,

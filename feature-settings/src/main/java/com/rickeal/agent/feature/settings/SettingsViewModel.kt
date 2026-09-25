@@ -1,5 +1,6 @@
 package com.rickeal.agent.feature.settings
 
+import android.net.Uri
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -104,6 +105,31 @@ class SettingsViewModel(
     fun onThemeCommit() {
         val next = _uiState.value.theme
         viewModelScope.launch { container.settingsRepository.setThemeState(next) }
+    }
+
+    /**
+     * 自定义壁纸（Wave 9 需求 3b）：Photo Picker 选中后走这里。
+     * 导入（降采样 + JPEG 压缩落盘）成功**才**写路径 —— 失败时旧壁纸原样保留，
+     * 路径流不动、LiquidAgentApp 不重新解码，UI 自然无感。
+     */
+    fun onWallpaperImport(uri: Uri) {
+        viewModelScope.launch {
+            container.wallpaperStore.import(uri)
+                .onSuccess { path -> container.settingsRepository.setWallpaperPath(path) }
+                .onFailure {
+                    _uiState.update { s ->
+                        s.copy(error = "壁纸导入失败：${it.message ?: "未知错误"}")
+                    }
+                }
+        }
+    }
+
+    /** 恢复默认壁纸：先删文件再清路径（顺序反了会留孤儿文件，见 setWallpaperPath 注释）。 */
+    fun onWallpaperReset() {
+        viewModelScope.launch {
+            container.wallpaperStore.delete()
+            container.settingsRepository.setWallpaperPath("")
+        }
     }
 
     fun onDismissMessage() {

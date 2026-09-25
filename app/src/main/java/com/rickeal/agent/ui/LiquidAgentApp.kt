@@ -49,6 +49,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -75,6 +76,7 @@ import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.LocalWallpaperImage
 import com.rickeal.agent.core.design.TabSpec
 import com.rickeal.agent.core.design.WindowSizeClass
 import com.rickeal.agent.core.design.WindowWidthClass
@@ -94,8 +96,10 @@ import com.rickeal.agent.feature.settings.memory.MemoryRoute
 import com.rickeal.agent.feature.settings.settingsGraph
 import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.onboarding.FirstRunGate
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 
 private const val TAG = "LiquidAgentApp"
 
@@ -137,6 +141,22 @@ fun LiquidAgentApp() {
     } ?: return
 
     val themeState by container.settingsRepository.themeState.collectAsState(initial = ThemeState())
+
+    // ── 自定义壁纸（Wave 9 需求 3b）──────────────────────────────────────────
+    // DataStore 存相对路径 → 这里一次性解码成 ImageBitmap → 经 LocalWallpaperImage
+    // 下发，7 个业务屏的 GlassScaffold 经默认参数自动取用（feature 签名零改动）。
+    // 解码缓存放在**根组合的 remember(wallpaperPath)**：只在路径变化（冷启动 / 换图 /
+    // 恢复默认）时解码一次，旋转、切页签全走缓存；刻意不做进程级单例 ——
+    // 组合销毁后 Bitmap 交给 GC，泄漏面更小。文件丢失 / 损坏 → null → 自动回退程序化壁纸。
+    val wallpaperPath by container.settingsRepository.wallpaperPath.collectAsState(initial = "")
+    var wallpaperBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(wallpaperPath) {
+        wallpaperBitmap = if (wallpaperPath.isBlank()) {
+            null
+        } else {
+            withContext(Dispatchers.IO) { container.wallpaperStore.decode(wallpaperPath) }
+        }
+    }
 
     // 「生成速度通知」开关 → notifier 总开关（Wave 9 需求 5）。
     // 用 collect 而不是一次性赋值：设置页改开关要**立刻**生效（正在生成时也能开/关），
@@ -187,7 +207,12 @@ fun LiquidAgentApp() {
     )
 
     LiquidAgentTheme(darkTheme = darkTheme, glassConfig = glassConfig) {
-        CompositionLocalProvider(LocalAppContainer provides container) {
+        CompositionLocalProvider(
+            LocalAppContainer provides container,
+            // 壁纸位图在 Theme 内 provide：程序化壁纸/玻璃配色都按 darkTheme 取色，
+            // provide 在主题内保证「换深浅色 → scrim 重算」与壁纸位图同帧生效。
+            LocalWallpaperImage provides wallpaperBitmap?.asImageBitmap(),
+        ) {
             // 首启闸门必须在主题之内：引导页 / 条款页要用玻璃组件与主题下发的配色。
             // 放在导航之外，是为了「未接受条款就进不了主界面」这件事不依赖任何路由规则。
             // 同 MainShell：用 LocalActivity 而非 `context as? Activity`。
