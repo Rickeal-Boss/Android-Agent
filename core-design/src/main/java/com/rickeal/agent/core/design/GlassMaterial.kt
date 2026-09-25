@@ -33,8 +33,8 @@ import androidx.compose.ui.unit.dp
  * 2. **性能**：容器在 `LazyColumn` / `LazyVerticalGrid` 的 **item 内** → 取 **THIN**
  *    （下限达标即止；模糊成本 ×N，逐条渲染下 blur 7 会明显吃帧）。
  *    **独立容器**（协议卡、弹窗、详情正文）→ 取 **REGULAR**。
- *    THIN 与 REGULAR 的 alpha 几乎无差（0.18 / 0.16），真正的差别是 **blur 5 → 7**，
- *    这一步才是"把光斑磨平"的关键。
+ *    THIN 与 REGULAR 的 alpha 几乎同量级（0.21 / 0.22，Wave 9 调整后方向已捋正），
+ *    真正的差别是 **blur 5 → 7**，这一步才是"把光斑磨平"的关键。
  * 3. **豁免**：功能层（顶栏 / 底栏 / 页签 / FAB / 开关 / 分段）、纯图像容器、
  *    单行文本（chip、气泡标题）—— 不适用本判据。功能层本来就该是悬浮玻璃，
  *    按质感选档，不要拿文本量去约束它。
@@ -92,11 +92,21 @@ data class GlassMaterialSpec(
 object GlassMaterials {
     // blurRadius：从 14~40 降到 3~12，对齐 Kyant0 的 2~8。
     // 模糊只是柔化，必须轻到让折射的"像素位移"看得见。
-    // backgroundAlpha：从 0.14~0.92 降到 0.07~0.72。
+    // backgroundAlpha：从 0.14~0.92 降到 0.09~0.72。
     // 底色要薄 —— 它每厚一分，折射就被盖掉一分。
     // specularAlpha / borderAlpha 略提：底色变薄后，边缘高光与描边成为"玻璃存在感"的主要来源。
+    //
+    // ⚠️ Wave 9「卡片更实」：五档 alpha 0.07/0.18/0.16/0.34 → 0.09/0.21/0.22/0.36（Opaque 0.72 不动）。
+    // 真机反馈卡片在亮背景下"压不住"、内容发飘 —— 整体加厚一档。顺带捋直了
+    // Thin(0.18) > Regular(0.16) 的历史倒挂：底色序列现在单调递增
+    // 0.09 → 0.21 → 0.22 → 0.36 → 0.72，档位语义与数值方向一致。
+    // blur / border / specular / noise / 折射全部不动，只动 backgroundAlpha 这一个旋钮
+    // —— 波及面收在一处，真机不满意只回退一个参数。
+    //
+    // ⚠️ 退路（真机回看后若 REGULAR 折射被底色盖掉过多）：Regular 0.22 → 0.20，
+    // 同时 refractionAmount 24 → 28（用折射强度补偿底色变薄，而不是简单减底色）。
     val UltraThin = GlassMaterialSpec(
-        backgroundAlpha = 0.07f,
+        backgroundAlpha = 0.09f,
         blurRadius = 3.dp,
         borderAlpha = 0.34f,
         specularAlpha = 0.22f,
@@ -106,9 +116,9 @@ object GlassMaterials {
         refractionAmount = 14.dp,
     )
     val Thin = GlassMaterialSpec(
-        // 0.11 → 0.18：真机反馈"卡片透明度不要太高"——底色太薄时内容压在
-        // 复杂背景上可读性差。blur / lens / 折射一律不动，只加厚底色这一层。
-        backgroundAlpha = 0.18f,
+        // 0.11 → 0.18（Wave 8 真机反馈）→ 0.21（Wave 9「卡片更实」）。
+        // blur / lens / 折射一律不动，只加厚底色这一层。
+        backgroundAlpha = 0.21f,
         blurRadius = 5.dp,
         borderAlpha = 0.44f,
         specularAlpha = 0.28f,
@@ -118,8 +128,10 @@ object GlassMaterials {
         refractionAmount = 18.dp,
     )
     // 12/24 就是 Kyant0 LiquidButton 的 lens(12f.dp, 24f.dp)，作为全局默认档。
+    // 0.16 → 0.22（Wave 9「卡片更实」）：原值比 Thin(0.18) 还薄，是历史倒挂 ——
+    // 名义上"常规档"却比 THIN 更透，本波一并捋直。退路见上方注释。
     val Regular = GlassMaterialSpec(
-        backgroundAlpha = 0.16f,
+        backgroundAlpha = 0.22f,
         blurRadius = 7.dp,
         borderAlpha = 0.58f,
         specularAlpha = 0.36f,
@@ -129,9 +141,9 @@ object GlassMaterials {
         refractionAmount = 24.dp,
     )
     val Thick = GlassMaterialSpec(
-        // 0.26 → 0.34：同上 —— 真机反馈"卡片透明度不要太高"。卡片（GlassCard /
-        // 弹层）多走 Thick，底色加厚后折射仍在（refractionAmount 未动）。
-        backgroundAlpha = 0.34f,
+        // 0.26 → 0.34（Wave 8 真机反馈）→ 0.36（Wave 9「卡片更实」）。
+        // 卡片（GlassCard / 弹层）多走 Thick，底色加厚后折射仍在（refractionAmount 未动）。
+        backgroundAlpha = 0.36f,
         blurRadius = 9.dp,
         borderAlpha = 0.72f,
         specularAlpha = 0.44f,

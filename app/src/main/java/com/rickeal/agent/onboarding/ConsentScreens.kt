@@ -174,8 +174,8 @@ private fun LegalStepLayout(
                     // HIG materials：容纳大量文本的组件必须用 regular 变体。
                     // 这里是限高滚动的整篇法律文本（远多于 3 行）——ULTRA_THIN 的
                     // blur 5 压不住背后的动态光斑，长文滚动时字面发飘。
-                    // 取 REGULAR 而非 THIN：本仓 Thin.alpha(0.18) 与 Regular.alpha(0.16)
-                    // 几乎无差，真正的差别是 blur 5 → 7（把光斑磨平）；顺带与 HIG 术语对齐。
+                    // 取 REGULAR 而非 THIN：两者 alpha 几乎同量级（0.21 / 0.22），
+                    // 真正的差别是 blur 5 → 7（把光斑磨平）；顺带与 HIG 术语对齐。
                     material = GlassMaterial.REGULAR,
                     cornerRadius = tokens.radiusSm,
                     // 同意页正文卡是大面积容器且带滚动，色散 7 次采样在这里纯属白烧。
