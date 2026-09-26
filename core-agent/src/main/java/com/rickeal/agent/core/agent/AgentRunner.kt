@@ -333,6 +333,17 @@ class AgentRunner(
             val registeredToolNames: Set<String> = availableTools.map { it.name }.toSet()
 
             val working = ArrayList<ChatMessage>()
+            // 提前把系统指令拼成局部变量（内容与下方 ChatMessage.text 完全一致）：
+            // 供本轮 detector 构建「提示词回显指纹集」用（StreamRepetitionDetector 的
+            // systemPrompt 参数）。buildSystemInstruction 是纯函数（无条件追加
+            // STOP_CONDITIONS，恒非空），无条件调用一次不改变任何行为；系统消息的
+            // **发送条件**保持原判断分支原样 —— 这里只提取字符串，不动条件语义。
+            //
+            // 层级定位：层1（提示词约束）对 500M 级模型被 Wave 21 真机证伪 ——
+            // SmolVLM2-500M 会先逐字复述工具系统提示词再退化刷屏。这里是层3
+            // （输出侧拦截）：把拼好的提示词交给检测器做指纹，模型把提示词原样
+            // 吐回来时在输出流上直接截断（连续 2 句命中 → StreamLoopException）。
+            val systemText = buildSystemInstruction(config, availableTools, request.memoryText)
             // 只要「有系统指令」或「有可用工具」就必须带系统消息：停止条件段要靠它下发，
             // 文本协议模式下模型也才能从里面读到工具清单（systemInstruction 默认是空串，
             // 旧写法会让这两样都永远送不到模型）。
@@ -342,7 +353,7 @@ class AgentRunner(
                 working.add(
                     ChatMessage(
                         role = Role.SYSTEM,
-                        text = buildSystemInstruction(config, availableTools, request.memoryText),
+                        text = systemText,
                     ),
                 )
             }
@@ -465,7 +476,12 @@ class AgentRunner(
                 // 轮内流式重复检测器（Wave 19 P0，来源见 StreamRepetitionDetector KDoc）。
                 // 每轮新建一个（放 while(true) 重试循环**外**、accumulator 旁）；重试路径
                 // 换干净累加器时同步 reset，避免把上次失败尝试的句子计数带进重试。
-                val detector = StreamRepetitionDetector()
+                // systemPrompt（Wave 21 P0-3）：传入本 run 实际拼出的系统提示词构建回显
+                // 指纹集 —— 层1 提示词约束对 500M 级模型被真机证伪（逐字复述系统提示词），
+                // 此为层3 输出侧拦截。systemText 恒非空（buildSystemInstruction 兜底追加
+                // 停止条件段），takeIf 仅为语义显式；上方 systemText 提取处已保证发送条件
+                // 分支原样未动。
+                val detector = StreamRepetitionDetector(systemPrompt = systemText.takeIf { it.isNotBlank() })
                 // 本轮生成是否被轮内重复检测截断：while(true) 重试循环内置位，
                 // 生成后流程消费（处置分支 / finishReason 标记）。
                 var intraStreamLoop = false

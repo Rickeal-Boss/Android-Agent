@@ -143,14 +143,20 @@ object ModelSamplingProfiles {
 
         // SmolVLM2-500M：转换仓 README 原话「use sensible max_tokens and use sampling
         // (e.g. top-p); at pure greedy it can be repetitive/verbose」→ 温度下限 0.3。
+        // repPen 下限 1.05：Wave 21 真机该模型单字符退化实锤（「、」单字符行无限刷屏），
+        // README 警告贪心 repetitive → 取保守下限；小模型 repPen 副作用（抑制高频但
+        // 合法的词）更明显（Welleck 2020 unlikelihood 训练结论的推理期类比），故不取 1.1。
         "SmolVLM2-500M.litertlm" -> ModelSamplingProfile(
             recommendedTemperature = 0.7f,
             temperatureRange = 0.3f..1.2f,
             recommendedTopK = 40,
             maxTopK = 128,
             recommendedTopP = 0.9f,
+            recommendedRepetitionPenalty = 1.05f,
             maxContextLength = 4096,
             evidence = "转换仓 README：贪心会 repetitive/verbose，要求 top-p 采样 → 下限 0.3；" +
+                "Wave21 真机单字符退化实证（「、」刷屏）；README 警告贪心 repetitive → " +
+                "保守 1.05 下限（小模型 repPen 副作用更明显，Welleck 2020 unlikelihood 结论，不取 1.1）；" +
                 "基准口径 max-num-tokens 4096",
         )
 
