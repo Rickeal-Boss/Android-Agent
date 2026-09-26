@@ -41,4 +41,11 @@ data class ThemeState(
      * @Serializable 字段带默认值 ⇒ 旧 JSON 反序列化向后兼容。
      */
     val overlayOpacity: Float = 0.45f,
+    /**
+     * 覆盖层背景深度模糊的**满量程半径**（dp，设置页「覆盖层背景模糊」驱动，默认 20f）。
+     *
+     * 同 [overlayOpacity] 走 Float 通道；@Serializable 带默认值 ⇒ 旧数据向后兼容。
+     * 默认 20f 只是起点（本机无真机可验证观感），真机上由滑条在 8~32dp 之间定档。
+     */
+    val overlayBlurRadius: Float = 20f,
 )

@@ -39,6 +39,9 @@ class SettingsRepository(private val context: Context) {
         // （同 GLASS_INTENSITY 模式，无依赖倒置问题）。
         val OVERLAY_OPACITY = floatPreferencesKey("overlay_opacity")
 
+        // 覆盖层背景深度模糊的满量程半径 dp（2026-09-27）。同为 Float 原生类型。
+        val OVERLAY_BLUR_RADIUS = floatPreferencesKey("overlay_blur_radius")
+
         // 「生成速度通知」开关（Wave 9 需求 5）。默认 false：
         // 通知是观测窗口不是能力，且 API 33+ 要运行时权限 —— 默认关掉，
         // 不在用户没表达意愿时去请求权限。
@@ -81,6 +84,7 @@ class SettingsRepository(private val context: Context) {
                 // 枚举名非法（改名 / 脏数据 / 老版本）时回退 STANDARD，不让坏值毒化整个 flow。
                 hapticLevel = prefs[Keys.HAPTIC_LEVEL] ?: "STANDARD",
                 overlayOpacity = prefs[Keys.OVERLAY_OPACITY] ?: 0.45f,
+                overlayBlurRadius = prefs[Keys.OVERLAY_BLUR_RADIUS] ?: 20f,
             )
         }
 
@@ -235,6 +239,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.ENABLE_NOISE] = state.enableNoise
             prefs[Keys.HAPTIC_LEVEL] = state.hapticLevel
             prefs[Keys.OVERLAY_OPACITY] = state.overlayOpacity
+            prefs[Keys.OVERLAY_BLUR_RADIUS] = state.overlayBlurRadius
         }
     }
 

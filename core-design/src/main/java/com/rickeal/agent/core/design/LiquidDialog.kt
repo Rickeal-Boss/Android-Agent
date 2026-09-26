@@ -174,7 +174,9 @@ fun LiquidDialog(
         // 比挂在 `if (!visible) return` 之后的代码段更硬（那是靠编译器给 early return
         // 插的组来保证作用域，这里直接用「没发射就销毁」这条最可靠的作用域）。
         // 归还方向由 requestDismiss 提前做（配出场动画），这里是兜底。
-        DisposableEffect(blurToken) {
+        // key 带上 overlayBlur：provider 换实例时（理论上不该发生，但这里零成本）
+        // 能重新登记到新实例上，不会「登记在旧实例、释放到新实例」。
+        DisposableEffect(overlayBlur, blurToken) {
             overlayBlur.acquire(blurToken, OverlayBlurScope.SHELL)
             onDispose { overlayBlur.release(blurToken) }
         }
