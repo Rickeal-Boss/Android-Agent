@@ -30,7 +30,19 @@ fun BackdropEffectScope.lens(
     depthEffect: Boolean = false,
     chromaticAberration: Boolean = false
 ) {
-    if (!isRuntimeShaderSupported()) return
+    if (!isRuntimeShaderSupported()) {
+        // 复审成因 1（2026-09-26）：这是折射"消失"的最高频路径 —— API 31/32 设备
+        // （Android 12/12L）无 AGSL，模糊正常、折射静默降级，此前连一行日志都没有。
+        // 降级本身正确（低版本没得选），但必须留痕：后人真机排查"卡片怎么没折射"
+        // 时，第一件事就该看这条日志，而不是从参数开始猜。
+        android.util.Log.d(
+            TAG,
+            "lens 跳过折射：设备 API ${android.os.Build.VERSION.SDK_INT} 不支持 AGSL " +
+                "RuntimeShader（需 API 33+ / Android 13），已降级纯模糊。" +
+                "这不是参数问题 —— 折射带、底色、intensity 调什么都调不出来。"
+        )
+        return
+    }
     if (refractionHeight <= 0f || refractionAmount <= 0f) return
 
     if (padding > 0f) {
