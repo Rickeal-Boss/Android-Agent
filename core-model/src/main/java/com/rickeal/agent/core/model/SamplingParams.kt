@@ -8,7 +8,10 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class SamplingParams(
-    val temperature: Float = 0.8f,
+    // 0.8 → 0.7（2026-09-26）：LiteRT-LM SamplerConfig 无 repetition penalty（架构
+    // §5.1），端侧小模型（0.4~2B）在 0.8 下重复循环/胡言乱语真机实锤；降 0.1 换
+    // 明显更稳的输出，创造性损失在端侧助手场景可接受。用户可在聊天参数面板调回。
+    val temperature: Float = 0.7f,
     val topP: Float = 0.95f,
     val topK: Int = 40,
     val repetitionPenalty: Float = 1.0f,

@@ -202,10 +202,16 @@ fun ChatMessageList(
                             }
                         }
                     }
+                    // 展示前净化 + <think> 拆分（见 splitThinkAndClean）：
+                    // 流式未闭合时整段算思考，闭合后自动归位正文区。
+                    val (streamThink, streamAnswer) = splitThinkAndClean(
+                        streaming.text,
+                        streaming.thinking.ifBlank { null },
+                    )
                     GlassBubble(
-                        text = streaming.text,
+                        text = streamAnswer,
                         isUser = false,
-                        thinking = streaming.thinking.ifBlank { null },
+                        thinking = streamThink,
                         thinkingExpanded = thinkingExpanded,
                         onToggleThinking = onToggleThinking,
                         isStreaming = true,
@@ -270,10 +276,11 @@ private fun MessageRow(
                     )
                 }
                 if (message.text.isNotBlank() || !message.thinking.isNullOrBlank()) {
+                    val (think, answer) = splitThinkAndClean(message.text, message.thinking)
                     GlassBubble(
-                        text = message.text,
+                        text = answer,
                         isUser = false,
-                        thinking = message.thinking,
+                        thinking = think,
                         thinkingExpanded = expanded,
                         onToggleThinking = { onToggleThinking(message.id) },
                         errorMessage = message.errorMessage,
@@ -367,4 +374,39 @@ fun ChatToolCard(
             }
         }
     }
+}
+
+/**
+ * 展示层文本净化 + `<think>` 解析（2026-09-26，仅作用于显示，不碰持久化 ——
+ * journal / 会话存档保留模型原始输出，排查问题需要原文）。
+ *
+ * 1. **U+FFFD（�）清洗**：小模型 tokenizer 流式解码常见坏字节，替换字符在中文
+ *    正文里非常刺眼（真机截图实锤）。只洗展示层。
+ * 2. **`<think>` 拆分**：DeepSeek-R1 等推理模型把思考直接写进正文（不走引擎的
+ *    thought channel），拆出来并入思考折叠区；流式未闭合时整段按思考显示，
+ *    闭合后自动归位正文区。已有 [existingThinking]（引擎 thought channel 的
+ *    思考）时按「channel 在前、正文解析在后」合并。
+ *
+ * 返回 `(thinking, answer)`。
+ */
+private fun splitThinkAndClean(text: String, existingThinking: String?): Pair<String?, String> {
+    val cleaned = text.replace("\uFFFD", "")
+    val openTag = "<think>"
+    val closeTag = "</think>"
+    val open = cleaned.indexOf(openTag)
+    if (open < 0) {
+        return existingThinking?.replace("\uFFFD", "") to cleaned
+    }
+    val close = cleaned.indexOf(closeTag)
+    val thinkBody = if (close >= 0) {
+        cleaned.substring(open + openTag.length, close)
+    } else {
+        cleaned.substring(open + openTag.length)
+    }
+    val answer = if (close >= 0) cleaned.substring(close + closeTag.length).trimStart('\n') else ""
+    val merged = listOfNotNull(
+        existingThinking?.replace("\uFFFD", "")?.takeIf { it.isNotBlank() },
+        thinkBody.trim().takeIf { it.isNotBlank() },
+    ).joinToString("\n\n")
+    return merged.takeIf { it.isNotBlank() } to answer
 }
