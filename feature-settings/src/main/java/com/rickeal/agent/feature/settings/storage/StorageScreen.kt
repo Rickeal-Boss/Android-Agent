@@ -1,7 +1,9 @@
 package com.rickeal.agent.feature.settings.storage
 
 import android.content.Intent
+import android.os.Environment
 import android.provider.DocumentsContract
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +40,7 @@ import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import java.io.File
 import java.util.Locale
 
 /**
@@ -260,9 +263,33 @@ fun StorageScreen(
                         GlassButton(
                             text = "打开系统文件夹",
                             onClick = {
+                                // 智能定位（2026-09-26 用户反馈：固定跳 files 只看到空的
+                                // Download——模型可能不在里面）。按「哪里有大文件（≥64MB）
+                                // 就跳哪里」：Download（直链下载落盘处）→ models（adb push
+                                // 的扫描目录）→ files 根；都没有（模型全在内部私有目录）
+                                // 时跳 files 并提示。
+                                fun hasModelFile(dir: File?): Boolean =
+                                    dir?.listFiles()?.any { it.length() >= 64L * 1024L * 1024L } == true
+                                val externalRoot = context.getExternalFilesDir(null)
+                                val sub = when {
+                                    hasModelFile(File(externalRoot, Environment.DIRECTORY_DOWNLOADS)) ->
+                                        "files/Download"
+                                    hasModelFile(File(externalRoot, "models")) -> "files/models"
+                                    else -> "files"
+                                }
+                                // ⚠️ SAF 导入的模型复制在**内部** filesDir（/data/user/0/...），
+                                // 任何外部文件管理器都无法访问 —— 检测到时明确告知，别让
+                                // 用户在外部目录里翻找不存在的东西。
+                                if (hasModelFile(File(context.filesDir, "models"))) {
+                                    Toast.makeText(
+                                        context,
+                                        "部分模型位于应用私有目录（内部存储），系统文件管理器无法访问；已打开外部专属目录",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
                                 val initial = DocumentsContract.buildDocumentUri(
                                     "com.android.externalstorage.documents",
-                                    "primary:Android/data/${context.packageName}/files",
+                                    "primary:Android/data/${context.packageName}/$sub",
                                 )
                                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
                                     putExtra(DocumentsContract.EXTRA_INITIAL_URI, initial)
