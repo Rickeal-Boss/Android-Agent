@@ -31,7 +31,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassIconButton
 import com.rickeal.agent.core.design.GlassMaterial
+import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.liquidGlass
 import com.rickeal.agent.core.model.InferenceConfig
@@ -69,6 +71,12 @@ fun ChatParamsSheet(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    // 底部悬浮玻璃页签浮在 sheet 之上（真机截图实锤：页签直接压进
+                    // 参数行）。整个 sheet 上抬到页签上沿：先 navigationBarsPadding
+                    // 再 padding(overlay)，顺序与 GlassScaffold 对 FAB 的处理同构 ——
+                    // 先吃系统导航栏，再垫悬浮页签占位，两层互不吞并。
+                    .navigationBarsPadding()
+                    .padding(bottom = LocalBottomBarOverlay.current)
                     .fillMaxWidth()
                     .fillMaxHeight(0.78f)
                     .clip(RoundedCornerShape(topStart = tokens.radiusXl, topEnd = tokens.radiusXl))
@@ -86,6 +94,18 @@ fun ChatParamsSheet(
                         dispersion = false,
                     ),
             ) {
+                // 覆盖层自身压实 scrim：THICK 材质在壁纸/聊天内容上偏"透"，
+                // 参数行文字对比度不足（与 :66 的全屏 dim Box 是两回事 —— 那个
+                // 压暗的是 sheet 背后的页面，这里压的是 sheet 自己，后者保留）。
+                // 不透明度由设置页「覆盖层不透明度」经 LocalGlassConfig 驱动，
+                // 此处只读消费（GlassConfig.overlayOpacity，并行成员接线中）。
+                // matchParentSize 是 BoxScope 成员：玻璃 Box 就是 Box，直接可用，
+                // 且不像 fillMaxSize 会反过来撑大父容器。
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(colors.glassShadow.copy(alpha = LocalGlassConfig.current.overlayOpacity)),
+                )
                 Column(modifier = Modifier.fillMaxSize()) {
                     Row(
                         modifier = Modifier
@@ -122,8 +142,11 @@ fun ChatParamsSheet(
                             // 输入框会被键盘盖住。顺序为「先 ime 后 nav」：API 30+ 的
                             // Type.ime() 只报键盘自身高度、不含导航栏，两者相加才对
                             // （与 ChatInputBar 的做法一致）。
+                            //
+                            // 2026-09-26：删掉 navigationBarsPadding —— sheet 底边已经在
+                            // 玻璃 Box 上抬到页签上沿（含导航栏），内容层再垫一次是双倍
+                            // 空隙；imePadding 保留，键盘弹出时继续顶内容。
                             .imePadding()
-                            .navigationBarsPadding()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                 }
