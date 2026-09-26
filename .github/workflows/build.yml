@@ -24,7 +24,7 @@ name: Build
 
 on:
   push:
-    branches: [main, UI, harness]
+    branches: [main, UI, harness, harness-improve]
   pull_request:
     branches: [main, UI, harness]
   workflow_dispatch:

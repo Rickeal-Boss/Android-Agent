@@ -33,6 +33,10 @@ on:
     branches:
       - UI
       - harness
+      # harness-improve（Wave 21，2026-09-26）：用户建的分改善分支，
+      # 与 harness 同规格产出「签名正式包 + debug 包」双产物。
+      - harness-improve
+      - harness-improve
     tags:
       - 'v*'
     # Wave4 审查（D-P1-5）：文档/杂项推送不触发完整 release 双轨（R8+AAB 代价高）。
