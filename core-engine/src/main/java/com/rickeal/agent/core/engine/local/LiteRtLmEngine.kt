@@ -227,7 +227,7 @@ class LiteRtLmEngine(
                 // 把「引擎加载失败」换成可操作的文案：
                 //  1、不存在 → 明说「重新下载」；
                 //  2、体积 < [MODEL_MIN_BYTES] → 下载几乎必然中断（最小的预设也有 ~0.25GB）；
-                //  3、.litertlm/.task 都是 zip 容器（PK 魔数）→ 魔数不对 = 下到的不是模型。
+                //  3、按扩展名校验容器魔数（见下方 when 的 KDoc）→ 魔数不对 = 下到的不是模型。
                 val modelFile = java.io.File(modelPath)
                 if (!modelFile.exists()) {
                     throw EngineException(
@@ -240,12 +240,24 @@ class LiteRtLmEngine(
                             "下载很可能已中断，请删除后重新下载"
                     )
                 }
+                // 两种模型容器、两套魔数（2026-09-26 修正）：
+                //  - .litertlm = LiteRT-LM **自研容器**：头部 8 字节 ASCII "LITERTLM" +
+                //    版本 u32 + section 数 u32…（Range 请求实测 SmolVLM2-500M 与
+                //    Qwen2.5-1.5B 两个官方直链的头部，均为 "LITERTLM" 开头，**不是 zip**）。
+                //    ⚠️ 曾想当然按「zip（PK）」校验，把所有正常模型全部拦截 —— 真机
+                //    「模型文件完全没问题却报格式异常」的根因，引以为戒：魔数必须实测。
+                //  - .task = TFLite Task Library 模型，是真正的 zip 容器（PK）。
                 val modelExt = modelFile.extension.lowercase()
-                if (modelExt == "litertlm" || modelExt == "task") {
-                    val magic = ByteArray(2)
+                val expectedMagic: ByteArray? = when (modelExt) {
+                    "litertlm" -> "LITERTLM".toByteArray(Charsets.US_ASCII)
+                    "task" -> byteArrayOf('P'.code.toByte(), 'K'.code.toByte())
+                    else -> null
+                }
+                if (expectedMagic != null) {
+                    val magic = ByteArray(expectedMagic.size)
                     java.io.FileInputStream(modelFile).use { ins ->
                         val read = ins.read(magic)
-                        if (read != 2 || magic[0] != 'P'.code.toByte() || magic[1] != 'K'.code.toByte()) {
+                        if (read != expectedMagic.size || !magic.contentEquals(expectedMagic)) {
                             throw EngineException(
                                 "模型文件格式异常（不是 .$modelExt 容器）—— " +
                                     "下载源可能返回了错误页，请换源后重新下载"
