@@ -36,8 +36,25 @@ import java.util.Locale
  *     [WINDOW_UNIQUE_LIMIT]（两句 A/B 交替也是循环）。
  *  3. 思考预算（仅 thinking 流）：累计思考字符超 [THINKING_CHAR_BUDGET] → 循环
  *     （循环思考的常见形态是不出句界地无限铺陈，句界判定抓不住，只能按总量截）。
+ *  4. 短签名连击：第二口径（去空白、保留标点、无长度门槛）下，同一签名连续
+ *     [SHORT_LOOP_STREAK] 句 → 循环。Wave 21 真机事故（SmolVLM2-500M）：模型退化为
+ *     「、」「当:」单字符行无限刷屏，而判定①②的 8 字门槛把短退化句全数放行
+ *     （「、」归一化为空、「当:」仅 1 字），窗口收不到任何签名、检测全盲。
+ *  5. text 流铺陈预算（仅 text 流）：不出句界累计超 [TEXT_RUNAWAY_CHARS] 字符 →
+ *     循环。与判定③同构：正常代码块 / 列表都有 \n，4096 字符无任何句界只能是退化。
+ *  6. 提示词回显（仅当构造时传入 systemPrompt）：连续 [ECHO_LOOP_STREAK] 句命中
+ *     系统提示词指纹 → 循环。Wave 21 真机：500M 级模型先逐字复述工具系统提示词
+ *     再退化 —— 层1 的提示词约束对它被证伪，只能在层3（输出侧）拦截。
  */
-class StreamRepetitionDetector {
+class StreamRepetitionDetector(
+    /**
+     * 系统提示词原文，可选。非空时在构造期一次性切段建「回显指纹集」（判定⑥）。
+     * 默认 null = 回显检测完全关闭，既有调用点（含 ask_actor 子 run）零行为变化：
+     * 回显指纹必须来自本 run 实际拼出的系统提示词，没有传就没有可比对基准 ——
+     * 不做成「空串也建指纹集」的退化语义，那只会让检测永远静默、看似接入实则无效。
+     */
+    systemPrompt: String? = null,
+) {
 
     sealed interface Verdict {
         data object Ok : Verdict
@@ -63,17 +80,53 @@ class StreamRepetitionDetector {
         /** 仅 thinking 流使用：累计思考字符数（预算截断判据）。 */
         var totalChars = 0
 
+        /**
+         * 短签名连击计数（判定④）：第二口径下与上一句短签名相同的连续句数。
+         * 短退化句（「、」「当:」）在原口径里签名恒为 null、进不了判定①，
+         * 只能在这里独立计数。
+         */
+        var shortStreak = 0
+
+        /** 上一句的第二口径短签名（短签名连击判定的基准）。 */
+        var shortLastSignature: String? = null
+
+        /**
+         * 提示词回显连击计数（判定⑥）：连续命中回显指纹集的原口径句子数。
+         * 放在 [StreamState] 内（两条流各一份）而非检测器字段：回显主要发生在
+         * text 流，但 thinking 流同样可能复读提示词，口径必须两条流独立。
+         */
+        var echoHitStreak = 0
+
         fun reset() {
             pendingSentence.setLength(0)
             recentSignatures.clear()
             lastSignature = null
             streak = 0
             totalChars = 0
+            shortStreak = 0
+            shortLastSignature = null
+            echoHitStreak = 0
         }
     }
 
     private val textState = StreamState()
     private val thinkingState = StreamState()
+
+    /**
+     * 回显指纹集：系统提示词按句界切段、逐段走**原口径**归一化（≥8 字门槛）。
+     * O(|prompt|) 且只在构造时跑一次；prompt 为空/空白 → 空集 → 判定⑥永远不触发
+     * （等价于既有行为）。用原口径建指纹：回显的是完整提示词句子，天然 ≥8 字；
+     * 若用无门槛的短口径，正常回答里随手一个「工具。」都会与提示词中的片段撞指纹。
+     */
+    private val echoSignatures: Set<String> = buildEchoSignatures(systemPrompt)
+
+    private fun buildEchoSignatures(prompt: String?): Set<String> {
+        if (prompt.isNullOrBlank()) return emptySet()
+        return prompt
+            .split(*SENTENCE_TERMINATORS.toCharArray())
+            .mapNotNull { normalizedSignature(it) }
+            .toSet()
+    }
 
     fun observeText(delta: String): Verdict = observe(textState, delta, inThinking = false)
 
@@ -95,6 +148,11 @@ class StreamRepetitionDetector {
                 return Verdict.LoopDetected(inThinking = true, repeatedSignature = THINKING_BUDGET_MARKER)
             }
         }
+        // text 流铺陈预算（判定⑤，P0-2）：与 thinking 预算同构 —— 循环退化同样可能
+        // 出现在 text 流且不出句界。O(1) 判定（只读拼句缓冲长度），先到先判。
+        if (!inThinking && state.pendingSentence.length > TEXT_RUNAWAY_CHARS) {
+            return Verdict.LoopDetected(inThinking = false, repeatedSignature = TEXT_RUNAWAY_MARKER)
+        }
         for (ch in delta) {
             state.pendingSentence.append(ch)
             if (SENTENCE_TERMINATORS.indexOf(ch) >= 0) {
@@ -105,11 +163,52 @@ class StreamRepetitionDetector {
         return Verdict.Ok
     }
 
-    /** 把 pendingSentence 冲刷成签名并跑两条判定（O(1) + O(WINDOW)）。 */
+    /**
+     * 把 pendingSentence 冲刷成签名并跑四条句子级判定（O(1) + O(WINDOW)）。
+     *
+     * 判定顺序与短路语义：④⑥先于①②，因为①②以原口径签名为前提 ——
+     * `normalizedSignature` 对短退化句返回 null 时旧实现直接 `return Ok`（短路），
+     * Wave 21 真机「、」刷屏正是从这个短路里全数漏过。④⑥不依赖原口径签名，
+     * 必须放在该短路之前才能接住。⑤（铺陈预算）不在句界，见 [observe]。
+     */
     private fun flushSentence(state: StreamState, inThinking: Boolean): Verdict {
         val sentence = state.pendingSentence.toString()
         state.pendingSentence.setLength(0)
-        val signature = normalizedSignature(sentence) ?: return Verdict.Ok
+
+        // 判定④：短签名连击（P0-1）。第二口径（保留标点、无长度门槛）——「、」
+        // 本身就是退化证据，标点不能像原口径那样剥掉；正常口头语（「好的。」
+        // 「明白。」「继续。」）签名互不相同不会连击，同一 1-2 字符签名连出
+        // [SHORT_LOOP_STREAK] 次在正常回答中不存在（Fu 2021：高频词分布的自强化
+        // 是退化的实锤形态）。
+        val shortSignature = normalizedShortSignature(sentence)
+        if (shortSignature != null) {
+            if (shortSignature == state.shortLastSignature) {
+                state.shortStreak++
+            } else {
+                state.shortLastSignature = shortSignature
+                state.shortStreak = 1
+            }
+            if (state.shortStreak >= SHORT_LOOP_STREAK) {
+                return Verdict.LoopDetected(inThinking, SHORT_SIG_RUN_MARKER)
+            }
+        }
+
+        // 判定⑥：提示词回显（P0-3）。原口径签名命中回显指纹集 → 连击累加，
+        // 任何未命中（含短退化句）清零。取「连续 2 句」而非单句：防误伤
+        // 「用户贴提示词片段、模型正常引用」的场景 —— 真回显是逐字复述，必然
+        // 连续多句命中；偶发引用一句后接正常内容即被打断。
+        val signature = normalizedSignature(sentence)
+        if (signature != null && signature in echoSignatures) {
+            state.echoHitStreak++
+            if (state.echoHitStreak >= ECHO_LOOP_STREAK) {
+                return Verdict.LoopDetected(inThinking, PROMPT_ECHO_MARKER)
+            }
+        } else {
+            state.echoHitStreak = 0
+        }
+
+        // 原口径短句短路（既有行为，保持不变）：下面的①②只对 ≥8 字签名有意义。
+        if (signature == null) return Verdict.Ok
         // 判定①：同句连击 —— 与上一句签名相同则连击累加，否则重置为新句。
         if (signature == state.lastSignature) {
             state.streak++
@@ -145,6 +244,22 @@ class StreamRepetitionDetector {
         /** 同句连击阈值：连续 4 句签名相同即判循环。 */
         const val LOOP_STREAK = 4
 
+        /**
+         * 短签名连击阈值（判定④）。长句连击阈值是 [LOOP_STREAK]=4，这里取 6：
+         * 「好的。」「明白。」「继续。」这类交替口头语签名互不相同不会连击，而
+         * 同一 1-2 字符签名连出 6 次在正常回答中不存在 —— Fu 2021（高频词分布
+         * 自强化）正是这种退化形态的实锤。取 6 而非更低：给正常回答里的偶发
+         * 重复（如列表项前的同一个引导词）留足余量。
+         */
+        const val SHORT_LOOP_STREAK = 6
+
+        /**
+         * 提示词回显连击阈值（判定⑥）：连续 2 句命中指纹集即判循环。取 2 而非 1
+         * 是防误伤「用户贴提示词片段、模型正常引用」的场景 —— 真回显是逐字复述
+         * 整段提示词，必然连续多句命中；偶发引用一句后接正常内容即被打断。
+         */
+        const val ECHO_LOOP_STREAK = 2
+
         /** 窗口塌缩判定的最少句子数。 */
         const val WINDOW_MIN_SENTENCES = 6
 
@@ -160,6 +275,15 @@ class StreamRepetitionDetector {
 
         /** 预算截断时 LoopDetected.repeatedSignature 的固定标记（日志可辨识）。 */
         const val THINKING_BUDGET_MARKER = "thinking_char_budget"
+
+        /** 短签名连击（判定④）触发时的固定标记（日志可辨识，非具体签名）。 */
+        const val SHORT_SIG_RUN_MARKER = "short_sig_run"
+
+        /** text 流铺陈预算（判定⑤）触发时的固定标记（日志可辨识）。 */
+        const val TEXT_RUNAWAY_MARKER = "text_runaway_sentence"
+
+        /** 提示词回显（判定⑥）触发时的固定标记（日志可辨识）。 */
+        const val PROMPT_ECHO_MARKER = "prompt_echo"
 
         /** 句子终止符集合：中英句读 + 换行（换行是流式输出最常见的句界）。 */
         private const val SENTENCE_TERMINATORS = "。！？!?.\n"
@@ -178,6 +302,23 @@ class StreamRepetitionDetector {
             // 于是同一段英文/中文回答前后归一化出不同签名，「重复检测」静默失效。
             val normalized = text.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
             return normalized.takeIf { it.length >= MIN_SIGNATURE_CHARS }
+        }
+
+        /**
+         * 短句的第二口径签名（判定④专用）：去空白、小写（同 [Locale.ROOT] 口径）、
+         * **保留标点**，非空即返回 —— 没有长度门槛。
+         *
+         * ⚠️ 与 [normalizedSignature] 是**刻意分开的两份实现**，不许互相调用、不许合并：
+         * 两者的取舍正好相反 —— 原口径剥标点 + 8 字门槛，服务「长句级」重复证据；
+         * 短口径保留标点 + 零门槛，服务「单字符级」退化证据。「、」「当:」这类退化
+         * 句在原口径下归一化为空 / 1 字，全部被 8 字门槛放行（Wave 21 真机事故根因）；
+         * 而标点本身就是这里的证据 —— 「、」刷屏里唯一稳定的就是那个顿号。合并成一
+         * 份带开关参数的实现会让两个口径互相牵制（改门槛/改标点策略必然同时影响
+         * AgentRunner 跨轮检测），分开演化才是安全的。
+         */
+        fun normalizedShortSignature(text: String): String? {
+            val normalized = text.lowercase(Locale.ROOT).filter { !it.isWhitespace() }
+            return normalized.takeIf { it.isNotEmpty() }
         }
     }
 }
