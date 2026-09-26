@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -324,6 +325,12 @@ private fun MessageRow(
  * 刻意不做玻璃控件：LazyColumn 一屏十几条，每条再叠一层玻璃控件
  * 模糊成本 ×N；小文字 + 按压态足够传达可点击。圆角 8dp + 灰字弱化，
  * 视觉层级明显低于气泡本体 —— 操作是附属能力，不是内容。
+ *
+ * 触控热区 ≥48dp（本仓最小触控目标纪律，GlassSwitch/GlassSlider 同款，
+ * tokens.minTouchTarget 的同一标准）：外层 Box heightIn(min=48)，
+ * clip/clickable 都挂在 Box 链上 —— **可点击区域就是 48dp 热区**，不是视觉
+ * 大小。视觉尽量不变：内容仍是 12dp 图标 + labelSmall 灰字，靠 Box 居中
+ * 撑高度；行高变 48dp 观感可接受（对齐 iOS 气泡操作行的宽松节奏）。
  */
 @Composable
 private fun BubbleCopyAction(
@@ -332,26 +339,30 @@ private fun BubbleCopyAction(
     onClick: () -> Unit,
 ) {
     val colors = LocalGlassColors.current
-    Row(
+    Box(
         modifier = Modifier
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
-            // padding 在 clickable 之后：热区含内边距，点字边也能命中。
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            // padding 在 clickable 之后：热区含水平内边距，点字边也能命中；
+            // 高度方向由 heightIn(min=48) 保证，不再叠 vertical padding。
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = colors.onGlassSubtle,
-            modifier = Modifier.size(12.dp),
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = colors.onGlassSubtle,
-            modifier = Modifier.padding(start = 3.dp),
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = colors.onGlassSubtle,
+                modifier = Modifier.size(12.dp),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onGlassSubtle,
+                modifier = Modifier.padding(start = 3.dp),
+            )
+        }
     }
 }
 
