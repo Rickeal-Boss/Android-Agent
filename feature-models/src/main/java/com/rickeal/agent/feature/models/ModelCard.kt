@@ -57,6 +57,15 @@ fun ModelCard(
     onProbe: () -> Unit,
     onDelete: (deleteFile: Boolean) -> Unit,
     onBackendChange: (InferenceBackend) -> Unit,
+    /**
+     * 是否放行 GPU（2026-09-26 GPU 白名单）。由调用方按预设元数据算好传入
+     * （`ModelPresets.findByFileName(...)?.gpuSupported`；无预设 = false 从严）。
+     * GPU 路径不支持时是 native 崩溃（闪退），Kotlin 层 catch 不住 —— 这里直接
+     * 拦下 GPU 选项并给出依据；加载侧 ModelsViewModel 还有第二道兜底。
+     */
+    gpuAllowed: Boolean = true,
+    /** GPU 禁用/放行的依据（来自预设 backendBasis），展示在选择器下方。 */
+    gpuBasis: String = "",
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalGlassColors.current
@@ -151,6 +160,9 @@ fun ModelCard(
                     InferenceBackend.NPU -> 2
                 },
                 onSelected = { index ->
+                    // GPU 白名单拦截（2026-09-26）：未放行 GPU 的模型点 GPU 直接忽略 +
+                    // 展示依据 —— 不回调 onBackendChange，配置值不会被写坏。
+                    if (index == 1 && !gpuAllowed) return@GlassSegmented
                     onBackendChange(
                         when (index) {
                             1 -> InferenceBackend.GPU
@@ -160,6 +172,16 @@ fun ModelCard(
                     )
                 },
             )
+            // GPU 白名单警示：永远可见（不是只在出错时），让「为什么点 GPU 没反应」
+            // 在选择的那一刻就有答案 —— 依据来自官方 README 的逐仓核实（backendBasis）。
+            if (!gpuAllowed) {
+                Text(
+                    text = "GPU 已禁用：${gpuBasis.ifEmpty { "该模型未列入 GPU 白名单（无预设元数据），GPU 路径未经验证，为避免闪退已禁用" }}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.warning,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
             // NPU 在不支持的设备上是在 native 层崩（用户只看到闪退），所以提前给警告。
             // 注意是"警告"不是"禁用"：8650 这个门槛是估计值，硬拦会误伤能跑的设备。
             if (backend == InferenceBackend.NPU && !DeviceCapability.supportsNpu()) {

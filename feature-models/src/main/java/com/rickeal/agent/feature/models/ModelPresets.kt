@@ -1,5 +1,7 @@
 package com.rickeal.agent.feature.models
 
+import com.rickeal.agent.core.model.ModelGpuSupport
+
 /**
  * 内置模型预设：**只收录 Google 官方 `litert-community` 组织下真实存在的文件**，
  * 链接与体积均按 Hugging Face API 核对过（2026-09 收录；2026-09-24 全量复核体积并增补
@@ -108,7 +110,17 @@ data class ModelPreset(
     /** 数字是怎么来的，写进数据里，后人才能校准。 */
     val memBasis: String,
     val note: String,
+    /** GPU 放行/禁用的依据与警示（模型卡展示）。空串 = 无特别说明。 */
+    val backendBasis: String = "",
 ) {
+    /**
+     * 是否放行 GPU 后端（2026-09-26）。**判定源下沉到 [ModelGpuSupport]**（core-model）：
+     * GPU 路径不支持时是 native 崩溃（用户只看到闪退），除了本表的 UI 选择拦截，
+     * 对话链路（AgentRunner → EngineEnvironment.loadConfig）也要做加载前兜底 ——
+     * 判定必须是同一数据源，否则 UI 与引擎各判各的必然漂移。
+     */
+    val gpuSupported: Boolean
+        get() = ModelGpuSupport.gpuVerifiedFileNames.contains(url.substringAfterLast('/'))
     /** 全部可用直链：主源在前，镜像在后。 */
     val allUrls: List<String>
         get() = listOf(url) + mirrors.map { it.url }
@@ -160,6 +172,7 @@ object ModelPresets {
             note = "端侧主力：画质与速度平衡，有 GPU/NPU 的手机首选",
             sizeBytes = 2008432640,
             recommended = true,
+            backendBasis = "官方 GPU 特化变体（LiteRT 的 ML Drift GPU，README 含 Galaxy S26 GPU 基准）",
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -172,6 +185,7 @@ object ModelPresets {
             note = "同上的 CPU 版：兼容性最好，慢一些但不容易出错",
             sizeBytes = 2588147712,
             recommended = false,
+            backendBasis = "CPU 特化变体；GPU 路径请选 GPU 变体（本变体未单独验证 GPU 图）",
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it.litertlm"),
         ),
         ModelPreset(
@@ -184,6 +198,7 @@ object ModelPresets {
             note = "更大的模型：回答更好，需要 8GB 以上内存的手机",
             sizeBytes = 2969059328,
             recommended = false,
+            backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）",
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -198,6 +213,7 @@ object ModelPresets {
             // 注意：recommended 只允许两项（MiniCPM5 主推 + Gemma 4 E2B·GPU 备选），
             // 标多了就失去「替用户做决定」的意义。
             recommended = false,
+            backendBasis = "官方 README 仅有桌面 GPU 基准（macOS Metal），无 Android GPU 验证 → 仅 CPU",
             mirrors = domesticMirrors(
                 "Qwen2.5-1.5B-Instruct",
                 "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -213,6 +229,7 @@ object ModelPresets {
             note = "会先「想一想」再回答，适合体验思考过程",
             sizeBytes = 1833451520,
             recommended = false,
+            backendBasis = "官方 README 无 Android GPU 验证 → 仅 CPU",
             mirrors = domesticMirrors(
                 "DeepSeek-R1-Distill-Qwen-1.5B",
                 "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -228,6 +245,7 @@ object ModelPresets {
             note = "体积小、中文强，大多数手机都能跑",
             sizeBytes = 1553670064,
             recommended = true,
+            backendBasis = "官方 README 明示 CPU+GPU 双兼容，但要求 litert-lm ≥ 0.16（本仓 0.11.0 未验证）→ 防闪退先禁 GPU；⚠️ 本模型同样存在运行时版本风险，加载失败请反馈",
             mirrors = domesticMirrors("MiniCPM5-2B", "MiniCPM5-2B_int4.litertlm"),
         ),
         ModelPreset(
@@ -240,6 +258,7 @@ object ModelPresets {
             note = "推理与代码能力强，但体积大，仅建议 12GB 内存机型",
             sizeBytes = 3910090752,
             recommended = false,
+            backendBasis = "官方 README 的 GPU 行无显存数据（N/A），无 Android GPU 验证 → 仅 CPU",
             mirrors = domesticMirrors(
                 "Phi-4-mini-instruct",
                 "Phi-4-mini-instruct_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -255,6 +274,7 @@ object ModelPresets {
             note = "能看懂图片：用来体验拍照问答，体积最小",
             sizeBytes = 563549568,
             recommended = false,
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；本仓 0.11.0 未验证 → 防闪退先禁 GPU",
             mirrors = domesticMirrors("LFM2.5-VL-450M", "LFM2.5-VL-450M_int8.litertlm"),
         ),
         // ── 视觉多模态批（2026-09-24 增补）：端侧 VL 帕累托前沿，500M/2B/1.6B/3B/8B 五档。
@@ -269,6 +289,7 @@ object ModelPresets {
             note = "能看图的最小模型：老手机也能体验拍照问答",
             sizeBytes = 360822960,
             recommended = false,
+            backendBasis = "官方在 Galaxy S26（litert-lm 0.15）验证 Android GPU 可生成；本仓 0.11.0 未验证 → 防闪退先禁 GPU。⚠️ 文本对话能力弱（360M 解码器，为图像输入设计）：纯文本对话建议 Qwen2.5-1.5B 或 DeepSeek-R1",
             mirrors = domesticMirrors("SmolVLM2-500M", "SmolVLM2-500M.litertlm"),
         ),
         ModelPreset(
@@ -281,6 +302,7 @@ object ModelPresets {
             note = "阿里通义视觉模型：中文看图、截图问答与 OCR 强",
             sizeBytes = 1783424544,
             recommended = false,
+            backendBasis = "官方在 Pixel 8a（视觉 GPU + 解码 CPU）与 Galaxy S26（0.15）验证；本仓 0.11.0 未验证 → 防闪退先禁 GPU",
             mirrors = domesticMirrors("Qwen2-VL-2B", "Qwen2-VL-2B.litertlm"),
         ),
         ModelPreset(
@@ -295,6 +317,7 @@ object ModelPresets {
             note = "同体积看图能力最强之一：多语言视觉与 OCR 均衡（含视觉修复）",
             sizeBytes = 1298139472,
             recommended = false,
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；本仓 0.11.0 未验证 → 防闪退先禁 GPU",
             mirrors = domesticMirrors("LFM2.5-VL-1.6B", "LFM2.5-VL-1.6B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -308,6 +331,7 @@ object ModelPresets {
             note = "小体积视觉旗舰：精细图像理解与文档 OCR，8GB 内存机型舒适运行（含视觉修复）",
             sizeBytes = 2352023888,
             recommended = false,
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；本仓 0.11.0 未验证 → 防闪退先禁 GPU",
             mirrors = domesticMirrors("LFM2.5-VL-3B", "LFM2.5-VL-3B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -320,6 +344,7 @@ object ModelPresets {
             note = "视觉能力天花板：8B 级多模态，仅建议 8GB 以上内存机型",
             sizeBytes = 4214021104,
             recommended = false,
+            backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU",
             mirrors = domesticMirrors("MiniCPM-V-4", "MiniCPM-V-4-int8.litertlm"),
         ),
     )

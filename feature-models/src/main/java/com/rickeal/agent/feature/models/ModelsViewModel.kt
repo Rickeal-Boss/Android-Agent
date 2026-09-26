@@ -893,7 +893,20 @@ class ModelsViewModel(
             }
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    val config = _uiState.value.config
+                    var config = _uiState.value.config
+                    // GPU 白名单兜底（2026-09-26）：模型卡已拦截 GPU 选择，但历史配置可能
+                    // 仍记着 GPU（白名单上线前选过）。GPU 路径不支持时是 native 崩溃，
+                    // catch 不住 —— 加载前最后一道：无预设依据放行 GPU 的一律落回 CPU，
+                    // 记忆值同步改写（否则 UI 显示 GPU、引擎实际 CPU，状态说谎）。
+                    val preset = ModelPresets.findByFileName(model.fileName)
+                    if (config.backend == InferenceBackend.GPU && preset?.gpuSupported != true) {
+                        AgentLogStore.warn(
+                            "GPU 已回落 CPU：${model.fileName} 未列入 GPU 白名单" +
+                                "（${preset?.backendBasis?.take(60) ?: "无预设元数据"}）"
+                        )
+                        config = config.copy(backend = InferenceBackend.CPU)
+                        _uiState.update { it.copy(config = config) }
+                    }
                     val engine = container.engineFactory.create(EngineKind.LOCAL)
                     engine.load(
                         EngineLoadConfig(

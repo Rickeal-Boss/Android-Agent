@@ -203,12 +203,17 @@ fun ModelsScreen(
                 }
             }
             items(items = state.visibleModels, key = { it.id }) { model ->
+                // GPU 白名单（2026-09-26）：按预设元数据放行/禁用 GPU —— 官方无 Android
+                // GPU 验证证据的一律禁（native 崩溃 catch 不住）；无预设的导入模型从严。
+                val preset = ModelPresets.findByFileName(model.fileName)
                 ModelCard(
                     model = model,
                     isActive = model.id == state.activeModelId,
                     isLoading = model.id == state.loadingModelId,
                     isLoaded = model.id == state.loadedModelId,
                     backend = state.backend,
+                    gpuAllowed = preset?.gpuSupported == true,
+                    gpuBasis = preset?.backendBasis.orEmpty(),
                     onSelect = { viewModel.onSelect(model.id) },
                     onLoad = { viewModel.onLoad(model.id) },
                     onUnload = viewModel::onUnload,

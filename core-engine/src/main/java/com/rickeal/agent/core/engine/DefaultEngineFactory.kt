@@ -1,9 +1,12 @@
 package com.rickeal.agent.core.engine
 
 import com.rickeal.agent.core.engine.local.LiteRtLmEngine
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.EngineKind
+import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
+import com.rickeal.agent.core.model.ModelGpuSupport
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -51,12 +54,28 @@ class EngineEnvironment(
     fun loadConfig(
         model: ModelDescriptor?,
         config: InferenceConfig,
-    ): EngineLoadConfig = EngineLoadConfig(
-        model = model,
-        config = config,
-        cacheDir = cacheDir,
-        nativeLibraryDir = nativeLibraryDir,
-        externalFilesDir = externalFilesDir,
-        sandboxDir = sandboxDir,
-    )
+    ): EngineLoadConfig {
+        // GPU 白名单兜底（2026-09-26，核心防闪退闸门）：GPU 路径不支持时是 native
+        // 崩溃（SIGSEGV），Kotlin 层 catch 不住 —— 这里是**所有加载路径的唯一汇聚点**
+        // （模型库 ModelsViewModel 与对话链路 AgentRunner 都经此组装），统一拦：
+        // 文件名不在 [ModelGpuSupport] 白名单（官方无 Android GPU 验证证据 / 无预设
+        // 元数据的导入模型）而请求 GPU 的一律落回 CPU 并记日志。
+        // UI 层（模型卡选择拦截 + ModelsViewModel 记忆改写）是第一道；这里是保命道。
+        var effective = config
+        if (config.backend == InferenceBackend.GPU && !ModelGpuSupport.isGpuVerified(model?.fileName)) {
+            AgentLogStore.warn(
+                "GPU 已回落 CPU：${model?.fileName ?: "未知模型"} 未列入 GPU 白名单" +
+                    "（native 路径未经验证，强行加载会闪退）"
+            )
+            effective = config.copy(backend = InferenceBackend.CPU)
+        }
+        return EngineLoadConfig(
+            model = model,
+            config = effective,
+            cacheDir = cacheDir,
+            nativeLibraryDir = nativeLibraryDir,
+            externalFilesDir = externalFilesDir,
+            sandboxDir = sandboxDir,
+        )
+    }
 }
