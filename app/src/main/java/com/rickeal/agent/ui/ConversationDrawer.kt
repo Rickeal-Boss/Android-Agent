@@ -1,5 +1,6 @@
 package com.rickeal.agent.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,7 @@ import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.model.ConversationMeta
 
@@ -92,6 +94,16 @@ internal fun ConversationDrawerContent(
         cornerRadius = 0.dp,
         contentPadding = PaddingValues(0.dp),
     ) {
+        // 覆盖层 scrim（Wave 21）：alpha 由 GlassConfig.overlayOpacity 驱动（设置页
+        // 「覆盖层不透明度」，与 LiquidDialog / 推理参数面板共用同一配置）。
+        // 插在表面绘制之后、内容之前：matchParentSize 不占布局测量，纯视觉压暗。
+        // 颜色在组合期解析 —— LiquidGlassSurface 的 content 是 BoxScope，这里
+        // matchParentSize 合法。
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(colors.glassShadow.copy(alpha = LocalGlassConfig.current.overlayOpacity)),
+        )
         Column(
             modifier = Modifier
                 .fillMaxSize()

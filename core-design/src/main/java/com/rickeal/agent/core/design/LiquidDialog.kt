@@ -22,6 +22,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -100,6 +101,12 @@ fun LiquidDialog(
     val tokens = LocalGlassTokens.current
     val spec = GlassMaterials.of(material)
     val density = LocalDensity.current
+    // 覆盖层 scrim（Wave 21）：alpha 由 GlassConfig.overlayOpacity 驱动（设置页
+    // 「覆盖层不透明度」）。在组合期取值——draw 阶段的 lambda 里不能读
+    // CompositionLocal（不在组合上下文，读取点必须像这里一样前移）。
+    // 独立窗口恒走退化路径（THICK 底色，见类 KDoc），底色偏透，用户反馈文字
+    // 可读性不足 —— scrim 压在表面绘制之上、内容之下，0=纯玻璃 1=完全不透明。
+    val overlayOpacity = LocalGlassConfig.current.overlayOpacity
 
     // 窗口显隐（局部 state）：出场动画播完才置 false → 真正移除窗口。
     var visible by remember { mutableStateOf(true) }
@@ -189,6 +196,14 @@ fun LiquidDialog(
                         },
                     )
                     // 内容内边距（在玻璃之内）。
+                    // 覆盖层 scrim（Wave 21）：插在 drawBackdrop（表面绘制）之后、
+                    // 内边距之前 —— 绘制层序上位于玻璃表面之上、内容之下，且覆盖
+                    // 整个面板（含内边距带）。用 drawBehind 而非 wrap Box：本文件
+                    // 层级是 Column 非 BoxScope，drawBehind 是最小侵入的等价写法
+                    // （颜色在组合期已解析，draw lambda 只读局部 val）。
+                    .drawBehind {
+                        drawRect(colors.glassShadow.copy(alpha = overlayOpacity))
+                    }
                     .padding(20.dp),
             ) {
                 if (hasHeader) {

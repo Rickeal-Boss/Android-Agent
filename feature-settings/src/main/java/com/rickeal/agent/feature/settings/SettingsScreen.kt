@@ -159,6 +159,19 @@ fun SettingsScreen(
                         valueRange = 0.5f..1.5f,
                         modifier = Modifier.padding(top = 8.dp),
                     )
+                    // 覆盖层不透明度（Wave 21）：驱动 GlassConfig.overlayOpacity，
+                    // 三类覆盖层（推理参数面板 / 新增记忆对话框 / 会话抽屉）共用。
+                    // preview/commit 模式与上面「玻璃质感强度」完全一致 —— 拖动只改
+                    // 内存（这条会触发三类覆盖层重画），松手才落盘。
+                    GlassSlider(
+                        value = state.theme.overlayOpacity,
+                        onValueChange = { viewModel.onThemePreview(state.theme.copy(overlayOpacity = it)) },
+                        onValueChangeFinished = { viewModel.onThemeCommit() },
+                        label = "覆盖层不透明度",
+                        valueText = "%.2f".format(Locale.US, state.theme.overlayOpacity),
+                        valueRange = 0f..1f,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
