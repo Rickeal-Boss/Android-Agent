@@ -172,6 +172,23 @@ fun SettingsScreen(
                         valueRange = 0f..1f,
                         modifier = Modifier.padding(top = 8.dp),
                     )
+                    // 覆盖层背景深度模糊的**满量程半径**（dp，2026-09-27）：驱动
+                    // GlassConfig.overlayBlurRadius —— 三类覆盖层（抽屉 / 对话框 / 推理
+                    // 参数面板）打开时，背景就糊到这个半径。
+                    //
+                    // 默认 20f 是**起点而非定论**：本机无真机可验证观感（玻璃自身模糊刻意
+                    // 压在 3~12dp 是另一回事，那条是"柔化"，这条是"景深隔离"），所以做成
+                    // 滑条让真机一档定下来：嫌糊成一坨往下 12~16，嫌不够深往上 24~28。
+                    // preview/commit 模式同上：拖动只改内存，松手才落盘。
+                    GlassSlider(
+                        value = state.theme.overlayBlurRadius,
+                        onValueChange = { viewModel.onThemePreview(state.theme.copy(overlayBlurRadius = it)) },
+                        onValueChangeFinished = { viewModel.onThemeCommit() },
+                        label = "覆盖层背景模糊",
+                        valueText = "%.0f dp".format(Locale.US, state.theme.overlayBlurRadius),
+                        valueRange = 8f..32f,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

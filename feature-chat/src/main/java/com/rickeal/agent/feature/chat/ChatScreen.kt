@@ -102,17 +102,25 @@ fun ChatScreen(
     // 覆盖层（Tune 入口也不渲染），但 rememberSaveable 可能把 paramsOpen 还原成 true，
     // 那时不该平白糊一屏。
     val panelOpen = paramsOpen && !windowSize.useThreePane
-    val overlayBlurState = LocalOverlayBlurState.current
-    val panelBlurToken = remember { Any() }
-    DisposableEffect(panelBlurToken, panelOpen) {
-        if (panelOpen) {
-            overlayBlurState.acquire(panelBlurToken, OverlayBlurScope.PANEL)
-        }
-        onDispose { overlayBlurState.release(panelBlurToken) }
-    }
-    val panelBlurProgress = rememberOverlayBlurProgress { panelOpen }
     // 与设置页「背景模糊」总闸 + GlassConfig.overlayBlurRadius 同源（外壳那条也一样）。
     val glassCfgForBlur = LocalGlassConfig.current
+    val panelBlurEnabled = glassCfgForBlur.enableBackdropBlur
+    val overlayBlurState = LocalOverlayBlurState.current
+    val panelBlurToken = remember { Any() }
+    // onDispose 只在**登记过的**分支里挂：不依赖「DisposableEffect 换 key 时先释放旧的
+    // 再执行新的」这条顺序保证（虽然 Compose 确实是这个顺序），将来谁改了实现也不出错。
+    DisposableEffect(overlayBlurState, panelBlurToken, panelOpen) {
+        if (panelOpen) {
+            overlayBlurState.acquire(panelBlurToken, OverlayBlurScope.PANEL)
+            onDispose { overlayBlurState.release(panelBlurToken) }
+        } else {
+            onDispose { }
+        }
+    }
+    val panelBlurProgress = rememberOverlayBlurProgress(
+        active = { panelOpen },
+        enabled = panelBlurEnabled,
+    )
 
     val pickImage = rememberImagePicker { uri, name -> viewModel.onAttachImage(uri, name) }
     val pickAudio = rememberAudioPicker { uri, name -> viewModel.onAttachAudio(uri, name) }

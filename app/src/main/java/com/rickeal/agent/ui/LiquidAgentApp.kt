@@ -229,6 +229,9 @@ fun LiquidAgentApp() {
         // 覆盖层 scrim 不透明度（Wave 21）：ThemeState 直通（Float 通道，同
         // glassIntensity），三类覆盖层（参数面板 / 新增记忆对话框 / 会话抽屉）共用。
         overlayOpacity = themeState.overlayOpacity,
+        // 覆盖层背景深度模糊的满量程半径 dp（2026-09-27）：设置页「覆盖层背景模糊」
+        // 驱动，默认 20f（观感需在真机定档，故做成可调）。
+        overlayBlurRadius = themeState.overlayBlurRadius,
     )
 
     LiquidAgentTheme(darkTheme = darkTheme, glassConfig = glassConfig) {
@@ -345,6 +348,10 @@ private fun MainShell() {
     // 外壳这层糊会把它自己也糊掉），由 ChatScreen 自己糊自己的屏，这里只补页签那一条。
     // 完整层级推导见 OverlayBackdropBlur.kt 的类 KDoc。
     val overlayBlurState = LocalOverlayBlurState.current
+    // 关掉设置页「背景模糊」（enableBackdropBlur）时整体不挂 —— 它与玻璃背景模糊是同一类
+    // 开销（全屏离屏录制 + 高斯模糊），那个开关本就是为这类开销准备的。
+    val overlayBlurEnabled = glassCfg.enableBackdropBlur
+    val overlayBlurRadius = glassCfg.overlayBlurRadius.dp
     val drawerWidthPx = with(LocalDensity.current) { DRAWER_WIDTH.toPx() }
     // 抽屉的模糊强度**直接由它的锚点位移换算**，因此拖拽中 / 开合动画中逐帧同步、
     // 完全跟手（比自绘弹簧准）。Closed 锚点 = -抽屉宽度、Open 锚点 = 0
@@ -357,17 +364,22 @@ private fun MainShell() {
     }
     // SHELL 级：抽屉（不经过登记表，直接由位移驱动）+ 各处 LiquidDialog（独立窗口，
     // 只能靠登记表）。取 max：两者同时只可能是「抽屉开着时又弹了个对话框」。
-    val shellBlurProgress = rememberOverlayBlurProgress { overlayBlurState.shellActive }
+    val shellBlurProgress = rememberOverlayBlurProgress(
+        active = { overlayBlurState.shellActive },
+        enabled = overlayBlurEnabled,
+    )
     // 页签条专用：参数面板在 NavHost 内部 ⇒ 上面那条 body 级模糊不会生效（会糊到面板自己），
     // 于是单独给页签补一轮。SHELL 级生效时它归零 —— 那时 body 级模糊已经把页签包含在内，
-    // 叠加就是「糊两次」（观感偏重、白烧一遍全屏高斯）。
-    val navBarBlurProgress = rememberOverlayBlurProgress {
-        overlayBlurState.anyActive && !overlayBlurState.shellActive
-    }
-    // 关掉设置页「背景模糊」（enableBackdropBlur）时整体不挂 —— 它与玻璃背景模糊是同一类
-    // 开销（全屏离屏录制 + 高斯模糊），那个开关本就是为这类开销准备的。
-    val overlayBlurEnabled = glassCfg.enableBackdropBlur
-    val overlayBlurRadius = glassCfg.overlayBlurRadius.dp
+    // 叠加就是「糊两次」（观感偏重、白烧一遍全屏高斯）；抽屉开着同理（body 级已包含页签）。
+    // ⚠️ drawerState.isOpen 是在 snapshotFlow 的协程里读的（不是组合期），不会引发重组。
+    val navBarBlurProgress = rememberOverlayBlurProgress(
+        active = {
+            overlayBlurState.anyActive &&
+                !overlayBlurState.shellActive &&
+                !drawerState.isOpen
+        },
+        enabled = overlayBlurEnabled,
+    )
 
     ModalNavigationDrawer(
         drawerState = drawerState,

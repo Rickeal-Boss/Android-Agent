@@ -59,13 +59,20 @@ import kotlin.math.ceil
  * ## 性能纪律（本文件最重要的部分）
  *
  * 1. **进度只在 layer 阶段读**（`graphicsLayer {}` 的 block），绝不在组合期读 ——
- *    否则每帧都会重组 `MainShell`（连带 NavHost 与整屏），这正是 [DrawerBackHandler] 的
- *    KDoc 里记着的那类事故。读在 layer 阶段只失效图层，不触发组合。
+ *    否则每帧都会重组 `MainShell`（连带 NavHost 与整屏）。这正是 `LiquidAgentApp` 里
+ *    `DrawerBackHandler` 的 KDoc 记着的那类事故（在 MainShell 里读抽屉派生状态 ⇒
+ *    每帧重组整屏）；这里把读取**下沉到 layer 阶段**，同类需求一律照此办理。
+ *    （该符号在 `app` 模块，本文件在 `core-design` 不依赖它 ⇒ 写成文字引用而非 KDoc 链接。）
  * 2. **进度为 0 时 `renderEffect = null`** —— 没有覆盖层时这是零成本的一个图层节点。
  * 3. **半径量化到 [OVERLAY_BLUR_STEP_DP] 台阶**，且同一像素值复用同一个 `BlurEffect` 实例：
  *    每改一次半径，RenderNode 就要重做一次全屏高斯模糊（开销随半径 × 面积增长，
  *    见 `GlassMaterial` 里那条「不做逐帧动画」的记载）。量化 + 实例复用把一次进出场
- *    的重建次数从「每帧一次」压到「每两 dp 一次」，而 2dp 台阶在深度模糊下肉眼不可辨。
+ *    的**对象重建次数**从「每帧一次」压到「每两 dp 一次」，2dp 台阶在深度模糊下肉眼不可辨。
+ *    ⚠️ 口径：**每帧一次全屏高斯本身并没有被台阶消解**（台阶只省掉重建 RenderEffect
+ *    与重复赋值），真机若掉帧，优先降半径（设置页「覆盖层背景模糊」），其次把台阶提到 4dp。
+ *    ⚠️ 缓存作用域：lambda 捕获的缓存变量**只活到下一次重组**（重组会重建 block 闭包）。
+ *    稳态下（拖拽 / 弹簧期间外壳不重组）完全有效；发生重组只多建一次 BlurEffect，
+ *    不会退化成每帧新建、也不影响正确性。
  * 4. 受 [GlassConfig.enableBackdropBlur] 总闸门控 —— 它与玻璃背景模糊是同一类开销
  *    （设置页「背景模糊」就是为这类开销准备的开关），关掉后覆盖层只剩 scrim 压暗。
  */
@@ -138,21 +145,32 @@ val LocalOverlayBlurState: ProvidableCompositionLocal<OverlayBlurState> =
  *
  * 返回的是 **lambda 而不是 Float**：调用点把它塞进 `graphicsLayer {}` 的 block，
  * 于是弹簧每帧的变化只失效图层，**不会重组外壳**（`animateFloatAsState` 会把值读回组合期，
- * 在这个量级的节点上是不可接受的 —— 见 [DrawerBackHandler] 的同类记载）。
+ * 在这个量级的节点上是不可接受的 —— 见 `MainShell` 里 `DrawerBackHandler` 的同类记载）。
  *
  * [active] 也刻意是 lambda：`snapshotFlow` 在协程里读它，`MainShell` 连
  * 「覆盖层开了」这件事都不会因订阅而重组。
  *
  * [GlassConfig.reduceMotion] 打开时直接 `snapTo` —— 减少动效的用户要的是「立刻到位」，
  * 而不是「慢慢糊上来」。
+ *
+ * @param enabled false 时**不起协程**（归零后直接 return）：关掉「背景模糊」总闸后没有
+ *   节点消费进度，让弹簧空转纯属白烧 CPU；开关翻回 true 时 LaunchedEffect 重启、从 0 起算。
  */
 @Composable
-fun rememberOverlayBlurProgress(active: () -> Boolean): () -> Float {
+fun rememberOverlayBlurProgress(
+    active: () -> Boolean,
+    enabled: Boolean = true,
+): () -> Float {
     val motion = LocalLiquidMotion.current
     val reduceMotion = LocalGlassConfig.current.reduceMotion
     val anim = remember { Animatable(0f) }
     val currentActive by rememberUpdatedState(active)
-    LaunchedEffect(motion, reduceMotion) {
+    LaunchedEffect(motion, reduceMotion, enabled) {
+        if (!enabled) {
+            // 总闸关闭：归零 + 不订阅（否则弹簧会在无人消费的情况下每帧跑）。
+            anim.snapTo(0f)
+            return@LaunchedEffect
+        }
         snapshotFlow { currentActive() }
             .distinctUntilChanged()
             .collect { open ->
@@ -218,6 +236,9 @@ fun Modifier.overlayBackdropBlur(
                 BlurEffect(null, radiusPx, radiusPx, TileMode.Clamp)
             }
         }
+        // 直接赋值：上面已经保证「同一像素值复用同一实例」，重复赋同一个实例不会
+        // 引出一个新的 RenderEffect（框架侧按实例判断是否重新同步到 RenderNode）。
+        // 这里只陈述**本文件能保证的**部分，不为框架内部实现背书。
         renderEffect = cachedEffect
     }
 }
