@@ -229,9 +229,12 @@ class LiteRtLmEngine(
                 //  2、体积 < [MODEL_MIN_BYTES] → 下载几乎必然中断（最小的预设也有 ~0.25GB）；
                 //  3、按扩展名校验容器魔数（见下方 when 的 KDoc）→ 魔数不对 = 下到的不是模型。
                 val modelFile = java.io.File(modelPath)
+                // 文件名只取前 48 字符进文案（复审 E1b）：用户自命名/adb push 的文件
+                // 名可能很长或含特殊字符，原样拼进错误提示会撑爆弹窗与诊断日志。
+                val displayName = modelFile.name.take(48)
                 if (!modelFile.exists()) {
                     throw EngineException(
-                        "模型文件不存在：${modelFile.name} —— 可能已被系统清理，请在模型页重新下载"
+                        "模型文件不存在：$displayName —— 可能已被系统清理，请在模型页重新下载"
                     )
                 }
                 if (modelFile.length() < MODEL_MIN_BYTES) {
@@ -448,15 +451,18 @@ class LiteRtLmEngine(
         val startNs = System.nanoTime()
         var finished = false
         var firstTokenNs = 0L
-        var chunkCount = 0
-
+        // 内容 chunk 数（排除纯思考 chunk）—— 复审 U7（2026-09-26）：chunk 里含
+        // thinkingDelta 时 tok/s 与 completionTokens 把推理输出也算进"生成"，
+        // 通知栏指标虚高（DeepSeek-R1 类推理模型尤甚，思考可能占大半时长）。
+        // 口径统一为**用户可见正文**：thinking chunk 不进这两个指标。
+        var contentChunkCount = 0
         val callback = object : MessageCallback {
             override fun onMessage(message: Message) {
                 if (firstTokenNs == 0L) firstTokenNs = System.nanoTime()
                 val textDelta = textTracker.next(message.toString())
                 val thoughtDelta = thoughtTracker.next(message.channels[THOUGHT_CHANNEL] ?: "")
                 if (textDelta.isEmpty() && thoughtDelta.isEmpty()) return
-                chunkCount++
+                if (textDelta.isNotEmpty()) contentChunkCount++
                 channel.trySend(
                     GenerationChunk(textDelta = textDelta, thinkingDelta = thoughtDelta)
                 )
@@ -476,14 +482,15 @@ class LiteRtLmEngine(
                 // 首 token 延迟越长指标越难看，与官方数字也不可比（长 prompt 下差距可达数倍）。
                 // decodeMs <= 0（首 token 与结束同一毫秒、或时间戳异常）时不做除法，直接给 0。
                 val decodeMs = (elapsedMs - firstTokenLatencyMs).coerceAtLeast(0L)
-                val tps = if (decodeMs > 0L) chunkCount * 1000f / decodeMs else 0f
+                // tok/s 与 completionTokens 同口径：都是**内容 chunk**（复审 U7）。
+                val tps = if (decodeMs > 0L) contentChunkCount * 1000f / decodeMs else 0f
                 channel.trySend(
                     GenerationChunk(
                         finishReason = FinishReason.STOP,
                         usage = TokenUsage(
                             promptTokens = TokenEstimator.estimate(request.messages),
-                            completionTokens = chunkCount,
-                            totalTokens = TokenEstimator.estimate(request.messages) + chunkCount,
+                            completionTokens = contentChunkCount,
+                            totalTokens = TokenEstimator.estimate(request.messages) + contentChunkCount,
                             tokensPerSecond = tps,
                             firstTokenLatencyMillis = firstTokenLatencyMs,
                             // 与 tokensPerSecond 的分母保持同一口径：都是纯 decode 时长。
