@@ -35,6 +35,15 @@ data class GlassConfig(
      * 这里的档位只在总闸开启时生效 —— 见 [GlassHaptics] KDoc。
      */
     val hapticLevel: GlassHapticLevel = GlassHapticLevel.STANDARD,
+    /**
+     * 覆盖层自身压实 scrim 的 alpha，0=纯玻璃 1=完全不透明。
+     *
+     * 三类覆盖层（推理参数面板 / 新增记忆对话框 / 会话抽屉）共用；设置页
+     * 「覆盖层不透明度」驱动。与 [intensity]（玻璃**材质**强度）正交：那条管
+     * 模糊 / 折射 / 底色 alpha，这条只管覆盖层**背后那层压暗 scrim** 的浓度。
+     * 默认 0.45：现状等效透出约 0.25，0.45 为可读性明显改善又不闷死玻璃的中点。
+     */
+    val overlayOpacity: Float = 0.45f,
 )
 
 val LocalGlassTokens: ProvidableCompositionLocal<GlassTokens> =

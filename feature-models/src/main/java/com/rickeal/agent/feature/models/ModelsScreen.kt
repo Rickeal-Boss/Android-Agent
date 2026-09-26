@@ -55,7 +55,7 @@ import com.rickeal.agent.core.design.GlassFab
 import com.rickeal.agent.core.design.GlassIconButton
 import com.rickeal.agent.core.design.GlassIconButtonShape
 import com.rickeal.agent.core.design.GlassSettingRow
-import com.rickeal.agent.core.design.GlassSwitch
+import com.rickeal.agent.core.design.CyberJoystickSwitch
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.data.LegalDocuments
@@ -673,7 +673,10 @@ private fun ModelDownloadCard(
                 title = "允许使用移动数据下载",
                 subtitle = if (allowMeteredDownload) "已允许：下载前不再询问" else "关闭时，检测到移动数据会先问一次",
                 trailing = {
-                    GlassSwitch(
+                    // 强调位开关（Wave 21）：唯一的摇杆样式调用点 —— 「移动数据」是
+                    // 带资费后果的强决策入口，用 CyberJoystickSwitch 提视觉权重；
+                    // 本屏其余开关（若有）与全 App 其余开关一律保持 GlassSwitch。
+                    CyberJoystickSwitch(
                         checked = allowMeteredDownload,
                         onCheckedChange = onAllowMeteredChange,
                     )

@@ -220,6 +220,9 @@ fun LiquidAgentApp() {
         // 在这里还原。脏值 / 枚举改名 / 老版本一律回退 STANDARD，不让坏值毒化整个设置。
         hapticLevel = runCatching { GlassHapticLevel.valueOf(themeState.hapticLevel) }
             .getOrDefault(GlassHapticLevel.STANDARD),
+        // 覆盖层 scrim 不透明度（Wave 21）：ThemeState 直通（Float 通道，同
+        // glassIntensity），三类覆盖层（参数面板 / 新增记忆对话框 / 会话抽屉）共用。
+        overlayOpacity = themeState.overlayOpacity,
     )
 
     LiquidAgentTheme(darkTheme = darkTheme, glassConfig = glassConfig) {

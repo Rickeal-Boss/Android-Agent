@@ -135,6 +135,22 @@ fun GlassSwitch(
                     // 否则同一次点击会回调 onCheckedChange 两次。
                     // 值回来后由下面的 LaunchedEffect(checked) 把 fraction 动画过去 ——
                     // 保持"checked 是唯一事实来源"，被外部驳回时视觉也不会先翻过去。
+                } else {
+                    // 未提交路径（让位 / 事件流断 / 亚 slop 漂移）一律向当前 checked
+                    // 对应值归位，杜绝「触控停在哪开关卡在哪」（真机实锤）。三条路径
+                    // 分别对应：A yieldedToParent 纵向让位；B finishedNormally=false
+                    // 事件流断；C 拖动量 ≤slop 但 fraction 已被 onDrag 挪了亚 slop
+                    // 小量且 checked 不变 —— 原先三条路都不提交也不归位，fraction
+                    // 就卡在半程。提交分支不归位：提交后靠 LaunchedEffect(checked)
+                    // 回流动画，提前归位会先弹回再弹过去闪两下。
+                    // ⚠️ animateToValue 调的是**接收者**（onDragStopped 的 receiver
+                    // 就是这个 DampedDragAnimation 实例），不引用外层 val —— 那会在
+                    // remember{} 初始化器里前向捕获自身，Kotlin 直接编译红。
+                    val target = if (currentChecked) 1f else 0f
+                    if (fraction != target) {
+                        fraction = target
+                        animateToValue(target)
+                    }
                 }
                 draggedX = 0f
             },
@@ -221,9 +237,12 @@ fun GlassSwitch(
                 .layerBackdrop(trackBackdrop)
                 .clip(Capsule)
                 .drawBehind {
-                    drawRect(
-                        lerp(trackColor, accentColor, dampedDragAnimation.value.coerceIn(0f, 1f))
-                    )
+                    val f = dampedDragAnimation.value.coerceIn(0f, 1f)
+                    // iOS 对齐：thumb 滑至行程 2/3 才开始渐变、1.0 变完（双向对称映射，
+                    // 拖回 f<2/3 即回 muted 色）。原实现从 0 起渐变，与 iOS 行为不符
+                    // （与 Kyant0/AndroidLiquidGlass 同款失误，用户实机对比指出）。
+                    val colorProgress = ((f - 2f / 3f) * 3f).coerceIn(0f, 1f)
+                    drawRect(lerp(trackColor, accentColor, colorProgress))
                 }
                 .size(64f.dp, 28f.dp),
         )

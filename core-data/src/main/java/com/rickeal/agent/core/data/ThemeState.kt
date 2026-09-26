@@ -33,4 +33,12 @@ data class ThemeState(
      * `GlassHapticLevel.valueOf(...)` 还原（解析失败回退 STANDARD）。
      */
     val hapticLevel: String = "STANDARD",
+    /**
+     * 覆盖层 scrim 不透明度 0~1（设置页「覆盖层不透明度」驱动，默认 0.45）。
+     *
+     * 走 **Float** 通道（同 [glassIntensity]）：它是纯原生类型，不存在 hapticLevel
+     * 那种「枚举定义在 :core-design」的依赖倒置问题，无需降级成 String。
+     * @Serializable 字段带默认值 ⇒ 旧 JSON 反序列化向后兼容。
+     */
+    val overlayOpacity: Float = 0.45f,
 )

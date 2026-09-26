@@ -35,6 +35,10 @@ class SettingsRepository(private val context: Context) {
         // :core-data 不能 import 它（依赖方向倒置）。解析失败一律回退 STANDARD。
         val HAPTIC_LEVEL = stringPreferencesKey("haptic_level")
 
+        // 覆盖层 scrim 不透明度（Wave 21）。Float 原生类型，走 floatPreferencesKey
+        // （同 GLASS_INTENSITY 模式，无依赖倒置问题）。
+        val OVERLAY_OPACITY = floatPreferencesKey("overlay_opacity")
+
         // 「生成速度通知」开关（Wave 9 需求 5）。默认 false：
         // 通知是观测窗口不是能力，且 API 33+ 要运行时权限 —— 默认关掉，
         // 不在用户没表达意愿时去请求权限。
@@ -76,6 +80,7 @@ class SettingsRepository(private val context: Context) {
                 enableNoise = prefs[Keys.ENABLE_NOISE] ?: true,
                 // 枚举名非法（改名 / 脏数据 / 老版本）时回退 STANDARD，不让坏值毒化整个 flow。
                 hapticLevel = prefs[Keys.HAPTIC_LEVEL] ?: "STANDARD",
+                overlayOpacity = prefs[Keys.OVERLAY_OPACITY] ?: 0.45f,
             )
         }
 
@@ -229,6 +234,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.GLASS_INTENSITY] = state.glassIntensity
             prefs[Keys.ENABLE_NOISE] = state.enableNoise
             prefs[Keys.HAPTIC_LEVEL] = state.hapticLevel
+            prefs[Keys.OVERLAY_OPACITY] = state.overlayOpacity
         }
     }
 
