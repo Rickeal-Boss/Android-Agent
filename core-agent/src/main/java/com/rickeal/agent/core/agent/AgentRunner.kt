@@ -39,6 +39,10 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 
 /**
  * 停止条件段（6 行）。端侧 4B 模型的上下文极宝贵，这里刻意保持最短：
@@ -95,6 +99,21 @@ private const val NO_TOOL_STREAK_LIMIT = 3
 
 /** 拒绝熔断阈值：同一工具连续被拒 N 次后，本 run 内跳过审批直接拒（防换参骚扰）。 */
 private const val DENIAL_CIRCUIT_LIMIT = 2
+
+/**
+ * 同工具+同参调用守卫阈值（ZCode model-anomaly 形态移植，Wave 19 P0）：连续
+ * REPEAT_TOOL_CALL_THRESHOLD 次签名完全相同的调用 → 注入一次提醒。签名经
+ * canonical JSON 归一（见 toolCallSignature），key 顺序不同的等价参数同签名。
+ */
+private const val REPEAT_TOOL_CALL_THRESHOLD = 3
+
+/**
+ * 同参守卫整个 run 内的提醒总次数上限：超过后不再注入（防提醒风暴，纪律对齐
+ * 跨轮重复检测的「每个签名至多提醒一次」）。与 DENIAL_CIRCUIT_LIMIT 并存不冲突：
+ * 熔断在审批层跳过询问（按工具名计数），本守卫在计数层提醒（按工具+参数签名计数），
+ * 阈值与维度都不同。
+ */
+private const val MAX_TOOL_ANOMALY_REMINDERS = 3
 
 /** 连续空输出轮数上限：超过后按失败收尾，不再空转烧 prefill（Wave4 审查 A-P0-2）。 */
 private const val MAX_EMPTY_ANSWER_ROUNDS = 3
@@ -373,6 +392,13 @@ class AgentRunner(
             // 用户反悔权保留 —— 新 run 计数归零，拒绝过不代表下次还拒。
             val toolDenialCounts = HashMap<String, Int>()
             val denialReminderSent = HashSet<String>()
+            // ── 同工具+同参调用守卫状态（ZCode model-anomaly 形态，Wave 19 P0）──
+            // ⚠️ 必须留在 executeBody 栈上，不设类字段：ask_actor 子代理会在父 run 的
+            // 工具阶段嵌套执行完整子 run，类字段会被子 run 覆写、父 run 恢复后拿着
+            // 脏状态继续计数（同 :313-316 记账状态的隔离教训）。
+            var lastToolCallSignature: String? = null
+            var toolCallStreak = 0
+            var toolAnomalyReminders = 0
 
             while (round < policy.maxRounds) {
                 emit(AgentEvent.RoundStarted(round, policy.maxRounds))
@@ -789,6 +815,33 @@ class AgentRunner(
                 journal?.appendMessage(toolCallModel)
 
                 for (call in calls) {
+                    // ── 同工具+同参调用守卫（ZCode model-anomaly / deepseek
+                    // repeat-tool-reminder 形态）────────────────────────────────
+                    // 计数在**执行前**：未注册 / denied / 审批失败同样计入 ——
+                    // deepseek 设计笔记明言 denied calls 也算循环（模型反复撞拒绝
+                    // 墙与反复空跑同样是「不会换路径」的病征）。
+                    val callSignature = toolCallSignature(call.name, call.argumentsJson)
+                    if (callSignature == lastToolCallSignature) {
+                        toolCallStreak++
+                    } else {
+                        lastToolCallSignature = callSignature
+                        toolCallStreak = 1
+                    }
+                    if (toolCallStreak == REPEAT_TOOL_CALL_THRESHOLD &&
+                        toolAnomalyReminders < MAX_TOOL_ANOMALY_REMINDERS &&
+                        // 单槽纪律：已有待注入提醒时不覆盖（同参信息最具体，优先级
+                        // 同参 > 重复回答 > 零工具，与 :569 判据同构）。
+                        pendingReminder == null
+                    ) {
+                        toolAnomalyReminders++
+                        AgentLogStore.warn(
+                            "同参调用守卫：${call.name} 已连续 $toolCallStreak 次以完全相同的参数调用，注入提醒"
+                        )
+                        pendingReminder =
+                            "你已连续 $toolCallStreak 次以完全相同的参数调用工具 ${call.name}。" +
+                                "除非用户明确要求原样重试，否则不要再次重复同一调用。" +
+                                "请基于既有结果采取不同的下一步：说明障碍，或向用户求助。"
+                    }
                     val tool = toolRegistry.get(call.name)
                     if (tool == null) {
                         // 未注册的工具名 = 模型幻觉（或白名单把它排除了）。把当前可用清单一起记下来，
@@ -1168,5 +1221,31 @@ class AgentRunner(
         // 停止条件始终下发：这是让 4B 模型「自己会停」的主要手段。
         sections.add(STOP_CONDITIONS)
         return sections.joinToString("\n\n")
+    }
+
+    /**
+     * 同工具+同参调用的稳定签名：参数 JSON 先 canonical 化（递归排序 JsonObject
+     * 的 key 后重新 stringify），再与工具名拼接 —— key 顺序不同的等价参数得到
+     * 同一签名，模型换个 key 顺序绕不过守卫。
+     *
+     * 来源：ZCode model-anomaly.ts 的 stableJson + deepseek-harness
+     * repeat-tool-reminder 的 canonicalize（:96-112）。
+     * 解析失败（模型输出非法 JSON）退回原始串：守卫是启发式防线，不因归一化
+     * 失败而失效 —— 非法 JSON 本身无法与「上次同串」区分开的情况极少，漏提醒
+     * 的代价远小于在这里抛异常打断主循环。
+     */
+    private fun toolCallSignature(name: String, argumentsJson: String): String {
+        val canonical = runCatching {
+            canonicalizeJson(Json.parseToJsonElement(argumentsJson)).toString()
+        }.getOrDefault(argumentsJson)
+        return name + ":" + canonical
+    }
+
+    /** 深度优先排序 JsonObject 的 key（数组保序 —— 列表顺序是有语义的）。 */
+    private fun canonicalizeJson(element: JsonElement): JsonElement = when (element) {
+        is JsonObject ->
+            JsonObject(element.entries.sortedBy { it.key }.associate { it.key to canonicalizeJson(it.value) })
+        is JsonArray -> JsonArray(element.map { canonicalizeJson(it) })
+        else -> element
     }
 }
