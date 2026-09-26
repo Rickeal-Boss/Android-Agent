@@ -2,7 +2,6 @@ package com.rickeal.agent.feature.settings.tools
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -15,6 +14,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -113,10 +120,43 @@ fun ToolsScreen(
                 )
                 // 分类 chip 行：横向滚动 —— 分类多时换行会把工具列表整体顶下去。
                 // 「全部」是 `category == null` 的显式入口（点击即清除分类筛选）。
+                // 边缘渐隐（复审 U1，2026-09-26）：滚到中途的行如果右边缘被屏幕硬切，
+                // 看起来像"内容坏了"—— 在**可滚动方向**的那一侧加 DstIn alpha 渐隐遮罩，
+                // 滚到头的一侧不画。scroll 状态在 draw 相位读取（快照自动触发重绘，
+                // 不经重组）。graphicsLayer 必须在 drawWithContent **之前**、
+                // horizontalScroll **之后**包住视口：Offscreen 层让 DstIn 只作用于本
+                // 节点像素，而不是把底下的壁纸一起乘掉。
+                val chipsScroll = rememberScrollState()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent {
+                            drawContent()
+                            val edgePx = 24.dp.toPx()
+                            val canScrollBack = chipsScroll.value > 0
+                            val canScrollForward = chipsScroll.value < chipsScroll.maxValue
+                            if (canScrollBack) {
+                                drawRect(
+                                    brush = Brush.horizontalGradient(
+                                        listOf(Color.Transparent, Color.Black),
+                                    ),
+                                    size = Size(edgePx, size.height),
+                                    blendMode = BlendMode.DstIn,
+                                )
+                            }
+                            if (canScrollForward) {
+                                drawRect(
+                                    brush = Brush.horizontalGradient(
+                                        listOf(Color.Black, Color.Transparent),
+                                    ),
+                                    topLeft = Offset(size.width - edgePx, 0f),
+                                    size = Size(edgePx, size.height),
+                                    blendMode = BlendMode.DstIn,
+                                )
+                            }
+                        }
+                        .horizontalScroll(chipsScroll),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     GlassChip(
@@ -210,7 +250,6 @@ fun ToolsScreen(
                     }
                 }
             }
-            Box(modifier = Modifier.size(tokens.bottomBarHeight))
         }
     }
 }
