@@ -170,8 +170,8 @@ class StreamRepetitionDetector {
          * 误判成重复。过短的口头语（「好的」「完成」）不构成循环证据，返回 null
          * 由调用方跳过。
          *
-         * AgentRunner 的跨轮重复检测（progressSignature）与本检测器共用本函数，
-         * **不许**各自再抄一份（口径分叉历史坑）。
+         * AgentRunner 的跨轮重复检测（AgentRunner.kt 无进展检测处的调用点）与本检测器
+         * 共用本函数，**不许**各自再抄一份（口径分叉历史坑）。
          */
         fun normalizedSignature(text: String): String? {
             // 必须指定 Locale：默认 Locale 在土耳其语区会把 "I" 折成无点的 "ı"，
