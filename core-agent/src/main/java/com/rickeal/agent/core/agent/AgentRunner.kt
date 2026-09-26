@@ -125,6 +125,22 @@ private const val DENIAL_CIRCUIT_LIMIT = 2
 private const val REPEAT_TOOL_CALL_THRESHOLD = 3
 
 /**
+ * 同参重复的**硬护栏**阈值（Wave 22 P0，与 [REPEAT_TOOL_CALL_THRESHOLD] 分工）：
+ * 连续第 [REPEAT_TOOL_CALL_EXEC_LIMIT] 次同参调用起**不再执行**，直接回一条
+ * 「已忽略未执行」的结果。
+ *
+ * 为什么必须由 advisory 升级到硬护栏：原实现只注入提醒（deepseek-harness /
+ * ZCode 同款，advisory-only 永不 veto），前提是模型听得懂提醒 —— 真机
+ * （小模型）把 `current_time` 同参连发 6 次，提醒被完全无视，同一副作用被
+ * 反复触发。写文件 / 执行命令类工具重复执行的代价不可逆，不能只靠提醒。
+ *
+ * 取 3 的语义：第 1 次正常执行、第 2 次放行（保留「工具失败后重试一次」的
+ * 合法路径）、第 3 次起忽略。协议上每个 call 仍然有一条对应 result
+ * （丢 result 会让引擎侧「有 call 无结果」报错），只是内容是「已忽略」。
+ */
+private const val REPEAT_TOOL_CALL_EXEC_LIMIT = 3
+
+/**
  * 同参守卫整个 run 内的提醒总次数上限：超过后不再注入（防提醒风暴，纪律对齐
  * 跨轮重复检测的「每个签名至多提醒一次」）。与 DENIAL_CIRCUIT_LIMIT 并存不冲突：
  * 熔断在审批层跳过询问（按工具名计数），本守卫在计数层提醒（按工具+参数签名计数），
@@ -899,6 +915,33 @@ class AgentRunner(
                             "你已连续 $toolCallStreak 次以完全相同的参数调用工具 ${call.name}。" +
                                 "除非用户明确要求原样重试，否则不要再次重复同一调用。" +
                                 "请基于既有结果采取不同的下一步：说明障碍，或向用户求助。"
+                    }
+                    // ── 同参重复硬护栏（Wave 22 P0）──────────────────────────────
+                    // 提醒是 advisory-only，小模型可以直接无视（真机：current_time
+                    // 同参连发 6 次）。第 REPEAT_TOOL_CALL_EXEC_LIMIT 次起不再真正
+                    // 执行，回一条「已忽略」的结果 —— 协议上每个 call 仍有一条对应
+                    // result（丢 result 会触发引擎侧「有 call 无结果」报错），但
+                    // 同一副作用不会被反复触发。放在 toolRegistry 查询之前：
+                    // 未注册工具名同样不该被重复打。
+                    if (toolCallStreak >= REPEAT_TOOL_CALL_EXEC_LIMIT) {
+                        AgentLogStore.warn(
+                            "同参重复护栏：${call.name} 连续第 $toolCallStreak 次同参调用，忽略不执行"
+                        )
+                        val ignored = commitToolMessage(
+                            working,
+                            call,
+                            ToolResult(
+                                callId = call.id,
+                                name = call.name,
+                                ok = false,
+                                output = "",
+                                errorMessage = "与上一次调用完全相同，已忽略未执行。" +
+                                    "不要再用同一参数重试，请改用其它方式或向用户说明。",
+                            ),
+                            journal,
+                        )
+                        emit(AgentEvent.ToolResultReceived(ignored))
+                        continue
                     }
                     val tool = toolRegistry.get(call.name)
                     if (tool == null) {

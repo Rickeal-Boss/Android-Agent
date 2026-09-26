@@ -45,6 +45,14 @@ import java.util.Locale
  *  6. 提示词回显（仅当构造时传入 systemPrompt）：连续 [ECHO_LOOP_STREAK] 句命中
  *     系统提示词指纹 → 循环。Wave 21 真机：500M 级模型先逐字复述工具系统提示词
  *     再退化 —— 层1 的提示词约束对它被证伪，只能在层3（输出侧）拦截。
+ *  7. 周期块循环：同一句子**以相同句距**反复出现、相同句距连续
+ *     [BLOCK_CYCLE_STREAK] 次 → 循环（「A B C D / A B C D …」型整块周期复读）。
+ *     Wave 22 真机（小模型把同一段工具调用 JSON 连发 6 次）：块内句子互不相同
+ *     ⇒ 判定①每句重置、判定②窗口唯一数 ≈5 > 2 永不塌缩 → 整块循环全数漏过。
+ *  8. 单字符 run：同一非空白字符连续 [CHAR_RUN_LOOP] 个 → 循环（空白不计，
+ *     代码缩进可合法地有几十个空格）。Wave 22 真机：模型退化为数百个「`」且
+ *     **不带换行** ⇒ 判定⑦刷不出句、判定⑤要等 4096 字符才截 —— 这是唯一
+ *     能在第 24 个字符就介入的判据。
  */
 class StreamRepetitionDetector(
     /**
@@ -97,6 +105,27 @@ class StreamRepetitionDetector(
          */
         var echoHitStreak = 0
 
+        /**
+         * 周期块循环状态（判定⑦）：最近句子的**有序**历史（FIFO，容量
+         * [Companion.BLOCK_CYCLE_HISTORY]）。判定①「同上一句连击」只抓得住
+         * 「A A A」，抓不住「A B C D / A B C D」这种**轮换块**的周期复读 ——
+         * 后者正是真机「同一工具 JSON 连发 N 次」的形态：块内句子签名互不相同，
+         * 判定①②（连击 / 窗口塌缩，窗口唯一数 ≈5 > 2）全数漏过。
+         */
+        val sentenceHistory = ArrayDeque<String>()
+
+        /** 上一次「某签名再次出现」的句距（0 = 尚无）。 */
+        var lastCycleDistance = 0
+
+        /** 相同句距连续出现的次数 —— 周期成立的最强证据。 */
+        var cycleDistanceStreak = 0
+
+        /** 判定⑧ 单字符 run：当前连续重复的非空白字符（'\u0000' = 无）。 */
+        var runChar: Char = '\u0000'
+
+        /** 判定⑧ 单字符 run：当前已连续重复几个（含首个）。 */
+        var runLength = 0
+
         fun reset() {
             pendingSentence.setLength(0)
             recentSignatures.clear()
@@ -106,6 +135,11 @@ class StreamRepetitionDetector(
             shortStreak = 0
             shortLastSignature = null
             echoHitStreak = 0
+            sentenceHistory.clear()
+            lastCycleDistance = 0
+            cycleDistanceStreak = 0
+            runChar = '\u0000'
+            runLength = 0
         }
     }
 
@@ -155,6 +189,25 @@ class StreamRepetitionDetector(
         }
         for (ch in delta) {
             state.pendingSentence.append(ch)
+            // 判定⑧：单字符 run（Wave 22 P0）。
+            // 真机形态：模型在工具 JSON 连发之后退化成一长串「`」——**没有换行**，
+            // 于是⑦刷不出句（无句界）、⑤要等 4096 字符才截，用户盯着几百个反引号
+            // 刷屏才发现不对。逐字符 run 是最早能介入的判据（Fu 2021：高频符号的
+            // 自强化闭环最早就表现为单字符 run）。
+            // 空白（含缩进空格 / 连续空行）刻意不计入：代码块缩进可以合法地有
+            // 几十个空格，把空白算进去会误伤正常代码输出。
+            if (ch.isWhitespace()) {
+                state.runChar = '\u0000'
+                state.runLength = 0
+            } else if (ch == state.runChar) {
+                state.runLength++
+                if (state.runLength >= CHAR_RUN_LOOP) {
+                    return Verdict.LoopDetected(inThinking, CHAR_RUN_MARKER)
+                }
+            } else {
+                state.runChar = ch
+                state.runLength = 1
+            }
             if (SENTENCE_TERMINATORS.indexOf(ch) >= 0) {
                 val verdict = flushSentence(state, inThinking)
                 if (verdict is Verdict.LoopDetected) return verdict
@@ -190,6 +243,51 @@ class StreamRepetitionDetector(
             }
             if (state.shortStreak >= SHORT_LOOP_STREAK) {
                 return Verdict.LoopDetected(inThinking, SHORT_SIG_RUN_MARKER)
+            }
+        }
+
+        // 判定⑦：周期块循环（Wave 22 P0）。
+        // 形态：模型把一整块内容（真机 = 同一段工具调用 JSON）按固定句数周期复读
+        // 「A B C D E / A B C D E / …」。块内句子互不相同 ⇒ 判定①（同上一句连击）
+        // 每句都被重置、判定②（窗口唯一数 ≈5 > [WINDOW_UNIQUE_LIMIT]）永不塌缩 ——
+        // 「current_time 同参连发 6 次」正是从这个缝里漏过的。
+        // 判据：同一句子**以相同句距**反复出现，相同句距连续出现
+        // [BLOCK_CYCLE_STREAK] 次即判周期成立 —— 比"某句重复过"强得多：
+        // 正常文本里一句话复现一次是引用/排比，等距反复复现才是复读。
+        // 键用第二口径（保标点、无长度门槛）：块里的短句（"{" "}"）同样参与周期。
+        if (shortSignature != null) {
+            state.sentenceHistory.addLast(shortSignature)
+            if (state.sentenceHistory.size > BLOCK_CYCLE_HISTORY) {
+                state.sentenceHistory.removeFirst()
+            }
+            // addLast/removeFirst 之后才扫下标，避免容量裁剪导致下标位移算错句距。
+            var lastIdx = -1
+            for (i in 0 until (state.sentenceHistory.size - 1)) {
+                if (state.sentenceHistory[i] == shortSignature) lastIdx = i
+            }
+            if (lastIdx >= 0) {
+                val distance = (state.sentenceHistory.size - 1) - lastIdx
+                // 周期下限（[BLOCK_CYCLE_MIN_PERIOD]）：句距 2 的「A B / A B」是
+                // 合法写作结构（对比 / 对仗 / 优缺点列表），不是退化 —— 实测
+                // 「- 优点 / - 缺点」连写 3 组就会以句距 2 触发，必须挡掉。
+                // 真机周期复读（工具 JSON 块）句距 7-9，稳稳落在门内。
+                if (distance >= BLOCK_CYCLE_MIN_PERIOD) {
+                    if (distance == state.lastCycleDistance) {
+                        state.cycleDistanceStreak++
+                    } else {
+                        state.lastCycleDistance = distance
+                        state.cycleDistanceStreak = 1
+                    }
+                    if (state.cycleDistanceStreak >= BLOCK_CYCLE_STREAK) {
+                        return Verdict.LoopDetected(inThinking, BLOCK_CYCLE_MARKER)
+                    }
+                } else {
+                    // 句距低于周期下限：不计数，但也要把「上一次句距」冲掉 ——
+                    // 否则下一句算出的句距若恰好等于这个被忽略的旧值，会被误判成
+                    // 连击延续（跨过一次非周期句后仍沿用旧基准）。
+                    state.lastCycleDistance = 0
+                    state.cycleDistanceStreak = 0
+                }
             }
         }
 
@@ -292,6 +390,50 @@ class StreamRepetitionDetector(
 
         /** 提示词回显（判定⑥）触发时的固定标记（日志可辨识）。 */
         const val PROMPT_ECHO_MARKER = "prompt_echo"
+
+        /** 周期块循环（判定⑦）触发时的固定标记（日志可辨识）。 */
+        const val BLOCK_CYCLE_MARKER = "block_cycle"
+
+        /** 单字符 run（判定⑧）触发时的固定标记（日志可辨识）。 */
+        const val CHAR_RUN_MARKER = "char_run"
+
+        /**
+         * 周期块循环的句子历史容量（判定⑦）。容量即「能识别的最大周期」：
+         * 48 句足够覆盖真机形态（工具 JSON 块约 7-9 句）。扫描 O(容量)，只在
+         * 句界冲刷时跑一次（远低于字符频次），开销可忽略。
+         */
+        const val BLOCK_CYCLE_HISTORY = 48
+
+        /**
+         * 周期块循环的句距连击阈值（判定⑦，配合 [BLOCK_CYCLE_MIN_PERIOD]）：
+         * 相同句距连续出现 5 次判周期成立。
+         *
+         * 阈值是**实测**定的（脚本复刻本检测器跑真机样本与误伤样本）：
+         *  - 连击 4 + 无周期门：「- 优点 / - 缺点」交替 3 组（句距 2）误触发 ✗；
+         *  - 连击 6 + 无周期门：交替 5 组仍误触发 ✗；
+         *  - **连击 5 + 周期 ≥3**：真机「工具 JSON 连发」在第 14 句（第二次复读
+         *    内）截住 ✓，交替排比 / 正常列表（内容各异）/ 代码缩进 /
+         *    Markdown 分隔线全部零误伤 ✓。
+         * 残留误伤面（可接受）：三句一组**逐字**相同的块重复 3 次（9 句）会触发
+         * —— 那本身就是复读，不是写作结构。
+         */
+        const val BLOCK_CYCLE_STREAK = 5
+
+        /**
+         * 周期块循环的最小句距（判定⑦）：句距 < 3 的等距复现不判周期。
+         * 句距 2 = 「A B / A B」交替，是合法写作结构（对比 / 对仗 / 优缺点列表），
+         * 不是退化；真机周期复读（工具 JSON 块）句距 7-9，远在门内。
+         */
+        const val BLOCK_CYCLE_MIN_PERIOD = 3
+
+        /**
+         * 单字符 run 阈值（判定⑧）：同一非空白字符连续出现 24 个即判退化。
+         * 取 24 的依据：合法文本里最长的同字符 run 是 Markdown 围栏/分隔线
+         * （``` --- === ≈3）、强调线（—— ≈4-6）、省略号（… ≈6）—— 24 有 4 倍余量；
+         * 真机「`」run 是数百级的，第 24 个字符就能截住，不用等 ⑤ 的 4096 字符。
+         * **空白不计入**（代码缩进可以合法地有几十个空格），见 [observe]。
+         */
+        const val CHAR_RUN_LOOP = 24
 
         /** 句子终止符集合：中英句读 + 换行（换行是流式输出最常见的句界）。 */
         private const val SENTENCE_TERMINATORS = "。！？!?.\n"
