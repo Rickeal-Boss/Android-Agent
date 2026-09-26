@@ -1,5 +1,7 @@
 package com.rickeal.agent.feature.settings.storage
 
+import android.content.Intent
+import android.provider.DocumentsContract
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +24,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.data.StorageBucket
 import com.rickeal.agent.core.design.GlassButton
@@ -243,6 +246,36 @@ fun StorageScreen(
                         color = colors.onGlassMuted,
                         modifier = Modifier.padding(top = tokens.gapSm),
                     )
+                    // 「打开系统文件夹」（2026-09-26 用户需求）：SAF 打开 app **外部专属
+                    // 目录**（Android/data/<pkg>/files），初始定位由 EXTRA_INITIAL_URI
+                    // 给定（minSdk 31 的 DocumentsUI 均支持；对 app 自己的专属目录，
+                    // SAF 树不受 Android/data 浏览限制）。直链下载的模型落在其下
+                    // Download/（ModelDownloader 的 DownloadManager 落盘处），adb push
+                    // 的模型在其下 models/ —— 换行列出的三个路径里，这两个都能在这里
+                    // 看到；runCatching 兜极少数无文件选择器的 ROM（静默，不打断）。
+                    // ⚠️ SAF 导入的模型复制在**内部** filesDir（/data/user/0/...），
+                    // 任何外部文件管理器都无法访问 —— 该位置不提供此入口，删除走模型库。
+                    if (detail.id == MODELS_BUCKET_ID) {
+                        val context = LocalContext.current
+                        GlassButton(
+                            text = "打开系统文件夹",
+                            onClick = {
+                                val initial = DocumentsContract.buildDocumentUri(
+                                    "com.android.externalstorage.documents",
+                                    "primary:Android/data/${context.packageName}/files",
+                                )
+                                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                                    putExtra(DocumentsContract.EXTRA_INITIAL_URI, initial)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                runCatching { context.startActivity(intent) }
+                            },
+                            material = GlassMaterial.THIN,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = tokens.gapSm),
+                        )
+                    }
                 }
             },
         )

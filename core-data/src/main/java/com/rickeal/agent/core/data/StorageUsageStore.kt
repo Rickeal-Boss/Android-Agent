@@ -72,7 +72,14 @@ class StorageUsageStore(
                 id = source.id,
                 title = source.title,
                 description = source.description,
-                path = source.targets.firstOrNull()?.absolutePath,
+                // 「数据在哪儿」必须如实：多目录桶（如模型 = 内部 models + 外部 models +
+                // 外部 Download）曾只显示 targets[0]，用户看着内部路径找文件、实际模型
+                // 却下载在外部 —— 全部列出（换行分隔；单目录桶展示不变）。
+                path = source.targets
+                    .map { it.absolutePath }
+                    .distinct()
+                    .joinToString("\n")
+                    .ifEmpty { null },
                 bytes = source.targets.sumOf { sizeOf(it) },
                 clearable = source.clearable,
             )
