@@ -130,6 +130,10 @@ object GlassMaterials {
     // 12/24 就是 Kyant0 LiquidButton 的 lens(12f.dp, 24f.dp)，作为全局默认档。
     // 0.16 → 0.22（Wave 9「卡片更实」）：原值比 Thin(0.18) 还薄，是历史倒挂 ——
     // 名义上"常规档"却比 THIN 更透，本波一并捋直。退路见上方注释。
+    // 折射 12/24 → 16/30（2026-09-26 用户反馈）：「卡片边角折射范围要加大」——
+    // 原值是 LiquidButton（小按钮）的口径，卡片面积大、边缘离内容远，同值下
+    // 边缘折射带在观感上几乎不存在。height（折射带宽）+4dp、amount（弯折量）+6dp；
+    // 退路：真机嫌折射过头只回退 amount（30 → 24），height 保留。
     val Regular = GlassMaterialSpec(
         backgroundAlpha = 0.22f,
         blurRadius = 7.dp,
@@ -137,20 +141,22 @@ object GlassMaterials {
         specularAlpha = 0.36f,
         noiseAlpha = 0.026f,
         shadowElevation = 8.dp,
-        refractionHeight = 12.dp,
-        refractionAmount = 24.dp,
+        refractionHeight = 16.dp,
+        refractionAmount = 30.dp,
     )
     val Thick = GlassMaterialSpec(
         // 0.26 → 0.34（Wave 8 真机反馈）→ 0.36（Wave 9「卡片更实」）。
         // 卡片（GlassCard / 弹层）多走 Thick，底色加厚后折射仍在（refractionAmount 未动）。
+        // 折射 16/28 → 20/34（2026-09-26）：与 Regular 同轮「边角折射范围加大」
+        //（弹层面积大，边缘折射带需要更宽才可见）。
         backgroundAlpha = 0.36f,
         blurRadius = 9.dp,
         borderAlpha = 0.72f,
         specularAlpha = 0.44f,
         noiseAlpha = 0.030f,
         shadowElevation = 16.dp,
-        refractionHeight = 16.dp,
-        refractionAmount = 28.dp,
+        refractionHeight = 20.dp,
+        refractionAmount = 34.dp,
     )
     val Opaque = GlassMaterialSpec(
         backgroundAlpha = 0.72f,

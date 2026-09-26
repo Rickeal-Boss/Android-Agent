@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -83,10 +84,12 @@ fun LegalScreen(
                         shape = GlassIconButtonShape.Capsule,
                         pressOnly = true,
                     ) {
-                        Text(
-                            text = "返回",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = colors.accent,
+                        // 对齐参考形态（iOS 26 返回钮）：玻璃圆钮 + 深色 chevron，无文字。
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "返回",
+                                tint = colors.onGlass,
+                                modifier = Modifier.size(18.dp),
                         )
                     }
                 },
