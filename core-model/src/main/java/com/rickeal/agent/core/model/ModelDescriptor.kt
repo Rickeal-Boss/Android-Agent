@@ -11,6 +11,9 @@ enum class ModelFamily {
     QWEN_3,
     LLAMA,
     PHI,
+
+    /** OpenBMB MiniCPM 系（MiniCPM5 文本 / MiniCPM-V 视觉）。Wave 20 新增。 */
+    MINICPM,
     OTHER,
 }
 

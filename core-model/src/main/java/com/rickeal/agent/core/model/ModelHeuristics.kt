@@ -62,6 +62,9 @@ object ModelHeuristics {
         // gemma-4 不含 "3n"、也不含 "gemma-3"，与上面两条不冲突；紧邻 Gemma 分支保持可读
         lower.contains("gemma-4") || lower.contains("gemma4") -> ModelFamily.GEMMA_4
         lower.contains("qwen3") || lower.contains("qwen-3") -> ModelFamily.QWEN_3
+        // MiniCPM 系先于 LLAMA 判断（litert-community 转换件架构是 LlamaForCausalLM，
+        // 但家族口径按品牌）：minicpm5 文本系 / minicpm-v 视觉系共用 MINICPM 族。
+        lower.contains("minicpm") -> ModelFamily.MINICPM
         lower.contains("llama") -> ModelFamily.LLAMA
         lower.contains("phi") -> ModelFamily.PHI
         else -> ModelFamily.OTHER
@@ -126,6 +129,24 @@ object ModelHeuristics {
             preferredBackends = setOf(InferenceBackend.CPU, InferenceBackend.GPU),
         )
 
+        // MiniCPM 系（Wave 20，逐项依据 = litert-community 转换仓 README + openbmb
+        // 官方 tags）：
+        // - minicpm5（文本）：官方 tags 有 tool-calling；两个转换件都声明 thought
+        //   channel（<think>/</think>）→ thinking = true。int4 件模板默认思考、int8
+        //   件默认直答，但能力位只描述「模型支持」，开关交给 ThinkingMode。
+        // - minicpm-v（视觉）：image = true；toolCalling/thinking 未在转换仓查到依据，
+        //   按「查不到就不设」保守关闭。
+        // - 后端：MiniCPM5 README 有 Galaxy S26 GPU 全委托实测（已入 ModelGpuSupport
+        //   白名单）；V 系未验证 → CPU 起步，GPU 由白名单拦。
+        ModelFamily.MINICPM -> ModelCapabilities(
+            text = true,
+            image = lower.contains("minicpm-v"),
+            audio = false,
+            toolCalling = lower.contains("minicpm5"),
+            thinking = lower.contains("minicpm5"),
+            preferredBackends = setOf(InferenceBackend.CPU, InferenceBackend.GPU),
+        )
+
         else -> ModelCapabilities(
             text = true,
             // "vl"：Qwen2-VL / LFM2.5-VL / SmolVLM；"minicpm-v"：MiniCPM-V 系列文件名是
@@ -163,6 +184,10 @@ object ModelHeuristics {
             // 按「宁可给小不给大」先与 GEMMA_3N / GEMMA_3 对齐取 8192。
             ModelFamily.GEMMA_4 -> 8192
             ModelFamily.QWEN_3 -> 32768
+            // MiniCPM5 原生 131k，但 litert-community 转换件把 KV 预算定死在
+            // max_num_tokens=4096（转换仓 README 明示）—— 配置给再大也是白给，
+            // 只会让压缩器塞进超预算的历史。按「宁可给小」取 4096。
+            ModelFamily.MINICPM -> 4096
             ModelFamily.LLAMA -> 8192
             ModelFamily.PHI -> 4096
             ModelFamily.OTHER -> if (sizeBytes >= 4L * 1024 * 1024 * 1024) 8192 else 4096

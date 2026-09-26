@@ -30,9 +30,11 @@ import com.rickeal.agent.core.model.ModelGpuSupport
  *      退化为无预设估算；且同档位体积/能力被 LFM2.5-VL 压制。
  *    - `FastVLM-0.5B` / `LLaVA-OneVision-0.5B`：与 SmolVLM2-500M、LFM2.5-VL 同档，
  *      帕累托被压制（体积更大或能力更弱），收录只会稀释选择。
- *  - **引擎版本提醒**：VL bundle 的官方验证运行时是 litert-lm 0.16.x；本仓引擎
- *    litertlm-android 0.11.0 能否加载这些视觉图**未真机验证**（既有 LFM2.5-VL-450M
- *    预设同此状态）。真机加载失败的第一排查方向：评估升级 litertlm-android（独立波次）。
+ *  - **引擎版本状态（2026-09-26 Wave 20）**：litertlm-android 已从 0.11.0 升至 **0.17.1**
+ *    （MiniCPM5-2B 官方要求 ≥0.16；0.17.1 同时开放 RepetitionPenaltyConfig/ThinkingConfig，
+ *    见 libs.versions.toml 注释）。VL 系官方验证运行时为 0.15/0.16，版本前提已满足；
+ *    但「视觉后端 GPU + 解码」的组合在真机上**仍未实测**，GPU 白名单对 VL 系保持关闭，
+ *    真机验证后逐个放行。文本系 MiniCPM5 有 README 级 GPU 证据，已随升级放行。
  *
  * 格式说明（很重要）：
  *  - `.litertlm` = 新版 LiteRT-LM 运行时格式，本项目引擎直接支持。
@@ -242,10 +244,12 @@ object ModelPresets {
             ramText = "≥ 2.4 GB",
             requiredRamBytes = (2.4 * GB).toLong(),
             memBasis = BASIS_CPU,
-            note = "体积小、中文强，大多数手机都能跑",
+            note = "体积小、中文强，支持思考模式与工具调用（OpenBMB 官方端侧主力）",
             sizeBytes = 1553670064,
             recommended = true,
-            backendBasis = "官方 README 明示 CPU+GPU 双兼容，但要求 litert-lm ≥ 0.16（本仓 0.11.0 未验证）→ 防闪退先禁 GPU；⚠️ 本模型同样存在运行时版本风险，加载失败请反馈",
+            backendBasis = "官方 Galaxy S26 OpenCL 全委托实测（逐节点零拒绝，GPU/CPU 双验证）；" +
+                "要求 litert-lm ≥ 0.16 —— 2026-09-26 运行时已升 0.17.1 满足 → GPU 放行。" +
+                "⚠️ 真机为首次验证，加载/速度异常请反馈",
             mirrors = domesticMirrors("MiniCPM5-2B", "MiniCPM5-2B_int4.litertlm"),
         ),
         ModelPreset(
@@ -274,7 +278,7 @@ object ModelPresets {
             note = "能看懂图片：用来体验拍照问答，体积最小",
             sizeBytes = 563549568,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；本仓 0.11.0 未验证 → 防闪退先禁 GPU",
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证",
             mirrors = domesticMirrors("LFM2.5-VL-450M", "LFM2.5-VL-450M_int8.litertlm"),
         ),
         // ── 视觉多模态批（2026-09-24 增补）：端侧 VL 帕累托前沿，500M/2B/1.6B/3B/8B 五档。
@@ -289,7 +293,7 @@ object ModelPresets {
             note = "能看图的最小模型：老手机也能体验拍照问答",
             sizeBytes = 360822960,
             recommended = false,
-            backendBasis = "官方在 Galaxy S26（litert-lm 0.15）验证 Android GPU 可生成；本仓 0.11.0 未验证 → 防闪退先禁 GPU。⚠️ 文本对话能力弱（360M 解码器，为图像输入设计）：纯文本对话建议 Qwen2.5-1.5B 或 DeepSeek-R1",
+            backendBasis = "官方在 Galaxy S26（litert-lm 0.15）验证 Android GPU 可生成；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证。⚠️ 文本对话能力弱（360M 解码器，为图像输入设计）：纯文本对话建议 Qwen2.5-1.5B 或 DeepSeek-R1",
             mirrors = domesticMirrors("SmolVLM2-500M", "SmolVLM2-500M.litertlm"),
         ),
         ModelPreset(
@@ -302,7 +306,7 @@ object ModelPresets {
             note = "阿里通义视觉模型：中文看图、截图问答与 OCR 强",
             sizeBytes = 1783424544,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（视觉 GPU + 解码 CPU）与 Galaxy S26（0.15）验证；本仓 0.11.0 未验证 → 防闪退先禁 GPU",
+            backendBasis = "官方在 Pixel 8a（视觉 GPU + 解码 CPU）与 Galaxy S26（0.15）验证；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证",
             mirrors = domesticMirrors("Qwen2-VL-2B", "Qwen2-VL-2B.litertlm"),
         ),
         ModelPreset(
@@ -317,7 +321,7 @@ object ModelPresets {
             note = "同体积看图能力最强之一：多语言视觉与 OCR 均衡（含视觉修复）",
             sizeBytes = 1298139472,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；本仓 0.11.0 未验证 → 防闪退先禁 GPU",
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证",
             mirrors = domesticMirrors("LFM2.5-VL-1.6B", "LFM2.5-VL-1.6B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -331,7 +335,7 @@ object ModelPresets {
             note = "小体积视觉旗舰：精细图像理解与文档 OCR，8GB 内存机型舒适运行（含视觉修复）",
             sizeBytes = 2352023888,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；本仓 0.11.0 未验证 → 防闪退先禁 GPU",
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证",
             mirrors = domesticMirrors("LFM2.5-VL-3B", "LFM2.5-VL-3B_int4_fixB.litertlm"),
         ),
         ModelPreset(

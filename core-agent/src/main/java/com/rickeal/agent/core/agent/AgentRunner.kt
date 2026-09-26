@@ -10,6 +10,7 @@ import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.InferenceConfig
+import com.rickeal.agent.core.model.ModelSamplingProfiles
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.StreamAccumulator
 import com.rickeal.agent.core.model.StreamRepetitionDetector
@@ -258,9 +259,17 @@ class AgentRunner(
             // 的主对话填 policy.agentSamplingOverride 时覆写采样参数。默认 null = 零
             // 行为变化。阈值可调，真机输出质量反馈后校准；采样变更触发 Conversation
             // 重建已由 LiteRtLmEngine.kt:208-218 处理，无需额外版本操作。
-            val config: InferenceConfig = policy.agentSamplingOverride
+            val baseConfig: InferenceConfig = policy.agentSamplingOverride
                 ?.let { override -> request.config.coerce().copy(sampling = override.coerce()) }
                 ?: request.config.coerce()
+            // 按模型采样档案（Wave 20）：温度/topK 钳进官方安全区间、repPen 下限
+            // （Qwen2.5 官方 1.1）、思考模型 maxTokens ≥2048、上下文按 litertlm KV
+            // 预算封顶。唯一生效点 = 本处（所有 run/子 run 都过这里）；UI 保存值
+            // 不被改写。R1 类模型 agent 覆写的 0.4 会被抬回 0.5 —— 有意为之。
+            val config: InferenceConfig = ModelSamplingProfiles.appliedTo(
+                request.model?.fileName,
+                baseConfig,
+            )
             // 纯端侧运行（远程 OpenAI 兼容通道已移除）：引擎只有本地一种。
             val kind: EngineKind = EngineKind.LOCAL
             var engine = engineFactory.create(kind)
