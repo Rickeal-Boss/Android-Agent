@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -28,6 +29,7 @@ import com.rickeal.agent.core.design.GlassBottomBar
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassChip
 import com.rickeal.agent.core.design.GlassIconButton
+import com.rickeal.agent.core.design.GlassImageThumb
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalGlassColors
@@ -66,7 +68,18 @@ fun ChatInputBar(
             ) {
                 for (attachment in attachments) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        GlassChip(text = attachment.label())
+                        if (attachment is Attachment.Image) {
+                            // Wave 20：图片附件显示真实缩略图（与气泡附件条共用
+                            // [GlassImageThumb] 三态 URI 解码）。仍保留移除按钮 ——
+                            // 缩略块小，按钮的 48dp 触摸目标由组件内部撑起。
+                            GlassImageThumb(
+                                uri = attachment.uri,
+                                modifier = Modifier.size(48.dp),
+                                contentDescription = attachment.label(),
+                            )
+                        } else {
+                            GlassChip(text = attachment.label())
+                        }
                         // 触摸目标由组件内的 size 撑满 48dp；图标保持原来的 16dp。
                         GlassIconButton(
                             icon = Icons.Filled.Close,

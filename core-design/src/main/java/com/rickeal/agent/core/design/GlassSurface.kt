@@ -2,12 +2,10 @@ package com.rickeal.agent.core.design
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.fillMaxSize
 
-import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -25,7 +23,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Audiotrack
@@ -33,29 +30,20 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.GraphicsLayerScope
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /* ------------------------------------------------------------------ 表面 */
@@ -488,72 +476,11 @@ private fun AttachmentItem(attachment: GlassBubbleAttachment) {
 
 @Composable
 private fun AttachmentThumb(uri: String) {
-    val context = LocalContext.current
-    // content:// 不一定是本地文件：它可能是网盘 Provider（Google Drive / 各家云盘），
-    // openInputStream 会同步走网络。原来这里是 `remember(uri) { decodeThumbnail(...) }`，
-    // 在组合期同步执行 —— 主线程阻塞直到 ANR。
-    // 改成 produceState + Dispatchers.IO：先出占位图标，解码完成后再替换。
-    // 刻意不引 Coil（架构约定：不引入图片库）。
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = uri) {
-        value = withContext(Dispatchers.IO) { decodeThumbnail(context, uri) }
-    }
-    // 委托属性（by produceState）在 null 检查与使用之间可能被其他帧改写，
-    // Kotlin 不会为它做 smart cast —— 必须先取到局部 val 再判空。
-    val decoded = bitmap
-    if (decoded != null) {
-        Image(
-            bitmap = decoded,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .size(width = 96.dp, height = 72.dp)
-                .clip(RoundedCornerShape(12.dp)),
-        )
-    } else {
-        val colors = LocalGlassColors.current
-        Box(
-            modifier = Modifier.size(width = 96.dp, height = 72.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.PhotoLibrary,
-                contentDescription = null,
-                tint = colors.onGlassSubtle,
-                modifier = Modifier.size(22.dp),
-            )
-        }
-    }
+    // Wave 20：解码实现下沉到公开的 [GlassImageThumb]（输入框附件块复用同一组件，
+    // 根修「裸绝对路径 decode 失败 → 永远显示占位图标」，见 GlassImageThumb KDoc）。
+    // 这里只保留气泡附件条的尺寸口径：96×72、12dp 圆角。
+    GlassImageThumb(
+        uri = uri,
+        modifier = Modifier.size(width = 96.dp, height = 72.dp),
+    )
 }
-
-/** 缩略图长边的目标上限（px）。缩略图实际显示尺寸只有 96×72 dp，320px 足够。 */
-private const val THUMBNAIL_MAX_DIM = 320
-
-/**
- * 缩略图解码：先读 bounds 算 inSampleSize，再按需缩放解码。
- * 刻意不使用 Coil（简报 §6：不引入图片库）。RGB_565 省一半内存。
- *
- * **必须在后台线程调用**：`content://` 可能是网盘 Provider，`openInputStream`
- * 会同步走网络（调用点 [AttachmentThumb] 已切到 Dispatchers.IO）。
- */
-private fun decodeThumbnail(context: android.content.Context, uri: String): ImageBitmap? = runCatching {
-    if (uri.isBlank()) return null
-    val parsed = Uri.parse(uri)
-    val resolver = context.contentResolver
-    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    resolver.openInputStream(parsed)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
-    val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
-    // inJustDecodeBounds 失败（流不可读 / 非图片 / Provider 报错）时 outWidth/outHeight
-    // 会是 -1 或 0：不挡掉的话 maxOf(-1, -1) = -1 ⇒ 下面的 while 一次都不执行 ⇒
-    // sample 保持 1 ⇒ 整图解码，4000×3000 的照片就是 24~36MB ⇒ OOM。
-    if (maxDim <= 0) return null
-    var sample = 1
-    while (maxDim / sample > THUMBNAIL_MAX_DIM) sample *= 2
-    val options = android.graphics.BitmapFactory.Options().apply {
-        inSampleSize = sample.coerceAtLeast(1)
-        inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
-    }
-    val decoded = resolver.openInputStream(parsed)?.use {
-        android.graphics.BitmapFactory.decodeStream(it, null, options)
-    }
-    decoded?.asImageBitmap()
-}.getOrNull()
