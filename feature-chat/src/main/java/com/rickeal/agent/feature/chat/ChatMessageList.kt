@@ -1,5 +1,6 @@
 package com.rickeal.agent.feature.chat
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,9 +14,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +32,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassAttachmentKind
@@ -277,6 +284,7 @@ private fun MessageRow(
                 }
                 if (message.text.isNotBlank() || !message.thinking.isNullOrBlank()) {
                     val (think, answer) = splitThinkAndClean(message.text, message.thinking)
+                    val clipboard = LocalClipboardManager.current
                     GlassBubble(
                         text = answer,
                         isUser = false,
@@ -285,10 +293,65 @@ private fun MessageRow(
                         onToggleThinking = { onToggleThinking(message.id) },
                         errorMessage = message.errorMessage,
                         usage = message.usage?.toGlassUsage(),
+                        // 气泡下方两枚复制键（不进气泡玻璃，省 LazyColumn item 一层 glass）：
+                        //  - 「复制」：splitThinkAndClean 的 .second —— 净化后展示文本
+                        //    （U+FFFD 已洗、<think> 已拆出），所见即所得；
+                        //  - 「复制为 Markdown」：message.text 原文，含原始 markdown 标记 ——
+                        //    "原始"语义有意为之，导出到外部编辑器需要标记本身。
+                        // 点击无 Toast：按钮自身有按压态反馈，复制是低风险幂等操作。
+                        actions = {
+                            BubbleCopyAction(
+                                label = "复制",
+                                icon = Icons.Filled.ContentCopy,
+                                onClick = { clipboard.setText(AnnotatedString(answer)) },
+                            )
+                            BubbleCopyAction(
+                                label = "复制为 Markdown",
+                                icon = Icons.Filled.ContentCopy,
+                                onClick = { clipboard.setText(AnnotatedString(message.text)) },
+                            )
+                        },
                     )
                 }
             }
         }
+    }
+}
+
+/**
+ * 气泡下方的轻量文字操作键（复制类）。
+ *
+ * 刻意不做玻璃控件：LazyColumn 一屏十几条，每条再叠一层玻璃控件
+ * 模糊成本 ×N；小文字 + 按压态足够传达可点击。圆角 8dp + 灰字弱化，
+ * 视觉层级明显低于气泡本体 —— 操作是附属能力，不是内容。
+ */
+@Composable
+private fun BubbleCopyAction(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+) {
+    val colors = LocalGlassColors.current
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            // padding 在 clickable 之后：热区含内边距，点字边也能命中。
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = colors.onGlassSubtle,
+            modifier = Modifier.size(12.dp),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.onGlassSubtle,
+            modifier = Modifier.padding(start = 3.dp),
+        )
     }
 }
 

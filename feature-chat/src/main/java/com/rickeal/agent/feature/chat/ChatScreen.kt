@@ -16,12 +16,14 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextDecoration
@@ -30,6 +32,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -49,6 +53,7 @@ import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.rememberGlassHaptics
 import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.core.model.Role
+import kotlinx.coroutines.launch
 
 @Composable
 fun ChatScreen(
@@ -70,6 +75,14 @@ fun ChatScreen(
     // LazyListState 必须用 LazyListState.Saver（它内部是普通可变状态，不能用 autoSaver）。
     val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     var paramsOpen by rememberSaveable { mutableStateOf(false) }
+
+    // 「新对话」操作反馈（2026-09-26）：原 Edit 图标语义（编辑）与行为（新对话）不符
+    // 导致误读 —— 图标换成 Add 之后，用户按下去也该知道"发生了什么"：
+    // 点新对话会瞬间清空列表，没有反馈看起来就像"坏掉了"。showSnackbar 挂
+    // rememberCoroutineScope（uiState 无此事件通道，ViewModel 属并行成员改动范围），
+    // 宿主槽复用 GlassScaffold 的 snackbarHost 卡片 Column 末尾，M3 默认样式即可。
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     val pickImage = rememberImagePicker { uri, name -> viewModel.onAttachImage(uri, name) }
     val pickAudio = rememberAudioPicker { uri, name -> viewModel.onAttachAudio(uri, name) }
@@ -133,9 +146,15 @@ fun ChatScreen(
                         )
                     }
                     GlassIconButton(
-                        icon = Icons.Filled.Edit,
+                        // 图标语义修复：Edit（编辑）长成了"编辑这条消息/草稿"的样子，
+                        // 实际行为却是开新对话 —— 换 Add（新建），contentDescription 不变。
+                        // 点击回调带 snackbar 反馈：清空列表是瞬时强变更，无反馈即"像坏了"。
+                        icon = Icons.Filled.Add,
                         contentDescription = "新对话",
-                        onClick = viewModel::onNewConversation,
+                        onClick = {
+                            viewModel.onNewConversation()
+                            scope.launch { snackbarHostState.showSnackbar("已开启新对话") }
+                        },
                         contentColor = colors.onGlassMuted,
                         pressOnly = true,
                     )
@@ -420,6 +439,12 @@ fun ChatScreen(
                     }
                 }
             }
+
+            // ── 轻量操作反馈（Snackbar）────────────────────────────────
+            // 挂在状态卡片列的末尾：M3 默认样式，不另做玻璃 Snackbar（宿主级
+            // 状态信息已有完整玻璃卡体系，瞬时 toast 级反馈不值得再造一层）。
+            // 当前唯一调用点：「新对话」完成提示。
+            SnackbarHost(hostState = snackbarHostState)
             }
         },
     ) { _ ->

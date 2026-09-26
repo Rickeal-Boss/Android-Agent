@@ -19,10 +19,12 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Audiotrack
@@ -221,6 +223,15 @@ fun GlassBubble(
     isStreaming: Boolean = false,
     errorMessage: String? = null,
     usage: GlassBubbleUsage? = null,
+    /**
+     * 气泡下方的操作行插槽（复制等小动作键）。
+     *
+     * 贴在气泡**外**、气泡 Box 之后渲染：玻璃内容 padding（14/10dp）不动，
+     * 操作键与气泡本体解耦，不参与气泡的 widthIn(max) 宽度约束；
+     * Row 的对齐跟随外层 Column 的 isUser 对齐（End/Start），与气泡同轴。
+     * null（默认）完全不渲染，流式气泡等调用点零成本。
+     */
+    actions: (@Composable RowScope.() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
 ) {
     val colors = LocalGlassColors.current
@@ -281,12 +292,28 @@ fun GlassBubble(
                     )
                 }
                 if (text.isNotBlank()) {
-                    Text(
-                        text = if (isStreaming) text + "▍" else text,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = colors.onGlass,
-                        modifier = Modifier.padding(top = if (attachments.isEmpty()) 0.dp else 8.dp),
-                    )
+                    if (isStreaming) {
+                        // 流式保持裸 Text，不包 SelectionContainer：流式文本每 120ms
+                        // 变化会不断重置选区（刚选中就没了），且与列表的滚动跟随
+                        // （snapshotFlow 驱动的 animateScrollToItem）打架。
+                        Text(
+                            text = text + "▍",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = colors.onGlass,
+                            modifier = Modifier.padding(top = if (attachments.isEmpty()) 0.dp else 8.dp),
+                        )
+                    } else {
+                        // 非流式（含用户气泡）包 SelectionContainer：长按可选、复制正文。
+                        // 用户消息短，不存在流式重置选区的问题，一并开放选择。
+                        SelectionContainer {
+                            Text(
+                                text = text,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = colors.onGlass,
+                                modifier = Modifier.padding(top = if (attachments.isEmpty()) 0.dp else 8.dp),
+                            )
+                        }
+                    }
                 } else if (isStreaming && thinking.isNullOrBlank()) {
                     GlassThinkingIndicator(label = "思考中")
                 }
@@ -317,6 +344,16 @@ fun GlassBubble(
                         modifier = Modifier.padding(top = 6.dp),
                     )
                 }
+            }
+        }
+        // 操作行在气泡 Box 之后、同一 Column 里：跟随 isUser 对齐（End/Start），
+        // 且不进气泡玻璃 —— 操作键多一层玻璃在 LazyColumn item 里纯属浪费。
+        actions?.let {
+            Row(
+                modifier = Modifier.padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                it()
             }
         }
     }
