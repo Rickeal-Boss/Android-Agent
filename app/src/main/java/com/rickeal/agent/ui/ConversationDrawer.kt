@@ -47,8 +47,14 @@ import com.rickeal.agent.core.model.ConversationMeta
  * 看不出"抽屉浮在内容之上"）。显式锁 300dp 是**防御性正确**的 —— 它不依赖 M3 是否限宽。
  * 右侧是否留空隙（即槽位本身是否已限宽）取决于 M3 实现，需真机确认；但即使槽位已限宽，
  * 锁死 300dp 的结果也一致，所以保持现状最稳。
+ *
+ * `internal` 而非 `private`（2026-09-27）：`MainShell` 要用它把抽屉的锚点位移换算成
+ * 「背景模糊强度」进度（Closed 锚点 = -宽度、Open = 0 ⇒ progress = 1 + offset/宽度，
+ * 见 MainShell 里 drawerBlurProgress 的注释）。**两处必须同源** —— 抽屉宽度一旦改动，
+ * 模糊进度与抽屉位置会立刻错位（糊满一半就不再加深），所以宁可暴露常量也不在那边
+ * 复制一个 300dp 字面量。
  */
-private val DRAWER_WIDTH = 300.dp
+internal val DRAWER_WIDTH = 300.dp
 
 /**
  * 左侧抽屉内容（Wave 10 Phase 2b C-3）—— **仅 COMPACT 使用**。

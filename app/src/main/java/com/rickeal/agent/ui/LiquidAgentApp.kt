@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -86,10 +87,14 @@ import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.LocalOverlayBlurState
 import com.rickeal.agent.core.design.LocalWallpaperImage
+import com.rickeal.agent.core.design.OverlayBlurState
 import com.rickeal.agent.core.design.TabSpec
 import com.rickeal.agent.core.design.WindowSizeClass
 import com.rickeal.agent.core.design.WindowWidthClass
+import com.rickeal.agent.core.design.overlayBackdropBlur
+import com.rickeal.agent.core.design.rememberOverlayBlurProgress
 import com.rickeal.agent.core.design.liquid.LocalBackdrop
 import com.rickeal.agent.core.design.liquid.backdrops.layerBackdrop
 import com.rickeal.agent.core.design.liquid.backdrops.rememberLayerBackdrop
@@ -110,6 +115,7 @@ import com.rickeal.agent.feature.settings.memory.MemoryRoute
 import com.rickeal.agent.feature.settings.settingsGraph
 import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.onboarding.FirstRunGate
+import kotlin.math.max
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.filter
@@ -237,6 +243,14 @@ fun LiquidAgentApp() {
             // 同 MainShell：用 LocalActivity 而非 `context as? Activity`。
             // 拒绝条款后点退出却什么都没发生，是最难排查的一类"没反应"。
             val activity: Activity? = LocalActivity.current
+            // 覆盖层背景深度模糊（2026-09-27 用户需求）的共享登记表。
+            // 位置刻意选在**闸门之内、MainShell 之外**：
+            //  - 在 MainShell 内下发，抽屉（ModalNavigationDrawer 的 drawerContent 是
+            //    body 的兄弟，虽同在 MainShell 组合内但层级不同）与各处 `LiquidDialog`
+            //    会各自读到不同的 provider —— 必须是同一个实例才能互通「我开着」；
+            //  - 在闸门之外下发，引导页 / 条款页里的弹窗会往同一张表里登记，而那会儿
+            //    MainShell 还没组合 ⇒ 带着残留占用进主界面（一进来背景就是糊的）。
+            val overlayBlurState = remember { OverlayBlurState() }
             FirstRunGate(
                 container = container,
                 onExitApp = {
@@ -247,7 +261,11 @@ fun LiquidAgentApp() {
                     }
                 },
             ) {
-                MainShell()
+                CompositionLocalProvider(
+                    LocalOverlayBlurState provides overlayBlurState,
+                ) {
+                    MainShell()
+                }
             }
         }
     }
@@ -319,6 +337,38 @@ private fun MainShell() {
         revealState.expand(Offset(shellSize.width / 2f, shellSize.height / 2f))
     }
 
+    // ── 覆盖层背景深度模糊（2026-09-27 用户需求）─────────────────────────────
+    // 需求：「覆盖层打开时把除了覆盖层以外的**整个背景**加入深度模糊，随动画逐渐加强度」。
+    // 三类覆盖层里，抽屉与对话框都在**外壳 body 之外**（抽屉是 ModalNavigationDrawer 里
+    // body 的兄弟；对话框是独立窗口），所以整块 body 可以放心糊 —— 连悬浮页签一起糊，
+    // 正是「除了覆盖层以外的整个背景」。参数面板是唯一例外（它活在 NavHost 内部，
+    // 外壳这层糊会把它自己也糊掉），由 ChatScreen 自己糊自己的屏，这里只补页签那一条。
+    // 完整层级推导见 OverlayBackdropBlur.kt 的类 KDoc。
+    val overlayBlurState = LocalOverlayBlurState.current
+    val drawerWidthPx = with(LocalDensity.current) { DRAWER_WIDTH.toPx() }
+    // 抽屉的模糊强度**直接由它的锚点位移换算**，因此拖拽中 / 开合动画中逐帧同步、
+    // 完全跟手（比自绘弹簧准）。Closed 锚点 = -抽屉宽度、Open 锚点 = 0
+    // （M3 ModalNavigationDrawer 的 updateAnchors，见其源码），故 progress = 1 + offset/width。
+    // ⚠️ 锚点未初始化时 currentOffset 是 NaN（M3 的语义是返回 `offset`，不抛异常）——
+    //    必须显式兜 0：兜 NaN 会污染 max()，兜 1 更糟（一进应用背景就是糊的）。
+    val drawerBlurProgress: () -> Float = {
+        val offset = drawerState.currentOffset
+        if (offset.isNaN()) 0f else (1f + offset / drawerWidthPx).coerceIn(0f, 1f)
+    }
+    // SHELL 级：抽屉（不经过登记表，直接由位移驱动）+ 各处 LiquidDialog（独立窗口，
+    // 只能靠登记表）。取 max：两者同时只可能是「抽屉开着时又弹了个对话框」。
+    val shellBlurProgress = rememberOverlayBlurProgress { overlayBlurState.shellActive }
+    // 页签条专用：参数面板在 NavHost 内部 ⇒ 上面那条 body 级模糊不会生效（会糊到面板自己），
+    // 于是单独给页签补一轮。SHELL 级生效时它归零 —— 那时 body 级模糊已经把页签包含在内，
+    // 叠加就是「糊两次」（观感偏重、白烧一遍全屏高斯）。
+    val navBarBlurProgress = rememberOverlayBlurProgress {
+        overlayBlurState.anyActive && !overlayBlurState.shellActive
+    }
+    // 关掉设置页「背景模糊」（enableBackdropBlur）时整体不挂 —— 它与玻璃背景模糊是同一类
+    // 开销（全屏离屏录制 + 高斯模糊），那个开关本就是为这类开销准备的。
+    val overlayBlurEnabled = glassCfg.enableBackdropBlur
+    val overlayBlurRadius = glassCfg.overlayBlurRadius.dp
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         // 只在 COMPACT 允许侧滑开抽屉：宽屏没有汉堡入口，若仍允许边缘手势，
@@ -370,6 +420,14 @@ private fun MainShell() {
                 .circularReveal(
                     progress = { revealState.progress.value },
                     origin = { revealState.origin },
+                )
+                // 覆盖层背景深度模糊（2026-09-27）：抽屉跟手、对话框走弹簧，两者取 max。
+                // 进度只在 graphicsLayer 的 layer 阶段读 ⇒ 逐帧变化只失效图层，
+                // **不会重组 MainShell**（连带 NavHost 与整屏都不会跟着重组）。
+                .overlayBackdropBlur(
+                    progress = { max(drawerBlurProgress(), shellBlurProgress()) },
+                    radius = overlayBlurRadius,
+                    enabled = overlayBlurEnabled,
                 ),
         ) {
             if (windowSize.useTwoPane) {
@@ -524,7 +582,15 @@ private fun MainShell() {
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
-                                .navigationBarsPadding(),
+                                .navigationBarsPadding()
+                                // 仅参数面板场景生效（见上方 navBarBlurProgress 的说明）：
+                                // 面板在 NavHost 内部，外壳 body 级模糊罩不到它、也不能罩
+                                // （会连面板一起糊），页签这条得单独补。
+                                .overlayBackdropBlur(
+                                    progress = navBarBlurProgress,
+                                    radius = overlayBlurRadius,
+                                    enabled = overlayBlurEnabled,
+                                ),
                         )
                     }
                 }

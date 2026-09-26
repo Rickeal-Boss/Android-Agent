@@ -44,6 +44,20 @@ data class GlassConfig(
      * 默认 0.45：现状等效透出约 0.25，0.45 为可读性明显改善又不闷死玻璃的中点。
      */
     val overlayOpacity: Float = 0.45f,
+    /**
+     * 覆盖层背景的**深度模糊半径**（dp，强度 1 时的满量程），默认 20f。
+     *
+     * 2026-09-27 用户需求：「覆盖层打开时都需要把除了覆盖层以外的整个背景完全加入深度模糊
+     * （随动画逐渐加强度）」。三类覆盖层（会话抽屉 / 对话框 / 推理参数面板）与
+     * [overlayOpacity] 共用同一份判据，实施见 `OverlayBackdropBlur.kt`。
+     *
+     * 与 [intensity] 正交：[intensity] 是**玻璃材质**的强度（底色/描边/模糊半径 alpha），
+     * 这条是**背景被覆盖层压住时**的满量程模糊半径。取值口径：手机（~3x）下 20dp ≈ 60px
+     * 半径，背景文字完全不可读但还看得出"有内容"，再大就会糊成一团均匀色块、失去景深暗示。
+     * **真机可调**：若反馈偏弱 / 过糊，只改这一个值即可（暂未做设置页滑条 —— 与
+     * [overlayOpacity] 不同，它没有「因人而异」的可读性诉求）。
+     */
+    val overlayBlurRadius: Float = 20f,
 )
 
 val LocalGlassTokens: ProvidableCompositionLocal<GlassTokens> =
