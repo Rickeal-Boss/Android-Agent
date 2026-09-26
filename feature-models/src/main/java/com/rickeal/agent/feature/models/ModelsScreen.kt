@@ -520,7 +520,7 @@ private fun ModelsFilterHeader(
 }
 
 /**
- * [ModelFamily] 的中文展示名。穷举全部 7 个家族（无 `else` 分支）—— 将来新增家族时
+ * [ModelFamily] 的中文展示名。穷举全部 8 个家族（无 `else` 分支）—— 将来新增家族时
  * 这里会**编译报错**，强制补映射，而不是静默漏掉一个分类。
  */
 private fun modelFamilyLabel(family: ModelFamily): String = when (family) {
@@ -530,6 +530,7 @@ private fun modelFamilyLabel(family: ModelFamily): String = when (family) {
     ModelFamily.QWEN_3 -> "Qwen 3"
     ModelFamily.LLAMA -> "Llama"
     ModelFamily.PHI -> "Phi"
+    ModelFamily.MINICPM -> "MiniCPM"
     ModelFamily.OTHER -> "其他"
 }
 
