@@ -12,6 +12,7 @@ import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.StreamAccumulator
+import com.rickeal.agent.core.model.StreamRepetitionDetector
 import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
@@ -38,7 +39,6 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
-import java.util.Locale
 
 /**
  * 停止条件段（6 行）。端侧 4B 模型的上下文极宝贵，这里刻意保持最短：
@@ -90,9 +90,6 @@ private const val REPEAT_REMINDER: String =
 private const val NO_TOOL_REMINDER: String =
     "已经连续多轮没有执行任何工具。复述计划、状态或意图都不算进展：要么调用工具去获取证据，要么给出结论并停止。"
 
-/** 归一化签名的最小长度：过短的口头语（「好的」「完成」）不算下车点。 */
-private const val MIN_SIGNATURE_CHARS = 8
-
 /** 连续零工具调用的告警阈值。 */
 private const val NO_TOOL_STREAK_LIMIT = 3
 
@@ -101,6 +98,30 @@ private const val DENIAL_CIRCUIT_LIMIT = 2
 
 /** 连续空输出轮数上限：超过后按失败收尾，不再空转烧 prefill（Wave4 审查 A-P0-2）。 */
 private const val MAX_EMPTY_ANSWER_ROUNDS = 3
+
+/** 轮内流式重复触发后的提醒（复用 pendingReminder 单槽注入纪律）。 */
+private const val INTRA_LOOP_REMINDER: String =
+    "你刚才的输出陷入重复循环，已被截断。请换一个实质不同的回答。"
+
+/**
+ * 轮内流式重复（StreamRepetitionDetector）连续触发的轮数上限：第 3 次触发即按失败
+ * 收尾（对齐 MAX_EMPTY_ANSWER_ROUNDS 的收尾与 journal 语义 —— 先给 N 轮自我纠正
+ * 机会，仍复发就是终态，不再空转烧 prefill）。正常轮把计数归零。
+ */
+private const val MAX_INTRA_STREAM_LOOP_ROUNDS = 2
+
+/**
+ * 轮内流式重复检测触发时从 collect 内抛出的控制流异常。
+ *
+ * ⚠️ 绝不能是 CancellationException 的子类：CancellationException 会走取消收尾路径
+ * （executeBody 的 catch 分支 + 各处「is CancellationException 上抛」），语义完全不同 ——
+ * 这里是「检测到循环、主动截断」，必须落 to 生成后流程而不是取消收尾。
+ * 也因此 catch 顺序上它必须排在 `catch (t: Throwable)` 之前（更具体者在前）。
+ */
+private class StreamLoopException(
+    val inThinking: Boolean,
+    val signature: String,
+) : RuntimeException("轮内输出陷入重复循环（thinking=$inThinking, signature=$signature）")
 
 /**
  * Agent 主循环（架构文档 §4.1 / §4.6）。
@@ -343,6 +364,9 @@ class AgentRunner(
             var noToolStreak = 0
             // 连续空输出轮数（见下方 answer.isBlank 分支：端侧增量水印下裸 continue 会空转）。
             var emptyAnswerStreak = 0
+            // 轮内流式重复连续触发的轮数：正常轮归零，超过 MAX_INTRA_STREAM_LOOP_ROUNDS
+            // 按失败收尾（语义对齐 emptyAnswerStreak）。run 内局部状态，随协程消亡。
+            var intraLoopStreak = 0
             var noToolReminderSent = false
             var pendingReminder: String? = null
             // 拒绝熔断状态（run 内，不跨 run）：run 结束随协程消亡，无需持久化。
@@ -391,6 +415,13 @@ class AgentRunner(
                 }
 
                 var accumulator = StreamAccumulator()
+                // 轮内流式重复检测器（Wave 19 P0，来源见 StreamRepetitionDetector KDoc）。
+                // 每轮新建一个（放 while(true) 重试循环**外**、accumulator 旁）；重试路径
+                // 换干净累加器时同步 reset，避免把上次失败尝试的句子计数带进重试。
+                val detector = StreamRepetitionDetector()
+                // 本轮生成是否被轮内重复检测截断：while(true) 重试循环内置位，
+                // 生成后流程消费（处置分支 / finishReason 标记）。
+                var intraStreamLoop = false
                 val generationRequest = GenerationRequest(
                     // 发出去之前做一次配对清洗：压缩可能切掉工具组的一半，这里补上最后一道保险，
                     // 避免 provider 收到「有 tool 结果没 tool_call」而报 400。
@@ -445,9 +476,39 @@ class AgentRunner(
                     try {
                         engine.generateStream(generationRequest).collect { chunk ->
                             accumulator.append(chunk)
-                            if (chunk.textDelta.isNotEmpty()) emit(AgentEvent.TextDelta(chunk.textDelta))
-                            if (chunk.thinkingDelta.isNotEmpty()) emit(AgentEvent.ThinkingDelta(chunk.thinkingDelta))
+                            // 检测器只消费增量 delta（O(delta)，无全文扫描）：text / thinking
+                            // 两条流各自独立判定，命中即抛 StreamLoopException 提前终止本次
+                            // 生成 —— 已产出的文本保留在 accumulator（deepseek-harness
+                            // agent.ts:428-460 的 interrupted blocks 语义）。
+                            if (chunk.textDelta.isNotEmpty()) {
+                                emit(AgentEvent.TextDelta(chunk.textDelta))
+                                when (val verdict = detector.observeText(chunk.textDelta)) {
+                                    is StreamRepetitionDetector.Verdict.LoopDetected ->
+                                        throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
+                                    StreamRepetitionDetector.Verdict.Ok -> Unit
+                                }
+                            }
+                            if (chunk.thinkingDelta.isNotEmpty()) {
+                                emit(AgentEvent.ThinkingDelta(chunk.thinkingDelta))
+                                when (val verdict = detector.observeThinking(chunk.thinkingDelta)) {
+                                    is StreamRepetitionDetector.Verdict.LoopDetected ->
+                                        throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
+                                    StreamRepetitionDetector.Verdict.Ok -> Unit
+                                }
+                            }
                         }
+                        break
+                    } catch (loop: StreamLoopException) {
+                        // 轮内重复 ≠ 生成失败：**不** rebuildEngine、**不** generationAttempt++、
+                        // **不** continue 重试 —— 坏的不是引擎是模型的输出内容，重试只会把
+                        // 同一个循环再跑一遍。直接 break 落到「生成后」流程（accumulator 已含
+                        // 部分文本，由下方处置分支分流）。引擎侧 finally 会 cancelProcess +
+                        // conversationDirty（LiteRtLmEngine.kt:512-521），下一轮自动重建会话，
+                        // 属预期 —— 上下文一致性由全量重放保证。
+                        AgentLogStore.warn(
+                            "轮内重复检测触发（thinking=${loop.inThinking}），已提前终止本次生成并保留已产出文本"
+                        )
+                        intraStreamLoop = true
                         break
                     } catch (t: Throwable) {
                         if (t is CancellationException) {
@@ -474,6 +535,8 @@ class AgentRunner(
                         generationAttempt++
                         // 重试前必须换一个干净的累加器：否则会把两次尝试的半截输出拼成一条错误答案。
                         accumulator = StreamAccumulator()
+                        // 检测器同步清零（与累加器同口径）：上一半尝试的句子计数不属于重试。
+                        detector.reset()
                         try {
                             engine = rebuildEngine(kind, loadConfig)
                         } catch (retry: Throwable) {
@@ -551,8 +614,65 @@ class AgentRunner(
                 val protocolFinalAnswer: String? = (protocol as? ProtocolResult.FinalAnswer)?.text
                 val visibleText = if (policy.enableTextProtocol) TextToolProtocol.strip(accumulator.text) else accumulator.text
 
+                // ── 轮内循环的处置（Wave 19 P0）────────────────────────────────
+                // 被轮内重复检测截断的轮次**不得**直接当最终答案交付：循环中产出的
+                // 工具调用同样不可信（参数大概率是循环复读），无论 calls 空不空一律
+                // 丢弃。复用「重复回答提醒」的路径形态（同 :578-609 结构）：模型回显
+                // 入 working + 合成提醒（稳定派生 id）+ round++，给模型一轮实质改写
+                // 的机会；连续超过 MAX_INTRA_STREAM_LOOP_ROUNDS 按失败收尾。
+                // 本分支必须在下方 calls.isEmpty() 判定之前分流，否则会与既有
+                // repeat/empty 逻辑叠加产生双重 continue。检测器判了循环的文本不再
+                // 进跨轮签名检测（无意义且可能抢占 pendingReminder 单槽）。
+                if (intraStreamLoop) {
+                    intraLoopStreak++
+                    if (intraLoopStreak > MAX_INTRA_STREAM_LOOP_ROUNDS) {
+                        AgentLogStore.error(
+                            "连续 $intraLoopStreak 轮触发轮内重复循环（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发），终止 run"
+                        )
+                        journal?.append(
+                            AgentRunJournal.KIND_SETTLED,
+                            AgentRunJournal.settledPayload("Failed", round),
+                        )
+                        emit(AgentEvent.Failed("模型输出陷入重复循环，已停止本轮任务"))
+                        return
+                    }
+                    val cleanText = if (policy.enableTextProtocol) TextToolProtocol.strip(accumulator.text) else accumulator.text
+                    val repeatModel = ChatMessage(
+                        role = Role.MODEL,
+                        text = cleanText.ifBlank { accumulator.text },
+                        thinking = accumulator.thinking.takeIf { it.isNotBlank() },
+                        // 截断语义：本轮没有终帧，finishReason 标 LENGTH（不新增枚举值）。
+                        finishReason = FinishReason.LENGTH,
+                    )
+                    working.add(repeatModel)
+                    journal?.appendMessage(repeatModel)
+                    // 单槽纪律：已有待注入提醒时不覆盖（同参 > 重复回答 > 零工具的
+                    // 优先级对齐 :569 判据）；随后立刻消费成合成消息，不留到下一轮
+                    // 造成双重注入。
+                    if (pendingReminder == null) {
+                        pendingReminder = INTRA_LOOP_REMINDER
+                    }
+                    val loopReminder = pendingReminder
+                    pendingReminder = null
+                    val reminderMessage = ChatMessage(
+                        id = "reminder:$round:loop",
+                        role = Role.USER,
+                        text = loopReminder,
+                    )
+                    working.add(reminderMessage)
+                    journal?.appendReminder(reminderMessage)
+                    AgentLogStore.warn(
+                        "第 ${round + 1} 轮轮内重复循环：丢弃 ${calls.size} 个工具调用并注入提醒（连续第 $intraLoopStreak 次）"
+                    )
+                    round++
+                    continue
+                } else {
+                    // 正常轮：连击归零（「连续触发」语义 —— 任何一轮未复发即打断连击）。
+                    intraLoopStreak = 0
+                }
+
                 // 无进展检测：拿本轮「可见文本」的归一化签名比对历史。
-                val signature = progressSignature(visibleText)
+                val signature = StreamRepetitionDetector.normalizedSignature(visibleText)
                 if (signature != null) {
                     val firstSight = seenSignatures.add(signature)
                     // 纪律：先把「已提醒」标记置位，再排队提醒 —— 即使后续注入失败也不会重试，
@@ -585,7 +705,7 @@ class AgentRunner(
                             role = Role.MODEL,
                             text = cleanText,
                             thinking = accumulator.thinking.takeIf { it.isNotBlank() },
-                            finishReason = accumulator.finishReason ?: FinishReason.STOP,
+                            finishReason = if (intraStreamLoop) FinishReason.LENGTH else (accumulator.finishReason ?: FinishReason.STOP),
                         )
                         working.add(repeatModel)
                         journal?.appendMessage(repeatModel)
@@ -648,7 +768,7 @@ class AgentRunner(
                         text = answer,
                         thinking = accumulator.thinking.takeIf { it.isNotBlank() },
                         usage = accumulator.usage,
-                        finishReason = accumulator.finishReason ?: FinishReason.STOP,
+                        finishReason = if (intraStreamLoop) FinishReason.LENGTH else (accumulator.finishReason ?: FinishReason.STOP),
                         modelRef = request.model?.id,
                     )
                     working.add(committed)
@@ -1048,17 +1168,5 @@ class AgentRunner(
         // 停止条件始终下发：这是让 4B 模型「自己会停」的主要手段。
         sections.add(STOP_CONDITIONS)
         return sections.joinToString("\n\n")
-    }
-
-    /**
-     * 「同一段话」的归一化签名：去空白、去标点、小写。
-     * 直接用归一化后的字符串做集合键 —— 等价于哈希，但不会因为哈希碰撞把不同文本误判成重复。
-     * 过短的口头语（「好的」「完成」）不算下车点，返回 null 直接跳过，避免无谓多跑一轮。
-     */
-    private fun progressSignature(text: String): String? {
-        // 必须指定 Locale：默认 Locale 在土耳其语区会把 "I" 折成无点的 "ı"，
-        // 于是同一段英文/中文回答前后归一化出不同签名，「重复检测」静默失效。
-        val normalized = text.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
-        return normalized.takeIf { it.length >= MIN_SIGNATURE_CHARS }
     }
 }
