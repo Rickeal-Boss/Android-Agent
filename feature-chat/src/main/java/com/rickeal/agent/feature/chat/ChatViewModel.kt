@@ -607,8 +607,9 @@ class ChatViewModel(
                     maxRounds = config.maxAgentRounds.coerceAtLeast(1),
                     // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
                     // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
-                    // 随机性防 token 级循环（LiteRT-LM SamplerConfig 无 repeat penalty），
-                    // 循环兜底由 AgentRunner 轮内检测器负责。阈值可调，真机反馈后校准。
+                    // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
+                    // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
+                    // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
                     agentSamplingOverride = if (config.enableTools) {
                         SamplingParams(temperature = 0.4f, topK = 20)
                     } else {
@@ -770,8 +771,9 @@ class ChatViewModel(
                     maxRounds = config.maxAgentRounds.coerceAtLeast(1),
                     // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
                     // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
-                    // 随机性防 token 级循环（LiteRT-LM SamplerConfig 无 repeat penalty），
-                    // 循环兜底由 AgentRunner 轮内检测器负责。阈值可调，真机反馈后校准。
+                    // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
+                    // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
+                    // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
                     agentSamplingOverride = if (config.enableTools) {
                         SamplingParams(temperature = 0.4f, topK = 20)
                     } else {
@@ -870,8 +872,9 @@ class ChatViewModel(
                     maxRounds = config.maxAgentRounds.coerceAtLeast(1),
                     // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
                     // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
-                    // 随机性防 token 级循环（LiteRT-LM SamplerConfig 无 repeat penalty），
-                    // 循环兜底由 AgentRunner 轮内检测器负责。阈值可调，真机反馈后校准。
+                    // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
+                    // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
+                    // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
                     agentSamplingOverride = if (config.enableTools) {
                         SamplingParams(temperature = 0.4f, topK = 20)
                     } else {

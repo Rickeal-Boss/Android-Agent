@@ -10,6 +10,7 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
+import com.google.ai.edge.litertlm.RepetitionPenaltyConfig
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.rickeal.agent.core.engine.EngineCapabilities
 import com.rickeal.agent.core.engine.EngineException
@@ -507,7 +508,28 @@ class LiteRtLmEngine(
         }
 
         val contents = buildContents(request)
-        conv.sendMessageAsync(Contents.of(contents), callback, extraContext)
+        // 重复惩罚（Wave 20，litertlm 0.17.1 起真实生效）：此前 SamplerConfig 无此参数、
+        // SamplingParams.repetitionPenalty 只是「上层模拟或忽略」的死字段，0.17.1 把
+        // RepetitionPenaltyConfig 开放为 sendMessage* 的逐消息参数 —— 这里是它在整条
+        // 链路上唯一的生效点。默认 1.0 = 不惩罚（与旧版行为一致，零回归风险）；
+        // >1.0（用户滑条或 ModelSamplingProfiles 按模型下限）才传。逐消息参数不进
+        // Conversation 状态，改动不需要重建会话。NPU 后端保持与 samplerConfig=null
+        // 同一道约束（简报 §3.1），不传。
+        val repPenalty = request.config.sampling.repetitionPenalty
+        val repetitionPenaltyConfig = if (
+            repPenalty > 1.0f + 1e-3f &&
+            request.config.backend != InferenceBackend.NPU
+        ) {
+            RepetitionPenaltyConfig(repetitionPenalty = repPenalty)
+        } else {
+            null
+        }
+        conv.sendMessageAsync(
+            Contents.of(contents),
+            callback,
+            extraContext = extraContext,
+            repetitionPenaltyConfig = repetitionPenaltyConfig,
+        )
 
         try {
             channel.consumeAsFlow().collect { chunk -> emit(chunk) }

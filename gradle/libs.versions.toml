@@ -37,7 +37,16 @@ coreKtx = "1.15.0"
 datastore = "1.1.7"
 
 # 端侧推理（仅 :core-engine 依赖）
-litertlm = "0.11.0"
+# 0.11.0 → 0.17.1（2026-09-26，Wave 20）：①MiniCPM5-2B 官方 README 明示「requires
+# litert-lm ≥ 0.16」（thought channel + ThinkingConfig + minicpm5 模型类型），0.11.0
+# 大概率无法加载；②0.17.1 的 Kotlin API 新增 RepetitionPenaltyConfig /
+# NoRepeatNgramConfig / ThinkingConfig / maxOutputToken（sendMessage* 逐消息参数，
+# 全部有默认值）—— Wave 19 调研结论「无 repeat penalty」自此失效，胡言乱语/循环的
+# 根治手段到位。桥接面 11 个符号逐一对照 v0.17.1 源码核验兼容（SamplerConfig 逐字段
+# 相同；ConversationConfig 的 systemInstruction String?→Contents? 但调用点传 null；
+# sendMessageAsync/EngineConfig/Capabilities/cancelProcess 均在且签名兼容）。
+# 源码快照：工作区 _research/models/litertlm171_*.kt。
+litertlm = "0.17.1"
 
 # 测试（JVM 单测；AGP 不自动提供 junit，需显式声明，见 [libraries] 注释）
 junit = "4.13.2"
