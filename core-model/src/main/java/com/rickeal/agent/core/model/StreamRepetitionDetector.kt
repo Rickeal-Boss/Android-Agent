@@ -273,6 +273,14 @@ class StreamRepetitionDetector(
          */
         const val THINKING_CHAR_BUDGET = 2048
 
+        /**
+         * text 流的正文铺陈预算（判定⑤）。与 [THINKING_CHAR_BUDGET] 同款口径注记：
+         * 正常代码块 / 列表 / 段落都带 \n 句界，text 流 4096 字符无任何句界只能是
+         * 「不出句界的无限铺陈」退化。**可调，真机反馈校准**：量级取 thinking 预算
+         * 的两倍（正文比思维链更常出现长列表 / 长代码），流式长代码被误截可上调。
+         */
+        const val TEXT_RUNAWAY_CHARS = 4096
+
         /** 预算截断时 LoopDetected.repeatedSignature 的固定标记（日志可辨识）。 */
         const val THINKING_BUDGET_MARKER = "thinking_char_budget"
 
