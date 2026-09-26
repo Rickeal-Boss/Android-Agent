@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,8 +50,13 @@ import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassThinkingIndicator
 import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.LocalOverlayBlurState
+import com.rickeal.agent.core.design.OverlayBlurScope
+import com.rickeal.agent.core.design.overlayBackdropBlur
 import com.rickeal.agent.core.design.rememberGlassHaptics
+import com.rickeal.agent.core.design.rememberOverlayBlurProgress
 import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.core.model.Role
 import kotlinx.coroutines.launch
@@ -84,6 +90,30 @@ fun ChatScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
+    // ── 参数面板的背景深度模糊（2026-09-27 用户需求：「覆盖层打开时整个背景深度模糊」）──
+    // 这是三类覆盖层里唯一「外壳罩不住」的一个：ChatParamsSheet 是下面 GlassScaffold 的
+    // **兄弟**节点、两者都在 NavHost 之内，外壳那层 body 级模糊会连面板一起糊掉
+    // （Compose 没有「反模糊」，父节点挂了 RenderEffect，子树全跟着糊）。所以由本屏
+    // 自己糊自己的 scaffold（面板绘制序在后 ⇒ 不被糊），同时经登记表让外壳把**悬浮页签**
+    // 也糊上 —— 页签是 NavHost 的兄弟、不在本屏管辖内，不补这一条就会剩一条清晰玻璃条
+    // 浮在糊背景上，与「整个背景」矛盾。完整层级推导见 OverlayBackdropBlur.kt 的类 KDoc。
+    //
+    // 用 panelOpen 而不是 paramsOpen：宽屏（三栏）下参数是常驻的 ChatParamsPanel、根本不是
+    // 覆盖层（Tune 入口也不渲染），但 rememberSaveable 可能把 paramsOpen 还原成 true，
+    // 那时不该平白糊一屏。
+    val panelOpen = paramsOpen && !windowSize.useThreePane
+    val overlayBlurState = LocalOverlayBlurState.current
+    val panelBlurToken = remember { Any() }
+    DisposableEffect(panelBlurToken, panelOpen) {
+        if (panelOpen) {
+            overlayBlurState.acquire(panelBlurToken, OverlayBlurScope.PANEL)
+        }
+        onDispose { overlayBlurState.release(panelBlurToken) }
+    }
+    val panelBlurProgress = rememberOverlayBlurProgress { panelOpen }
+    // 与设置页「背景模糊」总闸 + GlassConfig.overlayBlurRadius 同源（外壳那条也一样）。
+    val glassCfgForBlur = LocalGlassConfig.current
+
     val pickImage = rememberImagePicker { uri, name -> viewModel.onAttachImage(uri, name) }
     val pickAudio = rememberAudioPicker { uri, name -> viewModel.onAttachAudio(uri, name) }
 
@@ -94,7 +124,14 @@ fun ChatScreen(
     }
 
     GlassScaffold(
-        modifier = modifier,
+        modifier = modifier
+            // 参数面板打开时的背景深度模糊（只糊本屏，面板是它的兄弟、绘制序在后）。
+            // 进度在 layer 阶段读 ⇒ 逐帧变化只失效图层，不重组本屏（消息列表不会被牵连）。
+            .overlayBackdropBlur(
+                progress = panelBlurProgress,
+                radius = glassCfgForBlur.overlayBlurRadius.dp,
+                enabled = glassCfgForBlur.enableBackdropBlur,
+            ),
         topBar = {
             GlassTopBar(
                 title = state.title,

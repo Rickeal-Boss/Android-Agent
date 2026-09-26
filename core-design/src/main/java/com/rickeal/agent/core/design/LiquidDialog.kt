@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +65,14 @@ import kotlinx.coroutines.launch
  *  - **不绘制自定义 scrim**：弹窗压暗靠系统 Dialog 自带的 dim。独立窗口里自绘
  *    scrim 只能盖住一块与壁纸对不齐的纯色矩形，观感是"糊了一层灰"，比不用更差。
  *
+ * ## 背景深度模糊（2026-09-27）
+ *
+ * 用户需求「覆盖层打开时整个背景加入深度模糊」。与本文件「独立窗口」这条约束相处的方式是：
+ * **模糊不在本窗口做**（做不了 —— 独立窗口碰不到主窗口的像素），而是经 [LocalOverlayBlurState]
+ * 登记一个 [OverlayBlurScope.SHELL] 占用，由 `MainShell` 把整块外壳背景糊上。
+ * 这里是全部 14 个调用点唯一的接线处 ⇒ 所有弹窗一次到位。
+ * 归还时机：`requestDismiss()` 里**提前**归还（配出场动画），Dialog 内容 dispose 时兜底再归还一次。
+ *
  * ## 进出场动画（不能"瞬间消失"）
  *
  * `Animatable` 驱动 `appear` 0→1：`scale 0.9→1` + `alpha 0→1`，施加在 `layerBlock` 上。
@@ -107,6 +116,11 @@ fun LiquidDialog(
     // 独立窗口恒走退化路径（THICK 底色，见类 KDoc），底色偏透，用户反馈文字
     // 可读性不足 —— scrim 压在表面绘制之上、内容之下，0=纯玻璃 1=完全不透明。
     val overlayOpacity = LocalGlassConfig.current.overlayOpacity
+    // 覆盖层背景深度模糊（2026-09-27 用户需求）的**登记令牌**。
+    // 本弹窗跑在独立窗口里，没法模糊主窗口的背景 —— 只能在这里登记「我开着」，
+    // 由 MainShell 那侧把整块背景糊上（OverlayBlurScope.SHELL，全部 14 个调用点零改动）。
+    val overlayBlur = LocalOverlayBlurState.current
+    val blurToken = remember { Any() }
 
     // 窗口显隐（局部 state）：出场动画播完才置 false → 真正移除窗口。
     var visible by remember { mutableStateOf(true) }
@@ -132,6 +146,10 @@ fun LiquidDialog(
     fun requestDismiss() {
         if (dismissing) return
         dismissing = true
+        // 提前归还模糊登记：出场动画期间背景就该开始转回清晰。若等到 visible=false
+        // 才释放（下面 Dialog 内容被移除时），会多出「弹窗已经缩没、背景还糊着」的
+        // 一整个出场弹簧时长。这里释放是幂等的，Dialog 内容 dispose 时再释放一次无害。
+        overlayBlur.release(blurToken)
         scope.launch {
             // 出场用 Snappy（快收敛），不让用户等一个"慢动作关闭"。
             appear.animateTo(0f, LiquidMotion.floatSpring(LiquidMotion.Snappy))
@@ -151,6 +169,15 @@ fun LiquidDialog(
             usePlatformDefaultWidth = false,
         ),
     ) {
+        // 覆盖层背景深度模糊（2026-09-27）：登记挂在 **Dialog 内容的生命周期**上
+        // —— 窗口内容不被发射（`visible=false` / 调用方不再调用本弹窗）时这里必然 dispose，
+        // 比挂在 `if (!visible) return` 之后的代码段更硬（那是靠编译器给 early return
+        // 插的组来保证作用域，这里直接用「没发射就销毁」这条最可靠的作用域）。
+        // 归还方向由 requestDismiss 提前做（配出场动画），这里是兜底。
+        DisposableEffect(blurToken) {
+            overlayBlur.acquire(blurToken, OverlayBlurScope.SHELL)
+            onDispose { overlayBlur.release(blurToken) }
+        }
         // 独立窗口：主窗口的 LayerBackdrop 在这里既对不齐也用不上，
         // 降级为 EmptyBackdrop（见类 KDoc）。
         CompositionLocalProvider(
