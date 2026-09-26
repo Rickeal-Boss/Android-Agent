@@ -54,7 +54,7 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | 🎛 **参数调节** | topK / topP / temperature / maxTokens / system prompt 全可调 | 规划中 |
 | 🌐 **远程后端** | ~~可选接入远程模型服务（OkHttp + SSE 流式）~~ 已移除（云端 API 整体删除，现为纯端侧） | 已移除 |
 | 💾 **会话管理** | 多会话持久化，DataStore + JSON，支持导入导出 | 规划中 |
-| ✨ **Liquid Glass UI** | 自研 Compose 设计系统：背景模糊、折射高光、内描边、噪声微纹理、弹性动效 | 规划中 |
+| ✨ **Liquid Glass UI** | Compose 液态玻璃设计系统（基于 Kyant0/AndroidLiquidGlass 移植改造，见 [NOTICE](NOTICE)）：背景模糊、折射高光、内描边、噪声微纹理、弹性动效 | 规划中 |
 | 🔌 **模型市场** | 模型清单管理、下载状态、能力探测（speculative decoding 等） | 规划中 |
 
 > 状态说明：仓库刚开荒，模块正在逐步落地。上表为设计目标，实际进度见 [路线图](#路线图) 与各模块代码。
@@ -103,7 +103,7 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 - ❌ 注解处理器：KSP / Kapt / Room / Hilt / Dagger / Koin
 - ❌ 图片加载库（Coil 等）—— 用 `BitmapFactory` + Compose `ImageBitmap`
 - ❌ 网络封装（Retrofit 等）—— 用 OkHttp + 手写 SSE 解析
-- ❌ JitPack 第三方 UI 库 —— Liquid Glass 设计系统自研
+- ❌ JitPack 第三方 UI 库 —— Liquid Glass 设计系统随源码内置（引擎原语移植自 Kyant0/AndroidLiquidGlass 并保留其版权头，见 [NOTICE](NOTICE)）
 
 持久化用 **DataStore Preferences + kotlinx.serialization 写 JSON**，DI 用 **纯 Kotlin 手写容器**。
 
