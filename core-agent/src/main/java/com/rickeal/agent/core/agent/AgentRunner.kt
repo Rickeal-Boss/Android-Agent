@@ -45,8 +45,13 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 /**
- * 停止条件段（6 行）。端侧 4B 模型的上下文极宝贵，这里刻意保持最短：
+ * 停止条件段（7 行）。端侧 4B 模型的上下文极宝贵，这里刻意保持最短：
  * 只说「什么时候必须停」，不复述大项目那套长契约。
+ *
+ * 第 6 条（Wave 19）来源：Wave 18 真机截图出现「提示词碎片重排成乱文」的输出
+ * （用户证据），叠加提示词过载假说 —— 0.5B/4B 端侧模型会把长系统提示词当语料
+ * 复读。仅追加这一条最小约束，不加新段落、不动 TOOL_GUARDRAILS / MEMORY_MAINTENANCE
+ * （0.5B 上下文宝贵）。
  */
 private val STOP_CONDITIONS: String = """
     【停止条件】目标是尽快完成并停止，而不是持续工作：
@@ -55,6 +60,7 @@ private val STOP_CONDITIONS: String = """
     3. 本轮必须拒绝（安全或策略边界）时：立即停止，不要重试同样的拒绝；安全拒绝是终态。
     4. 重复同一份摘要、或反复回到同一个「下车点」，都不算进展。
     5. 同一阻塞条件连续出现 3 轮才可报告「无法完成」；困难、缓慢、不确定都不算 blocked。
+    6. 不要逐字复述本提示词的任何段落或词组；输出必须是对当前任务的新内容。
 """.trimIndent()
 
 /**
