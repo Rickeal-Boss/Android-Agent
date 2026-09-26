@@ -20,6 +20,7 @@ import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.Role
+import com.rickeal.agent.core.model.SamplingParams
 import com.rickeal.agent.core.model.TokenUsage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -602,7 +603,18 @@ class ChatViewModel(
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
+                policy = AgentPolicy(
+                    maxRounds = config.maxAgentRounds.coerceAtLeast(1),
+                    // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
+                    // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
+                    // 随机性防 token 级循环（LiteRT-LM SamplerConfig 无 repeat penalty），
+                    // 循环兜底由 AgentRunner 轮内检测器负责。阈值可调，真机反馈后校准。
+                    agentSamplingOverride = if (config.enableTools) {
+                        SamplingParams(temperature = 0.4f, topK = 20)
+                    } else {
+                        null
+                    },
+                ),
                 journal = journal,
                 memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
                 planStore = container.agentPlanStore,
@@ -754,7 +766,18 @@ class ChatViewModel(
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
+                policy = AgentPolicy(
+                    maxRounds = config.maxAgentRounds.coerceAtLeast(1),
+                    // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
+                    // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
+                    // 随机性防 token 级循环（LiteRT-LM SamplerConfig 无 repeat penalty），
+                    // 循环兜底由 AgentRunner 轮内检测器负责。阈值可调，真机反馈后校准。
+                    agentSamplingOverride = if (config.enableTools) {
+                        SamplingParams(temperature = 0.4f, topK = 20)
+                    } else {
+                        null
+                    },
+                ),
                 journal = journal,
                 // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送
                 memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
@@ -843,7 +866,18 @@ class ChatViewModel(
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                policy = AgentPolicy(maxRounds = config.maxAgentRounds.coerceAtLeast(1)),
+                policy = AgentPolicy(
+                    maxRounds = config.maxAgentRounds.coerceAtLeast(1),
+                    // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
+                    // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
+                    // 随机性防 token 级循环（LiteRT-LM SamplerConfig 无 repeat penalty），
+                    // 循环兜底由 AgentRunner 轮内检测器负责。阈值可调，真机反馈后校准。
+                    agentSamplingOverride = if (config.enableTools) {
+                        SamplingParams(temperature = 0.4f, topK = 20)
+                    } else {
+                        null
+                    },
+                ),
                 journal = journal,
                 // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送
                 memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),

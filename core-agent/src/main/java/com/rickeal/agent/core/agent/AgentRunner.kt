@@ -254,7 +254,13 @@ class AgentRunner(
 
     private suspend fun FlowCollector<AgentEvent>.executeBodyUnchecked(request: AgentRequest) {
             val policy = request.policy
-            val config: InferenceConfig = request.config.coerce()
+            // agent 会话采样折衷（Wave 19 P1-1）：调用方（ChatViewModel）对 enableTools
+            // 的主对话填 policy.agentSamplingOverride 时覆写采样参数。默认 null = 零
+            // 行为变化。阈值可调，真机输出质量反馈后校准；采样变更触发 Conversation
+            // 重建已由 LiteRtLmEngine.kt:208-218 处理，无需额外版本操作。
+            val config: InferenceConfig = policy.agentSamplingOverride
+                ?.let { override -> request.config.coerce().copy(sampling = override.coerce()) }
+                ?: request.config.coerce()
             // 纯端侧运行（远程 OpenAI 兼容通道已移除）：引擎只有本地一种。
             val kind: EngineKind = EngineKind.LOCAL
             var engine = engineFactory.create(kind)
