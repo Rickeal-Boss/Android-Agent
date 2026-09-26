@@ -33,6 +33,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch          // ★ 修复 2026-08-06: scope.launch 需显式 import, cb8b186 漏配导致编译失败
@@ -74,7 +76,10 @@ import kotlin.math.sin
  *     [rememberGlassHaptics] —— 触感只在**用户提交位点**发（点击 / 拖拽提交分支），
  *     遵守 [GlassHaptics] KDoc 的「只在用户提交位点发」纪律；
  *  4. **import**：`androidx.compose.runtime.*` / `animation.core.*` 通配展开为显式
- *     import（与 GlassSwitch 同风格）；`kotlinx.coroutines.launch` 修复注释照搬。
+ *     import（与 GlassSwitch 同风格）；`kotlinx.coroutines.launch` 修复注释照搬；
+ *  5. **无障碍**：clickable(role = Role.Switch) 之外补 `stateDescription`
+ *     （「已开启/已关闭」中文文案）—— 与 GlassSwitch 走 `toggleable(value = checked)`
+ *     自带的开关状态语义对齐，TalkBack 能念出当前开/关（审查 P2-2）。
  *
  * ## 使用边界（强调位专用）
  *
@@ -166,10 +171,20 @@ fun CyberJoystickSwitch(
     val arcPx = with(density) { arcHeight.toPx() }
     val thumbDiameter = with(density) { (thumbR * 2f).toDp() }
 
-    // ══ 外层: 48dp 触控热区 + clickable(点击) + pointerInput(拖拽) ══
+    // ══ 外层: 48dp 触控热区 + semantics(开关状态) + clickable(点击) + pointerInput(拖拽) ══
     Box(
         modifier = modifier
             .defaultMinSize(minWidth = trackWidth, minHeight = 48.dp)
+            // TalkBack 状态语义（审查 P2-2）：clickable(role = Role.Switch) 只给角色
+            // 不给状态，TalkBack 念不出开/关。这里补 stateDescription，与 GlassSwitch
+            // 走 toggleable(value = checked) 自带的开关状态语义对齐 —— 自绘控件
+            // 无障碍不能靠"看起来像"。role 不重复设：clickable 已挂 Role.Switch，
+            // 同一节点上重复写只是噪音。stateDescription 读组合期 checked：本组件
+            // checked 变化必触发重组（progress 的 LaunchedEffect(checked) 依赖它），
+            // 无陈旧快照问题，无需 rememberUpdatedState。
+            .semantics {
+                stateDescription = if (checked) "已开启" else "已关闭"
+            }
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
