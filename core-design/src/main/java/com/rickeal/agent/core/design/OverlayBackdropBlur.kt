@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import com.rickeal.agent.core.design.liquid.internal.recordLayer
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 /**
@@ -70,10 +71,10 @@ import kotlin.math.roundToInt
  * 级跳肉眼可辨 —— 这正是用户追加反馈要改的两件事。
  *
  * 新管线：**降采样捕获一次 + 缩小空间里做廉价逐帧模糊 + 放大铺回**。
- *  - 面积比 1/scale²（256px 上限、夹在 1/16..1/4，典型全屏 3x 机上 scale≈1/8，
- *    缩略图面积约为全屏的 1/64）—— 高斯在这么小的空间里逐帧重做也近乎免费，
- *    于是半径可以**逐帧连续**变化，0.25px 台阶换算回屏幕空间 ≈ 0.7dp，
- *    20dp 满量程约 30 级过渡，级跳不可辨（用户要的「更多级别」）；
+ *  - 面积比 scale²（256px 上限、夹在 1/16..1/4，典型手机宽 1080px ⇒ scale≈0.24，
+ *    缩略图面积约为全屏的 1/18）—— 高斯在这么小的空间里逐帧重做也近乎免费，
+ *    于是半径可以**逐帧连续**变化，0.25px 台阶换算回屏幕空间 ≈ 1px（@3x ≈ 0.35dp），
+ *    20dp 满量程约 55~60 级过渡，级跳不可辨（用户要的「更多级别」）；
  *  - 附带第二重收益：p≥1 时缩略图完全盖住内容，可以**跳过一次全量内容绘制**
  *    （深度模糊下背景本来就糊到看不清细节，放大后的缩略图与真模糊视觉等价）；
  *  - **取舍（用户提案的既定语义）**：捕获的是**激活瞬间的静态背景** —— 覆盖层开着期间
@@ -215,8 +216,9 @@ fun rememberOverlayBlurProgress(
 private const val THUMB_MAX_WIDTH_PX = 256f
 
 /**
- * 缩略图空间的模糊量化台阶（px）。0.25px 在缩略图空间经 1/scale 放大后 ≈ 屏幕空间 2px
- * ≈ 0.7dp（@3x），20dp 满量程约 30 级过渡 —— 旧全屏管线的 2dp 台阶只有 ~10 级且级跳可见。
+ * 缩略图空间的模糊量化台阶（px）。0.25px 在缩略图空间经 1/scale 放大后 ≈ 屏幕空间 1px
+ * （宽 1080px 手机 scale≈0.24；@3x ≈ 0.35dp），20dp 满量程约 55~60 级过渡 ——
+ * 旧全屏管线的 2dp 台阶只有 ~10 级且级跳可见。
  * 量化只用于 [BlurEffect] 实例复用（引用比较省重建），级差本身已不可辨。
  */
 private const val THUMB_BLUR_STEP_PX = 0.25f
@@ -282,9 +284,13 @@ fun Modifier.overlayBackdropBlur(
             return@drawWithContent
         }
         val scale = (THUMB_MAX_WIDTH_PX / size.width).coerceIn(1f / 16f, 1f / 4f)
+        // 尺寸必须 ceil 不能 floor（审查 P1-1）：铺回按 1/scale 放大，floor 的
+        // ceil(w·s)/s ≤ w 会在右/底各欠 ~1/scale px（1080px 宽下 ≈4px）——p≥1 时
+        // 那是一条没被糊住的清晰内容条，与「缩略图完全盖住内容」矛盾；ceil 后
+        // 覆盖 ≥ w，多出的 ≤1/scale px 溢出节点边界（全屏场景即屏外），无害。
         val thumbSize = IntSize(
-            (size.width * scale).toInt().coerceAtLeast(1),
-            (size.height * scale).toInt().coerceAtLeast(1),
+            ceil(size.width * scale).toInt().coerceAtLeast(1),
+            ceil(size.height * scale).toInt().coerceAtLeast(1),
         )
         if (cache.capturedSize != thumbSize) {
             recordLayer(
@@ -293,9 +299,11 @@ fun Modifier.overlayBackdropBlur(
                 size = thumbSize,
             ) {
                 // 这里的 drawContent() 调用的是**外层 ContentDrawScope 的**（闭包捕获）——
-                // recordLayer 的 block receiver 是它内部 layer.record 新建的 DrawScope。
-                // 与 DrawBackdropModifier 的 ContentDrawScope.draw() 里 recordLayer{...drawContent()}
-                // 是同款在仓先例，照抄该模式。
+                // recordLayer 的 block receiver 是它内部 layer.record 新建的 DrawScope，
+                // 而 record 内部共享同一个 drawContext（LayerRecorder 手动换 density 正是
+                // 这一机制的注脚），所以外层 receiver 的 drawContent 在 record 画布上重放。
+                // 同款在仓先例：LayerBackdropModifier 的 LayerBackdropNode.draw() 同一
+                // draw pass 里先 drawContent() 再经 backdrop.onDraw(this@draw) 二次调用。
                 scale(scale, scale, Offset.Zero) { drawContent() }
             }
             cache.capturedSize = thumbSize
