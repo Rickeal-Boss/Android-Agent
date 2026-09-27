@@ -38,13 +38,11 @@ class ToolOscillationDetectorTest {
     }
 
     @Test
-    fun `同参连发 6 次 —— 判据二以 distinct 1 检出（与旧同参硬护栏的重叠面）`() {
-        // 旧护栏在第 3 次起「忽略不执行」，但忽略的调用同样进历史（追加在判定
-        // 之前），所以累计第 6 次会先被本判据以「1 个选项」判死 —— 归因是
-        // 振荡而非同参重复，属已知重叠面。
-        val evidence = evaluate("A", "A", "A", "A", "A", "A")
-        assertTrue(evidence != null)
-        assertTrue(evidence!!.contains("1 个选项"), evidence)
+    fun `同参连发 6 次不检出 —— 归旧同参硬护栏，不抢归因`() {
+        // 旧护栏在第 3 次起「忽略不执行」，而忽略的调用同样进历史（追加在判定之前），
+        // 所以历史里确实有 6 条同签名；但簇状序列不是「来回打转」，判据二的真交替
+        // 闸门把它挡在门外 —— 归因留在同参重复，不写成振荡。
+        assertNull(evaluate("A", "A", "A", "A", "A", "A"))
     }
 
     @Test
@@ -56,11 +54,13 @@ class ToolOscillationDetectorTest {
     }
 
     @Test
-    fun `混合历史后进入 A_B 死循环 —— 当前口径不检出（判据二取全历史 distinct）`() {
-        // 已知盲区（X 光用例）：distinct 取自整个历史，本 run 一旦出现过 ≥3 个
-        // 不同签名，A/B 交替（周期 2，判据一因 distance < MIN_PERIOD 结构性抓不住）
-        // 就再也不会被检出。若判据二改为滑动窗口口径，本断言需随之翻转。
-        assertNull(evaluate("C", "D", "E", "A", "B", "A", "B", "A", "B", "A", "B"))
+    fun `混合历史后进入 A_B 死循环仍检出 —— 判据二是滑动窗口，只看末尾 6 项`() {
+        // 全量历史 distinct=5（C/D/E/A/B），但滑动窗口只看末尾 6 项 A/B 交替 ——
+        // 这是本判据存在的理由：真机上本 run 早跑过别的工具是常态，取全量 distinct
+        // 会让 A/B 死循环永远抓不到（复审 P1-1 的修后锁定）。
+        val evidence = evaluate("C", "D", "E", "A", "B", "A", "B", "A", "B", "A", "B")
+        assertTrue(evidence != null, "混合历史后的 A/B 死循环必须检出")
+        assertTrue(evidence!!.contains("2 个选项"), evidence)
     }
 
     // ── 判据一：周期距离 ─────────────────────────────────────────────────────
@@ -138,16 +138,16 @@ class ToolOscillationDetectorTest {
     }
 
     @Test
-    fun `换参重试簇 —— 当前口径在累计第 6 次检出（误杀面，待裁定）`() {
+    fun `换参重试簇不检出 —— 真交替闸门放行换参重来`() {
         // read{a} 连发后换参 read{b} 再连发：旧同参护栏在换参时把 streak 重置
         // （换参重来是既有设计放行的恢复路径，连续失败由 TOOL_FAILURE_STREAK_LIMIT
-        // 维度处置），但全历史 distinct=2 会先被判据二判死，且归因写成「在 2 个
-        // 选项之间打转」而非「工具连续失败」。本用例锁定当前行为，待主理人裁定。
-        val evidence = evaluate(
-            "read:{a}", "read:{a}", "read:{a}", "read:{b}", "read:{b}", "read:{b}",
+        // 维度处置）。窗口 distinct=2 但簇状非交替 ⇒ 判据二放行，不把「连续失败」
+        // 归因成「在 2 个选项之间打转」（复审 P1-2 的修后锁定）。
+        assertNull(
+            evaluate(
+                "read:{a}", "read:{a}", "read:{a}", "read:{b}", "read:{b}", "read:{b}",
+            ),
         )
-        assertTrue(evidence != null)
-        assertTrue(evidence!!.contains("2 个选项"), evidence)
     }
 
     // ── evidence 可读性 ──────────────────────────────────────────────────────
