@@ -18,6 +18,8 @@ import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.model.DisclosureTools
+import com.rickeal.agent.core.model.HiddenToolCatalog
 import com.rickeal.agent.core.agent.approval.ToolApprovalCache
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
 import com.rickeal.agent.core.agent.subagent.AskSubagentTool
@@ -44,6 +46,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * 停止条件段（7 行）。端侧 4B 模型的上下文极宝贵，这里刻意保持最短：
@@ -384,11 +389,34 @@ class AgentRunner(
             }
             val useNativeTools = (capabilities?.nativeToolChannel == true) && config.enableTools
 
-            val availableTools: List<ToolSpec> = if (config.enableTools) {
+            // 用户白名单过滤后的**全部**真实工具（披露模式之前的口径）。
+            val allToolSpecs: List<ToolSpec> = if (config.enableTools) {
                 toolRegistry.specs().filter { request.toolNames?.contains(it.name) ?: true }
             } else {
                 emptyList()
             }
+            // ── 工具披露模式（Wave 27 / Operit「CLI 工具模式」裁剪移植）─────────
+            // ON_DEMAND 时把「面向模型的工具面」收窄成两个元工具，真实工具进隐藏
+            // 目录按需检索。这样提示词长度与工具总数**解耦** —— 既省端侧预算，也
+            // 缩小 Wave 21 真机复现过的「工具清单段被当模板逐字复述」的面积。
+            //
+            // 目录构建是纯内存映射（无 IO、无副作用），run 开头算一次即可。
+            // 注意 `disclosureActive` 还要求 enableTools —— 关掉工具时不该凭空
+            // 冒出两个元工具（那会让「无工具」的语义失效）；也要求目录非空 ——
+            // 隐藏目录为空（工具全被白名单排除）时，披露模式只会让提示词教模型
+            // 「去检索真实工具」而实际一个都没有，白白浪费轮次，不如退回全量模式
+            // （空工具清单本来就不会注入工具段）。
+            val disclosureActive = config.enableTools &&
+                allToolSpecs.isNotEmpty() &&
+                request.disclosureMode.hidesToolCatalog()
+            val hiddenToolCatalog =
+                if (disclosureActive) HiddenToolCatalog.from(allToolSpecs) else HiddenToolCatalog.EMPTY
+            // 面向模型的工具清单：ON_DEMAND 时只有元工具，因此下面三处自动一致 ——
+            // ① 系统提示词工具段；② 原生通道 tools；③ registeredToolNames 白名单。
+            // ③ 是关键：TextToolProtocol 只承认白名单内的工具名，所以模型**在协议层
+            // 就无法直接调用隐藏工具**（未注册名降级为最终答案，而不是执行）。
+            val availableTools: List<ToolSpec> =
+                if (disclosureActive) DisclosureTools.publicSpecs() else allToolSpecs
             // 文本协议模式的「可执行」判据：工具名必须真的在当前可用集合里。
             // 名字不认识的 JSON 一律按最终答案处理（见 TextToolProtocol.parse 注释），
             // 否则模型输出普通 JSON（如 {"name":"张三"}）时会被误判成工具调用而反复重试。
@@ -943,7 +971,35 @@ class AgentRunner(
                 working.add(toolCallModel)
                 journal?.appendMessage(toolCallModel)
 
-                for (call in calls) {
+                for (rawCall in calls) {
+                    // ── 按需披露：call_tool 解包成真实调用（Wave 27）─────────────
+                    // 解包后**换名继续走下面的原路径**，所以同参守卫、未注册检查、审批
+                    // 判定（静态标志 ∪ 参数门控 ∪ 效果声明 ∪ 能力档位）与执行全部作用在
+                    // **目标工具**上 —— 转发不构成任何权限旁路。这是本模式的硬约束，
+                    // 改这里必须同步复核（解包失败时给可行动报错，绝不猜目标）。
+                    val call: ToolCall
+                    if (disclosureActive && rawCall.name == DisclosureTools.CALL_TOOL_NAME) {
+                        val unpacked = DisclosureTools.unpackCall(rawCall.argumentsJson)
+                        if (unpacked == null) {
+                            val failed = commitToolMessage(
+                                working,
+                                rawCall,
+                                ToolResult(
+                                    callId = rawCall.id,
+                                    name = rawCall.name,
+                                    ok = false,
+                                    output = "",
+                                    errorMessage = DisclosureTools.UNPACK_ERROR_HINT,
+                                ),
+                                journal,
+                            )
+                            emit(AgentEvent.ToolResultReceived(failed))
+                            continue
+                        }
+                        call = rawCall.copy(name = unpacked.targetName, argumentsJson = unpacked.argumentsJson)
+                    } else {
+                        call = rawCall
+                    }
                     // ── 同工具+同参调用守卫（ZCode model-anomaly / deepseek
                     // repeat-tool-reminder 形态）────────────────────────────────
                     // 计数在**执行前**：未注册 / denied / 审批失败同样计入 ——
@@ -998,13 +1054,40 @@ class AgentRunner(
                         emit(AgentEvent.ToolResultReceived(ignored))
                         continue
                     }
-                    val tool = toolRegistry.get(call.name)
+                    // ── 按需披露：search_tools 就地检索（Wave 27）────────────────
+                    // 位置刻意在**同参签名与硬护栏之后**：检索虽然无副作用，但「同一 query
+                    // 反复搜」与「同一工具同参反复调」是同一种病征（不会换路径），Wave 22
+                    // 为 current_time 同参连发立的护栏必须同样罩住元工具 —— 否则模型可以
+                    // 无限 search 空转，且完全绕过 toolCallStreak 计数。
+                    if (disclosureActive && call.name == DisclosureTools.SEARCH_TOOL_NAME) {
+                        val hit = runDisclosureSearch(rawCall, hiddenToolCatalog)
+                        val committedHit = commitToolMessage(working, rawCall, hit, journal)
+                        emit(AgentEvent.ToolResultReceived(committedHit))
+                        continue
+                    }
+                    // 可用性判定必须走**披露面**（registeredToolNames）而不是 registry 的存在性：
+                    // ON_DEMAND 下注册表里仍有全部真实工具，若只看 registry，原生 tool 通道
+                    // 回吐的真实工具名（模型幻觉或历史残留）会被直接执行 —— 隐藏面形同虚设。
+                    // 这行同时封住了「toolNames 白名单在原生通道被绕过」的既有缺口
+                    // （FULL 模式下 registeredToolNames = 已启用 ∩ 白名单，与 get() 语义等价，
+                    //  故对既有行为零影响）。
+                    val tool = if (call.name in registeredToolNames) toolRegistry.get(call.name) else null
                     if (tool == null) {
-                        // 未注册的工具名 = 模型幻觉（或白名单把它排除了）。把当前可用清单一起记下来，
-                        // 才能区分「模型编了名字」和「工具其实在，只是没启用」。
+                        // 未注册的工具名 = 模型幻觉（或白名单/披露面把它排除了）。把当前可用
+                        // 清单一起记下来，才能区分「模型编了名字」和「工具其实在，只是没启用」。
                         AgentLogStore.warn(
-                            "调用了未注册的工具：${call.name}；当前可用：${registeredToolNames.joinToString(",")}"
+                            "调用了未注册的工具：${call.name}；当前可用：${registeredToolNames.joinToString(",")}" +
+                                if (disclosureActive) "（按需披露：隐藏目录 ${hiddenToolCatalog.size} 个）" else ""
                         )
+                        // ON_DEMAND 下「未注册」这个说法会误导：模型刚检索到的名字**是对的**，
+                        // 它只是不该直接调用（要先转发）。按模式给不同的可行动文案 ——
+                        // 报错的价值在于告诉模型下一步做什么，而不是复述它做错了什么。
+                        val errorMessage = if (disclosureActive) {
+                            "不能直接调用工具「${call.name}」。请先用 ${DisclosureTools.SEARCH_TOOL_NAME} " +
+                                "确认工具名与参数形状，再用 ${DisclosureTools.CALL_TOOL_NAME} 转发执行。"
+                        } else {
+                            "未注册的工具：${call.name}"
+                        }
                         val result = commitToolMessage(
                             working,
                             call,
@@ -1013,7 +1096,7 @@ class AgentRunner(
                                 name = call.name,
                                 ok = false,
                                 output = "",
-                                errorMessage = "未注册的工具：${call.name}",
+                                errorMessage = errorMessage,
                             ),
                             journal,
                         )
@@ -1165,6 +1248,9 @@ class AgentRunner(
                         // 档位必须往下传（Wave 26）：子 run 没有审批通道，档位是唯一
                         // 能拦住它的闸门 —— 不传就等于「只读档位可被 ask_actor 绕过」。
                         capabilityMode = request.capabilityMode,
+                        // 披露模式同理必须往下传（Wave 27）：子 run 未声明 allowedTools
+                        // 时白名单取全量注册表，不传就会在子 run 里把隐藏面整个还原。
+                        disclosureMode = request.disclosureMode,
                     )
                     val result = withContext(SubagentRunContext(parentContext)) {
                         executeWithGuard(call, tool, policy)
@@ -1373,6 +1459,12 @@ class AgentRunner(
         val sections = ArrayList<String>(4)
         if (config.systemInstruction.isNotBlank()) sections.add(config.systemInstruction)
         if (tools.isNotEmpty()) {
+            // 按需披露模式（Wave 27）：清单里出现元工具就说明模型看到的是收窄后的
+            // 工具面，必须先给「先检索、再转发」的协议说明 —— 否则小模型会直接猜
+            // 真实工具名，协议层会拒（未注册名降级为最终答案），白白浪费轮次。
+            if (tools.any { it.name == DisclosureTools.SEARCH_TOOL_NAME }) {
+                sections.add(DisclosureTools.DISCLOSURE_GUIDE)
+            }
             sections.add(
                 "你可以使用以下工具。当需要调用工具时，请只输出一个 ```json 代码块，格式为：" +
                     "[{\"tool\": \"工具名\", \"arguments\": {\"参数名\": 值}}]，不要输出其它文字。\n可用工具：\n" +
@@ -1407,6 +1499,36 @@ class AgentRunner(
         tools: List<ToolSpec>,
         memoryText: String? = null,
     ): String = buildSystemSections(config, tools, memoryText).joinToString("\n\n")
+
+    /**
+     * 按需披露模式下 `search_tools` 的执行体（Wave 27）：本地检索隐藏工具目录。
+     *
+     * 纯内存、无 IO、无副作用 —— 因此它不走 registry、审批与并发闸门（那些闸门是为
+     * 「有副作用面的执行」设计的，给纯计算套上只会凭空增加延迟与弹卡噪音）。
+     *
+     * 检索无命中同样返回 `ok = true`：那不是工具失败，而是「换个关键词」的可行动
+     * 信息；按失败返回会诱导模型重试同一查询（与 `TextToolProtocol` 把不可执行的
+     * 工具 JSON 判成最终答案同一个动机 —— 不给循环留入口）。
+     *
+     * 参数解析 fail-safe：query 缺失按空串（→ 空结果 + 提示），limit 非法按默认值。
+     * 这两个参数只影响**检索范围**，不构成安全面，因此不必 fail-closed。
+     */
+    private fun runDisclosureSearch(call: ToolCall, catalog: HiddenToolCatalog): ToolResult {
+        val root = runCatching { Json.parseToJsonElement(call.argumentsJson).jsonObject }.getOrNull()
+        val query = root?.get(DisclosureTools.ARG_QUERY)
+            ?.let { runCatching { it.jsonPrimitive.content }.getOrNull() }
+            .orEmpty()
+        val limit = root?.get(DisclosureTools.ARG_LIMIT)
+            ?.let { runCatching { it.jsonPrimitive.int }.getOrNull() }
+            ?: HiddenToolCatalog.DEFAULT_LIMIT
+        val hits = catalog.search(query, limit)
+        return ToolResult(
+            callId = call.id,
+            name = call.name,
+            ok = true,
+            output = catalog.renderHits(hits, query),
+        )
+    }
 
     /**
      * 同工具+同参调用的稳定签名：参数 JSON 先 canonical 化（递归排序 JsonObject

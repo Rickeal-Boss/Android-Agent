@@ -10,6 +10,7 @@ import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
 import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.TokenUsage
+import com.rickeal.agent.core.model.ToolDisclosureMode
 
 /**
  * 本轮为什么结束。让 UI / 日志能区分「模型自己停了」和「被轮次上限硬截断」。
@@ -142,4 +143,14 @@ data class AgentRequest(
      * 追加一次授权请求；档位**只收紧不放宽**，不构成任何提权。
      */
     val capabilityMode: AiCapabilityMode = AiCapabilityMode.WORKSPACE_WRITE,
+    /**
+     * 工具**披露模式**（Wave 27 / Operit「CLI 工具模式」裁剪移植）。
+     * 默认 [ToolDisclosureMode.FULL] = 工具清单完整进提示词，与引入本模式前的行为
+     * 逐字节一致（零行为回归）。[ToolDisclosureMode.ON_DEMAND] 时提示词只含
+     * `search_tools` / `call_tool` 两个元工具，真实工具按需检索后转发执行。
+     *
+     * ⚠️ 披露模式**只是可见性**，不是权限：转发调用在解包后走与直接调用完全相同的
+     * 守卫与审批链路（静态标志 ∪ 参数门控 ∪ 效果声明 ∪ [capabilityMode]）。
+     */
+    val disclosureMode: ToolDisclosureMode = ToolDisclosureMode.FULL,
 )

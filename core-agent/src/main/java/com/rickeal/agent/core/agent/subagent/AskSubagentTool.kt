@@ -18,6 +18,7 @@ import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.model.ToolDisclosureMode
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.json.JsonObject
@@ -157,6 +158,14 @@ class AskSubagentTool(
          * 子代理执行，档位就被绕过了。继承只会更保守，不会更宽。
          */
         val capabilityMode: AiCapabilityMode = AiCapabilityMode.WORKSPACE_WRITE,
+        /**
+         * 父 run 的工具披露模式（Wave 27）。子 run **必须继承**，不能回落到默认 FULL：
+         * 子 run 未声明 allowedTools 时白名单取的是**全量注册表**，若这里回落 FULL，
+         * 每个 ask_actor 子 run 的系统提示词仍会带上完整的真实工具清单 —— 主 run 刚
+         * 收窄的隐藏面在子 run 里被整个还原，披露模式的收益静默归零。
+         * 继承只会让子 run 更省上下文，不会放宽任何闸门（转发照走完整审批链路）。
+         */
+        val disclosureMode: ToolDisclosureMode = ToolDisclosureMode.FULL,
     )
 
     private suspend fun ask(
@@ -191,6 +200,9 @@ class AskSubagentTool(
             policy = AgentPolicy(maxRounds = definition.maxRounds),
             // 继承父档位（Wave 26）：子 run 无审批通道，档位是唯一能拦住它的闸门。
             capabilityMode = parent.capabilityMode,
+            // 继承父披露模式（Wave 27）：不继承的话，子 run 的提示词仍会带上完整工具
+            // 清单，主 run 收窄的隐藏面被静默还原（详见 ParentContext.disclosureMode）。
+            disclosureMode = parent.disclosureMode,
         )
 
         // Actor 上下文累积：任务本身 + 子 run 提交的所有消息（含工具调用与结果）
