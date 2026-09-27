@@ -92,12 +92,17 @@ class ToolApprovalCacheTest {
 
     @Test
     fun `有档位授权与无档位查询互不通用`() {
-        grant(capabilityMode = "WORKSPACE_WRITE")
-        assertNull(peek(capabilityMode = null))
+        // 注意自污染：同一 (会话,档位,工具,摘要) key 在本用例内先 grant 后 peek 会命中，
+        // 断言「隔离」必须用不同的 key 维度，否则 null 命中的是前面自己授的权。
         grant(capabilityMode = null)
-        // null 档位是「旧调用方兼容」通道，与带档位的 key 互相隔离
-        assertNull(peek(capabilityMode = "WORKSPACE_WRITE"))
+        // null 档位是「旧调用方兼容」通道，与带档位的 key 互相隔离：
+        // null 授权后，带档位查询必须 miss。
+        assertNull(peek(toolName = "file_read", digest = "digest-f", capabilityMode = "READ_ONLY"))
         assertEquals(ToolApprovalDecision.APPROVED, peek(capabilityMode = null))
+        // 反向：带档位授权后，null 兼容通道查询同样 miss。
+        grant(toolName = "file_read", digest = "digest-f", capabilityMode = "READ_ONLY")
+        assertNull(peek(toolName = "file_read", digest = "digest-f", capabilityMode = null))
+        assertEquals(ToolApprovalDecision.APPROVED, peek(toolName = "file_read", digest = "digest-f", capabilityMode = "READ_ONLY"))
     }
 
     // ── TTL ──────────────────────────────────────────────────────────────────
