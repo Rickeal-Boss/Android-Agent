@@ -8,9 +8,10 @@ package com.rickeal.agent.core.agent.thermal
  * core-agent 不依赖 core-data / framework —— core-agent 只见本文件的纯 Kotlin
  * 决策类型，PowerManager 档位数值到 [ThermalDecision] 的映射全部留在 core-data。
  *
- * 消费点：AgentRunner 主循环轮头（RoundStarted 之后、journal 之前，墙钟检查之后
- * —— 顺序：墙钟 → 热闸，失败语义一致）。`AgentRequest.thermalGate = null`
- * （默认）= 零行为变化；子 run 恒 null（R7-2：子 run 由父 run 的轮头 Abort 兜底）。
+ * 消费点：AgentRunner 主循环轮头（墙钟检查之后、RoundStarted journal 之前 ——
+ * 失败语义与墙钟一致：都是「轮头预算检查 → emitBreakerFailed 收口」，先到先生效）。
+ * `AgentRequest.thermalGate = null`（默认）= 零行为变化；子 run 恒 null
+ * （R7-2：子 run 由父 run 的轮头 Abort 兜底）。
  */
 interface RunThermalGate {
     /** 每轮主循环开始前调用一次。 */

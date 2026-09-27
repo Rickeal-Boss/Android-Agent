@@ -28,6 +28,17 @@ enum class ThermalTier { NONE, LIGHT, MODERATE, SEVERE, CRITICAL }
  * 幂等性：`addThermalStatusListener` 重复注册会重复回调；AppContainer 进程级
  * 单例天然只注册一次。
  *
+ * 生命周期：监听在 AppContainer.init 注册、**不注销** —— AppContainer 只由
+ * LiquidAgentApplication.onCreate 构造一次（进程级单例，与应用进程同终），
+ * PowerManager 持有的回调引用不会跨构造点泄漏，因此没有第二个注册面。注册失败
+ * （个别 ROM 收紧）降级为「无热干预」并 warn，与引入本功能前的行为一致。
+ *
+ * 降温回落（CRITICAL → NONE）**不需要配套的「重载引擎」动作**：引擎是按需懒加载
+ * 的，下一次 run 触发 engineFactory 重新装载 —— 与 onTrimMemory(TRIM_MEMORY_UI_HIDDEN)
+ * 释放后回前台的路径完全同一条，用户无感（AppContainer.releaseEngineIfIdle KDoc
+ * 同款结论）。反过来，CRITICAL 跃迁时若有 run 在跑，isBusy 闸门会跳过本次释放
+ * （防 native use-after-free），等下一次跃迁或下一次 onTrimMemory 再试。
+ *
  * @param releaseEngineIfIdle CRITICAL 跃迁时的引擎释放路径（AppContainer 传入，
  *   与 onTrimMemory 共用同一条；isBusy 硬闸门在其内部）。
  */
@@ -73,9 +84,17 @@ class ThermalGovernor(
     /**
      * LIGHT 降档：新 run 的 maxTokens 上限（对基准减半，保底 256）。
      * 只影响 run 启动时刻的取值 —— 在跑 run 不动（方案 §2.1 四档策略表）。
+     *
+     * `coerceAtMost(base)`：降档只允许往小压。InferenceConfig 把 maxTokens 钳在
+     * [64, 32768]（设置滑块下限 64），base < 512 时「减半再保底 256」会反超基准
+     * （64 → 32 → 256），热档期反而把输出上限抬高 4 倍，与降热目标相反。
      */
     fun maxTokensCap(base: Int): Int =
-        if (tier.value >= ThermalTier.LIGHT) (base / 2).coerceAtLeast(256) else base
+        if (tier.value >= ThermalTier.LIGHT) {
+            (base / 2).coerceAtLeast(256).coerceAtMost(base)
+        } else {
+            base
+        }
 
     /**
      * AgentRunner 轮头消费的门视图。档位 → 决策：
