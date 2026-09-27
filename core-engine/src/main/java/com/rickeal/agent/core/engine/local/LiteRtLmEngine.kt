@@ -19,6 +19,7 @@ import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.Attachment
+import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.DeltaTracker
 import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.FinishReason
@@ -64,9 +65,21 @@ private const val MODEL_MIN_BYTES: Long = 64L * 1024L * 1024L
  *     并在 finally 里精确 cancelProcess()，语义更直白。
  *  3. flowOn(engineDispatcher) —— ensureConversation / sendMessageAsync 是阻塞调用，
  *     整个 flow 体跑在单一 IO 线程；LiteRT 回调线程只做 trySend（线程安全）。
- *  4. ConversationConfig 的 systemInstruction/tools/initialMessages 全部传空 ——
- *     这三个参数在 0.11.0 的确切构造方式无法核对，传空最保险。
- *     系统提示词改由 messages[0]（role=SYSTEM）承载；工具走 Agent 层文本协议。
+ *  4. ConversationConfig 的 systemInstruction / initialMessages **启用「角色通道」**
+ *     （P0-A，2026-09-27）：系统提示词走 systemInstruction（native 侧 Message.system），
+ *     历史按 role 播种进 initialMessages，增量只发 USER / TOOL。
+ *
+ *     为什么必须这么做（旧实现是 bug 的根）：`sendMessageAsync(Contents, …)` 内部恒为
+ *     `Message.user(contents)`（litertlm 0.17.1 Conversation.kt），`Message.toJson()` 只
+ *     序列化 `{role, content}` —— 旧实现把 SYSTEM/USER/MODEL/TOOL 全部压成一条无角色的
+ *     user 纯文本发送，角色信息在进引擎前就丢了。小模型「续写」这段文本时先复述系统提示词
+ *     再退化，即用户反复反馈的「只输出提示词然后胡言乱语」。
+ *
+ *     ⚠️ 回退：`createConversation` 失败（旧版 litertlm / 模型 chat template 不接受
+ *     system 或 initialMessages）时自动回退 **legacy 配置**（三者传空 + roleChannelActive
+ *     =false），系统提示词与历史重新走 [buildContents] 的文本压平路径 —— 代价是退回原
+ *     bug，但**不会丢上下文**（比"两边都不发"安全）。工具仍走 Agent 层文本协议（tools
+ *     恒传空）。
  */
 class LiteRtLmEngine(
     private val engineDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1),
@@ -125,6 +138,26 @@ class LiteRtLmEngine(
      * releaseInternal 清零（外部审查报告2 §2：版本变化 = 必须重建 Conversation）。
      */
     private var currentContextVersion: Long = 0
+    /**
+     * 当前 Conversation 绑定的**系统提示词正文**（role=SYSTEM 消息的 text，null = 无）。
+     *
+     * P0-A（2026-09-27）：系统提示词此前被 [buildContents] 压进一条无角色 user 文本发送，
+     * 模型看到的是一段"纯文本"，于是先复述提示词再退化。现改走
+     * `ConversationConfig.systemInstruction`（native 侧 `Message.system`），本字段用于
+     * **重建判据**：提示词变了必须重建会话，否则 native 侧还挂着旧的 system。
+     * 与 currentConversationId / currentContextVersion 同生命周期，[releaseInternal] 清零。
+     */
+    private var currentSystemText: String? = null
+    /**
+     * 「角色通道」是否已**成功**启用（ConversationConfig 的 systemInstruction /
+     * initialMessages 播种成功）。
+     *
+     * 只有它为 true 时，[buildContents] 才可以跳过 SYSTEM / MODEL（这两类已由
+     * systemInstruction 与 initialMessages 承载）。一旦创建失败回退 legacy 配置，本标记
+     * **必须**为 false —— 否则系统提示词与 MODEL 轮会被"两边都不发"，模型直接失去系统
+     * 提示词与历史，比原 bug 更糟。
+     */
+    private var roleChannelActive: Boolean = false
     private var loadConfig: EngineLoadConfig? = null
 
     @Volatile
@@ -373,12 +406,18 @@ class LiteRtLmEngine(
     private fun ensureConversation(request: GenerationRequest): LiteRtConversation {
         val currentEngine = engine
             ?: throw EngineException("LiteRT-LM: 引擎未加载，请先 load()")
-        // 重建判据（外部审查报告2 §2）：conversationId 或 contextVersion 任一变化。
-        // cid 变化 = 换了会话；contextVersion 变化 = 应用侧上下文发生了引擎无法增量
-        // 表达的变化（典型：上下文压缩真的裁掉了历史）—— 两条路都必须关旧会话、
-        // 清水印、让上层全量重放 messages，否则 KV cache 与应用侧窗口脱节。
+        // P0-A：系统提示词改由 ConversationConfig.systemInstruction 承载（native Message.system），
+        // 取第一条非空 SYSTEM 正文。
+        val systemText = request.messages
+            .firstOrNull { it.role == Role.SYSTEM }?.text?.takeIf { it.isNotBlank() }
+        // 重建判据（外部审查报告2 §2）：conversationId / contextVersion / systemText 任一变化。
+        // cid 变化 = 换了会话；contextVersion 变化 = 应用侧上下文发生了引擎无法增量表达的
+        // 变化（典型：上下文压缩真的裁掉了历史）；systemText 变化 = 系统提示词改了，而它只在
+        // 建会话时注入一次，不重建就永远不生效。三条路都必须关旧会话、清水印、让上层全量
+        // 重放 messages，否则 KV cache / native system 与应用侧脱节。
         if (request.conversationId != currentConversationId ||
-            request.contextVersion != currentContextVersion
+            request.contextVersion != currentContextVersion ||
+            systemText != currentSystemText
         ) {
             // 可观测重建频率（核验建议）：重建 = 一次全量 re-prefill（4B 模型秒级开销），
             // 频率异常升高说明上层压缩/会话切换策略需要关注。
@@ -386,6 +425,13 @@ class LiteRtLmEngine(
                 "LiteRT-LM 会话重建：cid=${request.conversationId ?: "null"} v${request.contextVersion}" +
                     "（旧 cid=${currentConversationId ?: "null"} v$currentContextVersion）"
             )
+            // 单独一行说明「这次重建是不是因为系统提示词变了」，便于与上下文压缩区分。
+            if (systemText != currentSystemText) {
+                AgentLogStore.info(
+                    "LiteRT-LM 会话重建原因：系统提示词变化（旧 ${currentSystemText?.length ?: 0} 字 " +
+                        "→ 新 ${systemText?.length ?: 0} 字）"
+                )
+            }
             runCatching { conversation?.close() }
             conversation = null
             // 换了会话/版本 = 换了 KV cache，水印必须一起清零，否则历史不会被重发 → 新会话丢上下文
@@ -418,17 +464,55 @@ class LiteRtLmEngine(
                 temperature = cfg.sampling.temperature.toDouble().coerceAtLeast(0.01),
             )
         }
-        val created = currentEngine.createConversation(
-            ConversationConfig(
-                samplerConfig = samplerConfig,
-                systemInstruction = null,
-                tools = emptyList(),
-                initialMessages = emptyList(),
-            )
+        // P0-A：历史按 role 播种进 initialMessages（native 侧按 role 组装 chat template），
+        // 只剩最后一条留给 buildContents 作为本次 sendMessageAsync 的载荷。
+        // ⚠️ 最后一条**不一定是 USER**：工具轮之后最后一条是 TOOL（AgentRunner 的工具结果
+        // 回灌路径）。所以这里只按「末条留给发送、其余全部播种」处理，**不假设角色**。
+        val nonSystem = request.messages.filter { it.role != Role.SYSTEM }
+        val seed = nonSystem.dropLast(1)
+        val seedMessages = seed.mapNotNull { it.toNativeMessage() }
+        // 播种进 native 的历史必须**预登记进水印**：否则下一轮 buildContents 会把它们当成
+        // 「未发过」再发一遍，native 侧出现重复历史。
+        for (message in seed) sentMessageIds.add(message.id)
+
+        val roleConfig = ConversationConfig(
+            samplerConfig = samplerConfig,
+            // ⚠️ systemInstruction 的类型是 **Contents?**（litertlm 0.17.1 起，旧版是 String?）
+            // —— 必须包一层 Contents.of(...)。传裸 String 编译不过。
+            systemInstruction = systemText?.let { Contents.of(it) },
+            tools = emptyList(),
+            initialMessages = seedMessages,
         )
+        val created = try {
+            val conv = currentEngine.createConversation(roleConfig)
+            roleChannelActive = true
+            conv
+        } catch (t: Throwable) {
+            // 真机保命：角色通道播种失败（旧版 litertlm / 模型 chat template 不接受 system
+            // 或 initialMessages）时，回退到 **legacy 纯文本配置**，让系统提示词与 MODEL 轮
+            // 重新走 buildContents 的文本压平路径。
+            // 不置 roleChannelActive=false 会导致两条路都不发（系统提示词 + 历史全丢），
+            // 比原 bug 更糟；不回退则直接抛错，整个引擎不可用。
+            AgentLogStore.warn(
+                "LiteRT-LM 角色通道播种失败（systemInstruction/initialMessages），" +
+                    "已回退 legacy 纯文本配置：${t.message?.take(160) ?: "未知错误"}"
+            )
+            // 清掉刚登记的播种水印：legacy 路径必须靠 buildContents 把全量历史重新发一遍。
+            sentMessageIds.clear()
+            roleChannelActive = false
+            currentEngine.createConversation(
+                ConversationConfig(
+                    samplerConfig = samplerConfig,
+                    systemInstruction = null,
+                    tools = emptyList(),
+                    initialMessages = emptyList(),
+                )
+            )
+        }
         conversation = created
         currentConversationId = request.conversationId
         currentContextVersion = request.contextVersion
+        currentSystemText = systemText
         return created
     }
 
@@ -553,7 +637,17 @@ class LiteRtLmEngine(
      * 系统提示词与工具执行结果就永远进不了上下文，Agent 循环会退化成「单轮瞎猜」。
      */
     private fun buildContents(request: GenerationRequest): List<Content> {
-        val fresh = request.messages.filter { message -> sentMessageIds.add(message.id) }
+        val fresh = request.messages.filter { message ->
+            if (message.id in sentMessageIds) return@filter false
+            // P0-A：角色通道生效时，SYSTEM 与 MODEL 已由 ConversationConfig 承载
+            // （systemInstruction 与 initialMessages），不能在这里再发一遍 —— 否则 native
+            // 侧重复注入；MODEL 若回灌成 user 文本，模型还会读自己的旧输出当用户输入。
+            // 回退 legacy 时 roleChannelActive=false，这两类必须重新走文本压平（见 ensureConversation）。
+            if (roleChannelActive && (message.role == Role.SYSTEM || message.role == Role.MODEL)) {
+                return@filter false
+            }
+            sentMessageIds.add(message.id)
+        }
         if (fresh.isEmpty()) return listOf(Content.Text(""))
 
         val out = ArrayList<Content>(8)
@@ -603,6 +697,63 @@ class LiteRtLmEngine(
         }
         if (out.isEmpty()) out.add(Content.Text(""))
         return out
+    }
+
+    /**
+     * 把应用侧 [ChatMessage] 转成 native [Message]，用于 `ConversationConfig.initialMessages`
+     * 的**按 role 播种**（P0-A）。
+     *
+     * 返回 null = 该消息不参与播种（SYSTEM 由 systemInstruction 承载；空文本 / 无内容的
+     * USER / MODEL / TOOL 无意义）。
+     *
+     * ⚠️ 与 [buildContents] 的口径**刻意保持一致**（同一套附件顺序、同样的空值判断）：
+     * 两条路径（角色通道 / legacy 回退）给模型喂的上下文必须等价，否则回退瞬间行为突变。
+     *
+     * ⚠️ TOOL 用 `Message.user` 而非 `Message.tool` 的取舍：本项目工具走的是 **Agent 层
+     * 文本协议** —— 工具调用是模型以正文 JSON 形式输出的（Agent 层解析后已从 MODEL 文本里
+     * 剥掉），native 侧**没有**与之配对的 tool_call 记录。在缺少前置 tool_call 的情况下塞
+     * `role=tool` 消息，多数 chat template 会判为非法（tool 消息必须紧跟 tool_call）。工具
+     * 结果本就以 user 文本回传（legacy 路径即如此），故这里保持同一语义。
+     */
+    private fun ChatMessage.toNativeMessage(): Message? = when (role) {
+        // 系统提示词由 ConversationConfig.systemInstruction 承载，不重复播种成一条 message。
+        Role.SYSTEM -> null
+
+        Role.USER -> {
+            // 简报 §3.1：图片/音频必须在文本之前（与 buildContents 的 USER 分支逐字同序）。
+            val contents = ArrayList<Content>(4)
+            for (attachment in attachments) {
+                when (attachment) {
+                    is Attachment.Image -> AttachmentBytesReader.imagePngBytes(attachment.uri)
+                        ?.let { contents.add(Content.ImageBytes(it)) }
+
+                    is Attachment.Audio -> AttachmentBytesReader.audioBytes(attachment.uri)
+                        ?.let { contents.add(Content.AudioBytes(it)) }
+
+                    is Attachment.Text -> if (attachment.text.isNotBlank()) {
+                        contents.add(Content.Text(attachment.text))
+                    }
+
+                    is Attachment.File -> Unit
+                }
+            }
+            if (text.isNotBlank()) contents.add(Content.Text(text))
+            if (contents.isEmpty()) null else Message.user(Contents.of(contents))
+        }
+
+        // 只发可见正文，不带 thinking（与 buildContents 的 MODEL 分支同口径）：
+        // 工具调用的原始 JSON 由 Agent 层解析，不该污染上下文。
+        Role.MODEL -> text.takeIf { it.isNotBlank() }?.let { Message.model(it) }
+
+        Role.TOOL -> {
+            // 遍历**全部**结果：`ContextCompressor.sanitizeForProvider()` 会把一批工具结果
+            // 合成一条含 N 个结果的 TOOL 消息（与 buildContents 的 TOOL 分支同一理由）。
+            val texts = toolResults.mapNotNull { result ->
+                (result.output.takeIf { it.isNotBlank() } ?: result.errorMessage ?: "")
+                    .takeIf { it.isNotBlank() }
+            }
+            if (texts.isEmpty()) null else Message.user(Contents.of(texts.map { Content.Text(it) }))
+        }
     }
 
     // -------------------------------------------------------- misc
@@ -713,6 +864,11 @@ class LiteRtLmEngine(
         engine = null
         currentConversationId = null
         currentContextVersion = 0
+        // 角色通道绑定随 Conversation 一起销毁：会话没了，native 侧的 systemInstruction /
+        // initialMessages 也一并消失。标记必须复位 —— 否则下次建会话前 buildContents 会误以为
+        // SYSTEM / MODEL 已在 native 侧而跳过发送，模型直接失去系统提示词与历史。
+        currentSystemText = null
+        roleChannelActive = false
         loaded = false
         // 「复用判据」的记忆必须和 engine 一起清掉：只清 engine 而留着这几个参数，
         // 会让下一次 load() 拿着残留参数误判成「同一个引擎」而跳过重建。
