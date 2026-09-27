@@ -12,7 +12,11 @@ name: Build
 #   3. Build job 出 debug 包；unit-tests job 跑 JVM 单测（当前全仓测试源集
 #      为空 —— `test` 聚合 task 在零测试源集的模块上是 NO-SOURCE，直接跳过、
 #      exit 0，即「空集点火」：先把「测试必须绿」的门禁位立起来，后续补
-#      JVM 单测无需再改流水线）。不跑 lint，避免无关任务拖垮构建。
+#      JVM 单测无需再改流水线）。lint 由下方独立的 lint job 并行跑：
+#      独立并行 = 不挤占构建关键路径（正面回应旧注释「不跑 lint，避免无关
+#      任务拖垮构建」——拖垮的前提是 lint 串进 assemble 链，这里没有）；
+#      warn-only（:app lint{} 设 abortOnError=false）= 存量问题不阻断 CI，
+#      报告先行、门禁后置。
 #   4. 【绝不下载模型】4B 模型 > 2GB，CI 只产出 APK/AAR，模型由用户自行导入。
 #
 # 已知回退路径（禁止提前自行改动，完整版见 docs/02-ci.md §3.2.3 / §5.2-C）：
@@ -421,3 +425,151 @@ jobs:
             **/build/test-results/**
           retention-days: 14
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Lint 门禁位（warn-only 起步）
+  #
+  # 为什么是独立并行 job，而不是塞进 unit-tests 或 assemble-debug：
+  #   1. 不拖垮构建（历史顾虑见文件头注释）：本 job 与 assemble-debug 并行，
+  #      APK 产出耗时完全不受 lint 影响；塞进 assemble 会让出包关键路径
+  #      多 3~6 分钟，塞进 unit-tests 会让两类门禁的失败混在同一 job。
+  #   2. 单点跑 :app:lintDebug + checkDependencies=true（见 app/build.gradle.kts
+  #      lint{} 块）即可覆盖 :app 与全部 8 个 library 模块的源码，
+  #      而不是 9 个模块各跑一遍 lint——后者并行展开会成倍拉高 runner 占用，
+  #      且每个模块还要各自维护 lint 配置。
+  #   3. warn-only：第一次全量 lint 必然爆出存量问题（未用资源 / 硬编码 /
+  #      缺 contentDescription 等），abortOnError=false 保证它们只出现在
+  #      报告里、绝不让 CI 变红。等存量清完（或建立 baseline）再翻成阻断。
+  #   4. 不用 baseline 起步：生成 baseline 文件需要先跑一轮 lint 拿到结果
+  #      再提交 XML，多一次 CI 往返；abortOnError=false 已经达到同样的
+  #      「不阻断」效果，机制更少、失败面更小。后续翻转门禁时再考虑。
+  #
+  # 工具链与 Build / unit-tests job 完全同源（JDK 21 temurin / Gradle 9.7.1
+  # via setup-gradle / 同一份 ci-gradle.properties），三个 job 的 Gradle
+  # User Home 缓存由同一 action 以相同输入生成 key，天然共享、互相命中。
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (warn-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          # 缓存交给下面的 gradle/actions/setup-gradle，与 Build job 同款约定。
+
+      - name: Bootstrap Android SDK and accept licenses
+        # lint 需要 android.jar（compileSdk 36 的 platform）与 AAPT2；
+        # 「许可证未接受」会让 SDK 自动下载直接失败，照抄 Build job 的预处理。
+        run: |
+          sdk_root="${ANDROID_HOME:-}"
+          if [ -z "$sdk_root" ] || [ ! -d "$sdk_root" ]; then
+            for candidate in "$HOME/android-sdk" "/usr/local/lib/android/sdk" "$HOME/Android/Sdk" "/opt/android-sdk"; do
+              if [ -d "$candidate" ]; then sdk_root="$candidate"; break; fi
+            done
+          fi
+          if [ -z "$sdk_root" ]; then sdk_root="$HOME/android-sdk"; fi
+
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          echo "::notice::Android SDK root = $sdk_root"
+
+          mkdir -p "$sdk_root/licenses"
+          printf '%s\n%s\n' \
+            '24333f8a63b6825ea9c5514f83c2829b004d1fee' \
+            '8933bad161af4178b1185d1a37fbf41ea5269c55' \
+            > "$sdk_root/licenses/android-sdk-license"
+          printf '%s\n' '84831b9409646a7e0bab842799117058b6a3a0a6' \
+            > "$sdk_root/licenses/android-sdk-preview-license"
+          printf '%s\n' 'd975f751698a77b662f1254ddbeed3901e976f5a' \
+            > "$sdk_root/licenses/intel-android-extra-license"
+          printf '%s\n' '601085b94cd77f0b54ff86406957099beebea79f5' \
+            > "$sdk_root/licenses/android-googletv-license"
+
+          # 若镜像里带 cmdline-tools，再跑一次官方 license 流程做兜底
+          if [ -x "$sdk_root/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$sdk_root/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
+
+          ls -la "$sdk_root/licenses" || true
+
+      - name: Install CI Gradle properties
+        run: |
+          mkdir -p "$HOME/.gradle"
+          if [ -f .github/ci-gradle.properties ]; then
+            cat .github/ci-gradle.properties > "$HOME/.gradle/gradle.properties"
+            echo "::group::Effective CI gradle.properties"
+            cat "$HOME/.gradle/gradle.properties"
+            echo "::endgroup::"
+          else
+            echo "::warning::.github/ci-gradle.properties not found, using project defaults"
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          # 与 Build / unit-tests job 同版本、同参数：三个 job 的 Gradle User
+          # Home 缓存 key 前缀一致，互相命中，不产生第二套缓存。
+          gradle-version: '9.7.1'
+          validate-wrappers: false
+          cache-cleanup: on-success
+          add-job-summary: 'on-failure'
+
+      - name: Verify Gradle
+        run: |
+          if ! command -v gradle > /dev/null 2>&1; then
+            echo "::error::'gradle' is not on PATH — gradle/actions/setup-gradle failed to install it."
+            exit 1
+          fi
+          gradle --version
+
+      - name: Run Android Lint (warn-only)
+        # 【只用 setup-gradle 安装的 gradle，与其他 job 同款】不调 ./gradlew。
+        # :app:lintDebug + checkDependencies=true：单次调用覆盖 :app 及其全部
+        # library 依赖的源码（AGP 会自动先编译依赖模块的 class 供 lint 分析）。
+        # abortOnError=false（app/build.gradle.kts lint{}）保证存量 issue 不阻断；
+        # 不加 --continue：单任务调用没有「继续跑其余任务」的语义。
+        run: |
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
+            :app:lintDebug
+
+      - name: Upload lint reports
+        # warn-only 阶段报告就是全部价值：无论 job 红绿都上传，供存量清障与
+        # 将来建 baseline 使用。
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-reports-${{ github.sha }}
+          path: |
+            **/build/reports/lint-results-debug.html
+            **/build/reports/lint-results-debug.xml
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Write job summary
+        # 从 lint XML 报告头部的 issues count 提取问题总数；所有分支都有
+        # 兜底，本 step 自身绝不失败（warn-only 阶段不能反过来打红 CI）。
+        if: always()
+        run: |
+          {
+            echo "## Android Lint (warn-only)"
+            echo ""
+            xml="app/build/reports/lint-results-debug.xml"
+            if [ -f "$xml" ]; then
+              count="$(sed -n 's/.*issues[^>]*count="\([0-9]*\)".*/\1/p' "$xml" | head -n 1)"
+              echo "Issues found: **${count:-0}** — abortOnError=false，不阻断；完整报告见 artifact \`lint-reports-\`。"
+            else
+              echo "未找到 lint XML 报告 —— 检查上方 Run Android Lint 日志。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

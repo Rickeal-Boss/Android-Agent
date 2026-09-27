@@ -101,6 +101,28 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    // ---------------------------------------------------------------------
+    // Lint（AGP 自带 Android Lint，不引入 detekt/ktlint 等第三方依赖）
+    //
+    // 由 .github/workflows/build.yml 的 lint job 单点调用 :app:lintDebug：
+    //   * abortOnError = false —— 【warn-only 起步】第一次全量 lint 必然
+    //     爆出存量问题（未用资源 / 硬编码 / 缺 contentDescription 等），
+    //     直接阻断会把 CI 打红。本阶段 lint 只产出报告不阻断；
+    //     存量清完后再翻转成门禁。
+    //   * checkReleaseBuilds = false —— 关掉 assembleRelease 附带的
+    //     lintVital（fatal-only），release 构建不再被 lint 意外卡住。
+    //   * checkDependencies = true —— 单点 :app:lintDebug 即覆盖 :app 与
+    //     全部 8 个 library 模块的源码，无需逐模块跑 lint。
+    //     盲区说明：纯 JVM（org.jetbrains.kotlin.jvm）模块没有 lint 任务，
+    //     但本仓 9 个模块全部是 AGP 模块（core-model / core-design 用的
+    //     也是 com.android.library），因此没有盲区。
+    // ---------------------------------------------------------------------
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+        checkDependencies = true
+    }
 }
 
 kotlin {
