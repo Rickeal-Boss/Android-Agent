@@ -26,6 +26,7 @@ import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
 import com.rickeal.agent.core.agent.breaker.BreakerKind
 import com.rickeal.agent.core.agent.breaker.BreakerLedger
 import com.rickeal.agent.core.agent.breaker.BottleneckReport
+import com.rickeal.agent.core.agent.breaker.ToolOscillationDetector
 import com.rickeal.agent.core.agent.breaker.buildBottleneckReport
 import com.rickeal.agent.core.agent.breaker.elapsedMillisSince
 import com.rickeal.agent.core.agent.subagent.AskSubagentTool
@@ -844,6 +845,17 @@ class AgentRunner(
         var toolCallStreak = 0
         var toolAnomalyReminders = 0
 
+        // ── 工具调用振荡检测状态（Wave 30 §2.6）──────────────────────
+        // 生命周期判据：A/B 交替的周期以轮为单位展开，签名历史必须**跨轮跨工具
+        // 循环**存活 —— A1 后每个 call 的签名计算发生在独立的 executeSingleToolCall
+        // 调用里，块局部变量每 call 都会清零，判据在结构上不可能成立。与上方
+        // 同参守卫状态是同族跨轮状态，落位一致。
+        val callSignatureHistory = ArrayDeque<String>()
+        // 评审 §3.2(c) 原算法的步进状态：算法抽纯函数（ToolOscillationDetector.evaluate）
+        // 后由 history 全量推导，字段按方案 §2.6 保留（后续若需 O(1) 增量检测可复用）。
+        var lastCallCycleDistance = 0
+        var callCycleStreak = 0
+
         // ── 物理断路器（Wave 30 §2.4）────────────────────────────────────
         // 内嵌字段而非构造参数（方案 §2.4 裁决）：executeSingleToolCall /
         // handleNoToolCalls / emitFinished 的签名已带 state，record/trip/装配
@@ -1042,6 +1054,28 @@ class AgentRunner(
         } else {
             state.lastToolCallSignature = callSignature
             state.toolCallStreak = 1
+        }
+        // ── 工具调用振荡检测（Wave 30 §2.6）──────────────────────────
+        // 签名历史跨轮存活（RunState 字段，见其注释），环形容量对齐
+        // BLOCK_CYCLE_HISTORY 的既有纪律。检出 → HARD 熔断。与同参硬护栏的
+        // 交互：同参死锁（distance=1）被下方既有硬护栏挡在第 3 次起「忽略不执行」，
+        // 不再产生新历史项 ⇒ 两判据无重复 trip 面；顺序上先追加历史不影响既有
+        // streak 逻辑（纯插入，不动原行）。
+        state.callSignatureHistory.addLast(callSignature)
+        if (state.callSignatureHistory.size > ToolOscillationDetector.HISTORY_CAPACITY) {
+            state.callSignatureHistory.removeFirst()
+        }
+        ToolOscillationDetector.evaluate(state.callSignatureHistory)?.let { evidence ->
+            state.breaker.trip(
+                BreakerKind.ToolCallOscillation,
+                state.round,
+                tool = call.name,
+                evidence = evidence,
+                atElapsedMillis = state.elapsedMillis(),
+            )
+            AgentLogStore.error("工具调用振荡熔断：$evidence")
+            emitBreakerFailed(state, journal, registeredToolNames)
+            return ToolCallStep.Terminal
         }
         if (state.toolCallStreak == REPEAT_TOOL_CALL_THRESHOLD &&
             state.toolAnomalyReminders < MAX_TOOL_ANOMALY_REMINDERS &&
