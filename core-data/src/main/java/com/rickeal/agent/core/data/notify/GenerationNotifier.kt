@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import com.rickeal.agent.core.data.perf.PerfSample
 import java.util.Locale
 
 /**
@@ -46,10 +47,15 @@ interface GenerationNotifier {
  *
  * @param smallIconRes 状态栏小图标。**必须由 app 层传入**（core-data 不能引 app 的 R），
  *   状态栏小图标要求纯白 + alpha 的单色矢量。
+ * @param perfSampleProvider 性能样本读取口（Wave 30 §2.2）：通知文案追加
+ *   `· CPU xx% · PSS xx MB`。观测窗口纪律 —— 只在 [onTick] 真正要 notify 时才读
+ *   （enabled=false / 节流未到点都是零读）；无观测者时 provider 返回 null，文案回落
+ *   既有形态。
  */
 class AndroidGenerationNotifier(
     private val context: Context,
     private val smallIconRes: Int,
+    private val perfSampleProvider: () -> PerfSample? = { null },
 ) : GenerationNotifier {
 
     /** 上次真正 notify 的时刻（节流用）。[enabled] 关闭时不更新，避免重新打开后立刻补发旧节奏。 */
@@ -72,7 +78,16 @@ class AndroidGenerationNotifier(
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return
 
-        val text = String.format(Locale.US, "%.1f token/s · 首字 %d ms", tps, ttftMillis)
+        // 文案主体 = 既有形态（逐字节不变）；有性能样本时追加观测后缀（Wave 30）。
+        // 文案变更属有意交付（方案 §2.2），commit message 已申报。
+        var text = String.format(Locale.US, "%.1f token/s · 首字 %d ms", tps, ttftMillis)
+        val perfSample = perfSampleProvider()
+        if (perfSample != null) {
+            perfSample.cpuPercent?.let { percent ->
+                text += String.format(Locale.US, " · CPU %.0f%%", percent)
+            }
+            text += " · PSS ${perfSample.pssKb / 1024} MB"
+        }
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(smallIconRes)
             .setContentTitle("端侧生成中")

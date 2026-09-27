@@ -2,11 +2,14 @@ package com.rickeal.agent.feature.settings
 
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.data.LocalAppContainer
+import com.rickeal.agent.core.data.perf.PerformanceMonitorManager
 import com.rickeal.agent.core.data.viewModelFactory
 import com.rickeal.agent.feature.settings.memory.MemoryRoute
 import com.rickeal.agent.feature.settings.memory.MemoryScreen
@@ -85,10 +88,20 @@ fun NavGraphBuilder.settingsGraph(
 
     composable(route = DiagnosticsRoute.ROUTE) {
         val container = LocalAppContainer.current
+        // 物理量观测（Wave 30 §2.2）：StateFlow 收集 + 窗口开关经引用计数交给
+        // DiagnosticsScreen 的 DisposableEffect（进入 acquire / 离开 release）。
+        val perfSamples by container.perfMonitorManager.samples.collectAsState()
         DiagnosticsScreen(
             onBack = { navController.popBackStack() },
             readPersistedErrors = { container.agentLogFileStore.read() },
             clearPersistedErrors = { container.agentLogFileStore.clear() },
+            perfSamples = perfSamples,
+            perfHeader = "CLK_TCK：${container.perfMonitorManager.clkTckSourceLabel}" +
+                " · 样本 ${perfSamples.size}/${PerformanceMonitorManager.HISTORY_CAPACITY}（1s 间隔）",
+            onPerfObservation = { active ->
+                if (active) container.perfMonitorManager.acquire("diagnostics")
+                else container.perfMonitorManager.release("diagnostics")
+            },
         )
     }
 

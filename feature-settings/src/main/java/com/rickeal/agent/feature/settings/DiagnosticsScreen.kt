@@ -1,6 +1,7 @@
 package com.rickeal.agent.feature.settings
 
 import android.os.Build
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -20,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,8 +32,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.data.perf.PerfSample
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassEmptyState
@@ -73,10 +79,24 @@ fun DiagnosticsScreen(
     readPersistedErrors: () -> List<AgentLog>,
     clearPersistedErrors: () -> Unit,
     modifier: Modifier = Modifier,
+    // ── 物理量观测窗口（Wave 30 §2.2）─────────────────────────────────
+    // 本页打开 = acquire 采样（acquire 点 ②），与 run 窗口（acquire 点 ①）经
+    // 引用计数求精确交集：run 结束后本页仍开着，采样继续；两窗口全关，线程即停。
+    perfSamples: List<PerfSample> = emptyList(),
+    /** 头部说明（CLK_TCK 来源 + 样本数），由宿主从 PerformanceMonitorManager 拼装。 */
+    perfHeader: String? = null,
+    /** true = 进入页面（acquire）；false = 离开（release）。 */
+    onPerfObservation: (Boolean) -> Unit = {},
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val scope = rememberCoroutineScope()
+
+    // 物理量观测窗口（Wave 30 acquire 点 ②）：进入即采样、离开即停。
+    DisposableEffect(Unit) {
+        onPerfObservation(true)
+        onDispose { onPerfObservation(false) }
+    }
 
     var filterIndex by remember { mutableStateOf(0) }
     var snapshot by remember { mutableStateOf(AgentLogStore.recent(MAX_SHOWN)) }
@@ -209,6 +229,51 @@ fun DiagnosticsScreen(
                 }
             }
 
+            /* ------------------------------------------ 物理量（Wave 30 性能采样） */
+            if (perfHeader != null) {
+                GlassCard(contentPadding = PaddingValues(14.dp)) {
+                    Column {
+                        Text(
+                            text = "物理量",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = colors.onGlass,
+                        )
+                        Text(
+                            text = perfHeader,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onGlassSubtle,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        val latestSample = perfSamples.lastOrNull()
+                        if (latestSample == null) {
+                            Text(
+                                text = "暂无样本：打开本页或运行任务时开始采样（1s 间隔）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        } else {
+                            // CPU-秒曲线（单调递增；斜率即占用强度）。
+                            CpuSecondsChart(
+                                samples = perfSamples,
+                                color = colors.onGlass,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(64.dp)
+                                    .padding(top = 8.dp),
+                            )
+                            PerfRow("CPU 累计", "%.1f s".format(latestSample.cpuSeconds))
+                            PerfRow(
+                                "CPU 占比（最近 1s）",
+                                latestSample.cpuPercent?.let { "%.0f%%".format(it) } ?: "—",
+                            )
+                            PerfRow("PSS", "${latestSample.pssKb / 1024} MB")
+                            PerfRow("可用内存", "${latestSample.availMemBytes / (1024 * 1024)} MB")
+                        }
+                    }
+                }
+            }
+
             /* ------------------------------------------ 上次崩溃前的记录（磁盘） */
             // 这一区是整个诊断设施存在的理由：崩溃 = 进程死 = 内存缓冲全没，
             // 所以「最需要日志的场景」只能靠落盘文件回答。
@@ -306,8 +371,7 @@ private fun CapabilityRow(
     supported: Boolean,
     supportedText: String,
     unsupportedText: String,
-) {
-    val colors = LocalGlassColors.current
+) {    val colors = LocalGlassColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -325,6 +389,55 @@ private fun CapabilityRow(
             style = MaterialTheme.typography.labelMedium,
             color = if (supported) colors.onGlassMuted else colors.warning,
         )
+    }
+}
+
+/** 物理量行：左侧指标名 + 右侧当前值（形态对齐 [CapabilityRow]，无支持/不支持语义）。 */
+@Composable
+private fun PerfRow(label: String, value: String) {
+    val colors = LocalGlassColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.onGlass,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+            color = colors.onGlass,
+        )
+    }
+}
+
+/**
+ * CPU-秒折线（端侧裁剪版曲线区）：横轴 = 样本序（1s/点，最多 180 点），纵轴 =
+ * 进程累计 CPU 秒归一化到窗口最大值。曲线单调递增是健康形态，斜率即占用强度。
+ */
+@Composable
+private fun CpuSecondsChart(
+    samples: List<PerfSample>,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        if (samples.size < 2) return@Canvas
+        val maxCpu = samples.maxOf { it.cpuSeconds }.coerceAtLeast(1e-6)
+        val stepX = size.width / (samples.size - 1)
+        val path = Path()
+        samples.forEachIndexed { index, sample ->
+            val x = index * stepX
+            val y = size.height - ((sample.cpuSeconds / maxCpu) * size.height).toFloat()
+            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(path, color = color, style = Stroke(width = 2.dp.toPx()))
     }
 }
 

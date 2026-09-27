@@ -35,6 +35,8 @@ import com.rickeal.agent.core.engine.EngineInitStatus
 import com.rickeal.agent.core.engine.EngineLoadCoordinator
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.data.notify.GenerationNotifier
+import com.rickeal.agent.core.data.perf.PerformanceMonitorManager
+import com.rickeal.agent.core.data.thermal.ThermalGovernor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
@@ -161,11 +163,23 @@ class AppContainer(
     val modelDownloader: ModelDownloader = ModelDownloader(context)
 
     /**
+     * 性能采样管理器（Wave 30 §2.2）：引用计数窗口 —— 诊断页打开或 run 活跃时才
+     * 有 perf-sampler 线程，空闲零线程（「物理断路器省电」立意的自洽要求）。
+     * 必须声明在 [generationNotifier] 之前：通知文案的 CPU/PSS 后缀经
+     * `perfMonitorManager::latest` 低开销读取（enabled=false 时零读，观测窗口纪律）。
+     */
+    val perfMonitorManager: PerformanceMonitorManager = PerformanceMonitorManager(context)
+
+    /**
      * 「生成速度通知」出口（Wave 9 需求 5）。默认 disabled：由设置页的开关
      * （collect 到 [SettingsRepository.generationNotification]）驱动 [GenerationNotifier.enabled]。
      * 先例：[ModelDownloader] 同样在 core-data 里用系统服务（DownloadManager）。
      */
-    val generationNotifier: GenerationNotifier = AndroidGenerationNotifier(context, generationIconRes)
+    val generationNotifier: GenerationNotifier = AndroidGenerationNotifier(
+        context,
+        generationIconRes,
+        perfSampleProvider = { perfMonitorManager.latest },
+    )
 
     /**
      * 自定义壁纸（Wave 9 需求 3b）的导入 / 解码 / 删除。设置页选图走它，

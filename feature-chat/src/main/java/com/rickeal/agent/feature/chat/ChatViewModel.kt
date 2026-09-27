@@ -652,7 +652,7 @@ class ChatViewModel(
                 thermalGate = container.thermalGovernor.asGate(),
             )
             runCatching {
-                container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
+                collectRunWithPerfWindow(cid, request)
             }.onFailure { throwable ->
                 // 取消不是错误（与 onSend/onRetry 同一约定）
                 if (throwable is CancellationException) return@onFailure
@@ -822,7 +822,7 @@ class ChatViewModel(
                 thermalGate = container.thermalGovernor.asGate(),
             )
             runCatching {
-                container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
+                collectRunWithPerfWindow(cid, request)
             }.onFailure { throwable ->
                 // 取消不是错误：onStop() / onNewConversation() 会 cancel 这个协程，而 runCatching
                 // 把 CancellationException 也一起捕获了。不挡掉的话，用户点「停止」或「新对话」
@@ -934,7 +934,7 @@ class ChatViewModel(
                 thermalGate = container.thermalGovernor.asGate(),
             )
             runCatching {
-                container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
+                collectRunWithPerfWindow(cid, request)
             }.onFailure { throwable ->
                 // 取消不是错误：onStop() / onNewConversation() 会 cancel 这个协程，而 runCatching
                 // 把 CancellationException 也一起捕获了。不挡掉的话，用户点「停止」或「新对话」
@@ -959,6 +959,21 @@ class ChatViewModel(
     }
 
     /* -------------------------------------------------------------- 内部 */
+
+    /**
+     * run 收集壳（Wave 30 §2.2 acquire 点 ①）：性能采样窗口与 run 窗口精确重合。
+     * acquire/release 包在 try/finally 里 —— 取消 / 异常路径必然归还（引用计数
+     * 配对面）。刻意**不在** 10 个 generationNotifier.stop() 终态散点逐个加
+     * release：散点接线是 Wave 27 以降的已知事故形态（方案 §2.2 裁决）。
+     */
+    private suspend fun collectRunWithPerfWindow(cid: String, request: AgentRequest) {
+        container.perfMonitorManager.acquire("chat-run:$cid")
+        try {
+            container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
+        } finally {
+            container.perfMonitorManager.release("chat-run:$cid")
+        }
+    }
 
     private fun handleEvent(event: AgentEvent, conversationId: String) {
         when (event) {
