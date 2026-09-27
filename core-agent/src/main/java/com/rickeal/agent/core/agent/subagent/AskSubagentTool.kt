@@ -205,6 +205,13 @@ class AskSubagentTool(
             disclosureMode = parent.disclosureMode,
             // tokenLedger 保持默认 null（Wave 30）：子 run 独立短命，不进父 run 账本
             //（与审批缓存「子 run 不继承」同一隔离纪律，见 AgentRequest.tokenLedger KDoc）。
+            //
+            // thermalGate 同样保持默认 null（Wave 30）：热治理只拦**父 run 主入口**
+            //（onSend / onSendFrom / onRecover 的 SEVERE 拒绝 + LIGHT 降档），子 run 不挡。
+            // 已知边界：父 run 的最后一轮内若触发 SEVERE，由于主入口已放行，该次
+            // ask_actor 子 run 不会被热闸拦下——但子 run 轮次上限（definition.maxRounds）
+            // 与父 run 的墙钟预算仍是兜底，故不额外引���热闸穿透路径（避免过度工程）。
+            // 若真机观测到「过热时仍能通过子 run 长时间跑」，再在此处显式传门。
         )
 
         // Actor 上下文累积：任务本身 + 子 run 提交的所有消息（含工具调用与结果）

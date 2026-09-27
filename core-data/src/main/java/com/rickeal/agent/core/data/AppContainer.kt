@@ -167,6 +167,9 @@ class AppContainer(
      * 必须声明在 [generationNotifier] 之前：通知文案的 CPU/PSS 后缀经
      * `perfMonitorManager::latest` 低开销读取（enabled=false 时零读，观测窗口纪律）。
      */
+    // context 恒非 null（AppContainer 唯一构造点是 Application）：
+    // PerformanceMonitorManager 的 Context? 只是 JVM 单测的构造缝，生产路径不存在
+    // 空 context 语义（可用内存读到 null 时恒 0，属安全降级）。
     val perfMonitorManager: PerformanceMonitorManager = PerformanceMonitorManager(context)
 
     /**
@@ -544,7 +547,8 @@ class AppContainer(
      * 真实调用点（Wave 30，Operit 启发分析 B.3）：
      * - Application 层的 `onTrimMemory`：`TRIM_MEMORY_UI_HIDDEN` 及以上——
      *   UI 不可见 = 用户已离开，此时释放收益最大、代价最小；
-     * - 热熔断（`THERMAL_STATUS_CRITICAL`，Wave 30 后续接入）——同一释放路径。
+     * - 热熔断（`THERMAL_STATUS_CRITICAL` 及以上，Wave 30 已接入：
+     *   ThermalGovernor 监听 PowerManager 热状态跃迁）——同一释放路径。
      *
      * ⚠️ 措辞更正：此前 KDoc 写「调用点 onTerminate 是尽力而为语义」——实际上
      * `Application.onTerminate()` 在真实 Android 设备上**永远不会被调用**
