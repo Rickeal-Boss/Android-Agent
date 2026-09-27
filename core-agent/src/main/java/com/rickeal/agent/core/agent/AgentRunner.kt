@@ -23,6 +23,8 @@ import com.rickeal.agent.core.model.DisclosureTools
 import com.rickeal.agent.core.model.HiddenToolCatalog
 import com.rickeal.agent.core.agent.approval.ToolApprovalCache
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
+import com.rickeal.agent.core.agent.breaker.BreakerLedger
+import com.rickeal.agent.core.agent.breaker.elapsedMillisSince
 import com.rickeal.agent.core.agent.subagent.AskSubagentTool
 import com.rickeal.agent.core.agent.subagent.SubagentRunContext
 import com.rickeal.agent.core.agent.journal.AgentRunJournal
@@ -821,6 +823,19 @@ class AgentRunner(
         var lastToolCallSignature: String? = null
         var toolCallStreak = 0
         var toolAnomalyReminders = 0
+
+        // ── 物理断路器（Wave 30 §2.4）────────────────────────────────────
+        // 内嵌字段而非构造参数（方案 §2.4 裁决）：executeSingleToolCall /
+        // handleNoToolCalls / emitFinished 的签名已带 state，record/trip/装配
+        // report 零签名变更 —— 不重演 A1「13 参数对齐」的 review 面。每 run
+        // 局部对象的隔离纪律（类头 ⚠️ 注释）自动继承。
+        val breaker = BreakerLedger()
+        // 墙钟锚点（Wave 30 §2.7）：nanoTime 是单调刻度，减法比较安全；
+        // 禁止拿它与 Date 互转（非墙钟语义）。
+        val startedElapsedNanos = System.nanoTime()
+
+        /** run 相对时长（毫秒）。墙钟预算检查与诊断卡耗时共用这一个换算口径。 */
+        fun elapsedMillis(): Long = elapsedMillisSince(startedElapsedNanos)
     }
 
     /**

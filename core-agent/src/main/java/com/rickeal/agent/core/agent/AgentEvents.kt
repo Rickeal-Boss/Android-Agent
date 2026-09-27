@@ -12,6 +12,7 @@ import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.TokenUsage
 import com.rickeal.agent.core.model.ToolDisclosureMode
 import com.rickeal.agent.core.agent.token.RunTokenLedger
+import com.rickeal.agent.core.agent.breaker.BottleneckReport
 
 /**
  * 本轮为什么结束。让 UI / 日志能区分「模型自己停了」和「被轮次上限硬截断」。
@@ -53,8 +54,27 @@ sealed interface AgentEvent {
         val usage: TokenUsage?,
         /** 终止原因。带默认值，兼容既有调用方。 */
         val terminatedBy: TerminationReason = TerminationReason.ModelStopped,
+        /**
+         * 诊断卡（Wave 30 §2.8，可选）。轮次耗尽路径装配（轮次耗尽现状发的是
+         * Finished 不是 Failed —— 保持不改判，report 挂 Finished，原文案不动）；
+         * 正常结束恒 null。
+         */
+        val report: BottleneckReport? = null,
     ) : AgentEvent
-    data class Failed(val message: String, val cause: Throwable? = null) : AgentEvent
+    data class Failed(
+        val message: String,
+        val cause: Throwable? = null,
+        /**
+         * 诊断卡（Wave 30 §2.4，可选）。非空时 UI 渲染诊断卡（本波文本渲染即达标）；
+         * 既有 4 处 emit Failed 调用点零改动（默认值 null），本波只在新熔断路径装配。
+         */
+        val report: BottleneckReport? = null,
+        /**
+         * 终止原因（Wave 30，可选）。补齐与 [Finished] 的对称性；既有路径不填
+         * （默认 null），零回归纪律 —— 旧路径补齐属后续波。
+         */
+        val terminatedBy: TerminationReason? = null,
+    ) : AgentEvent
     data class Cancelled(val partialText: String) : AgentEvent
 
     /**
