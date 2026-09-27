@@ -37,11 +37,13 @@ enum class Blocker(val title: String, val template: String) {
 /** 「未注册工具」报错的特征前缀（与 AgentRunner.emitUnregisteredTool 的两态文案对应；改文案必须同步此处）。 */
 private val TOOL_UNAVAILABLE_CLUES = listOf("未注册的工具：", "不能直接调用工具")
 
-/** 输出退化族（方案 §2.5 归因表第 3 行）。 */
+/** 输出退化族（方案 §2.5 归因表第 3 行）。ToolFailureStreak（换参瞎试不收敛）与
+ *  ToolCallOscillation（输出打转）同族 —— 都是「模型不会换路径」的退化形态。 */
 private val MODEL_DEGRADED_KINDS =
     setOf(
         BreakerKind.EmptyOutput, BreakerKind.StreamLoop, BreakerKind.PromptEcho,
         BreakerKind.SameParamDeadlock, BreakerKind.ToolCallOscillation,
+        BreakerKind.ToolFailureStreak,
     )
 
 /** 预算族（方案 §2.5 归因表第 4 行）。 */
