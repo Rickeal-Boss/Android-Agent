@@ -3,6 +3,7 @@ package com.rickeal.agent
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.ComponentCallbacks2
 import android.os.Build
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
@@ -65,8 +66,27 @@ class LiquidAgentApplication : Application() {
     }
 
     override fun onTerminate() {
-        runCatching { container.close() }
+        // ⚠️ 本回调在真实设备上永远不会被调用（官方文档：emulated process
+        // environments only）。保留仅覆盖模拟器环境；生产环境的内存压力响应
+        // 走下方 onTrimMemory（Wave 30，Operit 启发分析 B.3——此前 close()
+        // 唯一调用点挂在这里，等于生产环境死代码）。
+        runCatching { container.releaseEngineIfIdle() }
         super.onTerminate()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // UI 不可见 = 用户已离开，此时释放 4B 引擎的收益最大、代价最小；
+        // 回前台后引擎按需重载（EngineLoadCoordinator 对加载中引擎有延迟
+        // evict 保护，此处调用天然安全）。引擎忙（isBusy）时由硬闸门跳过，
+        // 下一次 TRIM 再试。更高档位（MODERATE/SEVERE/CRITICAL）的热响应
+        // 策略见 Wave 30 后续的 ThermalGovernor——与本方法共用同一条释放路径。
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            runCatching { container.releaseEngineIfIdle() }
+                .onFailure { t ->
+                    AgentLogStore.warn("TRIM 释放引擎失败（${t.javaClass.simpleName}）")
+                }
+        }
     }
 
     companion object {

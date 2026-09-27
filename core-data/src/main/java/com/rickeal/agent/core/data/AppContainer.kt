@@ -478,14 +478,28 @@ class AppContainer(
         }.getOrDefault(true)
     }
 
-    fun close() {
-        // 硬闸门（外部审查报告3-A2 修正项）：closeAll 是同步的、无法等待在途生成收敛，
-        // 引擎忙时强关 = native use-after-free（SIGSEGV，runCatching 抓不住）。
-        // isBusy 与 AgentRunner.runMutex 严格同源（Wave4 C-P0-1 建立）：读到 false
-        // 才意味着此刻没有任何 run 持有引擎。调用点 LiquidAgentApplication.onTerminate
-        // 是尽力而为语义，跳过比崩掉好。
+    /**
+     * 引擎空闲时整体释放（4B 权重 GB 级常驻，是应用最大的内存占用者）。
+     *
+     * 真实调用点（Wave 30，Operit 启发分析 B.3）：
+     * - Application 层的 `onTrimMemory`：`TRIM_MEMORY_UI_HIDDEN` 及以上——
+     *   UI 不可见 = 用户已离开，此时释放收益最大、代价最小；
+     * - 热熔断（`THERMAL_STATUS_CRITICAL`，Wave 30 后续接入）——同一释放路径。
+     *
+     * ⚠️ 措辞更正：此前 KDoc 写「调用点 onTerminate 是尽力而为语义」——实际上
+     * `Application.onTerminate()` 在真实 Android 设备上**永远不会被调用**
+     * （官方文档：emulated process environments only；进程被杀 = 直接 kill）。
+     * onTerminate 保留仅覆盖模拟器环境，**它不是内存释放的实际路径**。
+     *
+     * 硬闸门（外部审查报告3-A2 修正项）：closeAll 是同步的、无法等待在途生成收敛，
+     * 引擎忙时强关 = native use-after-free（SIGSEGV，runCatching 抓不住）。
+     * isBusy 与 AgentRunner.runMutex 严格同源（Wave4 C-P0-1 建立）：读到 false
+     * 才意味着此刻没有任何 run 持有引擎。引擎忙时跳过（下次 TRIM 再试），
+     * 跳过比崩掉好；UI 回前台时引擎按需重载，用户无感。
+     */
+    fun releaseEngineIfIdle() {
         if (agentRunner.isBusy.value) {
-            AgentLogStore.warn("引擎忙，跳过 closeAll（防 native use-after-free）")
+            AgentLogStore.warn("引擎忙，跳过 releaseEngineIfIdle（防 native use-after-free）")
             return
         }
         engineFactory.closeAll()
