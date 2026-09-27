@@ -40,4 +40,11 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.core.ktx)
+
+    // JVM 单测（src/test/java，AGP 默认源集）。与 :core-model 同款配置（同一 catalog 键，
+    // 不新增依赖版本）：AGP 不自动提供 junit 必须显式声明；kotlin-test 提供断言 API。
+    // 测试只覆盖纯函数（TextToolProtocol / ToolApprovalCache / ToolArgsValidator），
+    // 不触任何 Android 类或引擎类型，因此无需 Robolectric / coroutines-test。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }
