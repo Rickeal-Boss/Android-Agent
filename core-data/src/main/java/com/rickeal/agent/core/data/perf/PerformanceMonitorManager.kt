@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.roundToLong
 
 /** [PerformanceMonitorManager] 的 CLK_TCK 获取来源（不出静默错数 —— 诊断页必须可见）。 */
 enum class ClkTckSource {
@@ -91,6 +92,13 @@ class PerformanceMonitorManager(private val context: Context) {
     val clkTckSourceLabel: String get() = "${clkTckSource.name} ($clkTck)"
 
     private val interests = AtomicInteger(0)
+
+    /**
+     * 采样线程句柄。@Volatile：主线程 [startWorker]/[stopWorker] 与采样线程异常自清
+     * （[sampleLoop] catch 分支置 null）三方跨线程读写，缺可见性会让下一次 acquire
+     * 读到陈旧句柄（进而漏 join 旧线程）。
+     */
+    @Volatile
     private var worker: Thread? = null
 
     private val _samples = MutableStateFlow<List<PerfSample>>(emptyList())
@@ -105,6 +113,9 @@ class PerformanceMonitorManager(private val context: Context) {
     private var lastMachineJiffies: Long? = null
     private var lastPssKb = 0L
     private var sampleCount = 0L
+
+    /** /proc 失败是否已在**本窗口**内留过 warn（防 1s 一次刷日志）。仅采样线程读写。 */
+    private var procWarned = false
 
     /** 进入观测窗口（幂等）。首 acquiring 启动 daemon 采样线程。 */
     fun acquire(reason: String) {
@@ -136,11 +147,15 @@ class PerformanceMonitorManager(private val context: Context) {
         lastCpuSeconds = 0.0
         lastAtElapsedMillis = 0L
         lastMachineJiffies = null
+        lastPssKb = 0L
         sampleCount = 0
+        procWarned = false
         val thread = Thread({ sampleLoop() }, "perf-sampler")
         thread.isDaemon = true
-        thread.start()
+        // 先登记再 start：若线程瞬时就异常自清（catch 分支置 worker=null），
+        // start 之后回填会把已死线程写回句柄，导致后续漏停。
         worker = thread
+        thread.start()
     }
 
     private fun stopWorker() {
@@ -168,18 +183,32 @@ class PerformanceMonitorManager(private val context: Context) {
     }
 
     private fun takeSample() {
-        val cpuSeconds = parseProcSelfStatCpuSeconds(nextLine("/proc/self/stat") ?: return, clkTck)
-            ?: return // 解析失败（SELinux 收紧 / 格式变更）：跳过本样本，不终止采样。
+        // 读取失败（API 31+ /proc 收紧、OEM SELinux 策略）与解析失败（格式变更）都只
+        // 跳过本样本、不终止采样；但**首错必须留痕** —— 与 clkTck 同款纪律：不出静默
+        // 错数（否则诊断页 CPU 区永远空白而无从追因）。
+        val statLine = nextLine(PROC_SELF_STAT)
+        if (statLine == null) {
+            warnProcOnce("读取 $PROC_SELF_STAT 失败")
+            return
+        }
+        val cpuSeconds = parseProcSelfStatCpuSeconds(statLine, clkTck)
+        if (cpuSeconds == null) {
+            warnProcOnce("$PROC_SELF_STAT 格式异常（字段不足或非数字）")
+            return
+        }
+        procWarned = false // 恢复正常：清标记，后续再失败仍会留痕。
         val at = SystemClock.elapsedRealtime()
 
         // CPU% = Δ(进程 jiffies) / Δ(整机 jiffies) × 100，上限 100（评审 B.2 口径）。
         // /proc/stat 首行列数异常时跳过该样本的 percent（保留 cpuSeconds，它不依赖 /proc/stat）。
-        val machineJiffies = parseProcStatCpuJiffies(nextLine("/proc/stat") ?: "")
+        val machineJiffies = parseProcStatCpuJiffies(nextLine(PROC_STAT) ?: "")
         val cpuPercent = if (machineJiffies != null && lastMachineJiffies != null &&
             lastAtElapsedMillis > 0L
         ) {
             val machineDelta = machineJiffies - lastMachineJiffies!!
-            val procDelta = ((cpuSeconds - lastCpuSeconds) * clkTck).toLong()
+            // 秒→jiffies 的浮点往返（utime+stime 曾除过 clkTck）会引入 <1 jiffy 的误差，
+            // 直接截断会把 3.9999 判成 3 —— roundToLong 保住口径。
+            val procDelta = ((cpuSeconds - lastCpuSeconds) * clkTck).roundToLong()
             if (machineDelta > 0 && procDelta >= 0) {
                 (procDelta.toFloat() / machineDelta * 100f).coerceIn(0f, 100f)
             } else {
@@ -220,6 +249,16 @@ class PerformanceMonitorManager(private val context: Context) {
         _samples.value = next
     }
 
+    /**
+     * /proc 失败首错留痕（自身纪律：不出静默错数）。之后每秒重试保持静默 —— 连续失败
+     * 不刷日志；恢复正常（[takeSample] 成功路径）后清标记，下次失败仍可见。
+     */
+    private fun warnProcOnce(detail: String) {
+        if (procWarned) return
+        procWarned = true
+        AgentLogStore.warn("性能采样跳过 CPU 指标（$detail）；PSS/可用内存仍采，诊断页 CPU 区可能为空")
+    }
+
     private fun nextLine(path: String): String? = runCatching {
         File(path).bufferedReader().use { it.readLine() }
     }.getOrNull()
@@ -235,6 +274,10 @@ class PerformanceMonitorManager(private val context: Context) {
         const val PSS_EVERY_N = 5L
 
         private const val JOIN_TIMEOUT_MILLIS = 1_000L
+
+        private const val PROC_SELF_STAT = "/proc/self/stat"
+
+        private const val PROC_STAT = "/proc/stat"
 
         /**
          * /proc/self/stat 首行 → 进程累计 CPU 秒（纯函数，可 JVM 单测）。

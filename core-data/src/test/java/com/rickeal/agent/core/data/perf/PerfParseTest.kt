@@ -16,12 +16,28 @@ class PerfParseTest {
 
     @Test
     fun `普通进程名解析 utime 加 stime 除以 clkTck`() {
-        // 字段 3 起切分：index 0..10 是 state/pgrp/...（12 个占位列到 index 11 为 utime）。
-        // 构造：comm 后 10 个占位字段 + utime=120 stime=80 + 其余。
-        val line = "1234 (main) S 1 2 3 4 5 6 7 8 9 10 120 80 0 0 0 0"
         // substringAfterLast(')') → "S 1 2 3 4 5 6 7 8 9 10 120 80 ..."
-        // 切分后 index: 0=S 1..10=1..10（10 个）11=120 12=80
-        assertEquals((120L + 80L) / 100.0, PerfParseTestAccess.parse("1234 (main) S 1 2 3 4 5 6 7 8 9 10 120 80 0 0 0 0"))
+        // 切分后 index: 0=state，1..10 = ppid..cmajflt（stat 第 4..13 列，共 10 个），
+        // 11=utime（第 14 列） 12=stime（第 15 列）。
+        assertEquals(
+            (120L + 80L) / 100.0,
+            PerfParseTestAccess.parse("1234 (main) S 1 2 3 4 5 6 7 8 9 10 120 80 0 0 0 0"),
+        )
+    }
+
+    @Test
+    fun `真实 stat 形态（11 个前置列）索引不错位`() {
+        // 真机 /proc/self/stat 真实列序：pid comm state ppid pgrp session tty_nr tpgid
+        // flags minflt cminflt majflt cmajflt utime stime ...（utime/stime 为第 14/15 列）。
+        val line = "1 (init) S 0 0 0 0 -1 4194304 100 0 0 0 30 120 0 0 20 0 1 0 1 3 0 1234"
+        assertEquals((30L + 120L) / 100.0, PerfParseTestAccess.parse(line))
+    }
+
+    @Test
+    fun `多空格与制表符分隔仍解析一致`() {
+        val compact = "1 (init) S 0 0 0 0 -1 4194304 100 0 0 0 30 120 0 0"
+        val loose = "1 (init)   S\t0  0 0 0 -1 4194304 100 0 0 0    30   120 0 0"
+        assertEquals(PerfParseTestAccess.parse(compact), PerfParseTestAccess.parse(loose))
     }
 
     @Test
@@ -46,8 +62,22 @@ class PerfParseTest {
     }
 
     @Test
+    fun `有 utime 但缺 stime 判废（不拿半截数）`() {
+        // 切分后只到 index 11（utime），stime 缺失。
+        assertNull(PerfParseTestAccess.parse("1234 (x) S 1 2 3 4 5 6 7 8 9 10 120"))
+    }
+
+    @Test
+    fun `无右括号的畸形行判废`() {
+        // 无 ')' → substringAfterLast 缺失值 "" → 列数为 1 → null（不会把 pid 当 utime）。
+        assertNull(PerfParseTestAccess.parse("1234 main S 1 2 3 4 5 6 7 8 9 10 120 80 0 0"))
+    }
+
+    @Test
     fun `clkTck 非正数判废`() {
-        assertNull(PerfParseTestAccess.parse("1234 (x) S 1 2 3 4 5 6 7 8 9 10 120 80 0 0 0 0", clkTck = 0))
+        val line = "1234 (x) S 1 2 3 4 5 6 7 8 9 10 120 80 0 0 0 0"
+        assertNull(PerfParseTestAccess.parse(line, clkTck = 0))
+        assertNull(PerfParseTestAccess.parse(line, clkTck = -1))
     }
 
     // ── parseProcStatCpuJiffies ──────────────────────────────────────────────
@@ -66,6 +96,18 @@ class PerfParseTest {
         assertNull(PerfParseTestAccess.jiffies("cpu0  100 0 50 900 10 0 5 0 0 0"))
         assertNull(PerfParseTestAccess.jiffies("garbage"))
         assertNull(PerfParseTestAccess.jiffies(""))
+    }
+
+    @Test
+    fun `proc_stat 列数合规但含非数字整行判废`() {
+        assertNull(PerfParseTestAccess.jiffies("cpu  100 0 50 900 10 0 5 0 abc 0"))
+        assertNull(PerfParseTestAccess.jiffies("cpu  100 0 50 900 10 0 5 0 0 -x"))
+    }
+
+    @Test
+    fun `proc_stat 前导与中间多重空格等价`() {
+        assertEquals(1065L, PerfParseTestAccess.jiffies("cpu    100  0 50 900 10 0 5 0 0 0"))
+        assertEquals(1065L, PerfParseTestAccess.jiffies("cpu\t100 0 50 900 10 0 5 0 0 0"))
     }
 }
 
