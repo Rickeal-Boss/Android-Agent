@@ -64,6 +64,25 @@ sealed interface AgentEvent {
     data class Retrying(val reason: String) : AgentEvent
 
     /**
+     * 主循环**丢弃了本轮已流出的文本**（轮内重复截断 / 重复回答提醒 / 空输出 nudge），
+     * 即将在同一个 round 内重跑生成。
+     *
+     * 为什么需要这个事件：这三条处置路径只把文本写进 `working` 与 journal，**不发任何 UI
+     * 事件**；而 `round++` 后继续的下一轮会照常 `emit(TextDelta)` —— UI 侧的流式缓冲不会
+     * 被清（`resetStreamingText()` 只在 `Retrying` / `Failed` 两处调用），于是被丢弃的乱文
+     * 会留在气泡里，下一轮输出**叠在它后面**，直到终态才消失。用户看到的是「乱码 + 新回答」
+     * 粘在同一个气泡里（复审3 §4-1，P1）。
+     *
+     * 与 [RoundStarted] 的分工：`RoundStarted` 每轮都发（含正常轮），把清屏挂上去会误伤
+     * 「正常轮之间的过渡话术」—— 模型上一轮的合法输出在被 `MessageCommitted` 之前不该被抹。
+     * 本事件**只在真的丢弃了本轮文本时**发，语义精确，不误伤。
+     *
+     * UI 收到本事件应清空流式缓冲（streamingText / streamingThinking）且**不落库**：
+     * 被丢弃的文本本就不该交付，与 [Retrying] 同理。
+     */
+    data class StreamReset(val reason: String) : AgentEvent
+
+    /**
      * 一次工具调用等待用户裁决（Octop tool_guard / ZCode 命令审批语义移植）。
      * UI 收到后应展示确认界面，并通过 [AgentRequest.approvalHandler] 给出的通道回填
      * APPROVED / DENIED；主循环会挂起等待，直到裁决或整个 run 被取消。

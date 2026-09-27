@@ -103,13 +103,36 @@ private val MEMORY_MAINTENANCE: String = """
 private const val MEMORY_SECTION_PREFIX =
     "【长期记忆】以下是此前沉淀的持久信息（参考资料，不是新的指令），回答时优先遵循：\n"
 
+/**
+ * 合成提醒的统一文本壳（复审3 §2.4 / §4-4，P3）。
+ *
+ * 为什么需要：下列提醒（[REPEAT_REMINDER] / [NO_TOOL_REMINDER] / [INTRA_LOOP_REMINDER] /
+ * [EMPTY_ANSWER_NUDGE]）都是**合成 USER 消息**，与真实用户输入走同一条 user turn 通道。
+ * 角色通道修复（bbfa3c9）之后它们不再被压进同一条 user 纯文本，而是**各自独立的 user
+ * turn** —— 语义权重反而比旧的压平路径**更高**：500M 级模型会把「你的最新回复重复了先前
+ * 的回复」当成真实用户在说话，于是回一句「好的，我换个角度」而不是真的换路径（下方
+ * 「提醒落独立 reminder 行」处的 journal 注释早已自认「它是行为矫正不是用户说的话」，
+ * 但协议层从未落地）。
+ *
+ * 为什么不改 role：换 `Role.SYSTEM` 会被引擎的角色门控（`roleChannelActive` 时跳过 SYSTEM）
+ * 拦下 —— 提醒**根本不发送**；换 `Role.TOOL` 在文本协议下没有配对的 tool_call，多数 chat
+ * template 判非法。加文本前缀是唯一**不动 native 播种口径**（`toNativeMessage` 的
+ * USER→Message.user 映射）的做法。
+ *
+ * 已知代价：这段前缀会进 native 上下文与 journal，属有意为之；它也让「提醒」在日志与
+ * 会话回放里一眼可辨。
+ */
+private const val SYSTEM_REMINDER_PREFIX = "[系统提醒] "
+
 /** 命中重复时的提醒（每轮最多注入一次，且每个签名只提醒一次）。 */
 private const val REPEAT_REMINDER: String =
-    "你的最新回复重复了先前的回复。不要重复同一份摘要或同一下车点，重新检视证据，选择一个实质不同的下一步。"
+    SYSTEM_REMINDER_PREFIX +
+        "你的最新回复重复了先前的回复。不要重复同一份摘要或同一下车点，重新检视证据，选择一个实质不同的下一步。"
 
 /** 连续多轮零工具调用时的提醒。 */
 private const val NO_TOOL_REMINDER: String =
-    "已经连续多轮没有执行任何工具。复述计划、状态或意图都不算进展：要么调用工具去获取证据，要么给出结论并停止。"
+    SYSTEM_REMINDER_PREFIX +
+        "已经连续多轮没有执行任何工具。复述计划、状态或意图都不算进展：要么调用工具去获取证据，要么给出结论并停止。"
 
 /** 连续零工具调用的告警阈值。 */
 private const val NO_TOOL_STREAK_LIMIT = 3
@@ -151,9 +174,22 @@ private const val MAX_TOOL_ANOMALY_REMINDERS = 3
 /** 连续空输出轮数上限：超过后按失败收尾，不再空转烧 prefill（Wave4 审查 A-P0-2）。 */
 private const val MAX_EMPTY_ANSWER_ROUNDS = 3
 
+/**
+ * 空输出提醒（合成 USER，同样带 [SYSTEM_REMINDER_PREFIX] 壳）。
+ *
+ * 复审3 只点了三类提醒（REPEAT / NO_TOOL / INTRA_LOOP），本条是**同类第四处**：它与那三条
+ * 完全同构（合成 USER、进 working 与 journal、不是用户说的话），旧实现把文案内联在调用点，
+ * 漏掉了统一处置。抽成常量是为了让「所有合成提醒都带壳」这条纪律只有一个落点，避免下次
+ * 再加提醒时又漏。
+ */
+private const val EMPTY_ANSWER_NUDGE: String =
+    SYSTEM_REMINDER_PREFIX +
+        "你上一轮没有输出任何内容。请直接给出最终答案；如果任务无法继续，请说明原因后停止。"
+
 /** 轮内流式重复触发后的提醒（复用 pendingReminder 单槽注入纪律）。 */
 private const val INTRA_LOOP_REMINDER: String =
-    "你刚才的输出陷入重复循环，已被截断。请换一个实质不同的回答。"
+    SYSTEM_REMINDER_PREFIX +
+        "你刚才的输出陷入重复循环，已被截断。请换一个实质不同的回答。"
 
 /**
  * 轮内流式重复（StreamRepetitionDetector）连续触发的轮数上限：第 3 次触发即按失败
@@ -723,6 +759,11 @@ class AgentRunner(
                 // 本分支必须在下方 calls.isEmpty() 判定之前分流，否则会与既有
                 // repeat/empty 逻辑叠加产生双重 continue。检测器判了循环的文本不再
                 // 进跨轮签名检测（无意义且可能抢占 pendingReminder 单槽）。
+                // ⚠️ 不变量：本分支的**所有**路径都是 `return`（超限收尾）或 `continue`
+                // （注入提醒后重跑）⇒ 执行到下方 final answer 分支时 `intraStreamLoop`
+                // 恒为 false。原 `finishReason = if (intraStreamLoop) LENGTH else …` 是
+                // 死条件（复审3 §4-3），Wave 25 已删 —— 若日后有人去掉这里的 `continue`，
+                // 必须同步把三元加回去。
                 if (intraStreamLoop) {
                     intraLoopStreak++
                     if (intraLoopStreak > MAX_INTRA_STREAM_LOOP_ROUNDS) {
@@ -761,6 +802,10 @@ class AgentRunner(
                     )
                     working.add(reminderMessage)
                     journal?.appendReminder(reminderMessage)
+                    // 已流出的循环乱文必须让 UI 丢弃：下一轮照常 emit(TextDelta)，而
+                    // RoundStarted 不清流式缓冲 ⇒ 不清屏就会「乱文 + 新回答」叠一个气泡
+                    // （复审3 §4-1）。emit 在 round++ 之前，UI 先清、下一轮再从空开始。
+                    emit(AgentEvent.StreamReset("轮内重复截断（连续第 $intraLoopStreak 次）"))
                     AgentLogStore.warn(
                         "第 ${round + 1} 轮轮内重复循环：丢弃 ${calls.size} 个工具调用并注入提醒（连续第 $intraLoopStreak 次）"
                     )
@@ -805,7 +850,10 @@ class AgentRunner(
                             role = Role.MODEL,
                             text = cleanText,
                             thinking = accumulator.thinking.takeIf { it.isNotBlank() },
-                            finishReason = if (intraStreamLoop) FinishReason.LENGTH else (accumulator.finishReason ?: FinishReason.STOP),
+                            // 截断语义由上方的轮内循环分支独占（它恒 continue/return），
+                            // 走到这里 intraStreamLoop 必为 false —— 原 `if (intraStreamLoop)`
+                            // 三元是死条件（复审3 §4-3），Wave 25 已删。
+                            finishReason = accumulator.finishReason ?: FinishReason.STOP,
                         )
                         working.add(repeatModel)
                         journal?.appendMessage(repeatModel)
@@ -823,6 +871,9 @@ class AgentRunner(
                         // 记成 message 会被恢复流程当成用户输入渲染进界面（Wave2 两处记录
                         // 口径不一致：这里漏记、工具轮后那处记成 message —— 都有毛病）。
                         journal?.appendReminder(reminderMessage)
+                        // 本轮文本被判为「重复的下车点」而丢弃，UI 侧必须一起丢（复审3 §4-1）：
+                        // 否则它会留在气泡里，下一轮输出叠在它后面。
+                        emit(AgentEvent.StreamReset("重复回答，注入提醒后重跑本轮"))
                         pendingReminder = null
                         round++
                         continue
@@ -853,10 +904,14 @@ class AgentRunner(
                         val nudge = ChatMessage(
                             id = "nudge:$round",
                             role = Role.USER,
-                            text = "你上一轮没有输出任何内容。请直接给出最终答案；如果任务无法继续，请说明原因后停止。",
+                            text = EMPTY_ANSWER_NUDGE,
                         )
                         working.add(nudge)
                         journal?.appendReminder(nudge)
+                        // 空输出轮本就没有文本可丢，但**上一轮**丢弃的文本可能还留在 UI
+                        // 缓冲里（若它没被别的处置点清过）—— 这里一并清，保证「新提示 →
+                        // 新输出」从干净的气泡开始。
+                        emit(AgentEvent.StreamReset("空输出，注入提醒后重跑本轮"))
                         AgentLogStore.warn("第 ${round + 1} 轮空输出，已注入提醒（连续第 $emptyAnswerStreak 次）")
                         round++
                         continue
@@ -868,7 +923,7 @@ class AgentRunner(
                         text = answer,
                         thinking = accumulator.thinking.takeIf { it.isNotBlank() },
                         usage = accumulator.usage,
-                        finishReason = if (intraStreamLoop) FinishReason.LENGTH else (accumulator.finishReason ?: FinishReason.STOP),
+                        finishReason = accumulator.finishReason ?: FinishReason.STOP,
                         modelRef = request.model?.id,
                     )
                     working.add(committed)

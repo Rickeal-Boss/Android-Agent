@@ -931,6 +931,13 @@ class ChatViewModel(
                 _uiState.update { it.copy(notice = "引擎异常，已自动重建并重试") }
             }
 
+            // 主循环丢弃了本轮已流出的文本（轮内重复截断 / 重复回答 / 空输出 nudge）：
+            // 必须清流式缓冲。round++ 后的下一轮照常 emit(TextDelta)，但 RoundStarted 不清
+            // 缓冲（它只管轮次数字），不清就会出现「被丢弃的乱文 + 新回答」粘在同一个气泡里，
+            // 直到终态才消失（复审3 §4-1，P1）。
+            // 与 Retrying 同理：清缓冲**不落库** —— 被丢弃的文本本就不该交付。
+            is AgentEvent.StreamReset -> resetStreamingText()
+
             // 工具审批请求：立一条 RUNNING 轨迹占位（授权卡另在 snackbarHost 区渲染）。
             // Wave2 接了真审批 UI 之后，这里还残留着 Wave1 的「未接审批 UI 已按拒绝处理」
             // 文案 + SKIPPED 状态 —— 用户会同时看到矛盾的错误轨迹和待授权卡片，且授权后
