@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.agent.AgentEvent
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.AiCapabilityMode
+import com.rickeal.agent.core.model.ToolDisclosureMode
 import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.AgentRequest
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
@@ -112,6 +113,12 @@ data class ChatUiState(
      * 控制、实际不生效」的假象（Operit2 明令禁止的反模式）。
      */
     val capabilityMode: AiCapabilityMode = AiCapabilityMode.WORKSPACE_WRITE,
+    /**
+     * 工具披露模式（Wave 27）。与 [capabilityMode] 同一纪律：由设置页写入 DataStore，
+     * 本页 collect 后每次 run 下发 —— 模式**必须进入执行路径**，只活在设置页就等于
+     * 什么都没做。默认 FULL（工具清单照旧全量进提示词）＝ 零行为回归。
+     */
+    val disclosureMode: ToolDisclosureMode = ToolDisclosureMode.FULL,
     val availableModels: List<ModelDescriptor> = emptyList(),
     val activeModel: ModelDescriptor? = null,
     val isGenerating: Boolean = false,
@@ -302,6 +309,13 @@ class ChatViewModel(
         viewModelScope.launch {
             container.settingsRepository.capabilityMode.collect { mode ->
                 _uiState.update { it.copy(capabilityMode = mode) }
+            }
+        }
+        // 工具披露模式（Wave 27）：与 capabilityMode 独立 collect（一个管权限面、
+        // 一个管提示词可见性，合并会让任一变化都触发全量更新）。
+        viewModelScope.launch {
+            container.settingsRepository.disclosureMode.collect { mode ->
+                _uiState.update { it.copy(disclosureMode = mode) }
             }
         }
         viewModelScope.launch {
@@ -639,6 +653,7 @@ class ChatViewModel(
                 // 档位必须进入执行路径 —— AgentRunner 用它决定 WRITE 效果的工具是否要
                 // 追加一次授权（ReadOnly 档）。默认档零行为变化。
                 capabilityMode = _uiState.value.capabilityMode,
+                disclosureMode = _uiState.value.disclosureMode,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -808,6 +823,7 @@ class ChatViewModel(
                 // 档位必须进入执行路径 —— AgentRunner 用它决定 WRITE 效果的工具是否要
                 // 追加一次授权（ReadOnly 档）。默认档零行为变化。
                 capabilityMode = _uiState.value.capabilityMode,
+                disclosureMode = _uiState.value.disclosureMode,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -913,6 +929,7 @@ class ChatViewModel(
                 // 档位必须进入执行路径 —— AgentRunner 用它决定 WRITE 效果的工具是否要
                 // 追加一次授权（ReadOnly 档）。默认档零行为变化。
                 capabilityMode = _uiState.value.capabilityMode,
+                disclosureMode = _uiState.value.disclosureMode,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }

@@ -12,6 +12,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.AgentJson
 import com.rickeal.agent.core.model.InferenceConfig
+import com.rickeal.agent.core.model.ToolDisclosureMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
@@ -40,6 +41,11 @@ class SettingsRepository(private val context: Context) {
         // 解析失败回退 **WORKSPACE_WRITE**（默认档）而不是 FULL —— 设置读坏绝不能
         // 变成「AI 能力被静默放宽」，回退值必须是仍然可用且最保守的那个档。
         val CAPABILITY_MODE = stringPreferencesKey("capability_mode")
+
+        // 工具披露模式（Wave 27）。同样存枚举名 String。解析失败回退 **FULL**（默认档）
+        // —— 与 CAPABILITY_MODE 相反的方向，因为本字段管的是**提示词预算与可见性**，
+        // 不是权限：回退到 FULL 只是「工具清单照旧全量进提示词」，不会放宽任何闸门。
+        val DISCLOSURE_MODE = stringPreferencesKey("disclosure_mode")
 
         // 覆盖层 scrim 不透明度（Wave 21）。Float 原生类型，走 floatPreferencesKey
         // （同 GLASS_INTENSITY 模式，无依赖倒置问题）。
@@ -125,6 +131,23 @@ class SettingsRepository(private val context: Context) {
                 AiCapabilityMode.READ_ONLY.name -> AiCapabilityMode.READ_ONLY
                 AiCapabilityMode.FULL.name -> AiCapabilityMode.FULL
                 else -> AiCapabilityMode.WORKSPACE_WRITE
+            }
+        }
+
+    /**
+     * 工具**披露模式**（Wave 27 / Operit「CLI 工具模式」裁剪移植）。默认
+     * [ToolDisclosureMode.FULL] = 工具清单完整进提示词，与引入本模式前的行为逐字节一致。
+     *
+     * 回退策略与 [capabilityMode] 相反、刻意选 FULL：本字段管的是**提示词预算与
+     * 工具可见性**，不是权限。回退到 FULL 的后果只是「工具清单照旧全量进提示词」，
+     * 不会放宽任何闸门（转发调用照走完整审批链路），因此这里无需选保守侧。
+     */
+    val disclosureMode: Flow<ToolDisclosureMode> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { prefs ->
+            when (prefs[Keys.DISCLOSURE_MODE]) {
+                ToolDisclosureMode.ON_DEMAND.name -> ToolDisclosureMode.ON_DEMAND
+                else -> ToolDisclosureMode.FULL
             }
         }
 
@@ -224,6 +247,11 @@ class SettingsRepository(private val context: Context) {
     /** AI 能力档位落盘。UI 侧负责在用户选择后立即调用（设置页与输入区共用同一入口）。 */
     suspend fun setCapabilityMode(mode: AiCapabilityMode) {
         context.settingsDataStore.edit { it[Keys.CAPABILITY_MODE] = mode.name }
+    }
+
+    /** 工具披露模式落盘。与 [setCapabilityMode] 同款入口纪律（UI 选择后立即调用）。 */
+    suspend fun setDisclosureMode(mode: ToolDisclosureMode) {
+        context.settingsDataStore.edit { it[Keys.DISCLOSURE_MODE] = mode.name }
     }
 
     /**

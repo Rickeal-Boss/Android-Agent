@@ -59,6 +59,7 @@ import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.LocalWallpaperImage
 import com.rickeal.agent.core.design.motion.staggeredPageItem
 import com.rickeal.agent.core.model.AiCapabilityMode
+import com.rickeal.agent.core.model.ToolDisclosureMode
 import com.rickeal.agent.core.model.ThinkingMode
 import java.util.Locale
 
@@ -607,6 +608,50 @@ fun SettingsScreen(
                                 "默认档：只由工具自身的风险标记决定是否要你确认"
                             AiCapabilityMode.FULL ->
                                 "不再额外收窄。注意它不会给 App 任何系统本来没授予的能力"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
+
+            // 工具披露模式（Wave 27 / Operit「CLI 工具模式」裁剪移植）。与上面「AI 能力」
+            // 卡刻意分开放：那张卡管**权限面**，这张管**提示词预算与工具可见性**。
+            // 二者语义不同 —— 混在一起会让用户以为「按需检索」也是一种权限限制。
+            GlassCard(
+                modifier = Modifier.staggeredPageItem(itemIndex = 5),
+                contentPadding = PaddingValues(14.dp),
+            ) {
+                Column {
+                    GroupTitle("工具清单")
+                    Text(
+                        text = "可用工具怎么交给模型",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                    )
+                    GlassSegmented(
+                        items = listOf("全量列出", "按需检索"),
+                        selectedIndex = when (state.disclosureMode) {
+                            ToolDisclosureMode.FULL -> 0
+                            ToolDisclosureMode.ON_DEMAND -> 1
+                        },
+                        onSelected = { index ->
+                            viewModel.onDisclosureModeChange(
+                                if (index == 1) ToolDisclosureMode.ON_DEMAND else ToolDisclosureMode.FULL,
+                            )
+                        },
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    Text(
+                        text = when (state.disclosureMode) {
+                            ToolDisclosureMode.FULL ->
+                                "默认档：全部可用工具的名称与参数一次性写进提示词，模型可直接调用"
+                            ToolDisclosureMode.ON_DEMAND ->
+                                "只给模型两个元工具（检索 / 转发），真实工具按能力关键词查出来再执行。" +
+                                    "提示词里的工具清单不再随工具数量变长，模型逐字复述工具清单的面积也更小；" +
+                                    "代价是会多花一轮检索 —— 工具很少时未必更省，工具越多越划算。" +
+                                    "危险操作该问的照样问，这不改变任何授权规则"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onGlassSubtle,

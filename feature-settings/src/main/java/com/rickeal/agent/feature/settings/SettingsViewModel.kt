@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.data.ThemeState
 import com.rickeal.agent.core.model.AiCapabilityMode
+import com.rickeal.agent.core.model.ToolDisclosureMode
 import com.rickeal.agent.core.model.InferenceConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +28,12 @@ data class SettingsUiState(
      * 迟早会让一次 UI 重构意外改到权限默认值。
      */
     val capabilityMode: AiCapabilityMode = AiCapabilityMode.WORKSPACE_WRITE,
+    /**
+     * 工具披露模式（Wave 27）。与 [capabilityMode] 同样分开存，但语义不同：它管的是
+     * **提示词可见性与预算**（工具清单是否全量进提示词），不是权限面。混在一起会让
+     * 「省点上下文」与「收紧 AI 权限」变成同一条落盘路径。
+     */
+    val disclosureMode: ToolDisclosureMode = ToolDisclosureMode.FULL,
     val message: String? = null,
     val error: String? = null,
 )
@@ -59,6 +66,11 @@ class SettingsViewModel(
                 _uiState.update { it.copy(capabilityMode = mode) }
             }
         }
+        viewModelScope.launch {
+            container.settingsRepository.disclosureMode.collect { mode ->
+                _uiState.update { it.copy(disclosureMode = mode) }
+            }
+        }
     }
 
     /**
@@ -83,6 +95,12 @@ class SettingsViewModel(
     fun onCapabilityModeChange(mode: AiCapabilityMode) {
         _uiState.update { it.copy(capabilityMode = mode) }
         viewModelScope.launch { container.settingsRepository.setCapabilityMode(mode) }
+    }
+
+    /** 工具披露模式切换。与 [onCapabilityModeChange] 同款：先更新 UI 再落盘。 */
+    fun onDisclosureModeChange(mode: ToolDisclosureMode) {
+        _uiState.update { it.copy(disclosureMode = mode) }
+        viewModelScope.launch { container.settingsRepository.setDisclosureMode(mode) }
     }
 
     /**
