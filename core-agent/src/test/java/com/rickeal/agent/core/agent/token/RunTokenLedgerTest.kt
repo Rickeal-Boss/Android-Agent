@@ -15,6 +15,10 @@ import kotlin.test.assertSame
  *    （否则账本与 RunState.sentTokens 永久分叉）；
  * 2. **null 跳过**：引擎未回报 usage 时零写入（时间戳也不动）。
  *
+ * 另钉两条 StateFlow 侧的读语义（消费顺序的前提）：引用稳定（读侧只持一次引用即
+ * 可见后续回写）、同值回写不换实例不发射（MutableStateFlow 的 Any.equals 合并，
+ * 因此读侧无需再套 distinctUntilChanged）。
+ *
  * 并发语义由 MutableStateFlow.update 的 CAS 循环保证，不在 JVM 单测范围（无
  * coroutines-test，与 core-agent 既有测试源集配置一致）。
  */
@@ -26,14 +30,34 @@ class RunTokenLedgerTest {
 
     @Test
     fun `初始快照全零`() {
-        assertEquals(RunTokenSnapshot(), ledger().snapshot.value)
+        val initial = ledger().snapshot.value
+        assertEquals(RunTokenSnapshot(), initial)
+        // 派生字段不在 data class 的 equals 里，单独钉一次（否则初始非 0 也测不出来）
+        assertEquals(0L, initial.engineTotalTokens)
     }
 
     @Test
-    fun `snapshot 每次访问返回同一个 StateFlow 实例`() {
+    fun `snapshot 引用稳定且回写经旧引用可见`() {
         val l = ledger()
         val flow: StateFlow<RunTokenSnapshot> = l.snapshot
         assertSame(flow, l.snapshot)
+        // 读侧只需持一次引用：后续回写必须通过该引用可见（不能换 flow 实例）
+        l.onSendEstimated(7L)
+        assertEquals(7L, flow.value.sentTokens)
+        assertSame(flow, l.snapshot)
+    }
+
+    @Test
+    fun `同值回写不产生新快照实例也不刷下游`() {
+        // MutableStateFlow 自带 Strong equality-based conflation（Any.equals 比较，
+        // 等价于一层的 distinctUntilChanged）：值未变则既不换实例也不发射 ——
+        // 因此读侧不需要再套 distinctUntilChanged。用「实例是否被换掉」作为
+        // 「是否发射」的可观测代理（本源集无 coroutines-test，无法直接 collect）。
+        val l = ledger()
+        l.onSendEstimated(7L)
+        val before = l.snapshot.value
+        l.onSendEstimated(7L)
+        assertSame(before, l.snapshot.value)
     }
 
     // ── 发送侧估算（镜像覆盖写） ─────────────────────────────────────────────

@@ -23,6 +23,12 @@ data class RunTokenSnapshot(
     val sentTokens: Long = 0L,
     val cumulativeIn: Long = 0L,
     val cumulativeOut: Long = 0L,
+    /**
+     * ⚠️ 名字里的 Elapsed 是方案 §2.3 的遗留：实际装的是**进程墙钟**
+     * （[System.currentTimeMillis]），**不是** run 起点相对耗时 —— 不要拿它与
+     * `RunState.elapsedMillis()`（run 级相对毫秒）做差值或比较，两者原点不同、量级也不同。
+     * 0 表示「该账本从未被回写过」。语义细节见 [InMemoryRunTokenLedger] 类头。
+     */
     val updatedAtElapsedMillis: Long = 0L,
 ) {
     /** 引擎回报侧的真实消耗（进+出），与估算口径的 [sentTokens] 并列呈现。 */
@@ -72,6 +78,27 @@ interface RunTokenLedger {
  * 线程安全：[kotlinx.coroutines.flow.update] 的 CAS 循环保证两个回写入口并发时
  * 各自的增量不丢（发送侧回写与引擎回报回写可能来自不同协程）。
  *
+ * 时钟采样：[update] 的 lambda 在 CAS 重试下**会被求值多次**（其 KDoc 明示
+ * "function may be evaluated multiple times"），因此 [clock] 一律在 [update] **之外**
+ * 采样一次再传入 —— 否则带副作用的时钟（自增/序列钟）会在并发下被多采样，
+ * 落库的时间戳不再是「本次回写的时刻」。
+ *
+ * 重复值不刷下游：[MutableStateFlow] 自带 **Strong equality-based conflation**
+ * （[Any.equals] 比较，等价于一层的 `distinctUntilChanged`），
+ * 同值回写既不换实例也不发射 —— 因此读侧**不需要**再套一层 distinctUntilChanged。
+ * 注意 [RunTokenSnapshot] 含时间戳字段：只要时钟前进，即便 token 数完全没变也会发射
+ * （这是「最后活跃时刻」语义的应有之义，不是噪音）。
+ *
+ * ⚠️ 生命周期红线（run 级 vs 会话级，尚未解决的口径张力）：本实现被 AppContainer 按
+ * **conversationId** 池化、跨 run 存活，而 [RunTokenSnapshot.sentTokens] 镜像的
+ * RunState.sentTokens 是**run 级**（每轮新建、从 0 起）。后果是两条字段的时间窗不一致：
+ * sentTokens 靠覆盖写天然跟得住（新 run 首轮回写即归零重来），而
+ * [RunTokenSnapshot.cumulativeIn] / [RunTokenSnapshot.cumulativeOut] 单调累加、
+ * 跨 run 永不归零 —— 自第二次 run 起，「估算 vs 真实」的双口径对比就不再可比
+ * （估算侧是本次 run，引擎侧是历史全部 run）。本波账本尚无消费方（只读侧投影），
+ * 故不在本文件内引入无人调用的 reset API；真正接线前必须先解决这个生命周期错配
+ * （要么账本改按 run 实例化，要么新增 run 起点重置入口并由 AgentRunner 在 run 头调用）。
+ *
  * 时间戳口径：账本按会话池化（AppContainer），**没有 run 起点锚**，因此
  * [RunTokenSnapshot.updatedAtElapsedMillis] 记录的是最后一次写入的进程墙钟
  * （[System.currentTimeMillis]）——语义是「这个账本最后活跃在什么时候」，不参与
@@ -86,16 +113,18 @@ class InMemoryRunTokenLedger(
     override val snapshot: StateFlow<RunTokenSnapshot> = _snapshot.asStateFlow()
 
     override fun onSendEstimated(totalSentTokens: Long) {
-        _snapshot.update { it.copy(sentTokens = totalSentTokens, updatedAtElapsedMillis = clock()) }
+        val now = clock()
+        _snapshot.update { it.copy(sentTokens = totalSentTokens, updatedAtElapsedMillis = now) }
     }
 
     override fun onEngineUsage(usage: TokenUsage?) {
         if (usage == null) return
+        val now = clock()
         _snapshot.update {
             it.copy(
                 cumulativeIn = it.cumulativeIn + usage.promptTokens,
                 cumulativeOut = it.cumulativeOut + usage.completionTokens,
-                updatedAtElapsedMillis = clock(),
+                updatedAtElapsedMillis = now,
             )
         }
     }
