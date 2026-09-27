@@ -14,7 +14,7 @@ import java.time.format.DateTimeFormatter
 class DateTimeTool(private val context: ToolContext) : Tool {
     override val spec: ToolSpec = ToolSpec(
         name = "current_time",
-        description = "获取当前日期与时间。可选参数 timeZone（如 Asia/Shanghai）、pattern（如 yyyy-MM-dd HH:mm:ss）",
+        description = "获取当前日期与时间（现在几点、今天几号）。可选参数 timeZone（如 Asia/Shanghai）、pattern（如 yyyy-MM-dd HH:mm:ss）",
         parameters = listOf(
             ToolParameter("timeZone", ToolParamType.STRING, "时区 ID，默认系统时区", required = false),
             ToolParameter("pattern", ToolParamType.STRING, "时间格式，默认 yyyy-MM-dd HH:mm:ss", required = false),

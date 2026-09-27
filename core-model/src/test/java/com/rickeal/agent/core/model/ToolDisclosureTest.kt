@@ -347,4 +347,54 @@ class ToolDisclosureTest {
         assertEquals("file read", HiddenToolCatalog.normalize("FILE\tREAD"))
         assertEquals("", HiddenToolCatalog.normalize("   "))
     }
+
+    // ── 中文分词（bigram，深度评审召回悬崖修复）───────────────────────────
+
+    @Test
+    fun tokenizeSplitsCjkRunsIntoBigrams() {
+        // 「读取文件」→ {读取, 取文, 文件}：与描述的公共子串必然相交。
+        assertEquals(listOf("读取", "取文", "文件"), HiddenToolCatalog.tokenize("读取文件"))
+        // 两字 CJK 段 = 单个 bigram，与旧 split 行为等价（既有用例不回归的根据）。
+        assertEquals(listOf("文件"), HiddenToolCatalog.tokenize("文件"))
+        // 单字 CJK 段保留原字（score 侧 length<2 跳过的既有口径不变）。
+        assertEquals(listOf("写"), HiddenToolCatalog.tokenize("写"))
+    }
+
+    @Test
+    fun tokenizeKeepsNonCjkWholeWords() {
+        // 英文整词不拆字符（拆了会产生单字符误命中）。
+        assertEquals(listOf("file"), HiddenToolCatalog.tokenize("file"))
+        // 混排：CJK bigram 与英文整词分段互不污染。
+        assertEquals(listOf("读取", "取文", "文件", "file"), HiddenToolCatalog.tokenize("读取文件file"))
+        // 大小写归一化发生在 normalize，tokenize 只管切分。
+        assertEquals(listOf("file"), HiddenToolCatalog.tokenize("FILE"))
+    }
+
+    @Test
+    fun searchHitsChinesePhraseWithoutSpaces() {
+        // 深度评审复现实验的零命中代表用例：「读取文件」此前是一个 term，
+        // contains("读取文件") 对该描述 = false → 全项 0 分 → 零命中。
+        val catalog = catalogOf(
+            spec("file_read", "读取沙箱目录内的文本文件", category = "file"),
+            spec("current_time", "获取当前日期与时间（现在几点、今天几号）", category = "utility"),
+            spec("memory_write", "把一条应当长期记住的信息（用户偏好、项目事实、长期约定）写入持久记忆", category = "memory"),
+            spec("clipboard", "读取或写入系统剪贴板。action 取 get 或 set；set 时需要 text", category = "system"),
+        )
+        assertTrue(catalog.search("读取文件").any { it.name == "file_read" })
+        assertTrue(catalog.search("帮我读取文件").any { it.name == "file_read" })
+        assertTrue(catalog.search("现在几点了").any { it.name == "current_time" })
+        assertTrue(catalog.search("我想记住用户的偏好").any { it.name == "memory_write" })
+        assertTrue(catalog.search("把这个复制到剪贴板").any { it.name == "clipboard" })
+    }
+
+    @Test
+    fun searchKeepsSpacedAndEnglishQueryBehavior() {
+        // 既有行为不回归：带空格 / 纯英文 query 与旧 split 分词等价。
+        val catalog = catalogOf(
+            spec("file_write", "把文本写入沙箱目录内的文件", category = "file"),
+        )
+        assertTrue(catalog.search("文件").any { it.name == "file_write" })
+        assertTrue(catalog.search("写入 文件").any { it.name == "file_write" })
+        assertTrue(catalog.search("file").any { it.name == "file_write" })
+    }
 }

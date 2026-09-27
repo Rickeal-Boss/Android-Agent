@@ -60,7 +60,7 @@ class HiddenToolCatalog private constructor(
     fun search(query: String, limit: Int = DEFAULT_LIMIT): List<HiddenToolEntry> {
         val normalizedQuery = normalize(query)
         if (normalizedQuery.isEmpty()) return emptyList()
-        val terms = normalizedQuery.split(' ').filter { it.isNotEmpty() }
+        val terms = tokenize(normalizedQuery)
         val cap = if (limit <= 0) DEFAULT_LIMIT else limit
         return entries
             .map { it to score(it, normalizedQuery, terms) }
@@ -178,6 +178,56 @@ class HiddenToolCatalog private constructor(
          */
         fun normalize(text: String): String =
             text.lowercase(Locale.ROOT).trim().replace(WHITESPACE, " ")
+
+        /**
+         * 检索分词：CJK 连续段按二元组（bigram）切，非 CJK 连续段整词保留。
+         *
+         * 为什么不能用 `split(' ')`：中文没有空格，「读取文件」会成为**一个** term，
+         * `description.contains("读取文件")` 对「读取沙箱目录内的文本文件」= false
+         * → 全项 0 分 → 零命中（深度评审离线复现证实 5 组自然语言 query 全部零命中，
+         * 而 ON_DEMAND 已 shipped —— 这是已发布的召回率悬崖，不是理论风险）。
+         * 二元组把「读取文件」拆成 {读取, 取文, 文件}，与描述的公共子串必然相交。
+         *
+         * 单字 CJK 段保留原字（单字 query 仍有意义；[score] 侧 `term.length < 2`
+         * 的跳过逻辑不变 —— 单字噪音大，与既有口径一致）。
+         * 非 CJK 段（英文工具名/标识符）整词保留不拆字符 —— 拆成单字符会产生
+         * 大量误命中。标点/空白视为词界。
+         */
+        fun tokenize(text: String): List<String> {
+            val out = ArrayList<String>()
+            val cjkRun = StringBuilder()
+            val wordRun = StringBuilder()
+            fun flush() {
+                if (cjkRun.isNotEmpty()) {
+                    val s = cjkRun.toString()
+                    if (s.length == 1) {
+                        out.add(s)
+                    } else {
+                        for (i in 0 until s.length - 1) out.add(s.substring(i, i + 2))
+                    }
+                    cjkRun.setLength(0)
+                }
+                if (wordRun.isNotEmpty()) {
+                    out.add(wordRun.toString())
+                    wordRun.setLength(0)
+                }
+            }
+            for (ch in text) {
+                when {
+                    ch.code in 0x4E00..0x9FFF -> {
+                        if (wordRun.isNotEmpty()) flush()
+                        cjkRun.append(ch)
+                    }
+                    ch.isLetterOrDigit() -> {
+                        if (cjkRun.isNotEmpty()) flush()
+                        wordRun.append(ch)
+                    }
+                    else -> flush()
+                }
+            }
+            flush()
+            return out
+        }
 
         private val WHITESPACE = Regex("\\s+")
     }
