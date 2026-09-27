@@ -11,6 +11,7 @@ import com.rickeal.agent.core.model.ToolSpec
 import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.TokenUsage
 import com.rickeal.agent.core.model.ToolDisclosureMode
+import com.rickeal.agent.core.agent.token.RunTokenLedger
 
 /**
  * 本轮为什么结束。让 UI / 日志能区分「模型自己停了」和「被轮次上限硬截断」。
@@ -153,4 +154,14 @@ data class AgentRequest(
      * 守卫与审批链路（静态标志 ∪ 参数门控 ∪ 效果声明 ∪ [capabilityMode]）。
      */
     val disclosureMode: ToolDisclosureMode = ToolDisclosureMode.FULL,
+    /**
+     * run 级 token 账本（Wave 30，可选）。非 null 时主循环在两处单点回写：
+     * 发送侧记账块结束后 [RunTokenLedger.onSendEstimated]（全仓唯一的
+     * sentTokens → 账本回写点，KDoc 红线见记账块处注释）；引擎回报 usage 后
+     * [RunTokenLedger.onEngineUsage]。账本是 [com.rickeal.agent.core.agent.RunState.sentTokens]
+     * 的**读侧投影**，不替代不改动记账块本身（Wave 29 A1 刚终审的结构不动）。
+     * null = 不记账（与历史行为一致）。子 run 应保持 null：子 run 独立短命，
+     * 不进父 run 账本（与审批缓存「子 run 不继承」同一隔离纪律）。
+     */
+    val tokenLedger: RunTokenLedger? = null,
 )

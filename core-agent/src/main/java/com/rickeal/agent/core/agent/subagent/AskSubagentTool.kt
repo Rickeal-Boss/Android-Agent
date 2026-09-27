@@ -203,6 +203,8 @@ class AskSubagentTool(
             // 继承父披露模式（Wave 27）：不继承的话，子 run 的提示词仍会带上完整工具
             // 清单，主 run 收窄的隐藏面被静默还原（详见 ParentContext.disclosureMode）。
             disclosureMode = parent.disclosureMode,
+            // tokenLedger 保持默认 null（Wave 30）：子 run 独立短命，不进父 run 账本
+            //（与审批缓存「子 run 不继承」同一隔离纪律，见 AgentRequest.tokenLedger KDoc）。
         )
 
         // Actor 上下文累积：任务本身 + 子 run 提交的所有消息（含工具调用与结果）

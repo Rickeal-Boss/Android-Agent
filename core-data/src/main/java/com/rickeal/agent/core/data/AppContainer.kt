@@ -24,6 +24,8 @@ import com.rickeal.agent.core.agent.subagent.AskSubagentTool
 import com.rickeal.agent.core.agent.subagent.BuiltInSubagents
 import com.rickeal.agent.core.agent.subagent.SubagentRegistry
 import com.rickeal.agent.core.agent.subagent.SubagentSessionStore
+import com.rickeal.agent.core.agent.token.InMemoryRunTokenLedger
+import com.rickeal.agent.core.agent.token.RunTokenLedger
 import com.rickeal.agent.core.engine.DefaultEngineFactory
 import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
@@ -127,6 +129,23 @@ class AppContainer(
     fun historyStore(conversationId: String): SegmentedHistoryStore =
         historyStores.getOrPut(conversationId) {
             SegmentedHistoryStore.open(historyRoot, conversationId)
+        }
+
+    /**
+     * 按会话缓存的 run 级 token 账本池（Wave 30 RunTokenLedger，historyStores 同款
+     * 池化范式 —— ConcurrentHashMap + getOrPut 逐字同构）。
+     *
+     * 账本按会话聚合（「切会话再切回」复用同一实例），run 级快照由 AgentRunner
+     * 经 `AgentRequest.tokenLedger` 单点回写（见 [RunTokenLedger] KDoc 的接线纪律）。
+     *
+     * 生命周期：实例随 AppContainer 存活；会话删除后残留一个空账本对象，
+     * 无泄漏、不值得加失效回调（与 [historyStores] 的既有结论同口径）。
+     */
+    private val tokenLedgers = java.util.concurrent.ConcurrentHashMap<String, RunTokenLedger>()
+
+    fun tokenLedger(conversationId: String): RunTokenLedger =
+        tokenLedgers.getOrPut(conversationId) {
+            InMemoryRunTokenLedger()
         }
 
     /** 模型下载目录（`externalFilesDir/Download`，DownloadManager 的落盘处）。 */

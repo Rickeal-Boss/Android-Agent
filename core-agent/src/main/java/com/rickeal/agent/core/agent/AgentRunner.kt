@@ -572,6 +572,16 @@ class AgentRunner(
                 }
                 state.lastCid = request.conversationId
 
+                // RunTokenLedger 回写（Wave 30）：sentTokens 的读侧投影。⚠️ 下方这一行
+                // 是**全仓唯一的 sentTokens → 账本回写点** —— 记账块今后若新增写点
+                // （全量/增量之外的新分支、新的兜底路径），必须在本处之后同步回写，
+                // 否则 UI / 断路器（TokenBudget）消费的账本口径会与 sentTokens 静默漂移。
+                // 投影语义：onSendEstimated 收「当前累计总量」覆盖写，非增量；压缩触发
+                // 全量重记使累计值回落时，账本如实镜像（不做「只增不减」二次加工）。
+                // 不替代 RunState.sentTokens：记账块本体是 Wave 29 A1 刚终审的结构，
+                // 账本只在其后镜像（方案 §2.3 裁决 B）。
+                request.tokenLedger?.onSendEstimated(state.sentTokens)
+
                 val generation = runGenerationRound(
                     kind = kind,
                     loadConfig = loadConfig,
@@ -600,6 +610,10 @@ class AgentRunner(
                     return
                 }
                 if (accumulator.usage != null) state.lastUsage = accumulator.usage
+                // 引擎回报侧回写（Wave 30）：与发送侧估算（上方记账块后的
+                // onSendEstimated）口径分离 —— 这里只进引擎真实回报的
+                // prompt/completion；usage 为 null（引擎未回报）时实现方跳过。
+                request.tokenLedger?.onEngineUsage(accumulator.usage)
                 state.lastModelText = accumulator.text
 
                 val nativeCalls = accumulator.toolCalls()
