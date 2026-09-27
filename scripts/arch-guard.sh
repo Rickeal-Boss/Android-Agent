@@ -72,8 +72,11 @@ check "core-model 无 android/androidx 依赖" \
 # 4) 禁止被明令禁止的依赖（.kts 字面量 + gradle 版本目录双覆盖）
 #    C 增补：版本目录（libs.versions.toml）声明的依赖在 .kts 里只剩 libs.xxx 访问器，
 #    只扫 .kts 时 retrofit/koin 换个声明方式就完全失明 —— .toml 必须同扫。
-check "禁止的依赖（KSP/Room/Hilt/Koin/Retrofit/Coil，含版本目录）" \
-  bash -c 'grep -rn "androidx\.room\|com\.google\.dagger\|io\.insert-koin\|org\.koin\|com\.squareup\.retrofit\|io\.coil-kt\|com\.google\.devtools\.ksp" --include="*.kts" --include="*.toml" '"${EXCL[*]}"' .'
+#    Wave 30 增补：app.cash.sqldelight 走 Gradle 插件 codegen（无 KSP/Kapt 字面），
+#    上述坐标拦不住它 —— 它属于「被禁的那一类」（生成物无法本地预演），
+#    显式入列堵住守卫盲区（三项决策建议复评 v4 ②）。
+check "禁止的依赖（KSP/Room/Hilt/Koin/Retrofit/Coil/SQLDelight，含版本目录）" \
+  bash -c 'grep -rn "androidx\.room\|com\.google\.dagger\|io\.insert-koin\|org\.koin\|com\.squareup\.retrofit\|io\.coil-kt\|com\.google\.devtools\.ksp\|app\.cash\.sqldelight" --include="*.kts" --include="*.toml" '"${EXCL[*]}"' .'
 
 # 5) 全仓禁网络栈（纯端侧收敛：远程引擎已整体移除，任何直连网络栈的代码
 #    都是对「模型任务不出设备」承诺的破坏）。android.net.Uri / ConnectivityManager
