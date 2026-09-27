@@ -45,19 +45,19 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 
 ## 特性
 
-| 类别 | 能力 | 状态 |
-|---|---|---|
-| 🧠 **本地推理** | 端侧加载 `.litertlm` / `.task` 模型，CPU / GPU / NPU 后端可选 | 规划中 |
-| 👁 **多模态** | 文本 + 图片 + 音频输入（Gemma 3n 要求 vision=GPU、audio=CPU） | 规划中 |
-| 🔧 **工具调用** | 内置工具集 + 自定义工具，模型自主决定是否调用 | 规划中 |
-| 💭 **思考模式** | `enable_thinking` 开关，独立渲染 `thought` 通道内容 | 规划中 |
-| 🎛 **参数调节** | topK / topP / temperature / maxTokens / system prompt 全可调 | 规划中 |
-| 🌐 **远程后端** | ~~可选接入远程模型服务（OkHttp + SSE 流式）~~ 已移除（云端 API 整体删除，现为纯端侧） | 已移除 |
-| 💾 **会话管理** | 多会话持久化，DataStore + JSON，支持导入导出 | 规划中 |
-| ✨ **Liquid Glass UI** | Compose 液态玻璃设计系统（基于 Kyant0/AndroidLiquidGlass 移植改造，见 [NOTICE](NOTICE)）：背景模糊、折射高光、内描边、噪声微纹理、弹性动效 | 规划中 |
-| 🔌 **模型市场** | 模型清单管理、下载状态、能力探测（speculative decoding 等） | 规划中 |
+| 类别 | 能力 | 代码状态 | 验证状态 |
+|---|---|---|---|
+| 🧠 **本地推理** | 端侧加载 `.litertlm` / `.task` 模型，CPU / GPU / NPU 后端可选 | ✅ 已落地 | CPU/GPU 可用；**NPU 未实测** |
+| 👁 **多模态** | 文本 + 图片 + 音频输入（Gemma 3n 要求 vision=GPU、audio=CPU） | ✅ 已落地 | 图/音链路通；**VL+GPU 组合未实测** |
+| 🔧 **工具调用** | 内置工具集，模型自主决定是否调用；审批闸门 + 能力档位 + 按需披露 | ✅ 已落地 | 走文本协议；原生 tool 通道未启用 |
+| 💭 **思考模式** | `enable_thinking` 开关，独立渲染 `thought` 通道内容 | ✅ 已落地 | `thought` 通道已通 |
+| 🎛 **参数调节** | topK / topP / temperature / maxTokens / system prompt 全可调 | ✅ 已落地 | — |
+| 🌐 **远程后端** | ~~可选接入远程模型服务（OkHttp + SSE 流式）~~ 已移除（云端 API 整体删除，现为纯端侧） | ⛔ 已移除 | — |
+| 💾 **会话管理** | 多会话持久化（DataStore + JSON），崩溃恢复 | ⚠️ 部分 | 持久化 + 恢复已落地；**导入导出未实现** |
+| ✨ **Liquid Glass UI** | Compose 液态玻璃设计系统（基于 Kyant0/AndroidLiquidGlass 移植改造，见 [NOTICE](NOTICE)）：背景模糊、折射高光、内描边、噪声微纹理、弹性动效 | ✅ 已落地 | 底层可降级（API 31~32 / 无 RuntimeShader） |
+| 🔌 **模型市场** | 模型清单管理、下载状态、能力探测（speculative decoding 等） | ✅ 已落地 | 13+ 官方预设 + 双镜像；直链下载依赖系统 DownloadManager |
 
-> 状态说明：仓库刚开荒，模块正在逐步落地。上表为设计目标，实际进度见 [路线图](#路线图) 与各模块代码。
+> 状态说明：**「代码状态」= 代码实际状态；「验证状态」= 真机验证程度，未标注项表示尚无真机数据**。本项目刻意区分"代码完备"与"真机验证过"——后者只有真机数据才能背书。实际进度见 [路线图](#路线图) 与各模块代码。
 
 ---
 
@@ -210,7 +210,7 @@ Android-Agent/
 ├── app/                          # 应用壳：Application / MainActivity / NavHost / DI 组装
 │   └── proguard-rules.pro        # R8 规则（保留 litertlm / serialization / Compose）
 ├── core-model/                   # 纯领域模型 + 序列化 + 纯算法（无 Android / Compose 依赖）
-├── core-engine/                  # 引擎抽象 + LiteRT-LM 实现 + OpenAI 兼容实现 + 能力探测
+├── core-engine/                  # 引擎抽象 + LiteRT-LM 实现 + 能力探测
 ├── core-agent/                   # Agent 循环、工具注册中心、内置工具、上下文压缩
 ├── core-data/                    # DataStore + JSON 持久化 + 仓库 + AppContainer + CompositionLocal
 ├── core-design/                  # Liquid Glass 设计系统（tokens / 颜色 / 动效 / 组件）
@@ -233,7 +233,7 @@ Android-Agent/
 |---|---|---|---|
 | `:app` | `com.rickeal.agent` | 应用壳：Application / MainActivity / NavHost / DI 组装 | 全部 |
 | `:core-model` | `com.rickeal.agent.core.model` | **纯领域模型 + 序列化 + 纯算法**，出度 0 | 无 |
-| `:core-engine` | `com.rickeal.agent.core.engine` | 引擎抽象 + LiteRT-LM 本地实现 + OpenAI 兼容实现 + 能力探测 | `:core-model` |
+| `:core-engine` | `com.rickeal.agent.core.engine` | 引擎抽象 + LiteRT-LM 本地实现 + 能力探测 | `:core-model` |
 | `:core-agent` | `com.rickeal.agent.core.agent` | Agent 循环（思考 → 工具调用 → 观察 → 继续）、工具注册中心、上下文压缩 | `:core-model`、`:core-engine` |
 | `:core-data` | `com.rickeal.agent.core.data` | DataStore + JSON 文件持久化 + 仓库 + **AppContainer + CompositionLocal** | `:core-model` |
 | `:core-design` | `com.rickeal.agent.core.design` | Liquid Glass 设计系统（tokens / 颜色 / 动效 / 组件）+ 窗口尺寸自适应，**纯视觉、出度 0** | 无 |
