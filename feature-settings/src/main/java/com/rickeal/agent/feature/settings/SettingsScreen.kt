@@ -104,6 +104,7 @@ fun SettingsScreen(
                 // Wave4：工具与记忆已提升为独立一级页签，本页只留全局偏好与低频入口。
                 subtitle = "主题 · 推理参数 · 高级",
                 modifier = Modifier.statusBarsPadding(),
+                titleAlignment = Alignment.CenterHorizontally,
             )
         },
     ) { _ ->

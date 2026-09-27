@@ -73,6 +73,7 @@ fun StorageScreen(
                 title = "存储空间",
                 subtitle = if (state.loading) "统计中…" else "共占用 ${formatBytes(state.totalBytes)}",
                 modifier = Modifier.statusBarsPadding(),
+                titleAlignment = Alignment.CenterHorizontally,
                 navigationIcon = {
                     // pressOnly：顶栏图标位于 GlassTopBar 自己的玻璃之上（见 GlassIconButton KDoc）。
                     GlassIconButton(

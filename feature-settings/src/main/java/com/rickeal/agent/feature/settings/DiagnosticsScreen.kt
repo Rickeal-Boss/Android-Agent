@@ -1,5 +1,6 @@
 package com.rickeal.agent.feature.settings
 
+import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +42,8 @@ import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.liquid.platform.isRenderEffectSupported
+import com.rickeal.agent.core.design.liquid.platform.isRuntimeShaderSupported
 import com.rickeal.agent.core.model.AgentLog
 import com.rickeal.agent.core.model.AgentLogLevel
 import com.rickeal.agent.core.model.AgentLogStore
@@ -96,6 +99,7 @@ fun DiagnosticsScreen(
                 title = "诊断信息",
                 subtitle = "内存 ${snapshot.size} 条 · 磁盘 ${persisted.size} 条",
                 modifier = Modifier.statusBarsPadding(),
+                titleAlignment = Alignment.CenterHorizontally,
                 navigationIcon = {
                     // pressOnly：顶栏图标位于 GlassTopBar 自己的玻璃之上，再叠玻璃会浑浊、
                     // 也会复现「镜面高光从边缘溢出盖住标题」的问题（详见 GlassIconButton KDoc）。
@@ -157,6 +161,51 @@ fun DiagnosticsScreen(
                             modifier = Modifier.padding(start = 10.dp),
                         )
                     }
+                }
+            }
+
+            /* ------------------------------------------ 玻璃渲染能力（折射降级诊断） */
+            // 为什么 API 直读而不是查日志：Lens.kt 的折射降级日志在 release 包会被
+            // R8 -assumenosideeffects 整条删除（见 Lens.kt:139-140），诊断页不能依赖日志。
+            // 这三项都是设备能力的客观事实，不随参数变化，因此放在最上面先给结论。
+            val sdkInt = Build.VERSION.SDK_INT
+            val runtimeShader = isRuntimeShaderSupported()
+            GlassCard(contentPadding = PaddingValues(14.dp)) {
+                Column {
+                    Text(
+                        text = "玻璃渲染能力",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = colors.onGlass,
+                    )
+                    Text(
+                        text = "设备 Android $sdkInt（${Build.VERSION.RELEASE}）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    CapabilityRow(
+                        label = "折射（液态玻璃）",
+                        supported = runtimeShader,
+                        supportedText = "支持（完整折射）",
+                        unsupportedText = "不支持 —— 仅模糊，需 Android 13+",
+                    )
+                    CapabilityRow(
+                        label = "背景模糊",
+                        supported = isRenderEffectSupported(),
+                        supportedText = "支持",
+                        unsupportedText = "不支持（需 Android 12+）",
+                    )
+                    Text(
+                        text = if (runtimeShader) {
+                            "本机为完整折射：玻璃边缘有厚度弯折与色散，这是正常形态。"
+                        } else {
+                            "本机不支持 AGSL 折射，玻璃已降级为纯模糊 —— 这不是参数问题，" +
+                                "折射带 / 强度 / 底色调什么都调不出来，也不是 bug。"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
                 }
             }
 
@@ -247,6 +296,35 @@ private fun LogRow(log: AgentLog) {
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
+    }
+}
+
+/** 能力行：左侧名称 + 右侧「支持/不支持」结论，配色沿用本页日志级别的既有口径。 */
+@Composable
+private fun CapabilityRow(
+    label: String,
+    supported: Boolean,
+    supportedText: String,
+    unsupportedText: String,
+) {
+    val colors = LocalGlassColors.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.onGlass,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = if (supported) supportedText else unsupportedText,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (supported) colors.onGlassMuted else colors.warning,
+        )
     }
 }
 

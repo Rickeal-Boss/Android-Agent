@@ -77,6 +77,7 @@ fun LegalScreen(
                 title = "条款与授权",
                 subtitle = "你已同意的内容与原文入口",
                 modifier = Modifier.statusBarsPadding(),
+                titleAlignment = Alignment.CenterHorizontally,
                 navigationIcon = {
                     // pressOnly：顶栏图标位于 GlassTopBar 自己的玻璃之上（见 GlassIconButton KDoc）。
                     GlassIconButton(

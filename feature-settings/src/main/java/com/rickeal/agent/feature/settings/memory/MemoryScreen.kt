@@ -85,6 +85,7 @@ fun MemoryScreen(
                 title = "记忆",
                 subtitle = "长期记忆 · 跨会话沉淀 · 人工可编辑",
                 modifier = Modifier.statusBarsPadding(),
+                titleAlignment = Alignment.CenterHorizontally,
             )
         },
     ) { _ ->
