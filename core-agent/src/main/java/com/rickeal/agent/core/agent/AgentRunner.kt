@@ -585,7 +585,6 @@ class AgentRunner(
                     working.addAll(window)
                 }
 
-                var accumulator = StreamAccumulator()
                 // 轮内流式重复检测器（Wave 19 P0，来源见 StreamRepetitionDetector KDoc）。
                 // 每轮新建一个（放 while(true) 重试循环**外**、accumulator 旁）；重试路径
                 // 换干净累加器时同步 reset，避免把上次失败尝试的句子计数带进重试。
@@ -595,9 +594,6 @@ class AgentRunner(
                 // echoCorpus 恒非空（兜底含停止条件段），takeIf 仅为语义显式；系统消息
                 // 的发送内容用的是 systemText（逐字节与旧实现一致），两者在此分道。
                 val detector = StreamRepetitionDetector(systemPrompt = echoCorpus.takeIf { it.isNotBlank() })
-                // 本轮生成是否被轮内重复检测截断：while(true) 重试循环内置位，
-                // 生成后流程消费（处置分支 / finishReason 标记）。
-                var intraStreamLoop = false
                 val generationRequest = GenerationRequest(
                     // 发出去之前做一次配对清洗：压缩可能切掉工具组的一半，这里补上最后一道保险，
                     // 避免 provider 收到「有 tool 结果没 tool_call」而报 400。
@@ -632,119 +628,22 @@ class AgentRunner(
                 }
                 lastCid = request.conversationId
 
-                // 生成失败同样「清理 + 重试一次」：本地引擎的 native 句柄一旦失效，
-                // 缓存里的实例不会自愈，只有换新实例重新 load 才能恢复（对齐官方 gallery 的
-                // cleanUpAndReinitialize）。严格只重试一次 —— 坏模型/坏配置重试多少次都一样，
-                // 无限重试只会把失败拖成「永远在转圈」。
-                var generationAttempt = 0
-                // 重试路径发生过 rebuildEngine（引擎整体换新，Conversation 从零）→
-                // 重试成功后必须 bump 版本让下一轮记账走全量分支（严质衡审查 P1-2）。
-                var generationRetried = false
-                while (true) {
-                    // 每次生成都重新解析引擎引用（不能依赖上一轮的 engine 变量）：
-                    // 嵌套子 run（ask_actor）在父 run 的工具阶段内运行，若子 run 内部
-                    // 走了 rebuildEngine（evict+close 旧实例），父 run 手里那个引用
-                    // 已经被 close，下一轮 generateStream 必失败一次、且再次 rebuild
-                    // 会把子 run 刚建好的实例又挤掉 —— 一次故障放大成三次全量重载
-                    // （4B 模型每次数十秒）。EngineFactory.create 是缓存型查询，
-                    // 每轮取最新缓存实例的成本可忽略。
-                    engine = engineFactory.create(kind)
-                    try {
-                        engine.generateStream(generationRequest).collect { chunk ->
-                            accumulator.append(chunk)
-                            // 检测器只消费增量 delta（O(delta)，无全文扫描）：text / thinking
-                            // 两条流各自独立判定，命中即抛 StreamLoopException 提前终止本次
-                            // 生成 —— 已产出的文本保留在 accumulator（deepseek-harness
-                            // agent.ts:428-460 的 interrupted blocks 语义）。
-                            if (chunk.textDelta.isNotEmpty()) {
-                                emit(AgentEvent.TextDelta(chunk.textDelta))
-                                when (val verdict = detector.observeText(chunk.textDelta)) {
-                                    is StreamRepetitionDetector.Verdict.LoopDetected ->
-                                        throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
-                                    StreamRepetitionDetector.Verdict.Ok -> Unit
-                                }
-                            }
-                            if (chunk.thinkingDelta.isNotEmpty()) {
-                                emit(AgentEvent.ThinkingDelta(chunk.thinkingDelta))
-                                when (val verdict = detector.observeThinking(chunk.thinkingDelta)) {
-                                    is StreamRepetitionDetector.Verdict.LoopDetected ->
-                                        throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
-                                    StreamRepetitionDetector.Verdict.Ok -> Unit
-                                }
-                            }
-                        }
-                        break
-                    } catch (loop: StreamLoopException) {
-                        // 轮内重复 ≠ 生成失败：**不** rebuildEngine、**不** generationAttempt++、
-                        // **不** continue 重试 —— 坏的不是引擎是模型的输出内容，重试只会把
-                        // 同一个循环再跑一遍。直接 break 落到「生成后」流程（accumulator 已含
-                        // 部分文本，由下方处置分支分流）。引擎侧 finally 会 cancelProcess +
-                        // conversationDirty（LiteRtLmEngine.kt:512-521），下一轮自动重建会话，
-                        // 属预期 —— 上下文一致性由全量重放保证。
-                        AgentLogStore.warn(
-                            "轮内重复检测触发（thinking=${loop.inThinking}），已提前终止本次生成并保留已产出文本"
-                        )
-                        intraStreamLoop = true
-                        break
-                    } catch (t: Throwable) {
-                        if (t is CancellationException) {
-                            // settled("Cancelled") 由 executeBody 外层统一收尾（NonCancellable）——
-                            // 协程已在取消态，这里任何普通挂起调用（journal 写 / emit）都会立即
-                            // 再抛 CancellationException，Wave2 在这里写的 journal 一行都没落过，
-                            // emit(Cancelled) 在已取消的 flow 上也不可达（emit 是取消检查点）。
-                            // 直接上抛，把收尾交给唯一出口。
-                            throw t
-                        }
-                        if (generationAttempt >= 1) {
-                            // ERROR：唯一的一次重试也用完了 —— 终态，用户会看到「生成失败」。
-                            // 流式连接被截断（引擎已补 LENGTH 终帧）后重试仍失败的情况也收敛到这里。
-                            AgentLogStore.error(
-                                "生成失败：$kind 重试后仍失败（${t.javaClass.simpleName}: ${t.message}），已放弃本轮"
-                            )
-                            journal?.append(
-                                AgentRunJournal.KIND_SETTLED,
-                                AgentRunJournal.settledPayload("Failed", round),
-                            )
-                            emit(AgentEvent.Failed("生成失败：${t.message}", t))
-                            return
-                        }
-                        generationAttempt++
-                        // 重试前必须换一个干净的累加器：否则会把两次尝试的半截输出拼成一条错误答案。
-                        accumulator = StreamAccumulator()
-                        // 检测器同步清零（与累加器同口径）：上一半尝试的句子计数不属于重试。
-                        detector.reset()
-                        try {
-                            engine = rebuildEngine(kind, loadConfig)
-                        } catch (retry: Throwable) {
-                            if (retry is CancellationException) throw retry
-                            // ERROR：生成失败之后连重建都失败，本轮已经没有恢复手段了。
-                            AgentLogStore.error(
-                                "引擎重载失败：$kind 生成失败后重建也失败（${retry.javaClass.simpleName}: ${retry.message}），已放弃本轮"
-                            )
-                            journal?.append(
-                                AgentRunJournal.KIND_SETTLED,
-                                AgentRunJournal.settledPayload("Failed", round),
-                            )
-                            emit(AgentEvent.Failed("引擎重载失败：${retry.message}", retry))
-                            return
-                        }
-                        // 重建成功、即将重新生成本轮。位置很关键：必须在 rebuildEngine 之后
-                        // （重建失败就直接 Failed 返回，不该先清 UI）、在下一圈 generateStream 之前。
-                        // 重试是在同一个 round 内重跑，不会经过 RoundStarted，UI 若不在此清空流式缓冲，
-                        // 上一轮已经流出的半截文本会和重试的输出叠在一起。
-                        AgentLogStore.warn(
-                            "引擎重建：$kind 生成失败（${t.javaClass.simpleName}: ${t.message}），已换新实例重试本轮"
-                        )
-                        generationRetried = true
-                        emit(AgentEvent.Retrying("生成失败，已重建引擎并重试本轮"))
-                    }
-                }
+                val generation = runGenerationRound(
+                    kind = kind,
+                    loadConfig = loadConfig,
+                    generationRequest = generationRequest,
+                    detector = detector,
+                    round = round,
+                    journal = journal,
+                ) ?: return
+                val accumulator = generation.accumulator
+                val intraStreamLoop = generation.intraStreamLoop
 
                 // 重试成功才走到这里（break 只在 collect 正常结束后执行）。
                 // 新实例的 Conversation 是空的：本轮请求已全量重放（水印为空，buildContents
                 // 全发），而本轮记账在此之前已按增量口径执行 —— bump 版本让下一轮记账
                 // 检测到版本变化、整包重记，与引擎实际持有量重新对齐。
-                if (generationRetried) {
+                if (generation.retried) {
                     contextVersion++
                 }
 
@@ -1295,6 +1194,146 @@ class AgentRunner(
                     terminatedBy = termination,
                 )
             )
+    }
+
+    /** 单轮生成的产物（Wave 29 A1 Step 1）：accumulator / intraStreamLoop 经返回值带出。 */
+    private class GenerationOutcome(
+        val accumulator: StreamAccumulator,
+        val intraStreamLoop: Boolean,
+        val retried: Boolean,
+    )
+
+    /**
+     * 单轮生成的「发送 + 失败重试」循环（Wave 29 A1 Step 1 自 executeBodyUnchecked 外提）。
+     *
+     * 返回 null = 原两处终态失败路径（重试耗尽 / 引擎重载失败，均已 emit Failed 并落
+     * journal），调用方必须 `?: return` 直接结束整个 run —— 与原内联 `return` 语义一致。
+     *
+     * ⚠️ 等价性前提（engine 局部化）：方法内的 `engine` 是本方法的局部变量 —— 每圈
+     * 从 engineFactory 重新 create、重试路径 rebuild 均在本方法内闭环。外层方法里的
+     * engine 引用在生成块之后已无任何读者（全方法核验），且 EngineFactory.create 是
+     * 缓存型查询，下一轮重新 create 拿到的仍是最新的缓存实例，语义不变。
+     */
+    private suspend fun FlowCollector<AgentEvent>.runGenerationRound(
+        kind: EngineKind,
+        loadConfig: EngineLoadConfig,
+        generationRequest: GenerationRequest,
+        detector: StreamRepetitionDetector,
+        round: Int,
+        journal: AgentRunJournal?,
+    ): GenerationOutcome? {
+        var accumulator = StreamAccumulator()
+        // 本轮生成是否被轮内重复检测截断：while(true) 重试循环内置位，
+        // 生成后流程消费（处置分支 / finishReason 标记）。
+        var intraStreamLoop = false
+        // 生成失败同样「清理 + 重试一次」：本地引擎的 native 句柄一旦失效，
+        // 缓存里的实例不会自愈，只有换新实例重新 load 才能恢复（对齐官方 gallery 的
+        // cleanUpAndReinitialize）。严格只重试一次 —— 坏模型/坏配置重试多少次都一样，
+        // 无限重试只会把失败拖成「永远在转圈」。
+        var generationAttempt = 0
+        // 重试路径发生过 rebuildEngine（引擎整体换新，Conversation 从零）→
+        // 重试成功后必须 bump 版本让下一轮记账走全量分支（严质衡审查 P1-2）。
+        var generationRetried = false
+        while (true) {
+            // 每次生成都重新解析引擎引用（不能依赖上一轮的 engine 变量）：
+            // 嵌套子 run（ask_actor）在父 run 的工具阶段内运行，若子 run 内部
+            // 走了 rebuildEngine（evict+close 旧实例），父 run 手里那个引用
+            // 已经被 close，下一轮 generateStream 必失败一次、且再次 rebuild
+            // 会把子 run 刚建好的实例又挤掉 —— 一次故障放大成三次全量重载
+            // （4B 模型每次数十秒）。EngineFactory.create 是缓存型查询，
+            // 每轮取最新缓存实例的成本可忽略。
+            var engine = engineFactory.create(kind)
+            try {
+                engine.generateStream(generationRequest).collect { chunk ->
+                    accumulator.append(chunk)
+                    // 检测器只消费增量 delta（O(delta)，无全文扫描）：text / thinking
+                    // 两条流各自独立判定，命中即抛 StreamLoopException 提前终止本次
+                    // 生成 —— 已产出的文本保留在 accumulator（deepseek-harness
+                    // agent.ts:428-460 的 interrupted blocks 语义）。
+                    if (chunk.textDelta.isNotEmpty()) {
+                        emit(AgentEvent.TextDelta(chunk.textDelta))
+                        when (val verdict = detector.observeText(chunk.textDelta)) {
+                            is StreamRepetitionDetector.Verdict.LoopDetected ->
+                                throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
+                            StreamRepetitionDetector.Verdict.Ok -> Unit
+                        }
+                    }
+                    if (chunk.thinkingDelta.isNotEmpty()) {
+                        emit(AgentEvent.ThinkingDelta(chunk.thinkingDelta))
+                        when (val verdict = detector.observeThinking(chunk.thinkingDelta)) {
+                            is StreamRepetitionDetector.Verdict.LoopDetected ->
+                                throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
+                            StreamRepetitionDetector.Verdict.Ok -> Unit
+                        }
+                    }
+                }
+                break
+            } catch (loop: StreamLoopException) {
+                // 轮内重复 ≠ 生成失败：**不** rebuildEngine、**不** generationAttempt++、
+                // **不** continue 重试 —— 坏的不是引擎是模型的输出内容，重试只会把
+                // 同一个循环再跑一遍。直接 break 落到「生成后」流程（accumulator 已含
+                // 部分文本，由下方处置分支分流）。引擎侧 finally 会 cancelProcess +
+                // conversationDirty（LiteRtLmEngine.kt:512-521），下一轮自动重建会话，
+                // 属预期 —— 上下文一致性由全量重放保证。
+                AgentLogStore.warn(
+                    "轮内重复检测触发（thinking=${loop.inThinking}），已提前终止本次生成并保留已产出文本"
+                )
+                intraStreamLoop = true
+                break
+            } catch (t: Throwable) {
+                if (t is CancellationException) {
+                    // settled("Cancelled") 由 executeBody 外层统一收尾（NonCancellable）——
+                    // 协程已在取消态，这里任何普通挂起调用（journal 写 / emit）都会立即
+                    // 再抛 CancellationException，Wave2 在这里写的 journal 一行都没落过，
+                    // emit(Cancelled) 在已取消的 flow 上也不可达（emit 是取消检查点）。
+                    // 直接上抛，把收尾交给唯一出口。
+                    throw t
+                }
+                if (generationAttempt >= 1) {
+                    // ERROR：唯一的一次重试也用完了 —— 终态，用户会看到「生成失败」。
+                    // 流式连接被截断（引擎已补 LENGTH 终帧）后重试仍失败的情况也收敛到这里。
+                    AgentLogStore.error(
+                        "生成失败：$kind 重试后仍失败（${t.javaClass.simpleName}: ${t.message}），已放弃本轮"
+                    )
+                    journal?.append(
+                        AgentRunJournal.KIND_SETTLED,
+                        AgentRunJournal.settledPayload("Failed", round),
+                    )
+                    emit(AgentEvent.Failed("生成失败：${t.message}", t))
+                    return null
+                }
+                generationAttempt++
+                // 重试前必须换一个干净的累加器：否则会把两次尝试的半截输出拼成一条错误答案。
+                accumulator = StreamAccumulator()
+                // 检测器同步清零（与累加器同口径）：上一半尝试的句子计数不属于重试。
+                detector.reset()
+                try {
+                    engine = rebuildEngine(kind, loadConfig)
+                } catch (retry: Throwable) {
+                    if (retry is CancellationException) throw retry
+                    // ERROR：生成失败之后连重建都失败，本轮已经没有恢复手段了。
+                    AgentLogStore.error(
+                        "引擎重载失败：$kind 生成失败后重建也失败（${retry.javaClass.simpleName}: ${retry.message}），已放弃本轮"
+                    )
+                    journal?.append(
+                        AgentRunJournal.KIND_SETTLED,
+                        AgentRunJournal.settledPayload("Failed", round),
+                    )
+                    emit(AgentEvent.Failed("引擎重载失败：${retry.message}", retry))
+                    return null
+                }
+                // 重建成功、即将重新生成本轮。位置很关键：必须在 rebuildEngine 之后
+                // （重建失败就直接 Failed 返回，不该先清 UI）、在下一圈 generateStream 之前。
+                // 重试是在同一个 round 内重跑，不会经过 RoundStarted，UI 若不在此清空流式缓冲，
+                // 上一轮已经流出的半截文本会和重试的输出叠在一起。
+                AgentLogStore.warn(
+                    "引擎重建：$kind 生成失败（${t.javaClass.simpleName}: ${t.message}），已换新实例重试本轮"
+                )
+                generationRetried = true
+                emit(AgentEvent.Retrying("生成失败，已重建引擎并重试本轮"))
+            }
+        }
+        return GenerationOutcome(accumulator, intraStreamLoop, generationRetried)
     }
 
     /**
