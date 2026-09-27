@@ -23,6 +23,14 @@ fail=0
 
 # 三态检查：$1=名称，其余=命令。退出码语义：
 #   0 且输出空 = OK；输出非空 = 违规；≥2 = 守卫自身故障（必须红，绝不能静默 OK）
+#
+# ⚠️ 契约是「**输出非空 = 违规**」，不是「退出码非 0 = 违规」。写守卫命令时踩过两次：
+#   ① `grep -q`（无输出）失败时退出 1，被 check 判成 OK —— 第 7 条就因此成了
+#      「永远通过」的僵尸规则（实测：把 INTERNET 权限整行删掉，守卫仍全绿退出 0）。
+#   ② 同理，`! grep -q ...` 在「该出现的东西没出现」时也是静默 OK。
+#   结论：**断言「必须存在」的守卫，必须自己 echo 一行**，例如
+#      `bash -c 'grep -q "X" f || echo "f 缺少 X"'`
+#   而断言「必须不存在」的守卫沿用 `grep -rn`（命中即输出），天然合规。
 check() {
   local name="$1"
   shift
@@ -97,8 +105,13 @@ check "全仓禁进程执行（ProcessBuilder/Runtime.exec 两段锚点）" \
 #    模型直链下载从未成功过（详见 AndroidManifest.xml 的 INTERNET 注释）。
 #    纯端侧承诺的实质在代码面：第 5 条禁网络栈 / 第 6 条禁进程执行不变 ——
 #    INTERNET 只用于系统 DownloadManager 替我们取回模型文件。
+#
+#    Wave 30 复审修正：原写法 `grep -q` 让本条成为**僵尸规则** —— grep -q 无输出，
+#    权限被删时退出 1，check() 只看输出，结果「权限不存在」也判 OK（实测删掉整行后
+#    守卫仍全绿退出 0，与 Wave 4 那次真机 SecurityException 的成因正好对上）。
+#    「必须存在」型断言改成失败时自己 echo，见 check() 上方契约说明。
 check "Manifest 有 INTERNET（系统下载链路必需，Wave 12）" \
-  bash -c 'grep -q "android.permission.INTERNET" app/src/main/AndroidManifest.xml'
+  bash -c 'grep -q "android.permission.INTERNET" app/src/main/AndroidManifest.xml || echo "app/src/main/AndroidManifest.xml 缺少 android.permission.INTERNET（系统 DownloadManager 下载模型会 SecurityException，见本条注释）"'
 
 # 7b) 明文流量禁令保留：下载源全部 https（Wave 6 口径：HF/hf-mirror/ModelScope 39 直链实测）。
 check "Manifest 无明文流量（下载源必须 https）" \

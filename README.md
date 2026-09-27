@@ -234,15 +234,18 @@ Android-Agent/
 |---|---|---|---|
 | `:app` | `com.rickeal.agent` | 应用壳：Application / MainActivity / NavHost / DI 组装 | 全部 |
 | `:core-model` | `com.rickeal.agent.core.model` | **纯领域模型 + 序列化 + 纯算法**，出度 0 | 无 |
-| `:core-engine` | `com.rickeal.agent.core.engine` | 引擎抽象 + LiteRT-LM 本地实现 + 能力探测 | `:core-model` |
-| `:core-agent` | `com.rickeal.agent.core.agent` | Agent 循环（思考 → 工具调用 → 观察 → 继续）、工具注册中心、上下文压缩 | `:core-model`、`:core-engine` |
-| `:core-data` | `com.rickeal.agent.core.data` | DataStore + JSON 文件持久化 + 仓库 + **AppContainer + CompositionLocal** | `:core-model` |
+| `:core-engine` | `com.rickeal.agent.core.engine` | 引擎抽象 + LiteRT-LM 本地实现 + 能力探测 + 多模态附件读取 + 加载编排 | 2 |
+| `:core-agent` | `com.rickeal.agent.core.agent` | Agent 循环（思考 → 工具调用 → 观察 → 继续）、工具注册中心、上下文压缩、断路器 / Token 账本 / 计划 / 记忆 / 子代理 | 2,3 |
+| `:core-data` | `com.rickeal.agent.core.data` | DataStore + JSON 文件持久化 + 仓库 + **AppContainer + CompositionLocal** + 通知 / 性能采样 / 热档位治理 | 2,3,4 |
 | `:core-design` | `com.rickeal.agent.core.design` | Liquid Glass 设计系统（tokens / 颜色 / 动效 / 组件）+ 窗口尺寸自适应，**纯视觉、出度 0** | 无 |
 | `:feature-chat` | `com.rickeal.agent.feature.chat` | 对话页 + 参数面板 + 多模态输入 | 2,3,4,5,6 |
-| `:feature-models` | `com.rickeal.agent.feature.models` | 模型库 / 导入 / 加载 / 后端选择 / 能力探测 | 2,3,5,6 |
-| `:feature-settings` | `com.rickeal.agent.feature.settings` | 设置页 + **Agent 工具页（子包 `tools`）** + 记忆管理页 | 2,4,5,6 |
+| `:feature-models` | `com.rickeal.agent.feature.models` | 模型库 / 导入 / 加载 / 后端选择 / 能力探测 | 2,3,4,5,6 |
+| `:feature-settings` | `com.rickeal.agent.feature.settings` | 设置页 + **Agent 工具页（子包 `tools`）** + 记忆管理页 | 2,3,4,5,6 |
 
-依赖无环：`core-model`、`core-design` 出度 0 → `core-engine` / `core-data` → `core-agent` → 三个 feature → `:app` 汇合。
+> 「依赖」列数字 = 本表行序：1 `:app`、2 `:core-model`、3 `:core-engine`、4 `:core-agent`、5 `:core-data`、6 `:core-design`。
+
+依赖无环：`core-model` / `core-design` 出度 0 → `core-engine` → `core-agent` → `core-data` → 三个 feature → `:app` 汇合。
+（注意方向：`core-data` **依赖** `core-agent`，而不是反过来 —— 内核不得反向依赖持久化层，见 `scripts/arch-guard.sh` 第 10 条。）
 
 > 设计系统刻意**不依赖**领域模型：一旦依赖，`ModelDescriptor` 的每次字段变更都会触发全量 UI 重编译，
 > 且 `@Preview` 就必须构造领域对象。需要展示模型信息的卡片在 feature 层组装。
