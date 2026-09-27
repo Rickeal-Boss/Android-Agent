@@ -468,8 +468,18 @@ class LiteRtLmEngine(
         // 只剩最后一条留给 buildContents 作为本次 sendMessageAsync 的载荷。
         // ⚠️ 最后一条**不一定是 USER**：工具轮之后最后一条是 TOOL（AgentRunner 的工具结果
         // 回灌路径）。所以这里只按「末条留给发送、其余全部播种」处理，**不假设角色**。
+        // 唯一例外见下方 tailIsModel：末条是 MODEL 时它会被角色门控拦下不发送，必须一起播种。
         val nonSystem = request.messages.filter { it.role != Role.SYSTEM }
-        val seed = nonSystem.dropLast(1)
+        // ⚠️ 尾部 MODEL 的静默丢失（复审3 §2.4 P2）：`dropLast(1)` 把尾条排除在播种之外，
+        // 而 buildContents 的角色门控（roleChannelActive 时跳过 MODEL）又不会发送它 ⇒ 该条
+        // 回复**既不在 native 上下文里、也不在本次载荷里**，无声消失。它不抛异常、不报错，
+        // 只是模型少看了一句自己的话 —— 完全不可观测。
+        // 现状不可触发（AgentRunner 循环尾恒 TOOL，UI 层尾恒 USER），但任何「尾部是 MODEL」
+        // 的新入口（后台批量续写 / 编辑后重生成 / subagent 复用会话）都会踩中。
+        // 处置：尾部是 MODEL 时**全量播种**（含该条），本次载荷退化为空文本 —— native 侧
+        // 已持有完整历史，空载荷语义与既有 `fresh.isEmpty()` 兜底一致。
+        val tailIsModel = nonSystem.lastOrNull()?.role == Role.MODEL
+        val seed = if (tailIsModel) nonSystem else nonSystem.dropLast(1)
         val seedMessages = seed.mapNotNull { it.toNativeMessage() }
         // 播种进 native 的历史必须**预登记进水印**：否则下一轮 buildContents 会把它们当成
         // 「未发过」再发一遍，native 侧出现重复历史。
