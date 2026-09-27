@@ -78,7 +78,7 @@ class ThermalGovernor(
     /** SEVERE 拒新 run（含 CRITICAL）。只挡 ChatViewModel 主入口，子 run 不挡（R7-2）。 */
     fun canStartRun(): Boolean = tier.value < ThermalTier.SEVERE
 
-    /** MODERATE 及以上的轮间冷却（毫秒）。轮头 Cooldown 决策的取值。 */
+    /** MODERATE 及以上的轮间冷却（毫秒）。轮头 Cooldown 决策的取值（首轮不取，见 [asGate]）。 */
     fun roundCooldownMillis(): Long = if (tier.value >= ThermalTier.MODERATE) 2_000L else 0L
 
     /**
@@ -99,8 +99,12 @@ class ThermalGovernor(
     /**
      * AgentRunner 轮头消费的门视图。档位 → 决策：
      * SEVERE/CRITICAL → Abort（拒新 run 在 ChatViewModel，在跑 run 由这里兜底）；
-     * MODERATE → Cooldown(2s)；LIGHT/NONE → Proceed（LIGHT 的降 maxTokens 在
-     * ChatViewModel 新 run 启动时刻生效，轮头无事可做）。
+     * MODERATE → Cooldown(2s)，**首轮（round == 0）除外**；LIGHT/NONE → Proceed
+     * （LIGHT 的降 maxTokens 在 ChatViewModel 新 run 启动时刻生效，轮头无事可做）。
+     *
+     * 首轮不冷却的理由：「轮间」冷却的定义是两轮之间 —— run 刚起来还没产生热量，
+     * 白等 2s 只拖慢首字；而按 maxRounds 累计（8 轮 = 14s、20 轮 = 38s）是实打实
+     * 吃掉墙钟硬预算（5min）的份额，换不到任何降温收益。
      */
     fun asGate(): RunThermalGate = object : RunThermalGate {
         override fun beforeRound(round: Int): ThermalDecision {
@@ -109,7 +113,8 @@ class ThermalGovernor(
                 current >= ThermalTier.SEVERE -> ThermalDecision.Abort(
                     "设备热状态已达 ${current.name} 档",
                 )
-                current >= ThermalTier.MODERATE -> ThermalDecision.Cooldown(roundCooldownMillis())
+                // round 由 AgentRunner 的 RunState.round 传入（0 起，首轮为 0）。
+                current >= ThermalTier.MODERATE && round > 0 -> ThermalDecision.Cooldown(roundCooldownMillis())
                 else -> ThermalDecision.Proceed
             }
         }

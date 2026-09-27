@@ -27,11 +27,13 @@ private const val STATUS_UNKNOWN = 99
  * 其余是 StateFlow + 纯判定；日志走 AgentLogStore（core-model，纯 Kotlin）。
  * 所以这里不需要 Robolectric / returnDefaultValues。
  *
- * 钉住的是三条最容易在后续改动里被悄悄改坏的语义：
+ * 钉住的是四条最容易在后续改动里被悄悄改坏的语义：
  * 1. **未知档位回落 NONE**（厂商扩展值不猜档 —— 猜档比无干预危险）；
  * 2. **降档只往小压**（maxTokensCap 不得反超基准，否则热档期反而放大输出）；
  * 3. **CRITICAL 释放只在跃迁时触发一次**（重复释放 = 与 onTrimMemory 抢同一条
- *    释放路径，幂等但会刷日志；漏触发才是真问题）。
+ *    释放路径，幂等但会刷日志；漏触发才是真问题）；
+ * 4. **首轮不冷却**（MODERATE 的 2s 是「轮间」冷却 —— 首轮 round==0 必须放行，
+ *    否则 maxRounds 越大越白吃掉墙钟硬预算）。
  */
 class ThermalGovernorTest {
 
@@ -135,10 +137,21 @@ class ThermalGovernorTest {
     }
 
     @Test
-    fun `MODERATE 轮间冷却 2s`() {
+    fun `MODERATE 轮间冷却 2s，但首轮（round 0）不冷却`() {
         val h = Harness()
         h.on(STATUS_MODERATE)
+        // 首轮不冷却：「轮间」冷却的定义是两轮之间，run 刚起来还没产生热量，
+        // 白等 2s 只拖慢首字，还占墙钟硬预算（5min）的份额。
+        assertEquals(ThermalDecision.Proceed, h.governor.asGate().beforeRound(0))
+        assertEquals(ThermalDecision.Cooldown(2_000L), h.governor.asGate().beforeRound(1))
         assertEquals(ThermalDecision.Cooldown(2_000L), h.governor.asGate().beforeRound(3))
+    }
+
+    @Test
+    fun `SEVERE 首轮照样熔断（首轮豁免只针对冷却，不针对熔断）`() {
+        val h = Harness()
+        h.on(STATUS_SEVERE)
+        assertEquals(ThermalDecision.Abort("设备热状态已达 SEVERE 档"), h.governor.asGate().beforeRound(0))
     }
 
     @Test
