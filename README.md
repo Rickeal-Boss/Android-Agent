@@ -72,7 +72,7 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | Kotlin | `2.3.0`（Compose 编译器由 KGP 内置，不单独声明） | nowinandroid main |
 | JDK | `21`（Temurin） | nowinandroid CI |
 | Compose BOM | `2026.02.00` | gallery main |
-| LiteRT-LM | `com.google.ai.edge.litertlm:litertlm-android:0.11.0` | gallery main 已验证 |
+| LiteRT-LM | `com.google.ai.edge.litertlm:litertlm-android:0.17.1` | Wave 20 起（`4a887a2`，对 v0.17.1 tag 逐符号核验后升级） |
 
 > JDK 口径消歧：CI 工具链 JDK 21，字节码目标 17（jvmTarget 17 是正常组合，不是版本冲突）。
 
@@ -102,7 +102,7 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 
 - ❌ 注解处理器：KSP / Kapt / Room / Hilt / Dagger / Koin
 - ❌ 图片加载库（Coil 等）—— 用 `BitmapFactory` + Compose `ImageBitmap`
-- ❌ 网络封装（Retrofit 等）—— 用 OkHttp + 手写 SSE 解析
+- ❌ 网络栈（Retrofit / OkHttp / SSE 等）—— 云端 API 已整体删除，现为**纯端侧零网络依赖**
 - ❌ JitPack 第三方 UI 库 —— Liquid Glass 设计系统随源码内置（引擎原语移植自 Kyant0/AndroidLiquidGlass 并保留其版权头，见 [NOTICE](NOTICE)）
 
 持久化用 **DataStore Preferences + kotlinx.serialization 写 JSON**，DI 用 **纯 Kotlin 手写容器**。
@@ -171,7 +171,7 @@ LiquidAgent **不内置、不分发任何模型权重**。`.litertlm` / `.task` 
 
 如果你的目标模型还没有现成的 `.litertlm`，可以用 Google 的 LiteRT / LiteRT-LM 转换工具链把原始权重转成端侧格式。这条路径依赖 Python 工具链，步骤较多且版本敏感，具体命令请以其官方仓库 README 为准，转换完成后同样得到 `.litertlm` 文件。
 
-> 本项目锁定 `litertlm-android:0.11.0`，因此**优先使用与该版本配套的转换产物**。升级引擎版本属于独立的技术决策，见 [`docs/00-recon-brief.md`](docs/00-recon-brief.md) 第 3 节。
+> 本项目当前使用 `litertlm-android:0.17.1`（Wave 20 升版，对 v0.17.1 tag 源码逐字段核验兼容后才合入），**优先使用与该版本配套的转换产物**。升级引擎版本属于独立的技术决策，见 [`docs/00-recon-brief.md`](docs/00-recon-brief.md) 第 3 节。
 
 ### 3. 导入到设备
 
@@ -216,7 +216,7 @@ Android-Agent/
 ├── core-design/                  # Liquid Glass 设计系统（tokens / 颜色 / 动效 / 组件）
 ├── feature-chat/                 # 对话页 + 参数面板 + 多模态输入
 ├── feature-models/               # 模型库 / 导入 / 加载 / 后端选择 / 能力探测
-├── feature-settings/             # 设置页 + Agent 工具页（子包 tools）+ 远程端点 CRUD
+├── feature-settings/             # 设置页 + Agent 工具页（子包 tools）+ 记忆管理页
 ├── docs/
 │   ├── 00-recon-brief.md         # 侦察简报（版本矩阵与硬约束的事实基线）
 │   ├── 01-architecture.md        # 架构方案与代码级契约
@@ -239,7 +239,7 @@ Android-Agent/
 | `:core-design` | `com.rickeal.agent.core.design` | Liquid Glass 设计系统（tokens / 颜色 / 动效 / 组件）+ 窗口尺寸自适应，**纯视觉、出度 0** | 无 |
 | `:feature-chat` | `com.rickeal.agent.feature.chat` | 对话页 + 参数面板 + 多模态输入 | 2,3,4,5,6 |
 | `:feature-models` | `com.rickeal.agent.feature.models` | 模型库 / 导入 / 加载 / 后端选择 / 能力探测 | 2,3,5,6 |
-| `:feature-settings` | `com.rickeal.agent.feature.settings` | 设置页 + **Agent 工具页（子包 `tools`）** + 远程端点 CRUD | 2,4,5,6 |
+| `:feature-settings` | `com.rickeal.agent.feature.settings` | 设置页 + **Agent 工具页（子包 `tools`）** + 记忆管理页 | 2,4,5,6 |
 
 依赖无环：`core-model`、`core-design` 出度 0 → `core-engine` / `core-data` → `core-agent` → 三个 feature → `:app` 汇合。
 

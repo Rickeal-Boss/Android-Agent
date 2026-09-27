@@ -32,8 +32,8 @@ java -version        # 应包含 21
 
 1. **不引入注解处理器**：禁止 KSP / Kapt / Room / Hilt / Dagger / Koin。
    持久化用 `DataStore Preferences` + `kotlinx.serialization`；DI 用纯 Kotlin 手写容器。
-2. **不擅自升级版本矩阵**（Gradle 9.7.1 / AGP 9.3.2 / Kotlin 2.3.0 / Compose BOM 2026.02.00 / litertlm 0.11.0）。
-   确需变更请在 PR 中说明理由并附 CI 验证结果。
+2. **不擅自升级版本矩阵**（Gradle 9.7.1 / AGP 9.3.2 / Kotlin 2.3.0 / Compose BOM 2026.02.00 / litertlm 0.17.1）。
+   确需变更请在 PR 中说明理由并附 CI 验证结果（litertlm 曾于 Wave 20 由 0.11.0 升至 0.17.1，先例：对目标版本 tag 源码逐符号核验兼容后再合入）。
 3. **每个模块都必须能被 `:app:assembleDebug` 编译通过**。宁可写法朴素，不要「可能更好但没把握」。
 4. **不要提交模型文件**：`*.litertlm` / `*.task` / `*.gguf` / `*.bin` 已在 `.gitignore` 中忽略。
 5. **不要提交密钥**：keystore、`local.properties`、`signing.properties` 均在 `.gitignore` 中。

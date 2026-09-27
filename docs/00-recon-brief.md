@@ -23,7 +23,7 @@ Google 官方 gallery 仓库（main 分支，2026）已经从 MediaPipe `tasks-g
 
 - 依赖坐标：`com.google.ai.edge.litertlm:litertlm-android`
 - 已发布版本：0.8.0 … 0.17.1（latest 0.17.1，2026-09-16 发布）
-- **本项目锁定 `0.11.0`**：因为我们能拿到的、经过 gallery main 分支验证的 API 用法就是这个版本，0.17.x 的 API 是否漂移未知，CI 无法本地预演，风险不可控。升级留 TODO。
+- **当前版本 `0.17.1`**：Wave 20（`4a887a2`）由 0.11.0 升级——对 v0.17.1 tag 源码逐字段核验（SamplerConfig 逐字段相同、11 符号桥接面核验通过）后合入，解锁 RepetitionPenaltyConfig / NoRepeatNgramConfig / ThinkingConfig。升版流程见 `handoff-20260926-211413.md`。
 - 注意：`com.google.mediapipe:tasks-genai` 与 `com.google.ai.edge:litertlm` 均不作为主引擎依赖。
 
 ### 3.1 LiteRT-LM 真实 API（摘录自 gallery `ui/llmchat/LlmChatModelHelper.kt`，可直接照抄用法）
@@ -104,7 +104,7 @@ ExperimentalFlags.enableSpeculativeDecoding / enableConversationConstrainedDecod
 | AGP | 9.3.2 | nowinandroid main |
 | Kotlin | 2.3.0 | nowinandroid main（compose compiler 由 KGP 内置，无需单独声明） |
 | JDK（CI） | 21（temurin） | nowinandroid CI |
-| Compose BOM | 2026.02.00 | gallery main（与 litertlm 0.11.0 同一矩阵验证） |
+| Compose BOM | 2026.02.00 | gallery main（与 litertlm 0.17.1 同一矩阵验证） |
 | androidx.core-ktx | 1.15.0 | gallery |
 | androidx.activity-compose | 1.10.1 | gallery |
 | lifecycle-runtime-ktx | 2.8.7 | gallery |

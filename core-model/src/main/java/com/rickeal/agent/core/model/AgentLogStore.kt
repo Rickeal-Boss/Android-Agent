@@ -39,10 +39,9 @@ object AgentLogStore {
      *  1. `Authorization: Bearer xxx` —— 请求头形态（整体替换，不保留原值）。
      *  2. `sk-xxxxxxxx` —— OpenAI 风格的裸 key（常见于异常消息里）。
      *  3. `?key=xxx` / `&api_key=xxx` / `token: xxx` —— **query 参数形态**。
-     *     这类最容易漏：本仓库的 `RemoteEndpoint.name` 在为空时会回退成 `baseUrl`
-     *     （见 SettingsViewModel.onSaveEndpoint），而 baseUrl 完全可能带 `?key=` 查询串；
-     *     引擎文案 `"${remote.name} 需要填写 API Key"` 又会把这个 name 带进异常消息，
-     *     于是 `t.message` 被日志记录时就成了一条凭据泄露路径。
+     *     这类最容易漏（历史动机：云端通道时代 `RemoteEndpoint.name` 回退 `baseUrl`
+     *     的异常文案泄露路径；云端 API 已整体删除，但规则保留——用户粘贴或模型
+     *     输出的 URL 同样可能带 `?key=` 查询串，进日志/上屏仍是泄露路径）。
      *     第 3 类**只替换参数值、保留参数名与分隔符**，脱敏后仍能看出「是哪个参数」。
      *
      * 大小写不敏感（`Bearer` / `bearer`、`API_KEY` / `api_key` 都覆盖）。
@@ -168,9 +167,10 @@ object AgentLogStore {
      *
      * 为什么必须有它：上屏的文本和进日志的文本**风险等级不同**。日志留在设备上的私有目录里，
      * 而上屏的文案会进截图、进录屏、进用户发给我们的 bug report —— 相当于主动外发。
-     * 真实的泄露路径已经存在：远程引擎的异常文案是 `"${remote.name} 需要填写 API Key"`，
-     * 而 `RemoteEndpoint.name` 为空时会回退成 `baseUrl`，用户自建反代的 baseUrl 完全可能
-     * 带 `?key=sk-xxxx`；这条异常消息被直接上屏，凭据就跟着截图走了。
+     * 历史泄露路径（云端通道时代，已随云端 API 删除）：远程引擎异常文案
+     * `"${remote.name} 需要填写 API Key"`，`RemoteEndpoint.name` 为空回退 `baseUrl`，
+     * 自建反代的 baseUrl 带 `?key=sk-xxxx` 时这条消息上屏凭据就跟着截图走了——
+     * 规则保留：用户粘贴或模型输出的 URL 仍可能带 key 形态查询串。
      *
      * 覆盖三类：`Authorization: Bearer xxx`、`sk-xxxxxxxx`、以及
      * `?key=` / `&api_key=` / `token: xxx` 这类 query 参数形态（**只替换值、保留参数名**，
