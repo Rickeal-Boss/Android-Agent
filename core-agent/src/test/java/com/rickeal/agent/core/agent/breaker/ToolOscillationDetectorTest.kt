@@ -31,6 +31,38 @@ class ToolOscillationDetectorTest {
         assertNull(evaluate("A", "B", "A", "B"))
     }
 
+    @Test
+    fun `A_B 交替第 5 次仍不检出 —— 塌缩门槛严格落在第 6 次`() {
+        // 第 5 次：窗口 5 < 6，distance 判据仍因周期 2 抓不住。
+        assertNull(evaluate("A", "B", "A", "B", "A"))
+    }
+
+    @Test
+    fun `同参连发 6 次 —— 判据二以 distinct 1 检出（与旧同参硬护栏的重叠面）`() {
+        // 旧护栏在第 3 次起「忽略不执行」，但忽略的调用同样进历史（追加在判定
+        // 之前），所以累计第 6 次会先被本判据以「1 个选项」判死 —— 归因是
+        // 振荡而非同参重复，属已知重叠面。
+        val evidence = evaluate("A", "A", "A", "A", "A", "A")
+        assertTrue(evidence != null)
+        assertTrue(evidence!!.contains("1 个选项"), evidence)
+    }
+
+    @Test
+    fun `容量 48 满载不使判据失效 —— 全历史 distinct 2 仍检出`() {
+        val seq = MutableList(ToolOscillationDetector.HISTORY_CAPACITY) { i ->
+            if (i % 2 == 0) "A" else "B"
+        }
+        assertTrue(evaluate(*seq.toTypedArray()) != null, "容量满载后 A/B 仍应检出")
+    }
+
+    @Test
+    fun `混合历史后进入 A_B 死循环 —— 当前口径不检出（判据二取全历史 distinct）`() {
+        // 已知盲区（X 光用例）：distinct 取自整个历史，本 run 一旦出现过 ≥3 个
+        // 不同签名，A/B 交替（周期 2，判据一因 distance < MIN_PERIOD 结构性抓不住）
+        // 就再也不会被检出。若判据二改为滑动窗口口径，本断言需随之翻转。
+        assertNull(evaluate("C", "D", "E", "A", "B", "A", "B", "A", "B", "A", "B"))
+    }
+
     // ── 判据一：周期距离 ─────────────────────────────────────────────────────
 
     @Test
@@ -84,6 +116,38 @@ class ToolOscillationDetectorTest {
         assertNull(evaluate("A"))
         assertNull(evaluate("A", "B"))
         assertNull(evaluate("A", "B", "C"))
+        // 判据一实际最小长度是 6（倒数第 3 个位置也要有更早同签名）：4/5 结构性不检出。
+        assertNull(evaluate("A", "B", "C", "A"))
+        assertNull(evaluate("A", "B", "C", "A", "B"))
+    }
+
+    @Test
+    fun `长序列中单次回调旧工具不检出 —— 尾部未构成周期`() {
+        assertNull(evaluate("A", "B", "C", "D", "E", "F", "A"))
+    }
+
+    @Test
+    fun `参数各异的推进序列不检出 —— 周期判据比的是签名不是工具名`() {
+        // 同名工具换参数 ⇒ 签名不同 ⇒ 末尾位置找不到更早同签名。
+        assertNull(
+            evaluate(
+                "read:{\"p\":\"a\"}", "write:{\"p\":\"a\"}", "run",
+                "read:{\"p\":\"b\"}", "write:{\"p\":\"b\"}", "run",
+            ),
+        )
+    }
+
+    @Test
+    fun `换参重试簇 —— 当前口径在累计第 6 次检出（误杀面，待裁定）`() {
+        // read{a} 连发后换参 read{b} 再连发：旧同参护栏在换参时把 streak 重置
+        // （换参重来是既有设计放行的恢复路径，连续失败由 TOOL_FAILURE_STREAK_LIMIT
+        // 维度处置），但全历史 distinct=2 会先被判据二判死，且归因写成「在 2 个
+        // 选项之间打转」而非「工具连续失败」。本用例锁定当前行为，待主理人裁定。
+        val evidence = evaluate(
+            "read:{a}", "read:{a}", "read:{a}", "read:{b}", "read:{b}", "read:{b}",
+        )
+        assertTrue(evidence != null)
+        assertTrue(evidence!!.contains("2 个选项"), evidence)
     }
 
     // ── evidence 可读性 ──────────────────────────────────────────────────────
