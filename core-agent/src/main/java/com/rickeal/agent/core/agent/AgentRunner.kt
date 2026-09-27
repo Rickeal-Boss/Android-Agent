@@ -563,14 +563,17 @@ class AgentRunner(
                 when (val thermal = request.thermalGate?.beforeRound(state.round)) {
                     is ThermalDecision.Cooldown -> delay(thermal.millis)
                     is ThermalDecision.Abort -> {
-                        // C7 先按既有失败终态三段式收口；C9 在此升级为
-                        // trip(ThermalThrottle) + emitBreakerFailed（诊断卡报告）。
-                        journal?.append(
-                            AgentRunJournal.KIND_SETTLED,
-                            AgentRunJournal.settledPayload("Failed", state.round),
+                        // ThermalThrottle trip 回灌（Wave 30 C9）：Abort 决策 → ledger
+                        // trip + 诊断卡报告 —— 与墙钟 / 失败连击 / 振荡同一条
+                        // emitBreakerFailed 四段式终态（C7 的 plain Failed 占位在此升级）。
+                        state.breaker.trip(
+                            BreakerKind.ThermalThrottle,
+                            state.round,
+                            atElapsedMillis = state.elapsedMillis(),
+                            evidence = thermal.evidence,
                         )
                         AgentLogStore.warn("热熔断：${thermal.evidence}（第 ${state.round} 轮轮头）")
-                        emit(AgentEvent.Failed("设备过热保护：${thermal.evidence}，本轮任务已暂停"))
+                        emitBreakerFailed(state, journal, registeredToolNames)
                         return
                     }
                     null, ThermalDecision.Proceed -> Unit

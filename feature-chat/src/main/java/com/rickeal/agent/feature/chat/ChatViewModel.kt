@@ -15,7 +15,6 @@ import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.agent.plan.PlanStep
 import java.io.File
 import com.rickeal.agent.core.data.AppContainer
-import com.rickeal.agent.core.data.thermal.ThermalTier
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.InferenceConfig
@@ -528,10 +527,11 @@ class ChatViewModel(
      * （onSend / onRetry→onSendFrom / onRecover），子 run 不挡 —— 在跑 run 由
      * 轮头 Abort 兜底，语义闭环（R7-2）。返回 null = 放行；非 null = 拒绝文案。
      */
-    private fun thermalRejection(): String? =
-        container.thermalGovernor.tier.value
-            .takeIf { it >= ThermalTier.SEVERE }
-            ?.let { tier -> "设备过热保护中（${tier.name} 档），请等待设备降温后再试" }
+    private fun thermalRejection(): String? {
+        val governor = container.thermalGovernor
+        if (governor.canStartRun()) return null
+        return "设备过热保护中（${governor.tier.value.name} 档），请等待设备降温后再试"
+    }
 
     /**
      * LIGHT 降档：新 run 启动时刻的 maxTokens 上限（对 1024 基准减半，保底 256）。
