@@ -4,7 +4,7 @@ package com.rickeal.agent.core.agent.breaker
  * 诊断卡卡点归因（评审 §3.4 的 Blocker 枚举原样收编）。
  *
  * [template] 是编译期常量，占位符 {tools} / {missing} / {rounds} / {elapsed} 由
- * [buildBottleneckReport] 用 Kotlin 字符串模板渲染 —— **禁止任何模型调用、禁止运行时
+ * [buildBottleneckReport] **单趟扫描**填值 —— **禁止任何模型调用、禁止运行时
  * 拼 LLM 语句**（诊断卡的内容必须可复现、可测试）。
  */
 enum class Blocker(val title: String, val template: String) {
@@ -88,6 +88,12 @@ data class BottleneckReport(
     val suggestions: List<String>,
 )
 
+/** 模板占位符（单趟扫描用）。改动占位符名必须同步 [Blocker] 各 template 与其 KDoc。 */
+private val BLOCKER_PLACEHOLDERS = Regex("\\{(?:tools|missing|rounds|elapsed)\\}")
+
+/** [missing] 最长 char 数 —— 工具报错是自由文本，超长会淹没诊断卡。 */
+private const val MISSING_MAX_CHARS = 80
+
 /**
  * 装配诊断卡（纯函数，可 JVM 单测）。
  *
@@ -113,7 +119,18 @@ fun buildBottleneckReport(
     val lastToolError = ledger.lastFailureError()
     val blocker = resolveBlocker(ledger.trips, engineCause, lastToolError)
     val tools = registeredToolNames.joinToString("、").ifBlank { "（无）" }
-    val missing = lastToolError?.take(80) ?: "未知阻塞（无失败工具记录）"
+    val missing = lastToolError?.take(MISSING_MAX_CHARS) ?: "未知阻塞（无失败工具记录）"
+    // 单趟扫描：占位符只认模板自带的那些。链式 replace 会让先填进去的运行时数据
+    // （尤其 {missing} 的工具报错）再被后续 replace 扫一遍 —— 报错里若自带
+    // "{rounds}" 字面量就会被二次展开。运行时数据只能填坑，不得参与模板解析。
+    val suggestion = BLOCKER_PLACEHOLDERS.replace(blocker.template) {
+        when (it.value) {
+            "{tools}" -> tools
+            "{missing}" -> missing
+            "{rounds}" -> rounds.toString()
+            else -> (elapsedMillis / 1000).toString()
+        }
+    }
     return BottleneckReport(
         task = task,
         rounds = rounds,
@@ -121,13 +138,7 @@ fun buildBottleneckReport(
         triedTools = ledger.attemptSummary(),
         tripped = ledger.trips,
         blocker = blocker,
-        suggestions = listOf(
-            blocker.template
-                .replace("{tools}", tools)
-                .replace("{missing}", missing)
-                .replace("{rounds}", rounds.toString())
-                .replace("{elapsed}", (elapsedMillis / 1000).toString()),
-        ),
+        suggestions = listOf(suggestion),
     )
 }
 
