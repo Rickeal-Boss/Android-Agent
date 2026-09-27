@@ -977,29 +977,7 @@ class AgentRunner(
                     // 判定（静态标志 ∪ 参数门控 ∪ 效果声明 ∪ 能力档位）与执行全部作用在
                     // **目标工具**上 —— 转发不构成任何权限旁路。这是本模式的硬约束，
                     // 改这里必须同步复核（解包失败时给可行动报错，绝不猜目标）。
-                    val call: ToolCall
-                    if (disclosureActive && rawCall.name == DisclosureTools.CALL_TOOL_NAME) {
-                        val unpacked = DisclosureTools.unpackCall(rawCall.argumentsJson)
-                        if (unpacked == null) {
-                            val failed = commitToolMessage(
-                                working,
-                                rawCall,
-                                ToolResult(
-                                    callId = rawCall.id,
-                                    name = rawCall.name,
-                                    ok = false,
-                                    output = "",
-                                    errorMessage = DisclosureTools.UNPACK_ERROR_HINT,
-                                ),
-                                journal,
-                            )
-                            emit(AgentEvent.ToolResultReceived(failed))
-                            continue
-                        }
-                        call = rawCall.copy(name = unpacked.targetName, argumentsJson = unpacked.argumentsJson)
-                    } else {
-                        call = rawCall
-                    }
+                    val call = resolveDisclosureCall(rawCall, disclosureActive, working, journal) ?: continue
                     // ── 同工具+同参调用守卫（ZCode model-anomaly / deepseek
                     // repeat-tool-reminder 形态）────────────────────────────────
                     // 计数在**执行前**：未注册 / denied / 审批失败同样计入 ——
@@ -1035,23 +1013,7 @@ class AgentRunner(
                     // 同一副作用不会被反复触发。放在 toolRegistry 查询之前：
                     // 未注册工具名同样不该被重复打。
                     if (toolCallStreak >= REPEAT_TOOL_CALL_EXEC_LIMIT) {
-                        AgentLogStore.warn(
-                            "同参重复护栏：${call.name} 连续第 $toolCallStreak 次同参调用，忽略不执行"
-                        )
-                        val ignored = commitToolMessage(
-                            working,
-                            call,
-                            ToolResult(
-                                callId = call.id,
-                                name = call.name,
-                                ok = false,
-                                output = "",
-                                errorMessage = "与上一次调用完全相同，已忽略未执行。" +
-                                    "不要再用同一参数重试，请改用其它方式或向用户说明。",
-                            ),
-                            journal,
-                        )
-                        emit(AgentEvent.ToolResultReceived(ignored))
+                        emitRepeatedCallIgnored(call, toolCallStreak, working, journal)
                         continue
                     }
                     // ── 按需披露：search_tools 就地检索（Wave 27）────────────────
@@ -1060,9 +1022,7 @@ class AgentRunner(
                     // 为 current_time 同参连发立的护栏必须同样罩住元工具 —— 否则模型可以
                     // 无限 search 空转，且完全绕过 toolCallStreak 计数。
                     if (disclosureActive && call.name == DisclosureTools.SEARCH_TOOL_NAME) {
-                        val hit = runDisclosureSearch(rawCall, hiddenToolCatalog)
-                        val committedHit = commitToolMessage(working, rawCall, hit, journal)
-                        emit(AgentEvent.ToolResultReceived(committedHit))
+                        emitDisclosureSearch(rawCall, hiddenToolCatalog, working, journal)
                         continue
                     }
                     // 可用性判定必须走**披露面**（registeredToolNames）而不是 registry 的存在性：
@@ -1073,34 +1033,14 @@ class AgentRunner(
                     //  故对既有行为零影响）。
                     val tool = if (call.name in registeredToolNames) toolRegistry.get(call.name) else null
                     if (tool == null) {
-                        // 未注册的工具名 = 模型幻觉（或白名单/披露面把它排除了）。把当前可用
-                        // 清单一起记下来，才能区分「模型编了名字」和「工具其实在，只是没启用」。
-                        AgentLogStore.warn(
-                            "调用了未注册的工具：${call.name}；当前可用：${registeredToolNames.joinToString(",")}" +
-                                if (disclosureActive) "（按需披露：隐藏目录 ${hiddenToolCatalog.size} 个）" else ""
-                        )
-                        // ON_DEMAND 下「未注册」这个说法会误导：模型刚检索到的名字**是对的**，
-                        // 它只是不该直接调用（要先转发）。按模式给不同的可行动文案 ——
-                        // 报错的价值在于告诉模型下一步做什么，而不是复述它做错了什么。
-                        val errorMessage = if (disclosureActive) {
-                            "不能直接调用工具「${call.name}」。请先用 ${DisclosureTools.SEARCH_TOOL_NAME} " +
-                                "确认工具名与参数形状，再用 ${DisclosureTools.CALL_TOOL_NAME} 转发执行。"
-                        } else {
-                            "未注册的工具：${call.name}"
-                        }
-                        val result = commitToolMessage(
-                            working,
+                        emitUnregisteredTool(
                             call,
-                            ToolResult(
-                                callId = call.id,
-                                name = call.name,
-                                ok = false,
-                                output = "",
-                                errorMessage = errorMessage,
-                            ),
+                            disclosureActive,
+                            hiddenToolCatalog.size,
+                            registeredToolNames,
+                            working,
                             journal,
                         )
-                        emit(AgentEvent.ToolResultReceived(result))
                         continue
                     }
                     // ── 审批闸门（Octop tool_guard / ZCode 命令审批语义移植）────
@@ -1137,20 +1077,13 @@ class AgentRunner(
                                     "审批熔断：${call.name} 已连续拒绝 $denialCount 次，本任务内跳过审批直接拒绝"
                                 )
                                 emit(AgentEvent.ToolSkipped(call, "该工具已被多次拒绝，本任务内不再询问"))
-                                val circuit = commitToolMessage(
-                                    working,
+                                emitToolFailure(
                                     call,
-                                    ToolResult(
-                                        callId = call.id,
-                                        name = call.name,
-                                        ok = false,
-                                        output = "",
-                                        errorMessage = "该工具已被用户多次拒绝。本任务内不要再调用它；" +
-                                            "请改用其它方式完成任务，或向用户说明限制。",
-                                    ),
+                                    "该工具已被用户多次拒绝。本任务内不要再调用它；" +
+                                        "请改用其它方式完成任务，或向用户说明限制。",
+                                    working,
                                     journal,
                                 )
-                                emit(AgentEvent.ToolResultReceived(circuit))
                                 // 熔断提醒复用 pendingReminder 单槽，每个工具至多注入一次
                                 // （与「重复回答提醒」同轮竞争时后者让位 —— 熔断是终态信息）。
                                 if (denialReminderSent.add(call.name)) {
@@ -1162,17 +1095,13 @@ class AgentRunner(
                             val handler = request.approvalHandler
                             if (handler == null) {
                                 emit(AgentEvent.ToolSkipped(call, "危险工具需用户授权"))
-                                commitToolMessage(
-                                    working,
+                                // notifyResult = false：保持该分支**既有**语义（只 commit 不 emit 结果事件）。
+                                emitToolFailure(
                                     call,
-                                    ToolResult(
-                                        callId = call.id,
-                                        name = call.name,
-                                        ok = false,
-                                        output = "",
-                                        errorMessage = "该工具需要用户授权后才会执行",
-                                    ),
+                                    "该工具需要用户授权后才会执行",
+                                    working,
                                     journal,
+                                    notifyResult = false,
                                 )
                                 continue
                             }
@@ -1190,20 +1119,13 @@ class AgentRunner(
                                 toolDenialCounts.merge(call.name, 1, Int::plus)
                                 AgentLogStore.info("工具被拒绝：${call.name}")
                                 emit(AgentEvent.ToolSkipped(call, "用户拒绝了该工具调用"))
-                                val denied = commitToolMessage(
-                                    working,
+                                emitToolFailure(
                                     call,
-                                    ToolResult(
-                                        callId = call.id,
-                                        name = call.name,
-                                        ok = false,
-                                        output = "",
-                                        errorMessage = "用户拒绝了该工具调用。不要原样重复这次调用；" +
-                                            "请改用其它方式完成任务，或向用户说明缺了什么。",
-                                    ),
+                                    "用户拒绝了该工具调用。不要原样重复这次调用；" +
+                                        "请改用其它方式完成任务，或向用户说明缺了什么。",
+                                    working,
                                     journal,
                                 )
-                                emit(AgentEvent.ToolResultReceived(denied))
                                 continue
                             }
                             // 用户放行 = 意愿反转，该工具的熔断计数清零。
@@ -1223,19 +1145,7 @@ class AgentRunner(
                         AgentLogStore.warn(
                             "工具参数校验失败：${call.name}（${violations.size} 项）"
                         )
-                        val result = commitToolMessage(
-                            working,
-                            call,
-                            ToolResult(
-                                callId = call.id,
-                                name = call.name,
-                                ok = false,
-                                output = "",
-                                errorMessage = ToolArgsValidator.renderForModel(call.name, violations),
-                            ),
-                            journal,
-                        )
-                        emit(AgentEvent.ToolResultReceived(result))
+                        emitToolFailure(call, ToolArgsValidator.renderForModel(call.name, violations), working, journal)
                         continue
                     }
 
@@ -1528,6 +1438,114 @@ class AgentRunner(
             ok = true,
             output = catalog.renderHits(hits, query),
         )
+    }
+
+    /**
+     * 解析按需披露的转发调用（Wave 27）：把 `call_tool` 的载荷解包成一次**真实工具调用**。
+     *
+     * 返回重定向后的调用；解包失败时就地完成 commit + emit 并返回 **null**（调用方
+     * `?: continue` 结束本轮）。与披露无关的调用原样返回，故 FULL 模式下它是恒等函数
+     * —— 对既有行为零影响。
+     *
+     * ⚠️ 外提为独立方法不是风格偏好：`executeBodyUnchecked` 是整个工具循环体，已逼近
+     * JVM **单方法 64KB bytecode 上限**（Wave 27 实测编译期 `Method too large` 失败）。
+     * 往那个方法里加代码前请先评估体积，**优先外提**。
+     */
+    private suspend fun FlowCollector<AgentEvent>.resolveDisclosureCall(
+        rawCall: ToolCall,
+        disclosureActive: Boolean,
+        working: MutableList<ChatMessage>,
+        journal: AgentRunJournal?,
+    ): ToolCall? {
+        if (!disclosureActive || rawCall.name != DisclosureTools.CALL_TOOL_NAME) return rawCall
+        val unpacked = DisclosureTools.unpackCall(rawCall.argumentsJson)
+        if (unpacked == null) {
+            emitToolFailure(rawCall, DisclosureTools.UNPACK_ERROR_HINT, working, journal)
+            return null
+        }
+        return rawCall.copy(name = unpacked.targetName, argumentsJson = unpacked.argumentsJson)
+    }
+
+    /**
+     * 按需披露的检索执行：检索 → commit → emit 一条链路。
+     *
+     * 检索是纯内存计算（无 IO、无副作用），故不走 registry / 审批 / 并发闸门 ——
+     * 给纯计算套上那些闸门只会凭空增加延迟与弹卡噪音。
+     */
+    private suspend fun FlowCollector<AgentEvent>.emitDisclosureSearch(
+        rawCall: ToolCall,
+        catalog: HiddenToolCatalog,
+        working: MutableList<ChatMessage>,
+        journal: AgentRunJournal?,
+    ) {
+        val committed = commitToolMessage(working, rawCall, runDisclosureSearch(rawCall, catalog), journal)
+        emit(AgentEvent.ToolResultReceived(committed))
+    }
+
+    /** 未注册工具的「不可执行」回灌：日志 + 按披露模式给不同的**可行动**文案。 */
+    private suspend fun FlowCollector<AgentEvent>.emitUnregisteredTool(
+        call: ToolCall,
+        disclosureActive: Boolean,
+        hiddenToolCount: Int,
+        registeredToolNames: Set<String>,
+        working: MutableList<ChatMessage>,
+        journal: AgentRunJournal?,
+    ) {
+        // 把当前可用清单一起记下来，才能区分「模型编了名字」和「工具其实在，只是没启用」。
+        AgentLogStore.warn(
+            "调用了未注册的工具：${call.name}；当前可用：${registeredToolNames.joinToString(",")}" +
+                if (disclosureActive) "（按需披露：隐藏目录 $hiddenToolCount 个）" else ""
+        )
+        // ON_DEMAND 下「未注册」这个说法会误导：模型刚检索到的名字**是对的**，它只是
+        // 不该直接调用（要先转发）。报错的价值在于告诉模型下一步做什么，而不是复述它
+        // 做错了什么 —— 所以按模式给不同文案。
+        val message = if (disclosureActive) {
+            "不能直接调用工具「${call.name}」。请先用 ${DisclosureTools.SEARCH_TOOL_NAME} " +
+                "确认工具名与参数形状，再用 ${DisclosureTools.CALL_TOOL_NAME} 转发执行。"
+        } else {
+            "未注册的工具：${call.name}"
+        }
+        emitToolFailure(call, message, working, journal)
+    }
+
+    /** 同参重复硬护栏（Wave 22 P0）的「已忽略」回灌。 */
+    private suspend fun FlowCollector<AgentEvent>.emitRepeatedCallIgnored(
+        call: ToolCall,
+        streak: Int,
+        working: MutableList<ChatMessage>,
+        journal: AgentRunJournal?,
+    ) {
+        AgentLogStore.warn("同参重复护栏：${call.name} 连续第 $streak 次同参调用，忽略不执行")
+        emitToolFailure(
+            call,
+            "与上一次调用完全相同，已忽略未执行。不要再用同一参数重试，请改用其它方式或向用户说明。",
+            working,
+            journal,
+        )
+    }
+
+    /**
+     * 回灌一条 `ok = false` 的工具结果（commit + 可选 emit）。
+     *
+     * `notifyResult` 默认 true，但「无审批通道」分支必须传 false：它**原本就只 commit
+     * 不 emit**（与该分支同族的熔断/拒绝都会 emit `ToolResultReceived`，唯独它没有）。
+     * 这看起来像既有的不一致，但本波**不顺手改** —— 改它会改变 UI 事件流（工具卡可能
+     * 因此多收到一条结果通知），而那是与本波无关的行为变化。留档待单独评估。
+     */
+    private suspend fun FlowCollector<AgentEvent>.emitToolFailure(
+        call: ToolCall,
+        message: String,
+        working: MutableList<ChatMessage>,
+        journal: AgentRunJournal?,
+        notifyResult: Boolean = true,
+    ) {
+        val result = commitToolMessage(
+            working,
+            call,
+            ToolResult(callId = call.id, name = call.name, ok = false, output = "", errorMessage = message),
+            journal,
+        )
+        if (notifyResult) emit(AgentEvent.ToolResultReceived(result))
     }
 
     /**
