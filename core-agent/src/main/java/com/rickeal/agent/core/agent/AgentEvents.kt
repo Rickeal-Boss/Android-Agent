@@ -8,6 +8,7 @@ import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.TokenUsage
 
 /**
@@ -134,4 +135,11 @@ data class AgentRequest(
      * plan_update 引起的版本变化并发 [AgentEvent.PlanUpdated]；null = 本 run 不感知计划。
      */
     val planStore: com.rickeal.agent.core.agent.plan.AgentPlanStore? = null,
+    /**
+     * 用户给 AI 的**整体能力档位**（Wave 26 / Operit2 四层能力模型裁剪移植）。
+     * 默认 [AiCapabilityMode.WORKSPACE_WRITE] = 与引入档位前的行为逐字节一致
+     * （零行为回归）。[AiCapabilityMode.READ_ONLY] 时，WRITE 效果的工具会在执行前
+     * 追加一次授权请求；档位**只收紧不放宽**，不构成任何提权。
+     */
+    val capabilityMode: AiCapabilityMode = AiCapabilityMode.WORKSPACE_WRITE,
 )

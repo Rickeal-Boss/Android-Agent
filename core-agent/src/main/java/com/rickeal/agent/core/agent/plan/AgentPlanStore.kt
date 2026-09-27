@@ -3,6 +3,7 @@ package com.rickeal.agent.core.agent.plan
 import com.rickeal.agent.core.agent.subagent.SubagentRunContext
 import com.rickeal.agent.core.agent.Tool
 import com.rickeal.agent.core.agent.tools.stringArg
+import com.rickeal.agent.core.model.ToolEffect
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolResult
@@ -224,6 +225,8 @@ abstract class PlanToolBase(
         description = description,
         parameters = parameters,
         category = "plan",
+        // plan_set / plan_update 都改会话级计划仓库（有状态副作用），显式声明 WRITE。
+        effect = ToolEffect.WRITE,
     )
 
     protected suspend fun conversationKey(): String? {

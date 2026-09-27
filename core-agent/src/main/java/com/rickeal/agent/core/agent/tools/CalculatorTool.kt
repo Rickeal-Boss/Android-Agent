@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.agent.tools
 
 import com.rickeal.agent.core.agent.Tool
+import com.rickeal.agent.core.model.ToolEffect
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolResult
@@ -15,6 +16,7 @@ class CalculatorTool : Tool {
             ToolParameter("expression", ToolParamType.STRING, "要计算的表达式", required = true),
         ),
         category = "utility",
+        effect = ToolEffect.READ,
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {

@@ -3,6 +3,7 @@ package com.rickeal.agent.core.agent.tools
 import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.Tool
 import com.rickeal.agent.core.agent.ToolContext
+import com.rickeal.agent.core.model.ToolEffect
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolResult
@@ -72,6 +73,7 @@ class FileReadTool(context: ToolContext) : SandboxedFileTool(context) {
         description = "读取沙箱目录内的文本文件",
         parameters = listOf(param("path", "相对于沙箱目录的文件路径")),
         category = "file",
+        effect = ToolEffect.READ,
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {
@@ -158,6 +160,7 @@ class FileWriteTool(context: ToolContext) : SandboxedFileTool(context) {
         dangerous = true,
         requiresConfirmation = true,
         category = "file",
+        effect = ToolEffect.WRITE,
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {
@@ -203,6 +206,7 @@ class FileListTool(context: ToolContext) : SandboxedFileTool(context) {
         description = "列出沙箱目录内的文件",
         parameters = listOf(param("path", "相对于沙箱目录的子目录，默认根目录", required = false)),
         category = "file",
+        effect = ToolEffect.READ,
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {

@@ -7,11 +7,13 @@ import com.rickeal.agent.core.agent.AgentRunner
 import com.rickeal.agent.core.agent.Tool
 import com.rickeal.agent.core.agent.ToolRegistry
 import com.rickeal.agent.core.model.AgentJson
+import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.Role
+import com.rickeal.agent.core.model.ToolEffect
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolResult
@@ -92,6 +94,9 @@ class AskSubagentTool(
             ),
         ),
         category = "agent",
+        // 子代理 run 可能自己调用工具（含写操作），对主会话而言它是「不确定效果」——
+        // 保守声明 WRITE：只读档位下必须先问用户，绝不替用户默认放行一条未知链路。
+        effect = ToolEffect.WRITE,
         // 子 run 是多轮推理，远超默认 15s 工具超时；单独放宽（executeWithGuard 尊重此值）
         timeoutMillisOverride = DEFAULT_TIMEOUT_MILLIS,
     )
@@ -145,6 +150,13 @@ class AskSubagentTool(
         val conversationId: String?,
         val config: InferenceConfig,
         val model: ModelDescriptor?,
+        /**
+         * 父 run 的 AI 能力档位（Wave 26）。子 run **必须继承**，不能回落到默认档：
+         * 子 run 在本实现里没有审批通道（`approvalHandler = null`），所以档位是唯一
+         * 能拦住它的闸门 —— 若回落，用户设「只读」后只要把写操作交给 ask_actor
+         * 子代理执行，档位就被绕过了。继承只会更保守，不会更宽。
+         */
+        val capabilityMode: AiCapabilityMode = AiCapabilityMode.WORKSPACE_WRITE,
     )
 
     private suspend fun ask(
@@ -177,6 +189,8 @@ class AskSubagentTool(
             // 辅助任务：更少的轮次上限；journal/approval 不接（子 run 不写盘、不弹审批，
             // 危险工具在子 run 中因无审批通道被拒 —— fail-closed）
             policy = AgentPolicy(maxRounds = definition.maxRounds),
+            // 继承父档位（Wave 26）：子 run 无审批通道，档位是唯一能拦住它的闸门。
+            capabilityMode = parent.capabilityMode,
         )
 
         // Actor 上下文累积：任务本身 + 子 run 提交的所有消息（含工具调用与结果）

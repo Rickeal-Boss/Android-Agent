@@ -2,6 +2,7 @@ package com.rickeal.agent.core.agent.tools
 
 import com.rickeal.agent.core.agent.Tool
 import com.rickeal.agent.core.agent.ToolContext
+import com.rickeal.agent.core.model.ToolEffect
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolResult
@@ -19,6 +20,7 @@ class DateTimeTool(private val context: ToolContext) : Tool {
             ToolParameter("pattern", ToolParamType.STRING, "时间格式，默认 yyyy-MM-dd HH:mm:ss", required = false),
         ),
         category = "utility",
+        effect = ToolEffect.READ,
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {

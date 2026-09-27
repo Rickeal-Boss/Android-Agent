@@ -1027,7 +1027,17 @@ class AgentRunner(
                     // ParamGatedTool 提供参数级判据（clipboard set 弹卡 / get 直行）。
                     val paramGated = (tool as? ParamGatedTool)
                         ?.requiresConfirmationFor(call.argumentsJson) == true
-                    val needsApproval = tool.spec.dangerous || tool.spec.requiresConfirmation || paramGated
+                    // ── 能力档位闸门（Wave 26 / Operit2 四层模型裁剪移植）──────────
+                    // 第三类判据，与前两者**正交**：静态标志答「这工具危不危险」，参数门控答
+                    // 「这次参数危不危险」，档位答「用户今天允许 AI 写到哪」。命中时走审批而
+                    // 非硬拒绝 —— 用户仍可单次放行（ReadOnly 是默认收窄，不是牢笼）。
+                    // effect 优先取**本次调用**的动态声明（EffectAwareTool），否则用静态声明；
+                    // 静态默认是 WRITE（fail-closed），所以忘了声明的工具只会更保守。
+                    val effectiveEffect = (tool as? EffectAwareTool)
+                        ?.effectFor(call.argumentsJson) ?: tool.spec.effect
+                    val capabilityGated = request.capabilityMode.requiresApprovalFor(effectiveEffect)
+                    val needsApproval = tool.spec.dangerous || tool.spec.requiresConfirmation ||
+                        paramGated || capabilityGated
                     val autoApproved = tool.spec.dangerous && policy.autoApproveDangerous
                     if (needsApproval && !autoApproved) {
                         // 审批缓存命中 = 用户此前显式授权仍在 TTL 内（同参重试免弹卡）。
@@ -1152,6 +1162,9 @@ class AgentRunner(
                         conversationId = request.conversationId,
                         config = config,
                         model = request.model,
+                        // 档位必须往下传（Wave 26）：子 run 没有审批通道，档位是唯一
+                        // 能拦住它的闸门 —— 不传就等于「只读档位可被 ask_actor 绕过」。
+                        capabilityMode = request.capabilityMode,
                     )
                     val result = withContext(SubagentRunContext(parentContext)) {
                         executeWithGuard(call, tool, policy)

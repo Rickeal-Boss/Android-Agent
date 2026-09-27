@@ -2,15 +2,17 @@ package com.rickeal.agent.core.agent.tools
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import com.rickeal.agent.core.agent.EffectAwareTool
 import com.rickeal.agent.core.agent.ParamGatedTool
 import com.rickeal.agent.core.agent.Tool
 import com.rickeal.agent.core.agent.ToolContext
+import com.rickeal.agent.core.model.ToolEffect
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
 
-class ClipboardTool(private val context: ToolContext) : ParamGatedTool {
+class ClipboardTool(private val context: ToolContext) : ParamGatedTool, EffectAwareTool {
     override val spec: ToolSpec = ToolSpec(
         name = "clipboard",
         description = "读取或写入系统剪贴板。action 取 get 或 set；set 时需要 text",
@@ -19,6 +21,9 @@ class ClipboardTool(private val context: ToolContext) : ParamGatedTool {
             ToolParameter("text", ToolParamType.STRING, "set 时要写入的文本", required = false),
         ),
         category = "system",
+        // 静态声明取保守值 WRITE：只有 action 解析明确为 get 时才由 effectFor 降为 READ。
+        // （若只依赖静态声明，只读档位下连 get 都要弹卡 —— 那是噪音，会训练用户无脑点同意。）
+        effect = ToolEffect.WRITE,
     )
 
     /**
@@ -28,6 +33,17 @@ class ClipboardTool(private val context: ToolContext) : ParamGatedTool {
      */
     override fun requiresConfirmationFor(argumentsJson: String): Boolean =
         runCatching { stringArg(argumentsJson, "action") == "set" }.getOrDefault(true)
+
+    /**
+     * 本次调用的效果声明（Wave 26）：get 是纯读，set 覆写用户剪贴板（可能覆盖正在复制的
+     * 密码/验证码）。与 [requiresConfirmationFor] 的分工：前者答「用户是否要确认这次动作」，
+     * 本方法答「这次动作属于读还是写」——只读档位据此决定是否追加授权。
+     * fail-closed：解析不出 action 时按 WRITE 处理。
+     */
+    override fun effectFor(argumentsJson: String): ToolEffect =
+        runCatching { stringArg(argumentsJson, "action") }
+            .map { if (it == "get") ToolEffect.READ else ToolEffect.WRITE }
+            .getOrDefault(ToolEffect.WRITE)
 
     override suspend fun invoke(argumentsJson: String): ToolResult {
         val manager: ClipboardManager? = context.clipboard
