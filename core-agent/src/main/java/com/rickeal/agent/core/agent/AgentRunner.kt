@@ -165,6 +165,21 @@ private const val DENIAL_CIRCUIT_LIMIT = 2
 private const val TOOL_FAILURE_STREAK_LIMIT = 4
 
 /**
+ * 墙钟软预算（Wave 30 §3.2(a)）：到达即 trip 留痕（run 继续，等待收敛），不中断。
+ * SOFT 幂等由「trips 里已有 WallClockBudget 则不再 trip」保证 —— SOFT 与 HARD
+ * 各一条 evidence，诊断卡里呈现「3min 提醒 → 5min 终止」的完整时间线。
+ */
+private const val WALL_CLOCK_SOFT_MILLIS = 180_000L
+
+/**
+ * 墙钟硬预算：达到即 HARD 熔断（emitBreakerFailed 终态）。
+ * 边界如实申报（方案 §2.7）：轮粒度检查 ⇒ 实际上限 = 硬预算 + 一轮时长
+ * （ask_actor 嵌套一轮可达分钟级）。这是接受的近似 —— 轮内打断需要生成流上的
+ * 取消语义改动，超出本波「机械保守」约束。
+ */
+private const val WALL_CLOCK_HARD_MILLIS = 300_000L
+
+/**
  * 同工具+同参调用守卫阈值（ZCode model-anomaly 形态移植，Wave 19 P0）：连续
  * REPEAT_TOOL_CALL_THRESHOLD 次签名完全相同的调用 → 注入一次提醒。签名经
  * canonical JSON 归一（见 toolCallSignature），key 顺序不同的等价参数同签名。
@@ -502,6 +517,43 @@ class AgentRunner(
 
             while (state.round < policy.maxRounds) {
                 emit(AgentEvent.RoundStarted(state.round, policy.maxRounds))
+
+                // ── 墙钟预算（Wave 30 §2.7）：SOFT 3min 留痕 → HARD 5min 熔断 ──
+                // 检查点在轮头（RoundStarted 之后；B3 的热闸将排在本检查之后，
+                // 顺序：墙钟 → 热闸，失败语义一致）。
+                // 边界如实申报：轮粒度检查 ⇒ 实际上限 = 5min + 一轮时长 —— 接受的
+                // 近似（轮内打断需要生成流上的取消语义改动，超出本波机械保守约束）。
+                val wallClockElapsed = state.elapsedMillis()
+                if (state.breaker.trips.none { it.kind == BreakerKind.WallClockBudget } &&
+                    wallClockElapsed >= WALL_CLOCK_SOFT_MILLIS
+                ) {
+                    // SOFT：只 trip 留痕不中断；幂等由「已有 WallClockBudget 则不再
+                    // trip」保证 —— HARD 到点时会再 trip 一次（两条 evidence 时间线）。
+                    state.breaker.trip(
+                        BreakerKind.WallClockBudget,
+                        state.round,
+                        atElapsedMillis = wallClockElapsed,
+                        evidence = "已运行 ${wallClockElapsed / 1000} 秒，" +
+                            "超过 ${WALL_CLOCK_SOFT_MILLIS / 1000} 秒软预算（继续，等待收敛）",
+                    )
+                    AgentLogStore.warn(
+                        "墙钟软预算：run 已运行 ${wallClockElapsed / 1000}s" +
+                            "（HARD 上限 ${WALL_CLOCK_HARD_MILLIS / 1000}s）"
+                    )
+                }
+                if (wallClockElapsed >= WALL_CLOCK_HARD_MILLIS) {
+                    state.breaker.trip(
+                        BreakerKind.WallClockBudget,
+                        state.round,
+                        atElapsedMillis = wallClockElapsed,
+                        evidence = "已运行 ${wallClockElapsed / 1000} 秒，" +
+                            "达到 ${WALL_CLOCK_HARD_MILLIS / 1000} 秒硬预算",
+                    )
+                    AgentLogStore.error("墙钟硬预算：run 已运行 ${wallClockElapsed / 1000}s，熔断收尾")
+                    emitBreakerFailed(state, journal, registeredToolNames)
+                    return
+                }
+
                 journal?.append(
                     AgentRunJournal.KIND_ROUND_STARTED,
                     AgentRunJournal.roundStartedPayload(state.round, policy.maxRounds),
@@ -599,6 +651,27 @@ class AgentRunner(
                 // 不替代 RunState.sentTokens：记账块本体是 Wave 29 A1 刚终审的结构，
                 // 账本只在其后镜像（方案 §2.3 裁决 B）。
                 request.tokenLedger?.onSendEstimated(state.sentTokens)
+
+                // ── TokenBudget SOFT（Wave 30 §2.7）：压缩没救回来的信号 ─────
+                // 只登记不中断（§3.5：它是「压缩没救回来」的信号，不是熔断判据）。
+                // 预算常量取 config.contextLength × 2 —— run 全生命周期累计口径
+                // （非单轮），保守首版待真机校准；误 trip 只产生 SOFT 日志不中断，
+                // 行为风险≈0。幂等由「已有 TokenBudget 则不再 trip」保证。
+                if (state.sentTokens > config.contextLength * 2L &&
+                    state.breaker.trips.none { it.kind == BreakerKind.TokenBudget }
+                ) {
+                    state.breaker.trip(
+                        BreakerKind.TokenBudget,
+                        state.round,
+                        atElapsedMillis = state.elapsedMillis(),
+                        evidence = "发送侧累计估算 ${state.sentTokens} token，" +
+                            "超过上下文预算（contextLength ${config.contextLength} × 2）",
+                    )
+                    AgentLogStore.warn(
+                        "TokenBudget 软预算：发送侧累计 ${state.sentTokens} token " +
+                            "超出 ${config.contextLength * 2L}，登记不中断（压缩未救回）"
+                    )
+                }
 
                 val generation = runGenerationRound(
                     kind = kind,
@@ -763,6 +836,7 @@ class AgentRunner(
                 policy = policy,
                 state = state,
                 journal = journal,
+                registeredToolNames = registeredToolNames,
             )
     }
 
@@ -1589,6 +1663,7 @@ class AgentRunner(
         policy: AgentPolicy,
         state: RunState,
         journal: AgentRunJournal?,
+        registeredToolNames: Set<String>,
     ) {
         // 循环唯一的正常出口是「模型自己给出最终答案」（modelStopped = true，见上面的 break）；
         // 其余情况都是 while 条件（round < maxRounds）不再成立，即真的耗尽轮次。
@@ -1610,6 +1685,15 @@ class AgentRunner(
         // 终止原因是排查「模型不会停」的第一现场：同样跑满 8 轮，是「自己停了」还是
         // 「被 maxRounds 硬截断」在 UI 上看起来几乎一样，但结论完全不同。
         if (exhausted) {
+            // Wave 30 §2.4：轮次判据补登记 trip —— 既有兜底行为（收尾文案 / 终止
+            // 原因）一字不动，只是把「这是轮次耗尽」的事实同时进断路器账，
+            // 诊断卡的熔断记录里才有一行可呈现。
+            state.breaker.trip(
+                BreakerKind.RoundBudget,
+                state.round,
+                atElapsedMillis = state.elapsedMillis(),
+                evidence = "已运行 ${state.round} 轮（上限 ${policy.maxRounds} 轮）仍无最终答案，按兜底收尾",
+            )
             AgentLogStore.info("轮次耗尽：已跑 ${state.round} 轮（上限 ${policy.maxRounds}），按兜底收尾")
         } else {
             AgentLogStore.info("正常结束：${state.round} 轮，模型自行给出最终答案")
@@ -1625,6 +1709,11 @@ class AgentRunner(
                 rounds = state.round,
                 usage = state.lastUsage,
                 terminatedBy = termination,
+                // Wave 30 §2.8：轮次耗尽路径装配诊断卡（Finished 扩 report 字段，
+                // §2.8 裁决 —— 保持 Finished 不改判 Failed，原文案不动，UI 收到
+                // report 渲染诊断卡）。正常结束 report = null。
+                report = buildBottleneckReportFor(state, journal, registeredToolNames)
+                    .takeIf { exhausted },
             )
         )
     }
