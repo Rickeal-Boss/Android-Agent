@@ -8,9 +8,11 @@ import com.google.ai.edge.litertlm.Conversation as LiteRtConversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.RepetitionPenaltyConfig
+import com.google.ai.edge.litertlm.Role as NativeRole
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.rickeal.agent.core.engine.EngineCapabilities
 import com.rickeal.agent.core.engine.EngineException
@@ -118,7 +120,23 @@ class LiteRtLmEngine(
     private var engine: Engine? = null
     private var conversation: LiteRtConversation? = null
     private var loadedModelPath: String? = null
-    private var loadedMaxTokens: Int = -1
+
+    /**
+     * 加载时锁定的 **KV cache 预算**（token 数）。
+     *
+     * Wave 28 语义修正（「只输出提示词然后胡言乱语」残留的第二条根因链）：litertlm 的
+     * `EngineConfig.maxNumTokens` 是「输入+输出总和 = KV cache 总容量」，**不是输出上限**。
+     * 旧实现把输出上限 `InferenceConfig.maxTokens`（默认 1024）传了进去 —— 系统提示词
+     * （5 段 + 工具清单，中文按 ~1 token/字符即 1500+ token）单独就超出 1024 的 KV，
+     * 首次 prefill 即触发 litertlm 硬报错（"Input token ids are too long"）或提前收尾。
+     * 现改为传 `InferenceConfig.contextLength`（按模型采样档案钳制后 = 转换件 metadata
+     * 的 max_num_tokens，预设内存闸门正是按 KV@4096 预算的）。
+     *
+     * 复用判据随之换轴：KV 预算（contextLength）变化 → 整引擎重建（native 按它分配
+     * KV）；而 maxTokens 只是**逐消息输出上限**（走 `sendMessageAsync(maxOutputToken=)`），
+     * 变更既不重建引擎也不重建会话 —— 用户在参数面板改输出上限立即生效。
+     */
+    private var loadedContextLength: Int = -1
     private var loadedBackend: InferenceBackend? = null
     /**
      * 加载时锁定的采样参数。
@@ -231,7 +249,7 @@ class LiteRtLmEngine(
                 val sameEngine = loaded &&
                     engine != null &&
                     loadedModelPath == modelPath &&
-                    loadedMaxTokens == config.config.maxTokens &&
+                    loadedContextLength == config.config.contextLength &&
                     loadedBackend == config.config.backend &&
                     loadedVisionBackend == resolvedVisionBackend &&
                     loadedAudioBackend == resolvedAudioBackend
@@ -342,7 +360,7 @@ class LiteRtLmEngine(
                         backend = toBackend(attempt.first, config.nativeLibraryDir),
                         visionBackend = attempt.second?.let { toBackend(it, config.nativeLibraryDir) },
                         audioBackend = resolvedAudioBackend?.let { toBackend(it, config.nativeLibraryDir) },
-                        maxNumTokens = config.config.maxTokens,
+                        maxNumTokens = config.config.contextLength,
                         cacheDir = effectiveCacheDir,
                     )
                     try {
@@ -361,7 +379,7 @@ class LiteRtLmEngine(
                         probedSpeculativeDecoding = runCatching {
                             Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
                         }.getOrNull()
-                        loadedMaxTokens = config.config.maxTokens
+                        loadedContextLength = config.config.contextLength
                         loadedBackend = config.config.backend
                         loadedSampling = config.config.sampling
                         // 记**解析后的值**，与 sameEngine 判据同源；记原始配置会让
@@ -403,6 +421,8 @@ class LiteRtLmEngine(
 
     // -------------------------------------------------------- conversation
 
+    /** ExperimentalApi：renderPrefaceIntoString 渲染诊断（Wave 28，仅日志用途，失败静默）。 */
+    @OptIn(ExperimentalApi::class)
     private fun ensureConversation(request: GenerationRequest): LiteRtConversation {
         val currentEngine = engine
             ?: throw EngineException("LiteRT-LM: 引擎未加载，请先 load()")
@@ -480,7 +500,13 @@ class LiteRtLmEngine(
         // 已持有完整历史，空载荷语义与既有 `fresh.isEmpty()` 兜底一致。
         val tailIsModel = nonSystem.lastOrNull()?.role == Role.MODEL
         val seed = if (tailIsModel) nonSystem else nonSystem.dropLast(1)
-        val seedMessages = seed.mapNotNull { it.toNativeMessage() }
+        // 相邻 USER 合并（Wave 28，复审 P1-2）：空文本 MODEL（纯思考无正文/strip 后为空）
+        // 被 toNativeMessage 过滤后，USER 与 TOOL 都映射成 Message.user，在 initialMessages
+        // 里形成两条连续 user —— 部分 chat template 判非法 → createConversation 抛异常 →
+        // 静默 legacy 回退（仅一条 warn），等于在长工具会话里复活原始 P0。合并后
+        // initialMessages 恢复严格交替。水印登记不受影响（按 seed 的消息 id 登记，
+        // 与合并后的 Message 对象一一对应无关）。
+        val seedMessages = mergeAdjacentNativeUsers(seed.mapNotNull { it.toNativeMessage() })
         // 播种进 native 的历史必须**预登记进水印**：否则下一轮 buildContents 会把它们当成
         // 「未发过」再发一遍，native 侧出现重复历史。
         for (message in seed) sentMessageIds.add(message.id)
@@ -496,6 +522,19 @@ class LiteRtLmEngine(
         val created = try {
             val conv = currentEngine.createConversation(roleConfig)
             roleChannelActive = true
+            // preface 渲染诊断（Wave 28，@OptIn ExperimentalApi）：preface = systemInstruction +
+            // initialMessages 在 native chat template 下的**实际渲染结果**。若某转换件对
+            // system role 渲染不当（createConversation 成功但渲染错位/丢失 —— 「角色通道
+            // 静默忽略」第三态，不抛异常故回退门控抓不住），这里是唯一的代码侧观测点：
+            // 真机日志比对 preface 长度与开头片段即可定位「模型根本没看到系统提示词」类问题。
+            // 渲染失败（模型/版本不支持）静默跳过 —— 诊断绝不成为失败面。
+            runCatching {
+                val preface = conv.renderPrefaceIntoString()
+                AgentLogStore.info(
+                    "LiteRT-LM preface 渲染诊断：${preface.length} chars，" +
+                        "开头「${preface.take(120).replace('\n', ' ')}」"
+                )
+            }
             conv
         } catch (t: Throwable) {
             // 真机保命：角色通道播种失败（旧版 litertlm / 模型 chat template 不接受 system
@@ -523,6 +562,25 @@ class LiteRtLmEngine(
         currentConversationId = request.conversationId
         currentContextVersion = request.contextVersion
         currentSystemText = systemText
+        // KV 占用可观测（Wave 28）：「只输出提示词然后胡言乱语」残留的第二条根因链是
+        // KV 超卖（旧实现把输出上限当 KV 容量）。这行日志让真机一眼可查「KV 预算多大、
+        // 本轮 prompt 估算多大、角色通道是否激活」，并与超容 warn（generateStream 的
+        // onError 文案映射）互为印证。
+        run {
+            val kvBudget = request.config.contextLength
+            val estPrompt = TokenEstimator.estimate(request.messages)
+            AgentLogStore.info(
+                "LiteRT-LM 会话已建：cid=${request.conversationId ?: "null"} " +
+                    "kv=$kvBudget tok role=${if (roleChannelActive) "on" else "legacy"} " +
+                    "estPrompt=$estPrompt tok sys=${systemText?.length ?: 0} chars"
+            )
+            if (estPrompt > kvBudget * 85 / 100) {
+                AgentLogStore.warn(
+                    "上下文占用偏高：估算 $estPrompt / KV $kvBudget tok（>85%）—— " +
+                        "生成可能失败或被截断，请精简会话/记忆或调大上下文长度"
+                )
+            }
+        }
         return created
     }
 
@@ -597,7 +655,19 @@ class LiteRtLmEngine(
             }
 
             override fun onError(throwable: Throwable) {
-                channel.close(EngineException("LiteRT-LM: 生成失败 (${throwable.message})", throwable))
+                val raw = throwable.message.orEmpty()
+                // 超容硬报错的可行动化映射（Wave 28）：litertlm 对「输入超 KV 容量」报
+                // "Input token ids are too long"（或 kMaxNumTokensReached 提前收尾），
+                // 裸透传用户读不懂。映射成可操作指引；命中后 conversationDirty 已由
+                // finally 置位，下一轮自动重建会话。
+                val tooLong = raw.contains("too long", ignoreCase = true) ||
+                    (raw.contains("max", ignoreCase = true) && raw.contains("token", ignoreCase = true))
+                val hint = if (tooLong) {
+                    " —— 上下文超出模型容量。请清空/精简当前会话，或调小「上下文长度」设置后重试"
+                } else {
+                    ""
+                }
+                channel.close(EngineException("LiteRT-LM: 生成失败 (${raw})$hint", throwable))
             }
         }
 
@@ -623,6 +693,12 @@ class LiteRtLmEngine(
             callback,
             extraContext = extraContext,
             repetitionPenaltyConfig = repetitionPenaltyConfig,
+            // 输出上限逐消息生效（Wave 28）：KV 预算已由 EngineConfig.maxNumTokens =
+            // contextLength 承载（输入+输出总和），maxTokens 在这里的语义回归本位 ——
+            // 「单次生成的输出 token 上限」（含思考输出，litertlm 口径）。逐消息参数
+            // 不进 Conversation 状态：用户改输出上限既不重建引擎也不重建会话，立即生效。
+            // NPU 后端无此约束（约束的是 samplerConfig，见上），照常传递。
+            maxOutputToken = request.config.maxTokens,
         )
 
         try {
@@ -768,6 +844,27 @@ class LiteRtLmEngine(
 
     // -------------------------------------------------------- misc
 
+    /**
+     * 合并相邻的同角色 USER native 消息（Contents 拼接）。
+     *
+     * 只处理 USER：MODEL 相邻在部分模板下同样非法，但应用侧 MODEL 轮之间恒有
+     * TOOL/USER 隔开（AgentRunner 循环不变量），无需处理；TOOL 不映射为 native
+     * tool（文本协议），天然在 USER 合并范围内。
+     */
+    private fun mergeAdjacentNativeUsers(messages: List<Message>): List<Message> {
+        if (messages.size < 2) return messages
+        val out = ArrayList<Message>(messages.size)
+        for (message in messages) {
+            val last = out.lastOrNull()
+            if (last != null && last.role == NativeRole.USER && message.role == NativeRole.USER) {
+                out[out.size - 1] = Message.user(Contents.of(last.contents.contents + message.contents.contents))
+            } else {
+                out.add(message)
+            }
+        }
+        return out
+    }
+
     override suspend fun capabilities(): EngineCapabilities {
         return withContext(engineDispatcher) {
             val model = loadConfig?.model
@@ -779,7 +876,11 @@ class LiteRtLmEngine(
                 supportsTools = caps?.toolCalling ?: false,
                 supportsThinking = caps?.thinking ?: false,
                 supportedBackends = caps?.preferredBackends ?: setOf(InferenceBackend.CPU),
-                maxContextTokens = model?.contextLength ?: 4096,
+                // Wave 28 对齐：maxContextTokens 报**引擎实际持有的 KV 预算**
+                // （loadConfig 的 contextLength，即 EngineConfig.maxNumTokens 实参），
+                // 不再是模型描述符的启发式默认 —— 上层据此对齐压缩预算才有意义。
+                maxContextTokens = loadConfig?.config?.contextLength
+                    ?: model?.contextLength ?: 4096,
                 nativeToolChannel = false,
                 nativeThinkingChannel = caps?.thinking ?: false,
                 supportsSpeculativeDecoding = probedSpeculativeDecoding
@@ -842,7 +943,7 @@ class LiteRtLmEngine(
             mutex.withLock {
                 // 必须复用 releaseInternal()，不要在这里另抄一份字段清单：
                 // 原来只清了 conversation / currentConversationId / loaded，把 **Engine 本身**
-                // （2~3GB 权重）以及 loadedModelPath / loadedMaxTokens / loadedBackend /
+                // （2~3GB 权重）以及 loadedModelPath / loadedContextLength / loadedBackend /
                 // loaded*Sampling / sentMessageIds 全留在原地 ——
                 // 表现是「UI 显示已卸载，内存一点没降；再去加载别的模型直接 OOM」。
                 // 抄一份字段清单迟早会漏（close() 的注释里已经记过一次这个教训）。
@@ -883,7 +984,7 @@ class LiteRtLmEngine(
         // 「复用判据」的记忆必须和 engine 一起清掉：只清 engine 而留着这几个参数，
         // 会让下一次 load() 拿着残留参数误判成「同一个引擎」而跳过重建。
         loadedModelPath = null
-        loadedMaxTokens = -1
+        loadedContextLength = -1
         loadedBackend = null
         loadedSampling = null
         loadedVisionBackend = null
