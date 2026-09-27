@@ -23,7 +23,10 @@ import com.rickeal.agent.core.model.DisclosureTools
 import com.rickeal.agent.core.model.HiddenToolCatalog
 import com.rickeal.agent.core.agent.approval.ToolApprovalCache
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
+import com.rickeal.agent.core.agent.breaker.BreakerKind
 import com.rickeal.agent.core.agent.breaker.BreakerLedger
+import com.rickeal.agent.core.agent.breaker.BottleneckReport
+import com.rickeal.agent.core.agent.breaker.buildBottleneckReport
 import com.rickeal.agent.core.agent.breaker.elapsedMillisSince
 import com.rickeal.agent.core.agent.subagent.AskSubagentTool
 import com.rickeal.agent.core.agent.subagent.SubagentRunContext
@@ -147,6 +150,18 @@ private const val NO_TOOL_STREAK_LIMIT = 3
 
 /** 拒绝熔断阈值：同一工具连续被拒 N 次后，本 run 内跳过审批直接拒（防换参骚扰）。 */
 private const val DENIAL_CIRCUIT_LIMIT = 2
+
+/**
+ * 工具失败连击硬熔断阈值（Wave 30 §3.2(d)）：同一工具连续失败 ≥N 次（含换参）→
+ * HARD 熔断。与既有两个维度的分工（防口径混淆，方案 §2.4）：
+ * - [DENIAL_CIRCUIT_LIMIT]：用户**拒绝**维度（审批层计数）；
+ * - [REPEAT_TOOL_CALL_THRESHOLD] / [REPEAT_TOOL_CALL_EXEC_LIMIT]：**同参**维度（签名计数）；
+ * - 本阈值：**执行失败**维度 —— 只数「真的执行过且失败」的调用（recordAttempt 口径），
+ *   被拒 / 被忽略 / 未注册 / Schema 违规不执行的不算。
+ * 取 4 与既有「失败后重试一次合法路径」（REPEAT_TOOL_CALL_EXEC_LIMIT=3 的第 2 次放行
+ * 语义）兼容：第 4 次连续失败才 HARD，用户可见的重试窗口不变。
+ */
+private const val TOOL_FAILURE_STREAK_LIMIT = 4
 
 /**
  * 同工具+同参调用守卫阈值（ZCode model-anomaly 形态移植，Wave 19 P0）：连续
@@ -701,7 +716,11 @@ class AgentRunner(
                 journal?.appendMessage(toolCallModel)
 
                 for (rawCall in calls) {
-                    if (executeSingleToolCall(
+                    // Wave 30 R4-1：ToolCallStep 扩 Terminal 后调用点必须 when 穷举 ——
+                    // 旧 `if (== NextCall) continue` 会把 Terminal 静默落成 Proceed
+                    // （熔断后继续执行后续 call，编译不报错的行为回归）。Terminal 分支：
+                    // journal/emit 已在 emitBreakerFailed 内置位，return 结束整个 run。
+                    when (executeSingleToolCall(
                             rawCall = rawCall,
                             request = request,
                             policy = policy,
@@ -713,9 +732,10 @@ class AgentRunner(
                             working = state.working,
                             journal = journal,
                             state = state,
-                        ) == ToolCallStep.NextCall
-                    ) {
-                        continue
+                        )) {
+                        ToolCallStep.NextCall -> continue
+                        ToolCallStep.Terminal -> return
+                        ToolCallStep.Proceed -> Unit
                     }
                 }
 
@@ -971,8 +991,15 @@ class AgentRunner(
         return GenerationOutcome(accumulator, intraStreamLoop, generationRetried)
     }
 
-    /** for 单次工具调用体的控制流映射（Wave 29 A1 Step 3）：NextCall = 原 for 级 continue。 */
-    private enum class ToolCallStep { NextCall, Proceed }
+    /**
+     * for 单次工具调用体的控制流映射（Wave 29 A1 Step 3）：NextCall = 原 for 级
+     * continue；Terminal = 断路器 HARD 熔断终态（Wave 30）：journal / emit 已在
+     * [emitBreakerFailed] 内置位，调用点直接 return 结束整个 run。
+     *
+     * ⚠️ R4-1：调用点必须 when 穷举。若沿用旧 `if (== NextCall) continue` 写法，
+     * 新增的 Terminal 会静默落成「继续执行后续 call」—— 编译不报错的行为回归。
+     */
+    private enum class ToolCallStep { NextCall, Proceed, Terminal }
 
     /**
      * 单次工具调用体（Wave 29 A1 Step 3 自 executeBodyUnchecked 的 for 循环外提）。
@@ -1212,8 +1239,39 @@ class AgentRunner(
         val result = withContext(SubagentRunContext(parentContext)) {
             executeWithGuard(call, tool, policy)
         }
+        // ── 执行事实入账（Wave 30 recordAttempt）────────────────────
+        // 仅此一处 —— 未注册 / 已忽略 / 被拒 / Schema 违规不执行的工具调用不算
+        // attempt（ledger 只收「真的跑过」的），与 §3.2(d)「失败计数针对执行失败」
+        // 的口径一致。argsDigest 与审批缓存命中处同款（重复计算 ~µs 级，机械保守
+        // 不做缓存）。
+        state.breaker.recordAttempt(
+            tool = call.name,
+            argsDigest = ToolApprovalCache.argsDigest(call.argumentsJson),
+            ok = result.ok,
+            error = result.errorMessage,
+            elapsedMillis = result.elapsedMillis,
+        )
         emit(AgentEvent.ToolResultReceived(result))
         commitToolMessage(working, call, result, journal)
+
+        // ── ToolFailureStreak 硬熔断（Wave 30 §3.5）─────────────────
+        // 同一工具连续失败 ≥ TOOL_FAILURE_STREAK_LIMIT 次（含换参）→ HARD。
+        // 放 commitToolMessage 之后：熔断前协议 call/result 配对已完整落库，
+        // 不会留下「有 call 无 result」的悬空状态。
+        if (!result.ok && state.breaker.failureStreak(call.name) >= TOOL_FAILURE_STREAK_LIMIT) {
+            val evidence = "工具 ${call.name} 连续 ${state.breaker.failureStreak(call.name)} 次执行失败" +
+                "（含换参），最近错误：${result.errorMessage.orEmpty().take(80)}"
+            state.breaker.trip(
+                BreakerKind.ToolFailureStreak,
+                state.round,
+                tool = call.name,
+                evidence = evidence,
+                atElapsedMillis = state.elapsedMillis(),
+            )
+            AgentLogStore.error("工具失败连击熔断：$evidence")
+            emitBreakerFailed(state, journal, registeredToolNames)
+            return ToolCallStep.Terminal
+        }
 
         // ── ask_actor 执行点接入（严质衡审查 P1-2）──────────────────
         // 子 run 真正执行过 → 引擎 Conversation 被换成子 run 的 cid（甚至
@@ -1536,6 +1594,58 @@ class AgentRunner(
             )
         )
     }
+
+    /**
+     * 断路器 HARD 熔断的统一终态（Wave 30 §2.4）：既有 Failed 终态三段式
+     * （journal settled → emit Failed → return）升级为四段式（+ report 装配）。
+     *
+     * 不抛异常：熔断路径走 [ToolCallStep.Terminal] 结构化返回（A1 建立的控制流
+     * 映射），抛异常要穿过 for 循环 + withContext(SubagentRunContext)，绕开控制流
+     * 底账，review 面爆炸。
+     *
+     * terminatedBy：仅当熔断面含轮次判据（RoundBudget）时补 MaxRounds，保持与
+     * Finished 的对称性；其余熔断为 null（语义 = 「不是轮次耗尽」，UI 不必区分）。
+     */
+    private suspend fun FlowCollector<AgentEvent>.emitBreakerFailed(
+        state: RunState,
+        journal: AgentRunJournal?,
+        registeredToolNames: Set<String>,
+    ) {
+        journal?.append(
+            AgentRunJournal.KIND_SETTLED,
+            AgentRunJournal.settledPayload("Failed", state.round),
+        )
+        emit(
+            AgentEvent.Failed(
+                message = "任务已被安全熔断：${state.breaker.firstHard()?.kind?.userLabel.orEmpty()}",
+                report = buildBottleneckReportFor(state, journal, registeredToolNames),
+                terminatedBy = TerminationReason.MaxRounds.takeIf {
+                    state.breaker.trips.any { t -> t.kind == BreakerKind.RoundBudget }
+                },
+            )
+        )
+    }
+
+    /**
+     * 诊断卡装配胶水（Wave 30）：从 RunState / journal 提取原语进 breaker 包纯函数
+     * （[buildBottleneckReport]）。RunState 是 private 嵌套类进不了 breaker 包，
+     * 拆分见其 KDoc 的偏离申报。
+     */
+    private fun buildBottleneckReportFor(
+        state: RunState,
+        journal: AgentRunJournal?,
+        registeredToolNames: Set<String>,
+        engineCause: Throwable? = null,
+    ): BottleneckReport =
+        buildBottleneckReport(
+            task = journal?.readUserInputSync()?.text
+                ?: state.finalText.ifBlank { "（任务原文不可用）" },
+            rounds = state.round,
+            elapsedMillis = state.elapsedMillis(),
+            ledger = state.breaker,
+            registeredToolNames = registeredToolNames,
+            engineCause = engineCause,
+        )
 
     /**
      * 丢弃当前 kind 的缓存实例，换一个全新实例重新 load() 并返回它。
