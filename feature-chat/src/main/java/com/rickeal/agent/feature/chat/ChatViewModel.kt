@@ -852,6 +852,14 @@ class ChatViewModel(
     fun onRetry() {
         val state = _uiState.value
         if (state.isGenerating) return
+        // 热闸（Wave 30 §2.1）：与 onSend 同一纪律 —— 拒绝时 UI 保持原样。判定
+        // 必须在裁剪历史**之前**：否则过热时用户看到的是「上一条回答凭空消失 +
+        // 一条过热提示」，而这一次重试根本没跑起来（onSendFrom 里还有一道，
+        // 那是真正起 runJob 的地方）。
+        thermalRejection()?.let { rejection ->
+            _uiState.update { it.copy(error = rejection) }
+            return
+        }
         val lastUserIndex = state.messages.indexOfLast { it.role == Role.USER }
         if (lastUserIndex < 0) return
         val trimmed = state.messages.take(lastUserIndex + 1)
