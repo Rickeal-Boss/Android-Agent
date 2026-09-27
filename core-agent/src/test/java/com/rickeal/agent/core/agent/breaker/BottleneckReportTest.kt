@@ -120,8 +120,9 @@ class BottleneckReportTest {
         assertEquals(1, report.tripped.size)
         assertEquals(1, report.triedTools.size)
         assertEquals(Blocker.ModelDegraded, report.blocker)
-        // 预算占位符渲染：{elapsed} = 310 秒
-        assertTrue(report.suggestions.single().contains("310"))
+        // ModelDegraded 模板是纯常量文案（无占位符）；{elapsed} 渲染由下方
+        // BudgetExhausted 用例覆盖。
+        assertTrue(report.suggestions.single().contains("无法推进"))
     }
 
     @Test
