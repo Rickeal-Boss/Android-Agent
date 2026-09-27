@@ -36,7 +36,6 @@ import com.rickeal.agent.core.engine.EngineLoadCoordinator
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.data.notify.GenerationNotifier
 import com.rickeal.agent.core.data.perf.PerformanceMonitorManager
-import com.rickeal.agent.core.data.thermal.ThermalGovernor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
