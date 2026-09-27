@@ -15,6 +15,7 @@ import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.StreamAccumulator
 import com.rickeal.agent.core.model.StreamRepetitionDetector
 import com.rickeal.agent.core.model.TokenEstimator
+import com.rickeal.agent.core.model.TokenUsage
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
@@ -474,75 +475,18 @@ class AgentRunner(
             // 重记会让文件暴涨且恢复时重复；会话文件里的可见历史由恢复流程自己拼。
             journal?.appendUserInput(request.userInput)
 
-            var round = 0
-            // ── 上下文版本与 token 记账（外部审查报告2 §2，B1 压缩语义失效的根治）──
-            // 端侧引擎的 Conversation 是「只增不减」的 KV cache：一旦压缩真的裁掉了历史，
-            // 引擎没有任何增量手段表达「这段历史没了」。contextVersion 就是把这件事
-            // 显式告诉引擎的契约：版本一变，引擎必须关闭旧 Conversation、清水印、全量重放
-            // messages（见 LiteRtLmEngine.ensureConversation 与 EngineContract.contextVersion）。
-            //
-            // sentTokens / accountedIds 是发送侧的 token 记账：引擎的 Conversation 里实际
-            // 持有多少 token，只能由我们（唯一知道「哪些 id 已送进引擎」的一方）维护。
-            //  - 引擎必重建（版本变 / 会话切）→ 全量重放 → 整包重新记账；
-            //  - 否则只把「没发过的新消息」增量记账。
-            // 由此「sentTokens > budget」才是触发压缩的可靠判据（旧的只看 working 估算，
-            // 在压缩返回原样的场景下会一轮又一轮地重复压缩、永不重建）。
-            //
-            // ⚠️ 必须是 executeBodyUnchecked 的**局部**状态，不能上提到类字段：
-            // AgentRunner 是 AppContainer 单例，ask_actor 子代理会在父 run 的工具阶段
-            // **嵌套**执行完整子 run —— 类字段会被子 run 覆写、父 run 恢复后拿着脏状态
-            // 继续记账（局部变量随协程栈天然隔离）。
-            var contextVersion = 0L
-            // 上次记账时的版本：记账分支以「版本自上次记账后是否变过」为全量触发之一，
-            // 覆盖三类 bump 来源 —— 压缩裁剪（本块）、ask_actor 子 run 执行（工具段）、
-            // 生成失败重建引擎后重试成功（生成段）。三者都意味着引擎侧将重建并全量重放。
-            var accountedVersion = 0L
-            var sentTokens = 0L
-            var accountedIds = mutableSetOf<String>()
-            var lastCid: String? = null
-            // 计划版本水印：只把「本次 run 期间发生的变化」推给 UI（run 打开前的历史计划不重放）
-            var lastPlanVersion = request.planStore
-                ?.peek(request.conversationId ?: "")?.version ?: 0L
-            var finalText = ""
-            // 取**最近**一条带 usage 的历史消息，不是第一条：第一条往往是建会话时的系统消息，
-            // usage 恒为 null，于是 Finished 事件里的用量永远是 null（UI 一片空白）。
-            var lastUsage = request.history.lastOrNull { it.usage != null }?.usage
-            var lastModelText = ""
-            // 循环是「模型自己给出最终答案而 break」还是「轮次耗尽」必须显式记下来。
-            // 旧实现用 `finalText.isBlank()` 反推：模型整段回答被 strip() 剥成空串时，
-            // 明明只跑了 1 轮也会被报成「达到轮次上限」，同时提交一个空气泡。
-            var modelStopped = false
+            val state = RunState(
+                working,
+                request.planStore
+                    ?.peek(request.conversationId ?: "")?.version ?: 0L,
+                request.history.lastOrNull { it.usage != null }?.usage,
+            )
 
-            // ── 「不会停」的防线 ───────────────────────────────────────────────
-            // 端侧 4B 最常见的失败不是不会做，而是不会停：重复同一段摘要、反复回到同一个
-            // 「下车点」。按轮记录可见文本的归一化签名，命中历史就注入一次提醒。
-            val seenSignatures = HashSet<String>()
-            val remindedSignatures = HashSet<String>()
-            var noToolStreak = 0
-            // 连续空输出轮数（见下方 answer.isBlank 分支：端侧增量水印下裸 continue 会空转）。
-            var emptyAnswerStreak = 0
-            // 轮内流式重复连续触发的轮数：正常轮归零，超过 MAX_INTRA_STREAM_LOOP_ROUNDS
-            // 按失败收尾（语义对齐 emptyAnswerStreak）。run 内局部状态，随协程消亡。
-            var intraLoopStreak = 0
-            var noToolReminderSent = false
-            var pendingReminder: String? = null
-            // 拒绝熔断状态（run 内，不跨 run）：run 结束随协程消亡，无需持久化。
-            // 用户反悔权保留 —— 新 run 计数归零，拒绝过不代表下次还拒。
-            val toolDenialCounts = HashMap<String, Int>()
-            val denialReminderSent = HashSet<String>()
-            // ── 同工具+同参调用守卫状态（ZCode model-anomaly 形态，Wave 19 P0）──
-            // ⚠️ 必须留在 executeBody 栈上，不设类字段：ask_actor 子代理会在父 run 的
-            // 工具阶段嵌套执行完整子 run，类字段会被子 run 覆写、父 run 恢复后拿着
-            // 脏状态继续计数（同 :313-316 记账状态的隔离教训）。
-            var lastToolCallSignature: String? = null
-            var toolCallStreak = 0
-            var toolAnomalyReminders = 0
-
-            while (round < policy.maxRounds) {
-                emit(AgentEvent.RoundStarted(round, policy.maxRounds))
+            while (state.round < policy.maxRounds) {
+                emit(AgentEvent.RoundStarted(state.round, policy.maxRounds))
                 journal?.append(
                     AgentRunJournal.KIND_ROUND_STARTED,
-                    AgentRunJournal.roundStartedPayload(round, policy.maxRounds),
+                    AgentRunJournal.roundStartedPayload(state.round, policy.maxRounds),
                 )
 
                 // 预算必须显式预留输出额度（Wave 28）：litertlm 的 KV cache = 输入+输出
@@ -554,35 +498,35 @@ class AgentRunner(
                 val budget = ((config.contextLength - config.maxTokens).coerceAtLeast(512) *
                     policy.compressThreshold).toInt()
                 val window = if (policy.compressContext) {
-                    compressor.compress(working, budget)
+                    compressor.compress(state.working, budget)
                 } else {
-                    working
+                    state.working
                 }
                 // 压缩是「静默」的：生效与否只体现在后续请求里，出问题时无法从结果反推。
                 // 这里只在**真的发生决策**时记一条：要么裁掉了消息，要么该裁却没裁成。
                 // 注意判据与压缩器内部一致（estimate > budget 才会走压缩），所以不会误报。
                 if (policy.compressContext) {
-                    if (window.size < working.size) {
-                        AgentLogStore.info("上下文压缩：${working.size} → ${window.size} 条（预算 $budget token）")
-                    } else if (working.size > 1 && TokenEstimator.estimate(working) > budget) {
-                        AgentLogStore.info("上下文压缩放弃：未找到安全切点，原样发送 ${working.size} 条（预算 $budget token）")
+                    if (window.size < state.working.size) {
+                        AgentLogStore.info("上下文压缩：${state.working.size} → ${window.size} 条（预算 $budget token）")
+                    } else if (state.working.size > 1 && TokenEstimator.estimate(state.working) > budget) {
+                        AgentLogStore.info("上下文压缩放弃：未找到安全切点，原样发送 ${state.working.size} 条（预算 $budget token）")
                     }
                 }
                 // 真的裁掉了消息 → bump 版本号，引擎下一轮收到请求时会重建 Conversation
                 // 并全量重放窗口内的历史（见 EngineContract.contextVersion 的契约）。
                 // 「压缩后仍超预算」不另设终态：压缩器放弃时原样发送（上面的 info 日志），
                 // 由下一轮判据再次尝试 —— 这是既有行为，保持不变。
-                if (policy.compressContext && window.size < working.size) {
-                    contextVersion++
-                    AgentLogStore.info("上下文重建：v$contextVersion，${working.size} → ${window.size} 条")
+                if (policy.compressContext && window.size < state.working.size) {
+                    state.contextVersion++
+                    AgentLogStore.info("上下文重建：v${state.contextVersion}，${state.working.size} → ${window.size} 条")
                     // 窗口落回 working 本体（严质衡审查 P1-1）：working 原本只增不减，
                     // 一旦超预算，之后每轮 window 都比 working 小 → 版本每轮 ++ →
                     // 引擎每轮重建 + 全量 re-prefill（4B 秒级），压缩收益被完全吐回。
                     // 回写后 working 与窗口对齐，版本只在「新的越界」时再次 bump。
                     // 安全性：working 是本 run 局部 ArrayList，原地改写不影响外部引用；
                     // journal 已逐条独立落盘不受影响；消息 id 保持原对象，水印语义无损。
-                    working.clear()
-                    working.addAll(window)
+                    state.working.clear()
+                    state.working.addAll(window)
                 }
 
                 // 轮内流式重复检测器（Wave 19 P0，来源见 StreamRepetitionDetector KDoc）。
@@ -602,7 +546,7 @@ class AgentRunner(
                     model = request.model,
                     tools = if (useNativeTools) availableTools else emptyList(),
                     conversationId = request.conversationId,
-                    contextVersion = contextVersion,
+                    contextVersion = state.contextVersion,
                 )
 
                 // ── 发送侧 token 记账 ────────────────────────────────────────
@@ -617,23 +561,23 @@ class AgentRunner(
                 // 也无影响；真正无法覆盖的是引擎在轮内被外部整体重置的场景 —— 当前
                 // 记账状态只写不读（尚未接入压缩门控），启用门控前必须先补齐该口径。
                 val requestMessages = generationRequest.messages
-                if (contextVersion != accountedVersion || request.conversationId != lastCid) {
-                    accountedIds = requestMessages.map { it.id }.toMutableSet()
-                    sentTokens = TokenEstimator.estimate(requestMessages).toLong()
-                    accountedVersion = contextVersion
+                if (state.contextVersion != state.accountedVersion || request.conversationId != state.lastCid) {
+                    state.accountedIds = requestMessages.map { it.id }.toMutableSet()
+                    state.sentTokens = TokenEstimator.estimate(requestMessages).toLong()
+                    state.accountedVersion = state.contextVersion
                 } else {
-                    val fresh = requestMessages.filter { it.id !in accountedIds }
-                    sentTokens += TokenEstimator.estimate(fresh)
-                    accountedIds.addAll(fresh.map { it.id })
+                    val fresh = requestMessages.filter { it.id !in state.accountedIds }
+                    state.sentTokens += TokenEstimator.estimate(fresh)
+                    state.accountedIds.addAll(fresh.map { it.id })
                 }
-                lastCid = request.conversationId
+                state.lastCid = request.conversationId
 
                 val generation = runGenerationRound(
                     kind = kind,
                     loadConfig = loadConfig,
                     generationRequest = generationRequest,
                     detector = detector,
-                    round = round,
+                    round = state.round,
                     journal = journal,
                 ) ?: return
                 val accumulator = generation.accumulator
@@ -644,19 +588,19 @@ class AgentRunner(
                 // 全发），而本轮记账在此之前已按增量口径执行 —— bump 版本让下一轮记账
                 // 检测到版本变化、整包重记，与引擎实际持有量重新对齐。
                 if (generation.retried) {
-                    contextVersion++
+                    state.contextVersion++
                 }
 
                 if (accumulator.finishReason == FinishReason.CANCELLED) {
                     journal?.append(
                         AgentRunJournal.KIND_SETTLED,
-                        AgentRunJournal.settledPayload("Cancelled", round),
+                        AgentRunJournal.settledPayload("Cancelled", state.round),
                     )
                     emit(AgentEvent.Cancelled(accumulator.text))
                     return
                 }
-                if (accumulator.usage != null) lastUsage = accumulator.usage
-                lastModelText = accumulator.text
+                if (accumulator.usage != null) state.lastUsage = accumulator.usage
+                state.lastModelText = accumulator.text
 
                 val nativeCalls = accumulator.toolCalls()
                 val protocol: ProtocolResult = if (nativeCalls.isEmpty() && policy.enableTextProtocol) {
@@ -704,14 +648,14 @@ class AgentRunner(
                 // 死条件（复审3 §4-3），Wave 25 已删 —— 若日后有人去掉这里的 `continue`，
                 // 必须同步把三元加回去。
                 if (intraStreamLoop) {
-                    intraLoopStreak++
-                    if (intraLoopStreak > MAX_INTRA_STREAM_LOOP_ROUNDS) {
+                    state.intraLoopStreak++
+                    if (state.intraLoopStreak > MAX_INTRA_STREAM_LOOP_ROUNDS) {
                         AgentLogStore.error(
-                            "连续 $intraLoopStreak 轮触发轮内重复循环（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发），终止 run"
+                            "连续 ${state.intraLoopStreak} 轮触发轮内重复循环（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发），终止 run"
                         )
                         journal?.append(
                             AgentRunJournal.KIND_SETTLED,
-                            AgentRunJournal.settledPayload("Failed", round),
+                            AgentRunJournal.settledPayload("Failed", state.round),
                         )
                         emit(AgentEvent.Failed("模型输出陷入重复循环，已停止本轮任务"))
                         return
@@ -724,64 +668,66 @@ class AgentRunner(
                         // 截断语义：本轮没有终帧，finishReason 标 LENGTH（不新增枚举值）。
                         finishReason = FinishReason.LENGTH,
                     )
-                    working.add(repeatModel)
+                    state.working.add(repeatModel)
                     journal?.appendMessage(repeatModel)
                     // 单槽纪律：已有待注入提醒时不覆盖（同参 > 重复回答 > 零工具的
                     // 优先级对齐 :569 判据）；随后立刻消费成合成消息，不留到下一轮
                     // 造成双重注入。
-                    if (pendingReminder == null) {
-                        pendingReminder = INTRA_LOOP_REMINDER
+                    if (state.pendingReminder == null) {
+                        state.pendingReminder = INTRA_LOOP_REMINDER
                     }
-                    val loopReminder = pendingReminder
-                    pendingReminder = null
+                    // R2-1（Wave 29 A1 Step 2）：K2 对 var 属性不做 smart-cast，
+                    // 字段化后需显式兜底（不变量保证 else 分支不触发，行为等价）。
+                    val loopReminder = state.pendingReminder ?: INTRA_LOOP_REMINDER.also { state.pendingReminder = it }
+                    state.pendingReminder = null
                     val reminderMessage = ChatMessage(
-                        id = "reminder:$round:loop",
+                        id = "reminder:${state.round}:loop",
                         role = Role.USER,
                         text = loopReminder,
                     )
-                    working.add(reminderMessage)
+                    state.working.add(reminderMessage)
                     journal?.appendReminder(reminderMessage)
                     // 已流出的循环乱文必须让 UI 丢弃：下一轮照常 emit(TextDelta)，而
                     // RoundStarted 不清流式缓冲 ⇒ 不清屏就会「乱文 + 新回答」叠一个气泡
                     // （复审3 §4-1）。emit 在 round++ 之前，UI 先清、下一轮再从空开始。
-                    emit(AgentEvent.StreamReset("轮内重复截断（连续第 $intraLoopStreak 次）"))
+                    emit(AgentEvent.StreamReset("轮内重复截断（连续第 ${state.intraLoopStreak} 次）"))
                     AgentLogStore.warn(
-                        "第 ${round + 1} 轮轮内重复循环：丢弃 ${calls.size} 个工具调用并注入提醒（连续第 $intraLoopStreak 次）"
+                        "第 ${state.round + 1} 轮轮内重复循环：丢弃 ${calls.size} 个工具调用并注入提醒（连续第 ${state.intraLoopStreak} 次）"
                     )
-                    round++
+                    state.round++
                     continue
                 } else {
                     // 正常轮：连击归零（「连续触发」语义 —— 任何一轮未复发即打断连击）。
-                    intraLoopStreak = 0
+                    state.intraLoopStreak = 0
                 }
 
                 // 无进展检测：拿本轮「可见文本」的归一化签名比对历史。
                 val signature = StreamRepetitionDetector.normalizedSignature(visibleText)
                 if (signature != null) {
-                    val firstSight = seenSignatures.add(signature)
+                    val firstSight = state.seenSignatures.add(signature)
                     // 纪律：先把「已提醒」标记置位，再排队提醒 —— 即使后续注入失败也不会重试，
                     // 从而杜绝提醒风暴。每个签名至多提醒一次。
-                    if (!firstSight && remindedSignatures.add(signature)) {
-                        AgentLogStore.info("无进展检测：第 ${round + 1} 轮命中重复回答（与历史签名相同），注入提醒")
-                        pendingReminder = REPEAT_REMINDER
+                    if (!firstSight && state.remindedSignatures.add(signature)) {
+                        AgentLogStore.info("无进展检测：第 ${state.round + 1} 轮命中重复回答（与历史签名相同），注入提醒")
+                        state.pendingReminder = REPEAT_REMINDER
                     }
                 }
                 // 连续零工具调用计数。正常情况下这种轮次就是终局（下面会 break），
                 // 只有「重复提醒」把循环续上时才会累加 —— 正好覆盖「只复述计划不干活」的病态循环。
                 if (calls.isEmpty()) {
-                    noToolStreak++
-                    if (noToolStreak >= NO_TOOL_STREAK_LIMIT && !noToolReminderSent && pendingReminder == null) {
-                        noToolReminderSent = true        // 同样是先置位、再排队
-                        AgentLogStore.info("无进展检测：第 ${round + 1} 轮起连续 $noToolStreak 轮零工具调用，注入提醒")
-                        pendingReminder = NO_TOOL_REMINDER
+                    state.noToolStreak++
+                    if (state.noToolStreak >= NO_TOOL_STREAK_LIMIT && !state.noToolReminderSent && state.pendingReminder == null) {
+                        state.noToolReminderSent = true        // 同样是先置位、再排队
+                        AgentLogStore.info("无进展检测：第 ${state.round + 1} 轮起连续 ${state.noToolStreak} 轮零工具调用，注入提醒")
+                        state.pendingReminder = NO_TOOL_REMINDER
                     }
                 } else {
-                    noToolStreak = 0
+                    state.noToolStreak = 0
                 }
 
                 if (calls.isEmpty()) {
                     val cleanText = protocolFinalAnswer ?: visibleText
-                    val reminder = pendingReminder
+                    val reminder = state.pendingReminder
                     if (reminder != null) {
                         // 本轮是「重复的下车点」：不把它当答案交付，注入一次提醒后再给模型一轮机会。
                         // 每个签名只会被提醒一次（标记已在检测处前置位），叠加 maxRounds 兜底，不会形成新循环。
@@ -794,18 +740,18 @@ class AgentRunner(
                             // 三元是死条件（复审3 §4-3），Wave 25 已删。
                             finishReason = accumulator.finishReason ?: FinishReason.STOP,
                         )
-                        working.add(repeatModel)
+                        state.working.add(repeatModel)
                         journal?.appendMessage(repeatModel)
                         // 合成提醒用**稳定派生 id**（外部审查报告2 §3.1 防御性随行）：
                         // 引擎按消息 id 做增量水印去重，派生 id 保证同一轮的提醒在
                         // 任何重放/清洗路径下都是同一条消息，而不是每轮一个新 UUID。
                         // ⚠️ 上面的 repeatModel 不加派生 id —— 那是模型自己的回复，不是合成消息。
                         val reminderMessage = ChatMessage(
-                            id = "reminder:$round:inject",
+                            id = "reminder:${state.round}:inject",
                             role = Role.USER,
                             text = reminder,
                         )
-                        working.add(reminderMessage)
+                        state.working.add(reminderMessage)
                         // 提醒落独立 reminder 行（不是 message）：它是行为矫正不是用户说的话，
                         // 记成 message 会被恢复流程当成用户输入渲染进界面（Wave2 两处记录
                         // 口径不一致：这里漏记、工具轮后那处记成 message —— 都有毛病）。
@@ -813,8 +759,8 @@ class AgentRunner(
                         // 本轮文本被判为「重复的下车点」而丢弃，UI 侧必须一起丢（复审3 §4-1）：
                         // 否则它会留在气泡里，下一轮输出叠在它后面。
                         emit(AgentEvent.StreamReset("重复回答，注入提醒后重跑本轮"))
-                        pendingReminder = null
-                        round++
+                        state.pendingReminder = null
+                        state.round++
                         continue
                     }
                     // 剥掉协议片段后可能什么都不剩（模型整段回答就是一个代码块）。
@@ -828,35 +774,35 @@ class AgentRunner(
                         // 必然再产出空输出 ⇒ 一路空转到 maxRounds，每轮白烧一次 4B 全量 prefill。
                         // 修法：注入一条合成 USER 提醒（ZCode「错误回传给模型修复」语义），
                         // 保证下一轮一定有新消息可发；连续超过阈值则按失败收尾，不再烧轮次。
-                        emptyAnswerStreak++
-                        if (emptyAnswerStreak > MAX_EMPTY_ANSWER_ROUNDS) {
+                        state.emptyAnswerStreak++
+                        if (state.emptyAnswerStreak > MAX_EMPTY_ANSWER_ROUNDS) {
                             AgentLogStore.error(
-                                "连续 $emptyAnswerStreak 轮空输出（已注入 $MAX_EMPTY_ANSWER_ROUNDS 次提醒仍无产出），终止 run"
+                                "连续 ${state.emptyAnswerStreak} 轮空输出（已注入 $MAX_EMPTY_ANSWER_ROUNDS 次提醒仍无产出），终止 run"
                             )
                             journal?.append(
                                 AgentRunJournal.KIND_SETTLED,
-                                AgentRunJournal.settledPayload("Failed", round),
+                                AgentRunJournal.settledPayload("Failed", state.round),
                             )
                             emit(AgentEvent.Failed("模型连续多轮输出为空，已停止本轮任务"))
                             return
                         }
                         val nudge = ChatMessage(
-                            id = "nudge:$round",
+                            id = "nudge:${state.round}",
                             role = Role.USER,
                             text = EMPTY_ANSWER_NUDGE,
                         )
-                        working.add(nudge)
+                        state.working.add(nudge)
                         journal?.appendReminder(nudge)
                         // 空输出轮本就没有文本可丢，但**上一轮**丢弃的文本可能还留在 UI
                         // 缓冲里（若它没被别的处置点清过）—— 这里一并清，保证「新提示 →
                         // 新输出」从干净的气泡开始。
                         emit(AgentEvent.StreamReset("空输出，注入提醒后重跑本轮"))
-                        AgentLogStore.warn("第 ${round + 1} 轮空输出，已注入提醒（连续第 $emptyAnswerStreak 次）")
-                        round++
+                        AgentLogStore.warn("第 ${state.round + 1} 轮空输出，已注入提醒（连续第 ${state.emptyAnswerStreak} 次）")
+                        state.round++
                         continue
                     }
-                    emptyAnswerStreak = 0
-                    finalText = answer
+                    state.emptyAnswerStreak = 0
+                    state.finalText = answer
                     val committed = ChatMessage(
                         role = Role.MODEL,
                         text = answer,
@@ -865,10 +811,10 @@ class AgentRunner(
                         finishReason = accumulator.finishReason ?: FinishReason.STOP,
                         modelRef = request.model?.id,
                     )
-                    working.add(committed)
+                    state.working.add(committed)
                     journal?.appendMessage(committed)
                     emit(AgentEvent.MessageCommitted(committed))
-                    modelStopped = true
+                    state.modelStopped = true
                     break
                 }
 
@@ -879,282 +825,44 @@ class AgentRunner(
                     toolCalls = calls,
                     finishReason = FinishReason.TOOL_CALLS,
                 )
-                working.add(toolCallModel)
+                state.working.add(toolCallModel)
                 journal?.appendMessage(toolCallModel)
 
                 for (rawCall in calls) {
-                    // ── 按需披露：call_tool 解包成真实调用（Wave 27）─────────────
-                    // 解包后**换名继续走下面的原路径**，所以同参守卫、未注册检查、审批
-                    // 判定（静态标志 ∪ 参数门控 ∪ 效果声明 ∪ 能力档位）与执行全部作用在
-                    // **目标工具**上 —— 转发不构成任何权限旁路。这是本模式的硬约束，
-                    // 改这里必须同步复核（解包失败时给可行动报错，绝不猜目标）。
-                    val call = resolveDisclosureCall(rawCall, disclosureActive, working, journal) ?: continue
-                    // ── 同工具+同参调用守卫（ZCode model-anomaly / deepseek
-                    // repeat-tool-reminder 形态）────────────────────────────────
-                    // 计数在**执行前**：未注册 / denied / 审批失败同样计入 ——
-                    // deepseek 设计笔记明言 denied calls 也算循环（模型反复撞拒绝
-                    // 墙与反复空跑同样是「不会换路径」的病征）。
-                    val callSignature = toolCallSignature(call.name, call.argumentsJson)
-                    if (callSignature == lastToolCallSignature) {
-                        toolCallStreak++
-                    } else {
-                        lastToolCallSignature = callSignature
-                        toolCallStreak = 1
-                    }
-                    if (toolCallStreak == REPEAT_TOOL_CALL_THRESHOLD &&
-                        toolAnomalyReminders < MAX_TOOL_ANOMALY_REMINDERS &&
-                        // 单槽纪律：已有待注入提醒时不覆盖（同参信息最具体，优先级
-                        // 同参 > 重复回答 > 零工具，与 :569 判据同构）。
-                        pendingReminder == null
+                    if (executeSingleToolCall(
+                            rawCall = rawCall,
+                            request = request,
+                            policy = policy,
+                            config = config,
+                            disclosureActive = disclosureActive,
+                            hiddenToolCatalog = hiddenToolCatalog,
+                            registeredToolNames = registeredToolNames,
+                            allToolNames = allToolNames,
+                            working = state.working,
+                            journal = journal,
+                            state = state,
+                        ) == ToolCallStep.NextCall
                     ) {
-                        toolAnomalyReminders++
-                        AgentLogStore.warn(
-                            "同参调用守卫：${call.name} 已连续 $toolCallStreak 次以完全相同的参数调用，注入提醒"
-                        )
-                        pendingReminder =
-                            "你已连续 $toolCallStreak 次以完全相同的参数调用工具 ${call.name}。" +
-                                "除非用户明确要求原样重试，否则不要再次重复同一调用。" +
-                                "请基于既有结果采取不同的下一步：说明障碍，或向用户求助。"
-                    }
-                    // ── 同参重复硬护栏（Wave 22 P0）──────────────────────────────
-                    // 提醒是 advisory-only，小模型可以直接无视（真机：current_time
-                    // 同参连发 6 次）。第 REPEAT_TOOL_CALL_EXEC_LIMIT 次起不再真正
-                    // 执行，回一条「已忽略」的结果 —— 协议上每个 call 仍有一条对应
-                    // result（丢 result 会触发引擎侧「有 call 无结果」报错），但
-                    // 同一副作用不会被反复触发。放在 toolRegistry 查询之前：
-                    // 未注册工具名同样不该被重复打。
-                    if (toolCallStreak >= REPEAT_TOOL_CALL_EXEC_LIMIT) {
-                        emitRepeatedCallIgnored(call, toolCallStreak, working, journal)
                         continue
-                    }
-                    // ── 按需披露：search_tools 就地检索（Wave 27）────────────────
-                    // 位置刻意在**同参签名与硬护栏之后**：检索虽然无副作用，但「同一 query
-                    // 反复搜」与「同一工具同参反复调」是同一种病征（不会换路径），Wave 22
-                    // 为 current_time 同参连发立的护栏必须同样罩住元工具 —— 否则模型可以
-                    // 无限 search 空转，且完全绕过 toolCallStreak 计数。
-                    if (disclosureActive && call.name == DisclosureTools.SEARCH_TOOL_NAME) {
-                        emitDisclosureSearch(rawCall, hiddenToolCatalog, working, journal)
-                        continue
-                    }
-                    // 可用性判定必须走**披露面**（registeredToolNames）而不是 registry 的存在性：
-                    // ON_DEMAND 下注册表里仍有全部真实工具，若只看 registry，原生 tool 通道
-                    // 回吐的真实工具名（模型幻觉或历史残留）会被直接执行 —— 隐藏面形同虚设。
-                    // 这行同时封住了「toolNames 白名单在原生通道被绕过」的既有缺口
-                    // （FULL 模式下 registeredToolNames = 已启用 ∩ 白名单，与 get() 语义等价，
-                    //  故对既有行为零影响）。
-                    //
-                    // 【审查4 P0 修复】转发放行：call_tool 解包换名后 call.name 已是**目标
-                    // 工具名**，必然不在元工具白名单内 —— 旧判据把一切合法转发当未注册名
-                    // 拒绝，错误文案还诱导模型重试 → 同参死循环，ON_DEMAND 整体不可用。
-                    // 以 rawCall.name（解包**前**的原始名）识别转发来源；放行后仍要求目标
-                    // 在用户启用集合（allToolNames）内。封堵面逐一复核不变：
-                    // ① 文本协议编造隐藏名 → TextToolProtocol 协议层已拒（不到这里）；
-                    // ② 原生通道幻觉隐藏名 → rawCall.name ≠ call_tool 且 ∉ registeredToolNames → 仍拒；
-                    // ③ 转发到元工具 → unpackCall 保留名递归防护已拦（解包失败 continue）；
-                    // ④ 编造未启用名 → viaForward 但 ∉ allToolNames → 拒；
-                    // ⑤ FULL 模式 → viaForward 恒 false → 行为逐字节不变。
-                    val viaForward = disclosureActive && rawCall.name == DisclosureTools.CALL_TOOL_NAME
-                    val allowedNames = if (viaForward) allToolNames else registeredToolNames
-                    val tool = if (call.name in allowedNames) toolRegistry.get(call.name) else null
-                    if (tool == null) {
-                        emitUnregisteredTool(
-                            call,
-                            disclosureActive,
-                            hiddenToolCatalog.size,
-                            registeredToolNames,
-                            working,
-                            journal,
-                        )
-                        continue
-                    }
-                    // ── 审批闸门（Octop tool_guard / ZCode 命令审批语义移植）────
-                    // 优先级链：策略豁免 > 审批缓存（用户显式授权、同参、TTL 内）>
-                    // 拒绝熔断（防换参骚扰）> 人在回路。fail-closed 纪律不变：
-                    // 审批通道缺失或异常一律拒绝，绝不默认放行。
-                    // ParamGatedTool 提供参数级判据（clipboard set 弹卡 / get 直行）。
-                    val paramGated = (tool as? ParamGatedTool)
-                        ?.requiresConfirmationFor(call.argumentsJson) == true
-                    // ── 能力档位闸门（Wave 26 / Operit2 四层模型裁剪移植）──────────
-                    // 第三类判据，与前两者**正交**：静态标志答「这工具危不危险」，参数门控答
-                    // 「这次参数危不危险」，档位答「用户今天允许 AI 写到哪」。命中时走审批而
-                    // 非硬拒绝 —— 用户仍可单次放行（ReadOnly 是默认收窄，不是牢笼）。
-                    // effect 优先取**本次调用**的动态声明（EffectAwareTool），否则用静态声明；
-                    // 静态默认是 WRITE（fail-closed），所以忘了声明的工具只会更保守。
-                    val effectiveEffect = (tool as? EffectAwareTool)
-                        ?.effectFor(call.argumentsJson) ?: tool.spec.effect
-                    val capabilityGated = request.capabilityMode.requiresApprovalFor(effectiveEffect)
-                    val needsApproval = tool.spec.dangerous || tool.spec.requiresConfirmation ||
-                        paramGated || capabilityGated
-                    val autoApproved = tool.spec.dangerous && policy.autoApproveDangerous
-                    if (needsApproval && !autoApproved) {
-                        // 审批缓存命中 = 用户此前显式授权仍在 TTL 内（同参重试免弹卡）。
-                        // 档位入 key（Wave 28 P1-1）：授权是「某档位下的放行」，降档
-                        // （如 WORKSPACE_WRITE → READ_ONLY）必须重新弹卡，否则 30min TTL
-                        // 内档位收窄会被缓存静默绕过。
-                        // 未命中（含过期/未授权/无缓存实例）继续走正常审批。
-                        val cachedDecision = request.approvalCache
-                            ?.peek(
-                                call.name,
-                                ToolApprovalCache.argsDigest(call.argumentsJson),
-                                request.conversationId,
-                                request.capabilityMode.name,
-                            )
-                        if (cachedDecision != ToolApprovalDecision.APPROVED) {
-                            // 拒绝熔断：同一工具连续被拒 N 次后跳过审批直接拒 ——
-                            // 防止模型换参数反复触发授权卡（熔断按工具名计数，
-                            // 换参不重置；用户放行一次即清零，反悔权保留）。
-                            val denialCount = toolDenialCounts[call.name] ?: 0
-                            if (denialCount >= DENIAL_CIRCUIT_LIMIT) {
-                                AgentLogStore.warn(
-                                    "审批熔断：${call.name} 已连续拒绝 $denialCount 次，本任务内跳过审批直接拒绝"
-                                )
-                                emit(AgentEvent.ToolSkipped(call, "该工具已被多次拒绝，本任务内不再询问"))
-                                emitToolFailure(
-                                    call,
-                                    "该工具已被用户多次拒绝。本任务内不要再调用它；" +
-                                        "请改用其它方式完成任务，或向用户说明限制。",
-                                    working,
-                                    journal,
-                                )
-                                // 熔断提醒复用 pendingReminder 单槽，每个工具至多注入一次
-                                // （与「重复回答提醒」同轮竞争时后者让位 —— 熔断是终态信息）。
-                                if (denialReminderSent.add(call.name)) {
-                                    pendingReminder =
-                                        "工具 ${call.name} 已被用户多次拒绝，这是终态。换路径或直接收尾。"
-                                }
-                                continue
-                            }
-                            val handler = request.approvalHandler
-                            if (handler == null) {
-                                emit(AgentEvent.ToolSkipped(call, "危险工具需用户授权"))
-                                // notifyResult = false：保持该分支**既有**语义（只 commit 不 emit 结果事件）。
-                                emitToolFailure(
-                                    call,
-                                    "该工具需要用户授权后才会执行",
-                                    working,
-                                    journal,
-                                    notifyResult = false,
-                                )
-                                continue
-                            }
-                            emit(AgentEvent.ApprovalRequested(call, tool.spec))
-                            val decision = try {
-                                handler.onApprovalRequested(call, tool.spec)
-                            } catch (t: CancellationException) {
-                                throw t
-                            } catch (t: Throwable) {
-                                // 审批通道自身异常 = 拒绝（fail-closed），并把原因留给日志
-                                AgentLogStore.warn("审批通道异常，按拒绝处理：${t.javaClass.simpleName}")
-                                null
-                            }
-                            if (decision != ToolApprovalDecision.APPROVED) {
-                                toolDenialCounts.merge(call.name, 1, Int::plus)
-                                AgentLogStore.info("工具被拒绝：${call.name}")
-                                emit(AgentEvent.ToolSkipped(call, "用户拒绝了该工具调用"))
-                                emitToolFailure(
-                                    call,
-                                    "用户拒绝了该工具调用。不要原样重复这次调用；" +
-                                        "请改用其它方式完成任务，或向用户说明缺了什么。",
-                                    working,
-                                    journal,
-                                )
-                                continue
-                            }
-                            // 用户放行 = 意愿反转，该工具的熔断计数清零。
-                            toolDenialCounts.remove(call.name)
-                        }
-                    }
-
-                    emit(AgentEvent.ToolCallStarted(call))
-
-                    // ── 参数 Schema 校验（ZCode typed-ask 语义的移植）─────────────
-                    // 在执行前按 ToolSpec.parameters 校验类型/必填/枚举；违规不执行工具，
-                    // 而是把结构化差异（路径 + 期望 + 实得）作为失败结果回给模型，
-                    // 让它在下一轮定向修复 —— 端侧 4B 的工具失败大头是参数给错，
-                    // 笼统的"执行异常"只会诱发盲猜循环。
-                    val violations = ToolArgsValidator.validate(tool.spec, call.argumentsJson)
-                    if (violations.isNotEmpty()) {
-                        AgentLogStore.warn(
-                            "工具参数校验失败：${call.name}（${violations.size} 项）"
-                        )
-                        emitToolFailure(call, ToolArgsValidator.renderForModel(call.name, violations), working, journal)
-                        continue
-                    }
-
-                    // 挂载子代理上下文：ask_actor 从协程上下文读取父 run 的
-                    // conversation/config/model（协程元素而非可变全局，取消安全）。
-                    val parentContext = AskSubagentTool.ParentContext(
-                        conversationId = request.conversationId,
-                        config = config,
-                        model = request.model,
-                        // 档位必须往下传（Wave 26）：子 run 没有审批通道，档位是唯一
-                        // 能拦住它的闸门 —— 不传就等于「只读档位可被 ask_actor 绕过」。
-                        capabilityMode = request.capabilityMode,
-                        // 披露模式同理必须往下传（Wave 27）：子 run 未声明 allowedTools
-                        // 时白名单取全量注册表，不传就会在子 run 里把隐藏面整个还原。
-                        disclosureMode = request.disclosureMode,
-                    )
-                    val result = withContext(SubagentRunContext(parentContext)) {
-                        executeWithGuard(call, tool, policy)
-                    }
-                    emit(AgentEvent.ToolResultReceived(result))
-                    commitToolMessage(working, call, result, journal)
-
-                    // ── ask_actor 执行点接入（严质衡审查 P1-2）──────────────────
-                    // 子 run 真正执行过 → 引擎 Conversation 被换成子 run 的 cid（甚至
-                    // 因子 run 内 rebuildEngine 整机换新），父 run 下一轮请求在引擎侧
-                    // 必然重建 + 全量重放。父 run 的 cid 全程不变，记账增量分支无法
-                    // 自行感知 —— 在此 bump 父 run 的 contextVersion，下一轮记账检测到
-                    // 版本变化后整包重记，与引擎实际持有量重新对齐。
-                    //
-                    // 「确实跑了」判据（AskSubagentTool 的返回约定，改其文案时需同步）：
-                    //  - ok=true：一律是子 run 执行完毕的返回（含「没有产出可见文本」
-                    //    的降级文案）；
-                    //  - ok=false 且 errorMessage 以「子代理 」开头（含空格）：子 run 已
-                    //    启动后的失败透传（「子代理 X 执行失败：…」）—— 该路径同时伴随
-                    //    子 run 内的 rebuildEngine 换新实例；注意与 pre-run 失败
-                    //    「子代理缺少父 run 上下文…」（无空格）区分；
-                    //  - ok=false 且为工具超时：子 run 已在跑、被 executeWithGuard 击杀，
-                    //    引擎 conversationDirty 必然置位（下一轮同样强制重建）。
-                    // 参数错误 / actor 不存在等 pre-run 失败不 bump：引擎未被触碰。
-                    if (tool is AskSubagentTool) {
-                        val msg = result.errorMessage
-                        if (result.ok ||
-                            msg?.startsWith("子代理 ") == true ||
-                            msg?.startsWith("工具执行超时") == true
-                        ) {
-                            contextVersion++
-                        }
-                    }
-
-                    // ── 计划变化检测（ZCode Phase Graph 降级移植）────────────────
-                    // plan_set / plan_update 工具改的是会话级 PlanStore；版本号变了就把
-                    // 最新计划推给 UI。放在工具循环内：一轮多个计划操作也能逐条可见。
-                    request.planStore?.let { store ->
-                        val tracked = store.peek(request.conversationId ?: "")
-                        if (tracked != null && tracked.version != lastPlanVersion) {
-                            lastPlanVersion = tracked.version
-                            emit(AgentEvent.PlanUpdated(tracked.steps))
-                        }
                     }
                 }
 
                 // 提醒作为下一轮 messages 里的合成 user 消息（槽位是单值，所以每轮最多注入一次）。
-                val reminder = pendingReminder
+                val reminder = state.pendingReminder
                 if (reminder != null) {
                     // 合成提醒统一用稳定派生 id（严质衡审查 P2-3，口径对齐 :496/:529 两处：
                     // 引擎按 id 做增量水印去重，合成消息不该每轮拿新 UUID）。
                     val reminderMessage = ChatMessage(
-                        id = "reminder:$round:tool",
+                        id = "reminder:${state.round}:tool",
                         role = Role.USER,
                         text = reminder,
                     )
-                    working.add(reminderMessage)
+                    state.working.add(reminderMessage)
                     journal?.appendReminder(reminderMessage)
-                    pendingReminder = null
+                    state.pendingReminder = null
                 }
 
-                round++
+                state.round++
             }
 
             // 循环唯一的正常出口是「模型自己给出最终答案」（modelStopped = true，见上面的 break）；
@@ -1163,13 +871,13 @@ class AgentRunner(
             // 误判成轮次耗尽，于是只跑 1 轮也报「达到轮次上限」。
             // 注意：这里**绝不**注入「请现在直接回答」之类的收尾提示再进循环 —— 那句话会被模型
             // 回显成工具调用形状的 JSON，又被文本协议解析成工具调用，正是我们要避免的死循环。
-            val exhausted = !modelStopped
+            val exhausted = !state.modelStopped
             val outgoing = if (!exhausted) {
-                finalText
+                state.finalText
             } else {
                 // 轮次耗尽时不能把「带工具 JSON 的原始输出」当答案，先剥掉协议片段再交付；
                 // 若连可见文本都没有，就合成一条用户可见的收尾说明（否则 UI 收到空串会静默结束）。
-                val visible = if (policy.enableTextProtocol) TextToolProtocol.strip(lastModelText) else lastModelText
+                val visible = if (policy.enableTextProtocol) TextToolProtocol.strip(state.lastModelText) else state.lastModelText
                 visible.ifBlank {
                     "本轮因达到轮次上限（${policy.maxRounds} 轮）而结束。可以让我继续，或换一种说法再试。"
                 }
@@ -1177,20 +885,20 @@ class AgentRunner(
             // 终止原因是排查「模型不会停」的第一现场：同样跑满 8 轮，是「自己停了」还是
             // 「被 maxRounds 硬截断」在 UI 上看起来几乎一样，但结论完全不同。
             if (exhausted) {
-                AgentLogStore.info("轮次耗尽：已跑 $round 轮（上限 ${policy.maxRounds}），按兜底收尾")
+                AgentLogStore.info("轮次耗尽：已跑 ${state.round} 轮（上限 ${policy.maxRounds}），按兜底收尾")
             } else {
-                AgentLogStore.info("正常结束：$round 轮，模型自行给出最终答案")
+                AgentLogStore.info("正常结束：${state.round} 轮，模型自行给出最终答案")
             }
             val termination = if (exhausted) TerminationReason.MaxRounds else TerminationReason.ModelStopped
             journal?.append(
                 AgentRunJournal.KIND_SETTLED,
-                AgentRunJournal.settledPayload(termination.name, round),
+                AgentRunJournal.settledPayload(termination.name, state.round),
             )
             emit(
                 AgentEvent.Finished(
                     text = outgoing,
-                    rounds = round,
-                    usage = lastUsage,
+                    rounds = state.round,
+                    usage = state.lastUsage,
                     terminatedBy = termination,
                 )
             )
@@ -1202,6 +910,79 @@ class AgentRunner(
         val intraStreamLoop: Boolean,
         val retried: Boolean,
     )
+
+    /**
+     * run 内跨轮状态（Wave 29 A1 Step 2）：原 executeBodyUnchecked 局部变量原样收编，
+     * 字段名未改。
+     *
+     * ⚠️ 必须保持为 executeBodyUnchecked 的**局部**对象（每 run 一个实例），不能上提
+     * 为 AgentRunner 字段：AgentRunner 是 AppContainer 单例，ask_actor 子代理会在父 run
+     * 的工具阶段**嵌套**执行完整子 run —— 类字段会被子 run 覆写、父 run 恢复后拿着
+     * 脏状态继续记账（局部变量随协程栈天然隔离）。
+     */
+    private class RunState(
+        val working: MutableList<ChatMessage>,
+        lastPlanVersion: Long,
+        lastUsage: TokenUsage?,
+    ) {
+        var round = 0
+        // ── 上下文版本与 token 记账（外部审查报告2 §2，B1 压缩语义失效的根治）──
+        // 端侧引擎的 Conversation 是「只增不减」的 KV cache：一旦压缩真的裁掉了历史，
+        // 引擎没有任何增量手段表达「这段历史没了」。contextVersion 就是把这件事
+        // 显式告诉引擎的契约：版本一变，引擎必须关闭旧 Conversation、清水印、全量重放
+        // messages（见 LiteRtLmEngine.ensureConversation 与 EngineContract.contextVersion）。
+        //
+        // sentTokens / accountedIds 是发送侧的 token 记账：引擎的 Conversation 里实际
+        // 持有多少 token，只能由我们（唯一知道「哪些 id 已送进引擎」的一方）维护。
+        //  - 引擎必重建（版本变 / 会话切）→ 全量重放 → 整包重新记账；
+        //  - 否则只把「没发过的新消息」增量记账。
+        // 由此「sentTokens > budget」才是触发压缩的可靠判据（旧的只看 working 估算，
+        // 在压缩返回原样的场景下会一轮又一轮地重复压缩、永不重建）。
+        var contextVersion = 0L
+        // 上次记账时的版本：记账分支以「版本自上次记账后是否变过」为全量触发之一，
+        // 覆盖三类 bump 来源 —— 压缩裁剪（本块）、ask_actor 子 run 执行（工具段）、
+        // 生成失败重建引擎后重试成功（生成段）。三者都意味着引擎侧将重建并全量重放。
+        var accountedVersion = 0L
+        var sentTokens = 0L
+        var accountedIds = mutableSetOf<String>()
+        var lastCid: String? = null
+        // 计划版本水印：只把「本次 run 期间发生的变化」推给 UI（run 打开前的历史计划不重放）
+        var lastPlanVersion = lastPlanVersion
+        var finalText = ""
+        // 取**最近**一条带 usage 的历史消息，不是第一条：第一条往往是建会话时的系统消息，
+        // usage 恒为 null，于是 Finished 事件里的用量永远是 null（UI 一片空白）。
+        var lastUsage = lastUsage
+        var lastModelText = ""
+        // 循环是「模型自己给出最终答案而 break」还是「轮次耗尽」必须显式记下来。
+        // 旧实现用 `finalText.isBlank()` 反推：模型整段回答被 strip() 剥成空串时，
+        // 明明只跑了 1 轮也会被报成「达到轮次上限」，同时提交一个空气泡。
+        var modelStopped = false
+
+        // ── 「不会停」的防线 ───────────────────────────────────────────────
+        // 端侧 4B 最常见的失败不是不会做，而是不会停：重复同一段摘要、反复回到同一个
+        // 「下车点」。按轮记录可见文本的归一化签名，命中历史就注入一次提醒。
+        val seenSignatures = HashSet<String>()
+        val remindedSignatures = HashSet<String>()
+        var noToolStreak = 0
+        // 连续空输出轮数（见下方 answer.isBlank 分支：端侧增量水印下裸 continue 会空转）。
+        var emptyAnswerStreak = 0
+        // 轮内流式重复连续触发的轮数：正常轮归零，超过 MAX_INTRA_STREAM_LOOP_ROUNDS
+        // 按失败收尾（语义对齐 emptyAnswerStreak）。run 内局部状态，随协程消亡。
+        var intraLoopStreak = 0
+        var noToolReminderSent = false
+        var pendingReminder: String? = null
+        // 拒绝熔断状态（run 内，不跨 run）：run 结束随协程消亡，无需持久化。
+        // 用户反悔权保留 —— 新 run 计数归零，拒绝过不代表下次还拒。
+        val toolDenialCounts = HashMap<String, Int>()
+        val denialReminderSent = HashSet<String>()
+        // ── 同工具+同参调用守卫状态（ZCode model-anomaly 形态，Wave 19 P0）──
+        // ⚠️ 必须留在 executeBody 栈上，不设类字段：ask_actor 子代理会在父 run 的
+        // 工具阶段嵌套执行完整子 run，类字段会被子 run 覆写、父 run 恢复后拿着
+        // 脏状态继续计数（同 :313-316 记账状态的隔离教训）。
+        var lastToolCallSignature: String? = null
+        var toolCallStreak = 0
+        var toolAnomalyReminders = 0
+    }
 
     /**
      * 单轮生成的「发送 + 失败重试」循环（Wave 29 A1 Step 1 自 executeBodyUnchecked 外提）。
@@ -1334,6 +1115,290 @@ class AgentRunner(
             }
         }
         return GenerationOutcome(accumulator, intraStreamLoop, generationRetried)
+    }
+
+    /** for 单次工具调用体的控制流映射（Wave 29 A1 Step 3）：NextCall = 原 for 级 continue。 */
+    private enum class ToolCallStep { NextCall, Proceed }
+
+    /**
+     * 单次工具调用体（Wave 29 A1 Step 3 自 executeBodyUnchecked 的 for 循环外提）。
+     *
+     * 返回 [ToolCallStep.NextCall] = 原 8 处 for 级 `continue`（本条调用不走完，继续
+     * 下一条）；[ToolCallStep.Proceed] = 本条调用正常走完。调用点 `== NextCall` 时
+     * `continue`，与原 for 循环控制流逐条等价。
+     *
+     * 跨轮可变量全部经 [state]（RunState，每 run 局部对象）读写；[working] 与
+     * `state.working` 是同一列表实例（按方案签名经参数直传）。
+     */
+    private suspend fun FlowCollector<AgentEvent>.executeSingleToolCall(
+        rawCall: ToolCall,
+        request: AgentRequest,
+        policy: AgentPolicy,
+        config: InferenceConfig,
+        disclosureActive: Boolean,
+        hiddenToolCatalog: HiddenToolCatalog,
+        registeredToolNames: Set<String>,
+        allToolNames: Set<String>,
+        working: MutableList<ChatMessage>,
+        journal: AgentRunJournal?,
+        state: RunState,
+    ): ToolCallStep {
+        // ── 按需披露：call_tool 解包成真实调用（Wave 27）─────────────
+        // 解包后**换名继续走下面的原路径**，所以同参守卫、未注册检查、审批
+        // 判定（静态标志 ∪ 参数门控 ∪ 效果声明 ∪ 能力档位）与执行全部作用在
+        // **目标工具**上 —— 转发不构成任何权限旁路。这是本模式的硬约束，
+        // 改这里必须同步复核（解包失败时给可行动报错，绝不猜目标）。
+        val call = resolveDisclosureCall(rawCall, disclosureActive, working, journal)
+            ?: return ToolCallStep.NextCall
+        // ── 同工具+同参调用守卫（ZCode model-anomaly / deepseek
+        // repeat-tool-reminder 形态）────────────────────────────────
+        // 计数在**执行前**：未注册 / denied / 审批失败同样计入 ——
+        // deepseek 设计笔记明言 denied calls 也算循环（模型反复撞拒绝
+        // 墙与反复空跑同样是「不会换路径」的病征）。
+        val callSignature = toolCallSignature(call.name, call.argumentsJson)
+        if (callSignature == state.lastToolCallSignature) {
+            state.toolCallStreak++
+        } else {
+            state.lastToolCallSignature = callSignature
+            state.toolCallStreak = 1
+        }
+        if (state.toolCallStreak == REPEAT_TOOL_CALL_THRESHOLD &&
+            state.toolAnomalyReminders < MAX_TOOL_ANOMALY_REMINDERS &&
+            // 单槽纪律：已有待注入提醒时不覆盖（同参信息最具体，优先级
+            // 同参 > 重复回答 > 零工具，与 :569 判据同构）。
+            state.pendingReminder == null
+        ) {
+            state.toolAnomalyReminders++
+            AgentLogStore.warn(
+                "同参调用守卫：${call.name} 已连续 ${state.toolCallStreak} 次以完全相同的参数调用，注入提醒"
+            )
+            state.pendingReminder =
+                "你已连续 ${state.toolCallStreak} 次以完全相同的参数调用工具 ${call.name}。" +
+                    "除非用户明确要求原样重试，否则不要再次重复同一调用。" +
+                    "请基于既有结果采取不同的下一步：说明障碍，或向用户求助。"
+        }
+        // ── 同参重复硬护栏（Wave 22 P0）──────────────────────────────
+        // 提醒是 advisory-only，小模型可以直接无视（真机：current_time
+        // 同参连发 6 次）。第 REPEAT_TOOL_CALL_EXEC_LIMIT 次起不再真正
+        // 执行，回一条「已忽略」的结果 —— 协议上每个 call 仍有一条对应
+        // result（丢 result 会触发引擎侧「有 call 无结果」报错），但
+        // 同一副作用不会被反复触发。放在 toolRegistry 查询之前：
+        // 未注册工具名同样不该被重复打。
+        if (state.toolCallStreak >= REPEAT_TOOL_CALL_EXEC_LIMIT) {
+            emitRepeatedCallIgnored(call, state.toolCallStreak, working, journal)
+            return ToolCallStep.NextCall
+        }
+        // ── 按需披露：search_tools 就地检索（Wave 27）────────────────
+        // 位置刻意在**同参签名与硬护栏之后**：检索虽然无副作用，但「同一 query
+        // 反复搜」与「同一工具同参反复调」是同一种病征（不会换路径），Wave 22
+        // 为 current_time 同参连发立的护栏必须同样罩住元工具 —— 否则模型可以
+        // 无限 search 空转，且完全绕过 toolCallStreak 计数。
+        if (disclosureActive && call.name == DisclosureTools.SEARCH_TOOL_NAME) {
+            emitDisclosureSearch(rawCall, hiddenToolCatalog, working, journal)
+            return ToolCallStep.NextCall
+        }
+        // 可用性判定必须走**披露面**（registeredToolNames）而不是 registry 的存在性：
+        // ON_DEMAND 下注册表里仍有全部真实工具，若只看 registry，原生 tool 通道
+        // 回吐的真实工具名（模型幻觉或历史残留）会被直接执行 —— 隐藏面形同虚设。
+        // 这行同时封住了「toolNames 白名单在原生通道被绕过」的既有缺口
+        // （FULL 模式下 registeredToolNames = 已启用 ∩ 白名单，与 get() 语义等价，
+        //  故对既有行为零影响）。
+        //
+        // 【审查4 P0 修复】转发放行：call_tool 解包换名后 call.name 已是**目标
+        // 工具名**，必然不在元工具白名单内 —— 旧判据把一切合法转发当未注册名
+        // 拒绝，错误文案还诱导模型重试 → 同参死循环，ON_DEMAND 整体不可用。
+        // 以 rawCall.name（解包**前**的原始名）识别转发来源；放行后仍要求目标
+        // 在用户启用集合（allToolNames）内。封堵面逐一复核不变：
+        // ① 文本协议编造隐藏名 → TextToolProtocol 协议层已拒（不到这里）；
+        // ② 原生通道幻觉隐藏名 → rawCall.name ≠ call_tool 且 ∉ registeredToolNames → 仍拒；
+        // ③ 转发到元工具 → unpackCall 保留名递归防护已拦（解包失败 continue）；
+        // ④ 编造未启用名 → viaForward 但 ∉ allToolNames → 拒；
+        // ⑤ FULL 模式 → viaForward 恒 false → 行为逐字节不变。
+        val viaForward = disclosureActive && rawCall.name == DisclosureTools.CALL_TOOL_NAME
+        val allowedNames = if (viaForward) allToolNames else registeredToolNames
+        val tool = if (call.name in allowedNames) toolRegistry.get(call.name) else null
+        if (tool == null) {
+            emitUnregisteredTool(
+                call,
+                disclosureActive,
+                hiddenToolCatalog.size,
+                registeredToolNames,
+                working,
+                journal,
+            )
+            return ToolCallStep.NextCall
+        }
+        // ── 审批闸门（Octop tool_guard / ZCode 命令审批语义移植）────
+        // 优先级链：策略豁免 > 审批缓存（用户显式授权、同参、TTL 内）>
+        // 拒绝熔断（防换参骚扰）> 人在回路。fail-closed 纪律不变：
+        // 审批通道缺失或异常一律拒绝，绝不默认放行。
+        // ParamGatedTool 提供参数级判据（clipboard set 弹卡 / get 直行）。
+        val paramGated = (tool as? ParamGatedTool)
+            ?.requiresConfirmationFor(call.argumentsJson) == true
+        // ── 能力档位闸门（Wave 26 / Operit2 四层模型裁剪移植）──────────
+        // 第三类判据，与前两者**正交**：静态标志答「这工具危不危险」，参数门控答
+        // 「这次参数危不危险」，档位答「用户今天允许 AI 写到哪」。命中时走审批而
+        // 非硬拒绝 —— 用户仍可单次放行（ReadOnly 是默认收窄，不是牢笼）。
+        // effect 优先取**本次调用**的动态声明（EffectAwareTool），否则用静态声明；
+        // 静态默认是 WRITE（fail-closed），所以忘了声明的工具只会更保守。
+        val effectiveEffect = (tool as? EffectAwareTool)
+            ?.effectFor(call.argumentsJson) ?: tool.spec.effect
+        val capabilityGated = request.capabilityMode.requiresApprovalFor(effectiveEffect)
+        val needsApproval = tool.spec.dangerous || tool.spec.requiresConfirmation ||
+            paramGated || capabilityGated
+        val autoApproved = tool.spec.dangerous && policy.autoApproveDangerous
+        if (needsApproval && !autoApproved) {
+            // 审批缓存命中 = 用户此前显式授权仍在 TTL 内（同参重试免弹卡）。
+            // 档位入 key（Wave 28 P1-1）：授权是「某档位下的放行」，降档
+            // （如 WORKSPACE_WRITE → READ_ONLY）必须重新弹卡，否则 30min TTL
+            // 内档位收窄会被缓存静默绕过。
+            // 未命中（含过期/未授权/无缓存实例）继续走正常审批。
+            val cachedDecision = request.approvalCache
+                ?.peek(
+                    call.name,
+                    ToolApprovalCache.argsDigest(call.argumentsJson),
+                    request.conversationId,
+                    request.capabilityMode.name,
+                )
+            if (cachedDecision != ToolApprovalDecision.APPROVED) {
+                // 拒绝熔断：同一工具连续被拒 N 次后跳过审批直接拒 ——
+                // 防止模型换参数反复触发授权卡（熔断按工具名计数，
+                // 换参不重置；用户放行一次即清零，反悔权保留）。
+                val denialCount = state.toolDenialCounts[call.name] ?: 0
+                if (denialCount >= DENIAL_CIRCUIT_LIMIT) {
+                    AgentLogStore.warn(
+                        "审批熔断：${call.name} 已连续拒绝 $denialCount 次，本任务内跳过审批直接拒绝"
+                    )
+                    emit(AgentEvent.ToolSkipped(call, "该工具已被多次拒绝，本任务内不再询问"))
+                    emitToolFailure(
+                        call,
+                        "该工具已被用户多次拒绝。本任务内不要再调用它；" +
+                            "请改用其它方式完成任务，或向用户说明限制。",
+                        working,
+                        journal,
+                    )
+                    // 熔断提醒复用 pendingReminder 单槽，每个工具至多注入一次
+                    // （与「重复回答提醒」同轮竞争时后者让位 —— 熔断是终态信息）。
+                    if (state.denialReminderSent.add(call.name)) {
+                        state.pendingReminder =
+                            "工具 ${call.name} 已被用户多次拒绝，这是终态。换路径或直接收尾。"
+                    }
+                    return ToolCallStep.NextCall
+                }
+                val handler = request.approvalHandler
+                if (handler == null) {
+                    emit(AgentEvent.ToolSkipped(call, "危险工具需用户授权"))
+                    // notifyResult = false：保持该分支**既有**语义（只 commit 不 emit 结果事件）。
+                    emitToolFailure(
+                        call,
+                        "该工具需要用户授权后才会执行",
+                        working,
+                        journal,
+                        notifyResult = false,
+                    )
+                    return ToolCallStep.NextCall
+                }
+                emit(AgentEvent.ApprovalRequested(call, tool.spec))
+                val decision = try {
+                    handler.onApprovalRequested(call, tool.spec)
+                } catch (t: CancellationException) {
+                    throw t
+                } catch (t: Throwable) {
+                    // 审批通道自身异常 = 拒绝（fail-closed），并把原因留给日志
+                    AgentLogStore.warn("审批通道异常，按拒绝处理：${t.javaClass.simpleName}")
+                    null
+                }
+                if (decision != ToolApprovalDecision.APPROVED) {
+                    state.toolDenialCounts.merge(call.name, 1, Int::plus)
+                    AgentLogStore.info("工具被拒绝：${call.name}")
+                    emit(AgentEvent.ToolSkipped(call, "用户拒绝了该工具调用"))
+                    emitToolFailure(
+                        call,
+                        "用户拒绝了该工具调用。不要原样重复这次调用；" +
+                            "请改用其它方式完成任务，或向用户说明缺了什么。",
+                        working,
+                        journal,
+                    )
+                    return ToolCallStep.NextCall
+                }
+                // 用户放行 = 意愿反转，该工具的熔断计数清零。
+                state.toolDenialCounts.remove(call.name)
+            }
+        }
+
+        emit(AgentEvent.ToolCallStarted(call))
+
+        // ── 参数 Schema 校验（ZCode typed-ask 语义的移植）─────────────
+        // 在执行前按 ToolSpec.parameters 校验类型/必填/枚举；违规不执行工具，
+        // 而是把结构化差异（路径 + 期望 + 实得）作为失败结果回给模型，
+        // 让它在下一轮定向修复 —— 端侧 4B 的工具失败大头是参数给错，
+        // 笼统的"执行异常"只会诱发盲猜循环。
+        val violations = ToolArgsValidator.validate(tool.spec, call.argumentsJson)
+        if (violations.isNotEmpty()) {
+            AgentLogStore.warn(
+                "工具参数校验失败：${call.name}（${violations.size} 项）"
+            )
+            emitToolFailure(call, ToolArgsValidator.renderForModel(call.name, violations), working, journal)
+            return ToolCallStep.NextCall
+        }
+
+        // 挂载子代理上下文：ask_actor 从协程上下文读取父 run 的
+        // conversation/config/model（协程元素而非可变全局，取消安全）。
+        val parentContext = AskSubagentTool.ParentContext(
+            conversationId = request.conversationId,
+            config = config,
+            model = request.model,
+            // 档位必须往下传（Wave 26）：子 run 没有审批通道，档位是唯一
+            // 能拦住它的闸门 —— 不传就等于「只读档位可被 ask_actor 绕过」。
+            capabilityMode = request.capabilityMode,
+            // 披露模式同理必须往下传（Wave 27）：子 run 未声明 allowedTools
+            // 时白名单取全量注册表，不传就会在子 run 里把隐藏面整个还原。
+            disclosureMode = request.disclosureMode,
+        )
+        val result = withContext(SubagentRunContext(parentContext)) {
+            executeWithGuard(call, tool, policy)
+        }
+        emit(AgentEvent.ToolResultReceived(result))
+        commitToolMessage(working, call, result, journal)
+
+        // ── ask_actor 执行点接入（严质衡审查 P1-2）──────────────────
+        // 子 run 真正执行过 → 引擎 Conversation 被换成子 run 的 cid（甚至
+        // 因子 run 内 rebuildEngine 整机换新），父 run 下一轮请求在引擎侧
+        // 必然重建 + 全量重放。父 run 的 cid 全程不变，记账增量分支无法
+        // 自行感知 —— 在此 bump 父 run 的 contextVersion，下一轮记账检测到
+        // 版本变化后整包重记，与引擎实际持有量重新对齐。
+        //
+        // 「确实跑了」判据（AskSubagentTool 的返回约定，改其文案时需同步）：
+        //  - ok=true：一律是子 run 执行完毕的返回（含「没有产出可见文本」
+        //    的降级文案）；
+        //  - ok=false 且 errorMessage 以「子代理 」开头（含空格）：子 run 已
+        //    启动后的失败透传（「子代理 X 执行失败：…」）—— 该路径同时伴随
+        //    子 run 内的 rebuildEngine 换新实例；注意与 pre-run 失败
+        //    「子代理缺少父 run 上下文…」（无空格）区分；
+        //  - ok=false 且为工具超时：子 run 已在跑、被 executeWithGuard 击杀，
+        //    引擎 conversationDirty 必然置位（下一轮同样强制重建）。
+        // 参数错误 / actor 不存在等 pre-run 失败不 bump：引擎未被触碰。
+        if (tool is AskSubagentTool) {
+            val msg = result.errorMessage
+            if (result.ok ||
+                msg?.startsWith("子代理 ") == true ||
+                msg?.startsWith("工具执行超时") == true
+            ) {
+                state.contextVersion++
+            }
+        }
+
+        // ── 计划变化检测（ZCode Phase Graph 降级移植）────────────────
+        // plan_set / plan_update 工具改的是会话级 PlanStore；版本号变了就把
+        // 最新计划推给 UI。放在工具循环内：一轮多个计划操作也能逐条可见。
+        request.planStore?.let { store ->
+            val tracked = store.peek(request.conversationId ?: "")
+            if (tracked != null && tracked.version != state.lastPlanVersion) {
+                state.lastPlanVersion = tracked.version
+                emit(AgentEvent.PlanUpdated(tracked.steps))
+            }
+        }
+        return ToolCallStep.Proceed
     }
 
     /**
