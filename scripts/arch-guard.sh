@@ -110,6 +110,20 @@ check "proguard 无网络栈残留" \
 check "全仓禁动态代码加载（DexClassLoader/loadLibrary）" \
   bash -c 'grep -rnE "DexClassLoader|PathClassLoader|InMemoryDexClassLoader|System\.loadLibrary|System\.load\(" --include="*.kt" '"${EXCL[*]}"' . | grep -vE "'"$EXCLUDE_COMMENT"'"'
 
+# 10) :core-agent 不得依赖 :core-data / :core-design（Wave 26 增补）
+#     core-agent 是纯 Kotlin 的 agent 内核（Tool / ToolRegistry / AgentRunner / 记忆 / 计划），
+#     它必须能在 JVM 上被单测直接拉起。一旦反向依赖 core-data（DataStore、文件仓库）
+#     或 core-design（Compose 令牌），内核测试就得先造 Android 环境，「内核可移植」的前提作废。
+#
+#     动机是 Operit 从一代到二代的架构教训：其一代把 UI 状态、持久化模型、原生接入三类
+#     职责装进同一个 app 模块，最终只能靠整体重写拆开（其官方重构计划自述「当前系统不是
+#     一棵树，而是多个宿主手工组装出来的共享引用图」）。这条守卫是防止我们走到那一步的
+#     最低成本手段 —— 依赖方向一旦错，返工代价是指数级的。
+#     注：grep 型守卫对全限定名拼接（"com.rickeal" + ".core.data"）无效，这是已知盲区；
+#     本仓无此写法，且真要绕过的人已在有意为之（与第 5/6 条同款取舍）。
+check "core-agent 不依赖 core-data/core-design（Wave 26）" \
+  bash -c 'grep -rn "com\.rickeal\.agent\.core\.data\|com\.rickeal\.agent\.core\.design" --include="*.kt" core-agent/ | grep -vE "'"$EXCLUDE_COMMENT"'"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

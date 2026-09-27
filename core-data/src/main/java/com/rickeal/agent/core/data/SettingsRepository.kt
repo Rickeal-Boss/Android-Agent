@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.AgentJson
 import com.rickeal.agent.core.model.InferenceConfig
 import kotlinx.coroutines.flow.Flow
@@ -34,6 +35,11 @@ class SettingsRepository(private val context: Context) {
         // 触感强度：存 String（枚举名），因为 GlassHapticLevel 定义在 :core-design，
         // :core-data 不能 import 它（依赖方向倒置）。解析失败一律回退 STANDARD。
         val HAPTIC_LEVEL = stringPreferencesKey("haptic_level")
+
+        // AI 能力档位（Wave 26）。存枚举名 String，与 HAPTIC_LEVEL 同款容错姿态：
+        // 解析失败回退 **WORKSPACE_WRITE**（默认档）而不是 FULL —— 设置读坏绝不能
+        // 变成「AI 能力被静默放宽」，回退值必须是仍然可用且最保守的那个档。
+        val CAPABILITY_MODE = stringPreferencesKey("capability_mode")
 
         // 覆盖层 scrim 不透明度（Wave 21）。Float 原生类型，走 floatPreferencesKey
         // （同 GLASS_INTENSITY 模式，无依赖倒置问题）。
@@ -104,6 +110,23 @@ class SettingsRepository(private val context: Context) {
     val generationNotification: Flow<Boolean> = context.settingsDataStore.data
         .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
         .map { it[Keys.GENERATION_NOTIFICATION] ?: false }
+
+    /**
+     * 用户给 AI 的**整体能力档位**（Wave 26）。默认 [AiCapabilityMode.WORKSPACE_WRITE]
+     * = 与引入档位前的行为逐字节一致。
+     *
+     * 回退策略刻意选 WORKSPACE_WRITE 而非 FULL：设置值损坏/被外部改写时，绝不能变成
+     * 「AI 能力被静默放宽」。档位只收紧不放宽，回退点必须落在仍然可用且更保守的那一侧。
+     */
+    val capabilityMode: Flow<AiCapabilityMode> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { prefs ->
+            when (prefs[Keys.CAPABILITY_MODE]) {
+                AiCapabilityMode.READ_ONLY.name -> AiCapabilityMode.READ_ONLY
+                AiCapabilityMode.FULL.name -> AiCapabilityMode.FULL
+                else -> AiCapabilityMode.WORKSPACE_WRITE
+            }
+        }
 
     /**
      * 自定义壁纸的相对路径（相对 filesDir，由 [WallpaperStore] 写入）。默认 "" = 程序化壁纸。
@@ -196,6 +219,11 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setAllowMeteredDownload(allow: Boolean) {
         context.settingsDataStore.edit { it[Keys.ALLOW_METERED_DOWNLOAD] = allow }
+    }
+
+    /** AI 能力档位落盘。UI 侧负责在用户选择后立即调用（设置页与输入区共用同一入口）。 */
+    suspend fun setCapabilityMode(mode: AiCapabilityMode) {
+        context.settingsDataStore.edit { it[Keys.CAPABILITY_MODE] = mode.name }
     }
 
     /**

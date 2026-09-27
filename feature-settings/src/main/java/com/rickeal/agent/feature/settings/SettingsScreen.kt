@@ -58,6 +58,7 @@ import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.LocalWallpaperImage
 import com.rickeal.agent.core.design.motion.staggeredPageItem
+import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.ThinkingMode
 import java.util.Locale
 
@@ -560,6 +561,57 @@ fun SettingsScreen(
                             },
                         )
                     }
+                }
+            }
+
+            /* ---------------------------------------------------- AI 能力 */
+            // AI 能力档位（Wave 26）：Operit2 四层能力模型的第 2 层，裁剪为单设备版本。
+            // 它解耦了「工具危不危险」（工具自身的危险标记）与「我今天允许 AI 做到哪」
+            // （用户授权范围）—— 在此之前只有前者，用户无法一次性收窄 AI 的行为面。
+            // 副文案按档位切换，点明代价与边界；「完整权限」必须说清它不是提权，
+            // 否则用户会以为选了它 App 就拿到了系统没给的能力。
+            GlassCard(
+                modifier = Modifier.staggeredPageItem(itemIndex = 4),
+                contentPadding = PaddingValues(14.dp),
+            ) {
+                Column {
+                    GroupTitle("AI 能力")
+                    Text(
+                        text = "AI 能对设备做到哪一步",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                    )
+                    GlassSegmented(
+                        items = listOf("只读", "工作区读写", "完整权限"),
+                        selectedIndex = when (state.capabilityMode) {
+                            AiCapabilityMode.READ_ONLY -> 0
+                            AiCapabilityMode.WORKSPACE_WRITE -> 1
+                            AiCapabilityMode.FULL -> 2
+                        },
+                        onSelected = { index ->
+                            viewModel.onCapabilityModeChange(
+                                when (index) {
+                                    0 -> AiCapabilityMode.READ_ONLY
+                                    2 -> AiCapabilityMode.FULL
+                                    else -> AiCapabilityMode.WORKSPACE_WRITE
+                                },
+                            )
+                        },
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    Text(
+                        text = when (state.capabilityMode) {
+                            AiCapabilityMode.READ_ONLY ->
+                                "写操作（改文件、写记忆、写剪贴板）执行前都会先问你"
+                            AiCapabilityMode.WORKSPACE_WRITE ->
+                                "默认档：只由工具自身的风险标记决定是否要你确认"
+                            AiCapabilityMode.FULL ->
+                                "不再额外收窄。注意它不会给 App 任何系统本来没授予的能力"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
                 }
             }
 

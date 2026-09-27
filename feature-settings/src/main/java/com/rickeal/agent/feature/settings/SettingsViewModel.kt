@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.data.ThemeState
+import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.InferenceConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,6 +21,12 @@ data class SettingsUiState(
     val theme: ThemeState = ThemeState(),
     /** 「生成速度通知」开关（与 theme 分开存：它要运行时权限，语义不是主题）。 */
     val generationNotification: Boolean = false,
+    /**
+     * AI 能力档位（Wave 26）。与 theme/config 分开存：它管的是**权限面**不是外观或采样，
+     * 混进 ThemeState 会让「换个主题」与「放宽 AI 权限」走同一条落盘路径 —— 那种耦合
+     * 迟早会让一次 UI 重构意外改到权限默认值。
+     */
+    val capabilityMode: AiCapabilityMode = AiCapabilityMode.WORKSPACE_WRITE,
     val message: String? = null,
     val error: String? = null,
 )
@@ -47,6 +54,11 @@ class SettingsViewModel(
                 _uiState.update { it.copy(generationNotification = enabled) }
             }
         }
+        viewModelScope.launch {
+            container.settingsRepository.capabilityMode.collect { mode ->
+                _uiState.update { it.copy(capabilityMode = mode) }
+            }
+        }
     }
 
     /**
@@ -61,6 +73,16 @@ class SettingsViewModel(
     fun onThemeChange(theme: ThemeState) {
         _uiState.update { it.copy(theme = theme) }
         viewModelScope.launch { container.settingsRepository.setThemeState(theme) }
+    }
+
+    /**
+     * AI 能力档位变更（Wave 26）。一次性写入（分段控件，点一下就定），
+     * 与 [onThemeChange] 同款：先改内存让 UI 立即响应，再落盘。
+     * 落盘失败不回滚 UI —— 下一次 collect 会把真值推回来，比手写回滚可靠。
+     */
+    fun onCapabilityModeChange(mode: AiCapabilityMode) {
+        _uiState.update { it.copy(capabilityMode = mode) }
+        viewModelScope.launch { container.settingsRepository.setCapabilityMode(mode) }
     }
 
     /**

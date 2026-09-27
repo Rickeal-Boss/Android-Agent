@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.agent.AgentEvent
 import com.rickeal.agent.core.model.AgentLogStore
+import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.AgentRequest
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
@@ -105,6 +106,12 @@ data class ChatUiState(
     val draftInput: String = "",
     val attachments: List<Attachment> = emptyList(),
     val config: InferenceConfig = InferenceConfig(),
+    /**
+     * AI 能力档位（Wave 26）。由设置页写入 DataStore，本页 collect 后在每次 run 时
+     * 传给 AgentRequest —— 档位**必须进入执行路径**，只活在设置页就是「看起来有权限
+     * 控制、实际不生效」的假象（Operit2 明令禁止的反模式）。
+     */
+    val capabilityMode: AiCapabilityMode = AiCapabilityMode.WORKSPACE_WRITE,
     val availableModels: List<ModelDescriptor> = emptyList(),
     val activeModel: ModelDescriptor? = null,
     val isGenerating: Boolean = false,
@@ -288,6 +295,13 @@ class ChatViewModel(
                         toolsEnabled = config.enableTools,
                     )
                 }
+            }
+        }
+        // AI 能力档位（Wave 26）：设置页改动后立即生效于下一次 run。
+        // 与 inferenceConfig 分开 collect（两者是独立设置，合并会让任一变化都触发全量更新）。
+        viewModelScope.launch {
+            container.settingsRepository.capabilityMode.collect { mode ->
+                _uiState.update { it.copy(capabilityMode = mode) }
             }
         }
         viewModelScope.launch {
@@ -621,6 +635,10 @@ class ChatViewModel(
                 planStore = container.agentPlanStore,
                 approvalHandler = approvalHandler,
                 approvalCache = container.toolApprovalCache,
+                // AI 能力档位（Wave 26）：由设置页写入 DataStore，此处读快照随请求下发。
+                // 档位必须进入执行路径 —— AgentRunner 用它决定 WRITE 效果的工具是否要
+                // 追加一次授权（ReadOnly 档）。默认档零行为变化。
+                capabilityMode = _uiState.value.capabilityMode,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -786,6 +804,10 @@ class ChatViewModel(
                 planStore = container.agentPlanStore,
                 approvalHandler = approvalHandler,
                 approvalCache = container.toolApprovalCache,
+                // AI 能力档位（Wave 26）：由设置页写入 DataStore，此处读快照随请求下发。
+                // 档位必须进入执行路径 —— AgentRunner 用它决定 WRITE 效果的工具是否要
+                // 追加一次授权（ReadOnly 档）。默认档零行为变化。
+                capabilityMode = _uiState.value.capabilityMode,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -887,6 +909,10 @@ class ChatViewModel(
                 planStore = container.agentPlanStore,
                 approvalHandler = approvalHandler,
                 approvalCache = container.toolApprovalCache,
+                // AI 能力档位（Wave 26）：由设置页写入 DataStore，此处读快照随请求下发。
+                // 档位必须进入执行路径 —— AgentRunner 用它决定 WRITE 效果的工具是否要
+                // 追加一次授权（ReadOnly 档）。默认档零行为变化。
+                capabilityMode = _uiState.value.capabilityMode,
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
