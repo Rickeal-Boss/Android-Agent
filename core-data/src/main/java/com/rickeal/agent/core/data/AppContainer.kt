@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Environment
+import android.os.PowerManager
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.runtime.ProvidableCompositionLocal
@@ -26,6 +27,7 @@ import com.rickeal.agent.core.agent.subagent.SubagentRegistry
 import com.rickeal.agent.core.agent.subagent.SubagentSessionStore
 import com.rickeal.agent.core.agent.token.InMemoryRunTokenLedger
 import com.rickeal.agent.core.agent.token.RunTokenLedger
+import com.rickeal.agent.core.data.thermal.ThermalGovernor
 import com.rickeal.agent.core.engine.DefaultEngineFactory
 import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
@@ -231,6 +233,15 @@ class AppContainer(
         environment = engineEnvironment,
     )
 
+    /**
+     * 热状态治理器（Wave 30 §2.1）：PowerManager 热档位 → 四档策略。
+     * [releaseEngineIfIdle] 与 onTrimMemory 共用同一条引擎释放路径（isBusy 硬闸门
+     * 在其内部防 native use-after-free）。
+     */
+    val thermalGovernor: ThermalGovernor = ThermalGovernor(
+        releaseEngineIfIdle = { releaseEngineIfIdle() },
+    )
+
     // ---- 子代理框架（ZCode Actor / Octop ask_agent 移植）----
     // 顺序有讲究：先建 runner，再把 ask_actor 注册进 registry（工具内部引用 runner）。
     val subagentRegistry: SubagentRegistry = SubagentRegistry().also { BuiltInSubagents.registerAll(it) }
@@ -374,6 +385,23 @@ class AppContainer(
 
     init {
         toolRegistry.register(subagentTool)
+        // Wave 30 §2.1：注册系统热状态监听。minSdk 31 ≥ API 29，addThermalStatusListener
+        // 无需版本分支；AppContainer 进程级单例天然只注册一次（重复注册会重复回调）。
+        // 监听失败（个别 ROM 策略收紧）不挡启动：热策略整体降级为「无热干预」，与
+        // 引入本功能前的行为一致 —— 热保护是观测与保护增强，不是能力。
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (powerManager != null) {
+            runCatching {
+                powerManager.addThermalStatusListener(
+                    context.mainExecutor,
+                    thermalGovernor::onThermalStatus,
+                )
+            }.onFailure {
+                AgentLogStore.warn("热状态监听注册失败（${it.javaClass.simpleName}），热策略降级为无干预")
+            }
+        } else {
+            AgentLogStore.warn("PowerManager 不可用，热策略降级为无干预")
+        }
     }
 
     /**

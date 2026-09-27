@@ -15,6 +15,7 @@ import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.agent.plan.PlanStep
 import java.io.File
 import com.rickeal.agent.core.data.AppContainer
+import com.rickeal.agent.core.data.thermal.ThermalTier
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.InferenceConfig
@@ -522,9 +523,38 @@ class ChatViewModel(
      * 输入本身作为 userInput 传入。Wave2 只拼 journal 过程消息：任务描述、此前
      * 会话轮次全部丢失，4B 模型是对着工具残骸盲猜。
      */
+    /**
+     * 热闸（Wave 30 §2.1）：SEVERE 及以上拒新 run。只挡 ChatViewModel 主入口
+     * （onSend / onRetry→onSendFrom / onRecover），子 run 不挡 —— 在跑 run 由
+     * 轮头 Abort 兜底，语义闭环（R7-2）。返回 null = 放行；非 null = 拒绝文案。
+     */
+    private fun thermalRejection(): String? =
+        container.thermalGovernor.tier.value
+            .takeIf { it >= ThermalTier.SEVERE }
+            ?.let { tier -> "设备过热保护中（${tier.name} 档），请等待设备降温后再试" }
+
+    /**
+     * LIGHT 降档：新 run 启动时刻的 maxTokens 上限（对 1024 基准减半，保底 256）。
+     * 只影响本次启动的取值，在跑 run 不动（方案 §2.1 四档策略表）。降档生效必留日志。
+     */
+    private fun thermallyCappedConfig(base: InferenceConfig): InferenceConfig {
+        val capped = container.thermalGovernor.maxTokensCap(base.maxTokens)
+        if (capped == base.maxTokens) return base
+        AgentLogStore.info(
+            "热降档：新 run maxTokens ${base.maxTokens} → $capped" +
+                "（${container.thermalGovernor.tier.value.name} 档）",
+        )
+        return base.copy(maxTokens = capped)
+    }
+
     fun onRecover() {
         val state = _uiState.value
         if (state.isGenerating) return
+        // 热闸（Wave 30 §2.1）：SEVERE 及以上拒新 run（含恢复续跑）。
+        thermalRejection()?.let { rejection ->
+            _uiState.update { it.copy(error = rejection) }
+            return
+        }
         val offer = state.recovery ?: return
         val cid = conversationId ?: return
         _uiState.update { it.copy(recovery = null, error = null, toolTraces = emptyList()) }
@@ -588,7 +618,7 @@ class ChatViewModel(
             if (savedInput == null) {
                 container.conversationRepository.appendMessage(cid, userMessage)
             }
-            val config = _uiState.value.config
+            val config = thermallyCappedConfig(_uiState.value.config)
             val request = AgentRequest(
                 conversationId = cid,
                 history = history,
@@ -618,6 +648,8 @@ class ChatViewModel(
                 // 追加一次授权（ReadOnly 档）。默认档零行为变化。
                 capabilityMode = _uiState.value.capabilityMode,
                 disclosureMode = _uiState.value.disclosureMode,
+                // 热闸（Wave 30 §2.1）：轮头热决策。子 run 不传（保持 null，R7-2）。
+                thermalGate = container.thermalGovernor.asGate(),
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -710,6 +742,13 @@ class ChatViewModel(
         val text = state.draftInput
         if (text.isBlank() && state.attachments.isEmpty()) return
 
+        // 热闸（Wave 30 §2.1）：SEVERE 及以上拒新 run。放在状态变更之前 ——
+        // 拒绝时 UI 保持原样，只弹错误提示。
+        thermalRejection()?.let { rejection ->
+            _uiState.update { it.copy(error = rejection) }
+            return
+        }
+
         val userMessage = ChatMessage(
             role = Role.USER,
             text = text,
@@ -742,7 +781,7 @@ class ChatViewModel(
         runJob = viewModelScope.launch {
             val cid = ensureConversation(firstUserText(history))
             container.conversationRepository.appendMessage(cid, userMessage)
-            val config = _uiState.value.config
+            val config = thermallyCappedConfig(_uiState.value.config)
             // 每次 run 一个 journal 文件：进程被杀后可从「已完成轮次」继续
             // （core-agent/journal；写入 best-effort，失败不影响 run 本身）。
             val journal = AgentRunJournal.open(
@@ -779,6 +818,8 @@ class ChatViewModel(
                 // 追加一次授权（ReadOnly 档）。默认档零行为变化。
                 capabilityMode = _uiState.value.capabilityMode,
                 disclosureMode = _uiState.value.disclosureMode,
+                // 热闸（Wave 30 §2.1）：轮头热决策。子 run 不传（保持 null，R7-2）。
+                thermalGate = container.thermalGovernor.asGate(),
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -827,6 +868,11 @@ class ChatViewModel(
         // 但 onRetry() 自己也在改状态之后才调过来（中间有 _uiState.update 的间隙），
         // 而这里才是真正起 runJob 的地方 —— 闸门放在真正启动的那一处才拦得住。
         if (_uiState.value.isGenerating) return
+        // 热闸（Wave 30 §2.1）：SEVERE 及以上拒新 run（重试同受热保护）。
+        thermalRejection()?.let { rejection ->
+            _uiState.update { it.copy(error = rejection) }
+            return
+        }
         // 重试也顶替恢复卡（同 onSend：用户行动优先于过时的恢复提示）。
         _uiState.value.recovery?.let { offer -> conversationId?.let { cid -> dismissRecovery(offer, cid) } }
         _uiState.update {
@@ -847,7 +893,7 @@ class ChatViewModel(
         runStartedAtMillis = System.currentTimeMillis()
         runJob = viewModelScope.launch {
             val cid = ensureConversation(firstUserText(history))
-            val config = _uiState.value.config
+            val config = thermallyCappedConfig(_uiState.value.config)
             // 每次 run 一个 journal 文件：进程被杀后可从「已完成轮次」继续
             // （core-agent/journal；写入 best-effort，失败不影响 run 本身）。
             val journal = AgentRunJournal.open(
@@ -884,6 +930,8 @@ class ChatViewModel(
                 // 追加一次授权（ReadOnly 档）。默认档零行为变化。
                 capabilityMode = _uiState.value.capabilityMode,
                 disclosureMode = _uiState.value.disclosureMode,
+                // 热闸（Wave 30 §2.1）：轮头热决策。子 run 不传（保持 null，R7-2）。
+                thermalGate = container.thermalGovernor.asGate(),
             )
             runCatching {
                 container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }

@@ -33,10 +33,12 @@ import com.rickeal.agent.core.agent.subagent.AskSubagentTool
 import com.rickeal.agent.core.agent.subagent.SubagentRunContext
 import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.agent.schema.ToolArgsValidator
+import com.rickeal.agent.core.agent.thermal.ThermalDecision
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -552,6 +554,26 @@ class AgentRunner(
                     AgentLogStore.error("墙钟硬预算：run 已运行 ${wallClockElapsed / 1000}s，熔断收尾")
                     emitBreakerFailed(state, journal, registeredToolNames)
                     return
+                }
+
+                // ── 热闸（Wave 30 §2.1）：每轮主循环开始前的热状态决策 ─────
+                // 顺序在墙钟之后（两者同属轮头预算检查，失败语义一致）。
+                // Cooldown 的 delay 在 flow 内可取消：用户点停止立即生效，无需
+                // NonCancellable（R7-3）。gate 为 null（默认 / 子 run）= 无热干预。
+                when (val thermal = request.thermalGate?.beforeRound(state.round)) {
+                    is ThermalDecision.Cooldown -> delay(thermal.millis)
+                    is ThermalDecision.Abort -> {
+                        // C7 先按既有失败终态三段式收口；C9 在此升级为
+                        // trip(ThermalThrottle) + emitBreakerFailed（诊断卡报告）。
+                        journal?.append(
+                            AgentRunJournal.KIND_SETTLED,
+                            AgentRunJournal.settledPayload("Failed", state.round),
+                        )
+                        AgentLogStore.warn("热熔断：${thermal.evidence}（第 ${state.round} 轮轮头）")
+                        emit(AgentEvent.Failed("设备过热保护：${thermal.evidence}，本轮任务已暂停"))
+                        return
+                    }
+                    null, ThermalDecision.Proceed -> Unit
                 }
 
                 journal?.append(

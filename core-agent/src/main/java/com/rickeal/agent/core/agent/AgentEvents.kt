@@ -13,6 +13,7 @@ import com.rickeal.agent.core.model.TokenUsage
 import com.rickeal.agent.core.model.ToolDisclosureMode
 import com.rickeal.agent.core.agent.token.RunTokenLedger
 import com.rickeal.agent.core.agent.breaker.BottleneckReport
+import com.rickeal.agent.core.agent.thermal.RunThermalGate
 
 /**
  * 本轮为什么结束。让 UI / 日志能区分「模型自己停了」和「被轮次上限硬截断」。
@@ -184,4 +185,12 @@ data class AgentRequest(
      * 不进父 run 账本（与审批缓存「子 run 不继承」同一隔离纪律）。
      */
     val tokenLedger: RunTokenLedger? = null,
+    /**
+     * 热状态门（Wave 30 §2.1，可选）。非 null 时主循环轮头（墙钟检查之后）每轮调
+     * [RunThermalGate.beforeRound]：Proceed 继续 / Cooldown 轮间 delay（可取消）/
+     * Abort 热熔断终态。null = 无热干预（与历史行为一致）。
+     * 子 run 保持 null：子 run 不单独过热闸，由父 run 的轮头 Abort 兜底（R7-2，
+     * 与审批缓存 / tokenLedger「子 run 不继承」同一隔离纪律）。
+     */
+    val thermalGate: RunThermalGate? = null,
 )
