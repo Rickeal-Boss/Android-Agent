@@ -134,7 +134,7 @@ fun ChatScreen(
     GlassScaffold(
         modifier = modifier
             // 参数面板打开时的背景深度模糊（只糊本屏，面板是它的兄弟、绘制序在后）。
-            // 进度在 layer 阶段读 ⇒ 逐帧变化只失效图层，不重组本屏（消息列表不会被牵连）。
+            // 进度在 draw 阶段读 ⇒ 逐帧变化只失效绘制，不重组本屏（消息列表不会被牵连）。
             .overlayBackdropBlur(
                 progress = panelBlurProgress,
                 radius = glassCfgForBlur.overlayBlurRadius.dp,

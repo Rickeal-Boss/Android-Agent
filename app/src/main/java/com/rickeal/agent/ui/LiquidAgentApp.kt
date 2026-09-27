@@ -17,14 +17,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -305,9 +309,10 @@ private fun MainShell() {
     }
 
     // ── 左侧抽屉（Wave 10 Phase 2b C-3）──────────────────────────────────────
-    // 只在 COMPACT 使用（见下面 ModalNavigationDrawer 的 gesturesEnabled）：MEDIUM/EXPANDED
-    // 保持常驻 GlassNavRail 的双栏形态，抽屉在那里既没有入口（无汉堡按钮），也不该被
-    // 边缘手势误触出来。
+    // 只在 COMPACT 且停在「对话」页使用（见下面 ModalNavigationDrawer 的
+    // gesturesEnabled）：MEDIUM/EXPANDED 保持常驻 GlassNavRail 的双栏形态，抽屉在
+    // 那里既没有入口（无汉堡按钮），也不该被边缘手势误触出来；COMPACT 下其它页签
+    // 同样不响应边缘滑动（2026-09-27 用户需求，推导见 gesturesEnabled 处注释）。
     val container = LocalAppContainer.current
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
@@ -383,9 +388,17 @@ private fun MainShell() {
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        // 只在 COMPACT 允许侧滑开抽屉：宽屏没有汉堡入口，若仍允许边缘手势，
-        // 会在 Rail 旁"擦"出一块抽屉，属无谓回归。
-        gesturesEnabled = !windowSize.useTwoPane,
+        // 抽屉（本地工作区）边缘滑动手势只在「对话」页触发（2026-09-27 用户需求）：
+        //  - `!windowSize.useTwoPane`：宽屏本来就没有抽屉手势 —— MEDIUM/EXPANDED 是
+        //    常驻 Rail 的双栏形态，没有汉堡入口，若仍允许边缘手势会在 Rail 旁"擦"
+        //    出一块抽屉，属无谓回归（既有语义，保留）；
+        //  - `selected == TopDestination.CHAT`：抽屉的打开入口只有对话页顶栏的汉堡
+        //    （下方 chatGraph 的 onOpenDrawer，仅对话页持有）。模型/工具/记忆/设置
+        //    页既没有抽屉入口、也不该被左边缘滑动误触出抽屉 —— 手势可用性与入口
+        //    所在页保持一致才是自洽的。
+        // `selected` 由上方回退栈派生（:302，同一 composable 作用域）：页签切换 /
+        // 导航变化才变，组合期读它的重组频率低，可接受。
+        gesturesEnabled = !windowSize.useTwoPane && selected == TopDestination.CHAT,
         drawerContent = {
             // 宽屏也照常 compose（只是永远关着、且禁用侧滑）：ModalNavigationDrawer 内部
             // 要 measure 它的 drawerContent，给空内容会在取首个子项时炸；而为了宽屏不 compose
@@ -434,7 +447,7 @@ private fun MainShell() {
                     origin = { revealState.origin },
                 )
                 // 覆盖层背景深度模糊（2026-09-27）：抽屉跟手、对话框走弹簧，两者取 max。
-                // 进度只在 graphicsLayer 的 layer 阶段读 ⇒ 逐帧变化只失效图层，
+                // 进度只在 drawWithContent 的 draw 阶段读 ⇒ 逐帧变化只失效绘制，
                 // **不会重组 MainShell**（连带 NavHost 与整屏都不会跟着重组）。
                 .overlayBackdropBlur(
                     progress = { max(drawerBlurProgress(), shellBlurProgress()) },
@@ -449,12 +462,17 @@ private fun MainShell() {
                         if (destination != selected) navController.navigateTop(destination.route)
                     },
                     windowSize = windowSize,
+                    // 边缘避让（2026-09-27 用户需求）：横屏时状态栏 / 导航栏 inset 落在
+                    // **侧边**，原先的 statusBarsPadding + navigationBarsPadding 在横屏下
+                    // top/bottom ≈ 0，等于不避让 —— 左边缘的摄像头挖孔会直接压住 Rail。
+                    // 改用 safeDrawing（状态栏 ∪ 导航栏 ∪ 挖孔 ∪ IME 的并集）一次性算准，
+                    // 不分屏幕方向都正确。排除 ime：Rail 是常驻导航，键盘弹出时不能被
+                    // IME inset 顶起（对话输入时 Rail 要纹丝不动）。
+                    // 竖屏不受损：safeDrawing 的 top ≈ 状态栏、bottom ≈ 导航栏，
+                    // 与原先两个 padding 语义等价（Wave4 审查 B-P1-1 的导航栏避让保留）。
                     modifier = Modifier
                         .fillMaxHeight()
-                        .statusBarsPadding()
-                        // Wave4 审查（B-P1-1）：Rail 此前缺导航栏避让 —— 5 项变高后
-                        // 底部页签会被手势导航条压住，必须补。
-                        .navigationBarsPadding(),
+                        .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime)),
                 )
             }
             // ── Tab 悬浮叠层（2026-09-26 用户需求）────────────────────────────────
@@ -913,9 +931,26 @@ private fun GlassNavBar(
  *
  * Wave4 五页签改造：竖排项 3→5 后的高度预算（5×48 + 间距 24 + 标题 28 + 内边距 72
  * ≈ 364dp）在横屏手机（可用高度 ≈ 288dp）会溢出，所以加 [verticalScroll] 兜底
- * （六路审查 B-P1-1）；并补 [navigationBarsPadding] —— 5 项变高后底部页签更容易
- * 被手势导航条压住。宽度按窗口档位参数化：MEDIUM 维持 88dp 图标栏，
+ * （六路审查 B-P1-1）。宽度按窗口档位参数化：MEDIUM 维持 88dp 图标栏，
  * EXPANDED 加宽到 132dp 让「图标 + 文字」完全展开（桌面端分类入口的可读性）。
+ *
+ * 横屏排版修复（2026-09-27 用户需求，1080p 手机横置截图暴露），修两点：
+ *
+ * **1. 胶囊盖弧线削内容** —— [LiquidGlassSurface] 开 `capsule = true` 后是全高胶囊，
+ * 圆角半径 = 宽/2（88dp 档 r=44dp，132dp 档 r=66dp）。圆角弧线在横向偏移 x 处的
+ * 竖向侵入量 ≈ r − √(r² − (r−x)²)（x 从胶囊左缘量起）。条目胶囊的左缘 x ≈ 8dp
+ * （contentPadding.horizontal）：88dp 档侵入 ≈ 19dp，132dp 档 ≈ 35dp —— 原来的
+ * `vertical = 12dp` 远不够，顶部「Liquid」标题与底部「设置」项都会被上下盖弧线
+ * 削掉。现按宽度档取 `vertical = 28dp / 36dp`（推导见 [contentVerticalPad] 处注释），
+ * 「Liquid」标题自身不再额外让位：contentPadding 抬高后标题左缘（x ≈ 14dp，侵入
+ * ≈ 12dp）已整体落在弧线外侧，其 `bottom = 8.dp` 保留作条目间距。
+ *
+ * **2. 横屏高度预算** —— 横屏手机高度 ≈ 390dp，若 5 项都带文字：
+ * 5×(48 触控目标 + 文字 ~16 + 条目 padding) + 标题 + 双 28dp 内边距 > 满高，必然
+ * 溢出（verticalScroll 兜底只是能滚，不是"放得下"）。故 MEDIUM（横屏手机）下条目
+ * 只显示图标（[NavDestinationItem] 的 Icon contentDescription 仍是 label，TalkBack
+ * 语义不丢；48dp 触控纪律由 heightIn 保持）：5×48 + 标题 + 56 ≈ 320dp 放得下。
+ * EXPANDED（平板 / 桌面双栏）高度充裕，保持图标 + 文字。
  *
  * 与 [GlassNavBar] 同一套：容器走门面（胶囊 + 关色散），页签项走裸 `liquidGlass` + 跟手形变。
  */
@@ -929,6 +964,16 @@ private fun GlassNavRail(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val railWidth = if (windowSize.width == WindowWidthClass.EXPANDED) 132.dp else 88.dp
+    // 胶囊盖的竖向侵入量（几何推导见类 KDoc「1」）：88dp 档条目左缘 x≈8dp 处侵入
+    // ≈19dp、132dp 档 ≈35dp。取 28dp / 36dp = 覆盖侵入量后再留一档呼吸空间。
+    // 用显式 when 而不是 railWidth 系数换算：这两个值是从胶囊几何推出来的离散档位，
+    // 不是线性关系 —— 写成 `railWidth * k` 会让读者误以为连续可调，反而藏住推导。
+    val contentVerticalPad = when (windowSize.width) {
+        WindowWidthClass.EXPANDED -> 36.dp
+        else -> 28.dp
+    }
+    // 横屏（MEDIUM）高度预算放不下「图标 + 文字」，只显示图标（推导见类 KDoc「2」）。
+    val showLabel = windowSize.width == WindowWidthClass.EXPANDED
     LiquidGlassSurface(
         modifier = modifier
             .padding(horizontal = 10.dp, vertical = 12.dp)
@@ -938,7 +983,7 @@ private fun GlassNavRail(
         // 同 [GlassNavBar]：保留但被胶囊覆盖。
         cornerRadius = tokens.radiusLg,
         dispersion = false,
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = contentVerticalPad),
     ) {
         Column(
             modifier = Modifier
@@ -957,6 +1002,7 @@ private fun GlassNavRail(
                     destination = destination,
                     selected = destination == selected,
                     onClick = { onSelect(destination) },
+                    showLabel = showLabel,
                     // 冷启动错峰入场：5 项按序号依次浮现（进程内仅一次，见 entranceReveal）。
                     // graphicsLayer-only，不参与任何交互重组。
                     modifier = Modifier
@@ -978,12 +1024,19 @@ private fun GlassNavRail(
  *
  * 每个页签项各自持有 [InteractiveHighlight]，**不能共用**：
  * 共用一个对象会导致按 A 时 B 也跟着形变。
+ *
+ * @param showLabel 是否显示文字标签（2026-09-27 用户需求）。false = 仅图标：
+ *   Icon 的 `contentDescription` 已是 label，TalkBack 语义不丢；48dp 触控纪律由
+ *   `heightIn(min = tokens.minTouchTarget)` 保持。取值由 [GlassNavRail] 按窗口
+ *   宽度档决定（横屏 MEDIUM 收起文字、EXPANDED 展开，高度预算推导见其类 KDoc）。
+ *   [GlassNavBar] 走 [LiquidBottomTabs] 不经过本组件，底栏排版不受影响。
  */
 @Composable
 private fun NavDestinationItem(
     destination: TopDestination,
     selected: Boolean,
     onClick: () -> Unit,
+    showLabel: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalGlassColors.current
@@ -1042,10 +1095,14 @@ private fun NavDestinationItem(
             tint = if (selected) colors.accent else colors.onGlassSubtle,
             modifier = Modifier.size(22.dp),
         )
-        Text(
-            text = destination.label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (selected) colors.onGlass else colors.onGlassSubtle,
-        )
+        // showLabel = false（横屏 MEDIUM）时整段 Text 不进组合：高度预算见
+        // GlassNavRail 类 KDoc「2」。语义由上方 Icon 的 contentDescription 兜住。
+        if (showLabel) {
+            Text(
+                text = destination.label,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (selected) colors.onGlass else colors.onGlassSubtle,
+            )
+        }
     }
 }
