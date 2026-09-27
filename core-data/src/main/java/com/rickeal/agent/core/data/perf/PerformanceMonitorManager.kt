@@ -260,6 +260,9 @@ class PerformanceMonitorManager(private val context: Context?) {
             lastPssKb = runCatching { Debug.getPss().toLong() }.getOrDefault(lastPssKb)
         }
         val availMem = runCatching {
+            // `context?` 的 null 分支**只**来自 JVM 单测构造（本模块无 Robolectric，
+            // 构造不出 Context）；生产路径恒非 null（AppContainer 注入）—— 可空是测试缝，
+            // 不是生产语义。null 时 am 为 null、可用内存记 0，其余采样照跑。
             val am = context?.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
             val info = ActivityManager.MemoryInfo()
             am?.getMemoryInfo(info)
