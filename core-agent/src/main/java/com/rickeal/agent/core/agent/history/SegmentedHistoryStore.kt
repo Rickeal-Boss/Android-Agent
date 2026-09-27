@@ -10,6 +10,15 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
+ * ⚠️ **未接线（Wave 30 判死）**：本类当前**零调用点**——唯一的写入入口
+ * `ChatViewModel.archiveTurnNow` 已摘除（恢复权威仍是 journal，行为不变）。
+ * 保留实现是因为它质量过硬（损坏行可见化、`associateBy` 去重、原子写），
+ * 将来有消费者时值得复用。**重新启用前必须同时满足：**
+ * ① 出现明确的读取消费者（长会话分页 / 按回合 revert / 历史剪枝）；
+ * ② [listTurnsSync] / `rebuildHistorySync` 有 JVM 单测，覆盖「blob 损坏降级跳过」；
+ * ③ 存储页「回合归档」副文案同步改为「删除后不可重建」——判死前那句
+ *    「可由会话正文重建」之所以为真，恰恰因为没人读它（见下）。
+ *
  * 会话级分段历史（Octop SegmentedHistoryStore 降级）：每会话一个目录，
  * `segments.jsonl` 追加式回合索引（同 turnId 以**最后一条**为准 —— commitTurn
  * 重放天然幂等）+ [pool] 正文池。

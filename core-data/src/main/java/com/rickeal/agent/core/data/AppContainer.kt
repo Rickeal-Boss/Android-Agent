@@ -111,6 +111,9 @@ class AppContainer(
     /**
      * 按会话缓存的回合归档存储池（外部审查报告2 §4.1，B3 锁失效根治）。
      *
+     * ⚠️ Wave 30 判死：当前**零调用点**（写入入口 archiveTurnNow 已摘除），
+     * 保留池化与实现以备将来接线——启用条件见 [SegmentedHistoryStore] 类头。
+     *
      * [SegmentedHistoryStore] 的 commitMutex 是**实例级** Mutex：此前宿主每次
      * archiveTurn 都 `open()` 一个新实例，四个并发归档入口各拿各的锁，互斥形同虚设。
      * 按 conversationId 池化后，同一会话的所有归档路径共享同一实例 ——
@@ -255,9 +258,11 @@ class AppContainer(
             StorageBucketSource(
                 id = "history",
                 title = "回合归档",
-                // 副文案要讲清「归档 ≠ 会话内容」：用户看到"归档"两个字容易以为
-                // 对话历史没了而不敢清。归档可从会话正文重建（见 SegmentedHistoryStore）。
-                description = "已完成回合的分段归档。删除后可由会话正文重建，不影响会话内容本身。",
+                // Wave 30 判死：归档写入已停用（见 SegmentedHistoryStore 类头启用条件），
+                // 本桶**不再产生新数据**，仅保留存量清理能力。旧副文案「删除后可由会话
+                // 正文重建」之所以为真，恰恰因为归档从没被读过——判死后这句话已无意义，
+                // 未来若启用归档（出现读取消费者），此副文案必须同步改为「不可重建」。
+                description = "旧版回合归档（现已停用，不再产生新数据）。可安全清理存量。",
                 targets = listOf(historyRoot),
                 clearable = true,
             ),
