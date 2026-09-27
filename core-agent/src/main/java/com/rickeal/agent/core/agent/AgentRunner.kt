@@ -633,189 +633,45 @@ class AgentRunner(
                 val protocolFinalAnswer: String? = (protocol as? ProtocolResult.FinalAnswer)?.text
                 val visibleText = if (policy.enableTextProtocol) TextToolProtocol.strip(accumulator.text) else accumulator.text
 
-                // ── 轮内循环的处置（Wave 19 P0）────────────────────────────────
-                // 被轮内重复检测截断的轮次**不得**直接当最终答案交付：循环中产出的
-                // 工具调用同样不可信（参数大概率是循环复读），无论 calls 空不空一律
-                // 丢弃。复用「重复回答提醒」的路径形态（同 :578-609 结构）：模型回显
-                // 入 working + 合成提醒（稳定派生 id）+ round++，给模型一轮实质改写
-                // 的机会；连续超过 MAX_INTRA_STREAM_LOOP_ROUNDS 按失败收尾。
-                // 本分支必须在下方 calls.isEmpty() 判定之前分流，否则会与既有
-                // repeat/empty 逻辑叠加产生双重 continue。检测器判了循环的文本不再
-                // 进跨轮签名检测（无意义且可能抢占 pendingReminder 单槽）。
-                // ⚠️ 不变量：本分支的**所有**路径都是 `return`（超限收尾）或 `continue`
-                // （注入提醒后重跑）⇒ 执行到下方 final answer 分支时 `intraStreamLoop`
-                // 恒为 false。原 `finishReason = if (intraStreamLoop) LENGTH else …` 是
-                // 死条件（复审3 §4-3），Wave 25 已删 —— 若日后有人去掉这里的 `continue`，
-                // 必须同步把三元加回去。
-                if (intraStreamLoop) {
-                    state.intraLoopStreak++
-                    if (state.intraLoopStreak > MAX_INTRA_STREAM_LOOP_ROUNDS) {
-                        AgentLogStore.error(
-                            "连续 ${state.intraLoopStreak} 轮触发轮内重复循环（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发），终止 run"
-                        )
-                        journal?.append(
-                            AgentRunJournal.KIND_SETTLED,
-                            AgentRunJournal.settledPayload("Failed", state.round),
-                        )
-                        emit(AgentEvent.Failed("模型输出陷入重复循环，已停止本轮任务"))
-                        return
-                    }
-                    val cleanText = if (policy.enableTextProtocol) TextToolProtocol.strip(accumulator.text) else accumulator.text
-                    val repeatModel = ChatMessage(
-                        role = Role.MODEL,
-                        text = cleanText.ifBlank { accumulator.text },
-                        thinking = accumulator.thinking.takeIf { it.isNotBlank() },
-                        // 截断语义：本轮没有终帧，finishReason 标 LENGTH（不新增枚举值）。
-                        finishReason = FinishReason.LENGTH,
-                    )
-                    state.working.add(repeatModel)
-                    journal?.appendMessage(repeatModel)
-                    // 单槽纪律：已有待注入提醒时不覆盖（同参 > 重复回答 > 零工具的
-                    // 优先级对齐 :569 判据）；随后立刻消费成合成消息，不留到下一轮
-                    // 造成双重注入。
-                    if (state.pendingReminder == null) {
-                        state.pendingReminder = INTRA_LOOP_REMINDER
-                    }
-                    // R2-1（Wave 29 A1 Step 2）：K2 对 var 属性不做 smart-cast，
-                    // 字段化后需显式兜底（不变量保证 else 分支不触发，行为等价）。
-                    val loopReminder = state.pendingReminder ?: INTRA_LOOP_REMINDER.also { state.pendingReminder = it }
-                    state.pendingReminder = null
-                    val reminderMessage = ChatMessage(
-                        id = "reminder:${state.round}:loop",
-                        role = Role.USER,
-                        text = loopReminder,
-                    )
-                    state.working.add(reminderMessage)
-                    journal?.appendReminder(reminderMessage)
-                    // 已流出的循环乱文必须让 UI 丢弃：下一轮照常 emit(TextDelta)，而
-                    // RoundStarted 不清流式缓冲 ⇒ 不清屏就会「乱文 + 新回答」叠一个气泡
-                    // （复审3 §4-1）。emit 在 round++ 之前，UI 先清、下一轮再从空开始。
-                    emit(AgentEvent.StreamReset("轮内重复截断（连续第 ${state.intraLoopStreak} 次）"))
-                    AgentLogStore.warn(
-                        "第 ${state.round + 1} 轮轮内重复循环：丢弃 ${calls.size} 个工具调用并注入提醒（连续第 ${state.intraLoopStreak} 次）"
-                    )
-                    state.round++
-                    continue
-                } else {
-                    // 正常轮：连击归零（「连续触发」语义 —— 任何一轮未复发即打断连击）。
-                    state.intraLoopStreak = 0
-                }
-
-                // 无进展检测：拿本轮「可见文本」的归一化签名比对历史。
-                val signature = StreamRepetitionDetector.normalizedSignature(visibleText)
-                if (signature != null) {
-                    val firstSight = state.seenSignatures.add(signature)
-                    // 纪律：先把「已提醒」标记置位，再排队提醒 —— 即使后续注入失败也不会重试，
-                    // 从而杜绝提醒风暴。每个签名至多提醒一次。
-                    if (!firstSight && state.remindedSignatures.add(signature)) {
-                        AgentLogStore.info("无进展检测：第 ${state.round + 1} 轮命中重复回答（与历史签名相同），注入提醒")
-                        state.pendingReminder = REPEAT_REMINDER
-                    }
-                }
-                // 连续零工具调用计数。正常情况下这种轮次就是终局（下面会 break），
-                // 只有「重复提醒」把循环续上时才会累加 —— 正好覆盖「只复述计划不干活」的病态循环。
-                if (calls.isEmpty()) {
-                    state.noToolStreak++
-                    if (state.noToolStreak >= NO_TOOL_STREAK_LIMIT && !state.noToolReminderSent && state.pendingReminder == null) {
-                        state.noToolReminderSent = true        // 同样是先置位、再排队
-                        AgentLogStore.info("无进展检测：第 ${state.round + 1} 轮起连续 ${state.noToolStreak} 轮零工具调用，注入提醒")
-                        state.pendingReminder = NO_TOOL_REMINDER
-                    }
-                } else {
-                    state.noToolStreak = 0
+                // 轮内循环处置 + 无进展检测（Wave 29 A1 Step 5 外提）：NextRound = 注入
+                // 提醒后重跑（round++ 已内置位）；Terminal = 超限按失败收尾（已 emit
+                // Failed）；Proceed = 正常轮，继续生成后流程。⚠️ 「intra 分支所有路径
+                // 必 return/NextRound」的不变量（原 :802-806 注释）由提取方法的返回值
+                // 结构化保住 —— Proceed 只从 else 连击归零路径返回。
+                when (handlePostStreamSignals(
+                    intraStreamLoop = intraStreamLoop,
+                    policy = policy,
+                    accumulator = accumulator,
+                    calls = calls,
+                    visibleText = visibleText,
+                    working = state.working,
+                    journal = journal,
+                    state = state,
+                )) {
+                    PostStreamStep.NextRound -> continue
+                    PostStreamStep.Terminal -> return
+                    PostStreamStep.Proceed -> Unit
                 }
 
                 if (calls.isEmpty()) {
-                    val cleanText = protocolFinalAnswer ?: visibleText
-                    val reminder = state.pendingReminder
-                    if (reminder != null) {
-                        // 本轮是「重复的下车点」：不把它当答案交付，注入一次提醒后再给模型一轮机会。
-                        // 每个签名只会被提醒一次（标记已在检测处前置位），叠加 maxRounds 兜底，不会形成新循环。
-                        val repeatModel = ChatMessage(
-                            role = Role.MODEL,
-                            text = cleanText,
-                            thinking = accumulator.thinking.takeIf { it.isNotBlank() },
-                            // 截断语义由上方的轮内循环分支独占（它恒 continue/return），
-                            // 走到这里 intraStreamLoop 必为 false —— 原 `if (intraStreamLoop)`
-                            // 三元是死条件（复审3 §4-3），Wave 25 已删。
-                            finishReason = accumulator.finishReason ?: FinishReason.STOP,
-                        )
-                        state.working.add(repeatModel)
-                        journal?.appendMessage(repeatModel)
-                        // 合成提醒用**稳定派生 id**（外部审查报告2 §3.1 防御性随行）：
-                        // 引擎按消息 id 做增量水印去重，派生 id 保证同一轮的提醒在
-                        // 任何重放/清洗路径下都是同一条消息，而不是每轮一个新 UUID。
-                        // ⚠️ 上面的 repeatModel 不加派生 id —— 那是模型自己的回复，不是合成消息。
-                        val reminderMessage = ChatMessage(
-                            id = "reminder:${state.round}:inject",
-                            role = Role.USER,
-                            text = reminder,
-                        )
-                        state.working.add(reminderMessage)
-                        // 提醒落独立 reminder 行（不是 message）：它是行为矫正不是用户说的话，
-                        // 记成 message 会被恢复流程当成用户输入渲染进界面（Wave2 两处记录
-                        // 口径不一致：这里漏记、工具轮后那处记成 message —— 都有毛病）。
-                        journal?.appendReminder(reminderMessage)
-                        // 本轮文本被判为「重复的下车点」而丢弃，UI 侧必须一起丢（复审3 §4-1）：
-                        // 否则它会留在气泡里，下一轮输出叠在它后面。
-                        emit(AgentEvent.StreamReset("重复回答，注入提醒后重跑本轮"))
-                        state.pendingReminder = null
-                        state.round++
-                        continue
+                    // 零调用三分支（Wave 29 A1 Step 4 外提）：NextRound = 注入提醒后重跑
+                    // （round++ 已内置位）；Terminal = 空输出超限按失败收尾（已 emit Failed）；
+                    // Done = 模型自行给出最终答案（modelStopped 已内置位）。
+                    // Done 分支的 break 跳的是 while 主循环（唯一外层循环，无 label 混淆）。
+                    when (handleNoToolCalls(
+                        request = request,
+                        policy = policy,
+                        accumulator = accumulator,
+                        protocolFinalAnswer = protocolFinalAnswer,
+                        visibleText = visibleText,
+                        working = state.working,
+                        journal = journal,
+                        state = state,
+                    )) {
+                        NoCallStep.NextRound -> continue
+                        NoCallStep.Terminal -> return
+                        NoCallStep.Done -> break
                     }
-                    // 剥掉协议片段后可能什么都不剩（模型整段回答就是一个代码块）。
-                    // 这时退回未剥离的原文：宁可让用户看到一段 JSON，也不能交付一个空气泡。
-                    val answer = cleanText.ifBlank { accumulator.text }
-                    if (answer.isBlank()) {
-                        // 本轮既没有文本也没有工具调用（模型真的什么都没产出）。
-                        // Wave4 六路审查（A-P0-2）：**不能裸 continue** —— 端侧 LiteRT 引擎是
-                        // 增量水印发送（只发 `sentMessageIds` 里没有的 id），working 不变 ⇒
-                        // 下一轮 `fresh.isEmpty()` ⇒ 引擎收到 `Content.Text("")` ⇒ 空输入几乎
-                        // 必然再产出空输出 ⇒ 一路空转到 maxRounds，每轮白烧一次 4B 全量 prefill。
-                        // 修法：注入一条合成 USER 提醒（ZCode「错误回传给模型修复」语义），
-                        // 保证下一轮一定有新消息可发；连续超过阈值则按失败收尾，不再烧轮次。
-                        state.emptyAnswerStreak++
-                        if (state.emptyAnswerStreak > MAX_EMPTY_ANSWER_ROUNDS) {
-                            AgentLogStore.error(
-                                "连续 ${state.emptyAnswerStreak} 轮空输出（已注入 $MAX_EMPTY_ANSWER_ROUNDS 次提醒仍无产出），终止 run"
-                            )
-                            journal?.append(
-                                AgentRunJournal.KIND_SETTLED,
-                                AgentRunJournal.settledPayload("Failed", state.round),
-                            )
-                            emit(AgentEvent.Failed("模型连续多轮输出为空，已停止本轮任务"))
-                            return
-                        }
-                        val nudge = ChatMessage(
-                            id = "nudge:${state.round}",
-                            role = Role.USER,
-                            text = EMPTY_ANSWER_NUDGE,
-                        )
-                        state.working.add(nudge)
-                        journal?.appendReminder(nudge)
-                        // 空输出轮本就没有文本可丢，但**上一轮**丢弃的文本可能还留在 UI
-                        // 缓冲里（若它没被别的处置点清过）—— 这里一并清，保证「新提示 →
-                        // 新输出」从干净的气泡开始。
-                        emit(AgentEvent.StreamReset("空输出，注入提醒后重跑本轮"))
-                        AgentLogStore.warn("第 ${state.round + 1} 轮空输出，已注入提醒（连续第 ${state.emptyAnswerStreak} 次）")
-                        state.round++
-                        continue
-                    }
-                    state.emptyAnswerStreak = 0
-                    state.finalText = answer
-                    val committed = ChatMessage(
-                        role = Role.MODEL,
-                        text = answer,
-                        thinking = accumulator.thinking.takeIf { it.isNotBlank() },
-                        usage = accumulator.usage,
-                        finishReason = accumulator.finishReason ?: FinishReason.STOP,
-                        modelRef = request.model?.id,
-                    )
-                    state.working.add(committed)
-                    journal?.appendMessage(committed)
-                    emit(AgentEvent.MessageCommitted(committed))
-                    state.modelStopped = true
-                    break
                 }
 
                 val toolCallModel = ChatMessage(
@@ -865,42 +721,11 @@ class AgentRunner(
                 state.round++
             }
 
-            // 循环唯一的正常出口是「模型自己给出最终答案」（modelStopped = true，见上面的 break）；
-            // 其余情况都是 while 条件（round < maxRounds）不再成立，即真的耗尽轮次。
-            // 这里用**显式标记**而不是 `finalText.isBlank()` 反推：后者会把「答案被 strip 剥成空串」
-            // 误判成轮次耗尽，于是只跑 1 轮也报「达到轮次上限」。
-            // 注意：这里**绝不**注入「请现在直接回答」之类的收尾提示再进循环 —— 那句话会被模型
-            // 回显成工具调用形状的 JSON，又被文本协议解析成工具调用，正是我们要避免的死循环。
-            val exhausted = !state.modelStopped
-            val outgoing = if (!exhausted) {
-                state.finalText
-            } else {
-                // 轮次耗尽时不能把「带工具 JSON 的原始输出」当答案，先剥掉协议片段再交付；
-                // 若连可见文本都没有，就合成一条用户可见的收尾说明（否则 UI 收到空串会静默结束）。
-                val visible = if (policy.enableTextProtocol) TextToolProtocol.strip(state.lastModelText) else state.lastModelText
-                visible.ifBlank {
-                    "本轮因达到轮次上限（${policy.maxRounds} 轮）而结束。可以让我继续，或换一种说法再试。"
-                }
-            }
-            // 终止原因是排查「模型不会停」的第一现场：同样跑满 8 轮，是「自己停了」还是
-            // 「被 maxRounds 硬截断」在 UI 上看起来几乎一样，但结论完全不同。
-            if (exhausted) {
-                AgentLogStore.info("轮次耗尽：已跑 ${state.round} 轮（上限 ${policy.maxRounds}），按兜底收尾")
-            } else {
-                AgentLogStore.info("正常结束：${state.round} 轮，模型自行给出最终答案")
-            }
-            val termination = if (exhausted) TerminationReason.MaxRounds else TerminationReason.ModelStopped
-            journal?.append(
-                AgentRunJournal.KIND_SETTLED,
-                AgentRunJournal.settledPayload(termination.name, state.round),
-            )
-            emit(
-                AgentEvent.Finished(
-                    text = outgoing,
-                    rounds = state.round,
-                    usage = state.lastUsage,
-                    terminatedBy = termination,
-                )
+            // 收尾段（Wave 29 A1 Step 6 外提）：exhausted/outgoing/termination/Finished
+            emitFinished(
+                policy = policy,
+                state = state,
+                journal = journal,
             )
     }
 
@@ -1399,6 +1224,288 @@ class AgentRunner(
             }
         }
         return ToolCallStep.Proceed
+    }
+
+    /** 轮内循环处置 + 无进展检测的控制流映射（Wave 29 A1 Step 5）：Proceed = 继续生成后流程。 */
+    private enum class PostStreamStep { Proceed, NextRound, Terminal }
+
+    /** 零调用三分支（repeat / empty / final-answer）的控制流映射（Wave 29 A1 Step 4）。 */
+    private enum class NoCallStep { NextRound, Terminal, Done }
+
+    /**
+     * 轮内循环处置 + 无进展检测（Wave 29 A1 Step 5 自 executeBodyUnchecked 外提）。
+     *
+     * 两块合并的语义依据（方案 §三 Step 5）：intra 分支所有路径必 return/NextRound
+     * （见块内 ⚠️ 不变量原注释），Proceed 只从 else 连击归零路径返回 —— 「执行到
+     * final answer 分支时 intraStreamLoop 恒为 false」的不变量由返回值结构化保住。
+     *
+     * 返回 [PostStreamStep.NextRound] = 原 round++ + continue（注入提醒后重跑本轮）；
+     * [PostStreamStep.Terminal] = 原 return（超限按失败收尾，已 emit Failed）；
+     * [PostStreamStep.Proceed] = 正常落穿，继续生成后流程。调用方 continue 不得再动
+     * round（轮级 continue 的 round++ 内置位不变式）。
+     */
+    private suspend fun FlowCollector<AgentEvent>.handlePostStreamSignals(
+        intraStreamLoop: Boolean,
+        policy: AgentPolicy,
+        accumulator: StreamAccumulator,
+        calls: List<ToolCall>,
+        visibleText: String,
+        working: MutableList<ChatMessage>,
+        journal: AgentRunJournal?,
+        state: RunState,
+    ): PostStreamStep {
+        // ── 轮内循环的处置（Wave 19 P0）────────────────────────────────
+        // 被轮内重复检测截断的轮次**不得**直接当最终答案交付：循环中产出的
+        // 工具调用同样不可信（参数大概率是循环复读），无论 calls 空不空一律
+        // 丢弃。复用「重复回答提醒」的路径形态（同 :578-609 结构）：模型回显
+        // 入 working + 合成提醒（稳定派生 id）+ round++，给模型一轮实质改写
+        // 的机会；连续超过 MAX_INTRA_STREAM_LOOP_ROUNDS 按失败收尾。
+        // 本分支必须在下方 calls.isEmpty() 判定之前分流，否则会与既有
+        // repeat/empty 逻辑叠加产生双重 continue。检测器判了循环的文本不再
+        // 进跨轮签名检测（无意义且可能抢占 pendingReminder 单槽）。
+        // ⚠️ 不变量：本分支的**所有**路径都是 `return`（超限收尾）或 `continue`
+        // （注入提醒后重跑）⇒ 执行到下方 final answer 分支时 `intraStreamLoop`
+        // 恒为 false。原 `finishReason = if (intraStreamLoop) LENGTH else …` 是
+        // 死条件（复审3 §4-3），Wave 25 已删 —— 若日后有人去掉这里的 `continue`，
+        // 必须同步把三元加回去。
+        if (intraStreamLoop) {
+            state.intraLoopStreak++
+            if (state.intraLoopStreak > MAX_INTRA_STREAM_LOOP_ROUNDS) {
+                AgentLogStore.error(
+                    "连续 ${state.intraLoopStreak} 轮触发轮内重复循环（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发），终止 run"
+                )
+                journal?.append(
+                    AgentRunJournal.KIND_SETTLED,
+                    AgentRunJournal.settledPayload("Failed", state.round),
+                )
+                emit(AgentEvent.Failed("模型输出陷入重复循环，已停止本轮任务"))
+                return PostStreamStep.Terminal
+            }
+            val cleanText = if (policy.enableTextProtocol) TextToolProtocol.strip(accumulator.text) else accumulator.text
+            val repeatModel = ChatMessage(
+                role = Role.MODEL,
+                text = cleanText.ifBlank { accumulator.text },
+                thinking = accumulator.thinking.takeIf { it.isNotBlank() },
+                // 截断语义：本轮没有终帧，finishReason 标 LENGTH（不新增枚举值）。
+                finishReason = FinishReason.LENGTH,
+            )
+            working.add(repeatModel)
+            journal?.appendMessage(repeatModel)
+            // 单槽纪律：已有待注入提醒时不覆盖（同参 > 重复回答 > 零工具的
+            // 优先级对齐 :569 判据）；随后立刻消费成合成消息，不留到下一轮
+            // 造成双重注入。
+            if (state.pendingReminder == null) {
+                state.pendingReminder = INTRA_LOOP_REMINDER
+            }
+            // R2-1（Wave 29 A1 Step 2）：K2 对 var 属性不做 smart-cast，
+            // 字段化后需显式兜底（不变量保证 else 分支不触发，行为等价）。
+            val loopReminder = state.pendingReminder ?: INTRA_LOOP_REMINDER.also { state.pendingReminder = it }
+            state.pendingReminder = null
+            val reminderMessage = ChatMessage(
+                id = "reminder:${state.round}:loop",
+                role = Role.USER,
+                text = loopReminder,
+            )
+            working.add(reminderMessage)
+            journal?.appendReminder(reminderMessage)
+            // 已流出的循环乱文必须让 UI 丢弃：下一轮照常 emit(TextDelta)，而
+            // RoundStarted 不清流式缓冲 ⇒ 不清屏就会「乱文 + 新回答」叠一个气泡
+            // （复审3 §4-1）。emit 在 round++ 之前，UI 先清、下一轮再从空开始。
+            emit(AgentEvent.StreamReset("轮内重复截断（连续第 ${state.intraLoopStreak} 次）"))
+            AgentLogStore.warn(
+                "第 ${state.round + 1} 轮轮内重复循环：丢弃 ${calls.size} 个工具调用并注入提醒（连续第 ${state.intraLoopStreak} 次）"
+            )
+            state.round++
+            return PostStreamStep.NextRound
+        } else {
+            // 正常轮：连击归零（「连续触发」语义 —— 任何一轮未复发即打断连击）。
+            state.intraLoopStreak = 0
+        }
+
+        // 无进展检测：拿本轮「可见文本」的归一化签名比对历史。
+        val signature = StreamRepetitionDetector.normalizedSignature(visibleText)
+        if (signature != null) {
+            val firstSight = state.seenSignatures.add(signature)
+            // 纪律：先把「已提醒」标记置位，再排队提醒 —— 即使后续注入失败也不会重试，
+            // 从而杜绝提醒风暴。每个签名至多提醒一次。
+            if (!firstSight && state.remindedSignatures.add(signature)) {
+                AgentLogStore.info("无进展检测：第 ${state.round + 1} 轮命中重复回答（与历史签名相同），注入提醒")
+                state.pendingReminder = REPEAT_REMINDER
+            }
+        }
+        // 连续零工具调用计数。正常情况下这种轮次就是终局（下面会 break），
+        // 只有「重复提醒」把循环续上时才会累加 —— 正好覆盖「只复述计划不干活」的病态循环。
+        if (calls.isEmpty()) {
+            state.noToolStreak++
+            if (state.noToolStreak >= NO_TOOL_STREAK_LIMIT && !state.noToolReminderSent && state.pendingReminder == null) {
+                state.noToolReminderSent = true        // 同样是先置位、再排队
+                AgentLogStore.info("无进展检测：第 ${state.round + 1} 轮起连续 ${state.noToolStreak} 轮零工具调用，注入提醒")
+                state.pendingReminder = NO_TOOL_REMINDER
+            }
+        } else {
+            state.noToolStreak = 0
+        }
+        return PostStreamStep.Proceed
+    }
+
+    /**
+     * 零调用三分支（Wave 29 A1 Step 4 自 executeBodyUnchecked 外提）：本轮无任何
+     * 工具调用时的 repeat / empty / final-answer 三条路径。
+     *
+     * 返回 [NoCallStep.NextRound] = 原 round++ + continue（注入提醒后重跑本轮）；
+     * [NoCallStep.Terminal] = 原 return（空输出超限按失败收尾，已 emit Failed）；
+     * [NoCallStep.Done] = 模型自行给出最终答案（modelStopped 已内置位），调用方
+     * `break` 跳出 while 主循环。调用方 continue/break 均不得再动 round。
+     */
+    private suspend fun FlowCollector<AgentEvent>.handleNoToolCalls(
+        request: AgentRequest,
+        policy: AgentPolicy,
+        accumulator: StreamAccumulator,
+        protocolFinalAnswer: String?,
+        visibleText: String,
+        working: MutableList<ChatMessage>,
+        journal: AgentRunJournal?,
+        state: RunState,
+    ): NoCallStep {
+        val cleanText = protocolFinalAnswer ?: visibleText
+        val reminder = state.pendingReminder
+        if (reminder != null) {
+            // 本轮是「重复的下车点」：不把它当答案交付，注入一次提醒后再给模型一轮机会。
+            // 每个签名只会被提醒一次（标记已在检测处前置位），叠加 maxRounds 兜底，不会形成新循环。
+            val repeatModel = ChatMessage(
+                role = Role.MODEL,
+                text = cleanText,
+                thinking = accumulator.thinking.takeIf { it.isNotBlank() },
+                // 截断语义由上方的轮内循环分支独占（它恒 continue/return），
+                // 走到这里 intraStreamLoop 必为 false —— 原 `if (intraStreamLoop)`
+                // 三元是死条件（复审3 §4-3），Wave 25 已删。
+                finishReason = accumulator.finishReason ?: FinishReason.STOP,
+            )
+            working.add(repeatModel)
+            journal?.appendMessage(repeatModel)
+            // 合成提醒用**稳定派生 id**（外部审查报告2 §3.1 防御性随行）：
+            // 引擎按消息 id 做增量水印去重，派生 id 保证同一轮的提醒在
+            // 任何重放/清洗路径下都是同一条消息，而不是每轮一个新 UUID。
+            // ⚠️ 上面的 repeatModel 不加派生 id —— 那是模型自己的回复，不是合成消息。
+            val reminderMessage = ChatMessage(
+                id = "reminder:${state.round}:inject",
+                role = Role.USER,
+                text = reminder,
+            )
+            working.add(reminderMessage)
+            // 提醒落独立 reminder 行（不是 message）：它是行为矫正不是用户说的话，
+            // 记成 message 会被恢复流程当成用户输入渲染进界面（Wave2 两处记录
+            // 口径不一致：这里漏记、工具轮后那处记成 message —— 都有毛病）。
+            journal?.appendReminder(reminderMessage)
+            // 本轮文本被判为「重复的下车点」而丢弃，UI 侧必须一起丢（复审3 §4-1）：
+            // 否则它会留在气泡里，下一轮输出叠在它后面。
+            emit(AgentEvent.StreamReset("重复回答，注入提醒后重跑本轮"))
+            state.pendingReminder = null
+            state.round++
+            return NoCallStep.NextRound
+        }
+        // 剥掉协议片段后可能什么都不剩（模型整段回答就是一个代码块）。
+        // 这时退回未剥离的原文：宁可让用户看到一段 JSON，也不能交付一个空气泡。
+        val answer = cleanText.ifBlank { accumulator.text }
+        if (answer.isBlank()) {
+            // 本轮既没有文本也没有工具调用（模型真的什么都没产出）。
+            // Wave4 六路审查（A-P0-2）：**不能裸 continue** —— 端侧 LiteRT 引擎是
+            // 增量水印发送（只发 `sentMessageIds` 里没有的 id），working 不变 ⇒
+            // 下一轮 `fresh.isEmpty()` ⇒ 引擎收到 `Content.Text("")` ⇒ 空输入几乎
+            // 必然再产出空输出 ⇒ 一路空转到 maxRounds，每轮白烧一次 4B 全量 prefill。
+            // 修法：注入一条合成 USER 提醒（ZCode「错误回传给模型修复」语义），
+            // 保证下一轮一定有新消息可发；连续超过阈值则按失败收尾，不再烧轮次。
+            state.emptyAnswerStreak++
+            if (state.emptyAnswerStreak > MAX_EMPTY_ANSWER_ROUNDS) {
+                AgentLogStore.error(
+                    "连续 ${state.emptyAnswerStreak} 轮空输出（已注入 $MAX_EMPTY_ANSWER_ROUNDS 次提醒仍无产出），终止 run"
+                )
+                journal?.append(
+                    AgentRunJournal.KIND_SETTLED,
+                    AgentRunJournal.settledPayload("Failed", state.round),
+                )
+                emit(AgentEvent.Failed("模型连续多轮输出为空，已停止本轮任务"))
+                return NoCallStep.Terminal
+            }
+            val nudge = ChatMessage(
+                id = "nudge:${state.round}",
+                role = Role.USER,
+                text = EMPTY_ANSWER_NUDGE,
+            )
+            working.add(nudge)
+            journal?.appendReminder(nudge)
+            // 空输出轮本就没有文本可丢，但**上一轮**丢弃的文本可能还留在 UI
+            // 缓冲里（若它没被别的处置点清过）—— 这里一并清，保证「新提示 →
+            // 新输出」从干净的气泡开始。
+            emit(AgentEvent.StreamReset("空输出，注入提醒后重跑本轮"))
+            AgentLogStore.warn("第 ${state.round + 1} 轮空输出，已注入提醒（连续第 ${state.emptyAnswerStreak} 次）")
+            state.round++
+            return NoCallStep.NextRound
+        }
+        state.emptyAnswerStreak = 0
+        state.finalText = answer
+        val committed = ChatMessage(
+            role = Role.MODEL,
+            text = answer,
+            thinking = accumulator.thinking.takeIf { it.isNotBlank() },
+            usage = accumulator.usage,
+            finishReason = accumulator.finishReason ?: FinishReason.STOP,
+            modelRef = request.model?.id,
+        )
+        working.add(committed)
+        journal?.appendMessage(committed)
+        emit(AgentEvent.MessageCommitted(committed))
+        state.modelStopped = true
+        return NoCallStep.Done
+    }
+
+    /**
+     * run 收尾段（Wave 29 A1 Step 6 自 executeBodyUnchecked 外提）：
+     * exhausted 判定 → outgoing 计算 → termination → journal settled → emit(Finished)。
+     * 注意 outgoing 计算里的 TextToolProtocol.strip 分支逐字符照搬自原实现。
+     */
+    private suspend fun FlowCollector<AgentEvent>.emitFinished(
+        policy: AgentPolicy,
+        state: RunState,
+        journal: AgentRunJournal?,
+    ) {
+        // 循环唯一的正常出口是「模型自己给出最终答案」（modelStopped = true，见上面的 break）；
+        // 其余情况都是 while 条件（round < maxRounds）不再成立，即真的耗尽轮次。
+        // 这里用**显式标记**而不是 `finalText.isBlank()` 反推：后者会把「答案被 strip 剥成空串」
+        // 误判成轮次耗尽，于是只跑 1 轮也报「达到轮次上限」。
+        // 注意：这里**绝不**注入「请现在直接回答」之类的收尾提示再进循环 —— 那句话会被模型
+        // 回显成工具调用形状的 JSON，又被文本协议解析成工具调用，正是我们要避免的死循环。
+        val exhausted = !state.modelStopped
+        val outgoing = if (!exhausted) {
+            state.finalText
+        } else {
+            // 轮次耗尽时不能把「带工具 JSON 的原始输出」当答案，先剥掉协议片段再交付；
+            // 若连可见文本都没有，就合成一条用户可见的收尾说明（否则 UI 收到空串会静默结束）。
+            val visible = if (policy.enableTextProtocol) TextToolProtocol.strip(state.lastModelText) else state.lastModelText
+            visible.ifBlank {
+                "本轮因达到轮次上限（${policy.maxRounds} 轮）而结束。可以让我继续，或换一种说法再试。"
+            }
+        }
+        // 终止原因是排查「模型不会停」的第一现场：同样跑满 8 轮，是「自己停了」还是
+        // 「被 maxRounds 硬截断」在 UI 上看起来几乎一样，但结论完全不同。
+        if (exhausted) {
+            AgentLogStore.info("轮次耗尽：已跑 ${state.round} 轮（上限 ${policy.maxRounds}），按兜底收尾")
+        } else {
+            AgentLogStore.info("正常结束：${state.round} 轮，模型自行给出最终答案")
+        }
+        val termination = if (exhausted) TerminationReason.MaxRounds else TerminationReason.ModelStopped
+        journal?.append(
+            AgentRunJournal.KIND_SETTLED,
+            AgentRunJournal.settledPayload(termination.name, state.round),
+        )
+        emit(
+            AgentEvent.Finished(
+                text = outgoing,
+                rounds = state.round,
+                usage = state.lastUsage,
+                terminatedBy = termination,
+            )
+        )
     }
 
     /**
