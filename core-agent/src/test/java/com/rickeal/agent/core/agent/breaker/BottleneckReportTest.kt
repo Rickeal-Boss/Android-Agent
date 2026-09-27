@@ -121,8 +121,8 @@ class BottleneckReportTest {
         assertEquals(1, report.triedTools.size)
         assertEquals(Blocker.ModelDegraded, report.blocker)
         // ModelDegraded 模板是纯常量文案（无占位符）；{elapsed} 渲染由下方
-        // BudgetExhausted 用例覆盖。
-        assertTrue(report.suggestions.single().contains("无法推进"))
+        // BudgetExhausted 用例覆盖。断言用实现模板的真实特征词。
+        assertTrue(report.suggestions.single().contains("模型输出退化"))
     }
 
     @Test
