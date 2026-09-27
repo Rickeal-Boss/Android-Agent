@@ -513,16 +513,6 @@ class ChatViewModel(
     }
 
     /**
-     * 从中断处继续（恢复卡「继续」按钮）。
-     *
-     * Wave3 修复的完整重建：journal 现在记录三类行 —— user_input（任务输入）、
-     * message（过程消息：工具调用/结果/中间输出）、settled（终态）。恢复上下文 =
-     * 会话可见历史（USER/MODEL 往来，去掉与本 run 任务输入重复的那条）+ journal
-     * 过程消息（工具调用与结果**只有 journal 有**，会话文件里没有）按序拼接，任务
-     * 输入本身作为 userInput 传入。Wave2 只拼 journal 过程消息：任务描述、此前
-     * 会话轮次全部丢失，4B 模型是对着工具残骸盲猜。
-     */
-    /**
      * 热闸（Wave 30 §2.1）：SEVERE 及以上拒新 run。只挡 ChatViewModel 主入口
      * （onSend / onRetry→onSendFrom / onRecover），子 run 不挡 —— 在跑 run 由
      * 轮头 Abort 兜底，语义闭环（R7-2）。返回 null = 放行；非 null = 拒绝文案。
@@ -547,16 +537,28 @@ class ChatViewModel(
         return base.copy(maxTokens = capped)
     }
 
+    /**
+     * 从中断处继续（恢复卡「继续」按钮）。
+     *
+     * Wave3 修复的完整重建：journal 现在记录三类行 —— user_input（任务输入）、
+     * message（过程消息：工具调用/结果/中间输出）、settled（终态）。恢复上下文 =
+     * 会话可见历史（USER/MODEL 往来，去掉与本 run 任务输入重复的那条）+ journal
+     * 过程消息（工具调用与结果**只有 journal 有**，会话文件里没有）按序拼接，任务
+     * 输入本身作为 userInput 传入。Wave2 只拼 journal 过程消息：任务描述、此前
+     * 会话轮次全部丢失，4B 模型是对着工具残骸盲猜。
+     */
     fun onRecover() {
         val state = _uiState.value
         if (state.isGenerating) return
-        // 热闸（Wave 30 §2.1）：SEVERE 及以上拒新 run（含恢复续跑）。
+        val offer = state.recovery ?: return
+        val cid = conversationId ?: return
+        // 热闸（Wave 30 §2.1）：SEVERE 及以上拒新 run（含恢复续跑）。放在
+        // offer / cid 取值之后 —— 没有卡可恢复时（UI 正常进不来，防御路径）
+        // 不该凭空弹出一条热保护错误。
         thermalRejection()?.let { rejection ->
             _uiState.update { it.copy(error = rejection) }
             return
         }
-        val offer = state.recovery ?: return
-        val cid = conversationId ?: return
         _uiState.update { it.copy(recovery = null, error = null, toolTraces = emptyList()) }
         runJob?.cancel()
         runJob = viewModelScope.launch {
@@ -1153,7 +1155,7 @@ class ChatViewModel(
                     )
                 }
                 resetStreaming(role = null, isStreaming = false)
-                // （history_v2 判死，Wave 30：CANCELLED 终帧不再写回合归档。）
+                // （history_v2 判死，Wave 30：CANCELLED 终态不再写回合归档。）
             }
         }
     }
