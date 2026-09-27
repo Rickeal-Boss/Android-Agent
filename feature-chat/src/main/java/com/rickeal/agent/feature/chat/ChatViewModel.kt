@@ -283,6 +283,8 @@ class ChatViewModel(
             toolName = pending.toolName,
             argsDigest = com.rickeal.agent.core.agent.approval.ToolApprovalCache.argsDigest(pending.arguments),
             conversationId = conversationId,
+            // 档位入 key（Wave 28 P1-1）：授权跟随授权那一刻的档位，降档后必须重新询问。
+            capabilityMode = _uiState.value.capabilityMode.name,
             ttlMillis = 0L,
         )
         pending.decision.complete(ToolApprovalDecision.APPROVED)

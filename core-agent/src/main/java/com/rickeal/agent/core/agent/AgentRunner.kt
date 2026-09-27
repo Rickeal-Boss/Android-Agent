@@ -540,7 +540,14 @@ class AgentRunner(
                     AgentRunJournal.roundStartedPayload(round, policy.maxRounds),
                 )
 
-                val budget = (config.contextLength * policy.compressThreshold).toInt()
+                // 预算必须显式预留输出额度（Wave 28）：litertlm 的 KV cache = 输入+输出
+                // 总和（EngineConfig.maxNumTokens 语义，Wave 28 起引擎侧吃 contextLength）。
+                // 旧算式 contextLength×threshold 不预留输出 —— 长回答会越过 KV 顶，
+                // litertlm 以硬报错（"Input token ids are too long"）收场。
+                // coerceAtLeast(512)：极端配置（maxTokens ≥ contextLength）下保底预算，
+                // 压缩器仍能工作而不是把预算算成 0/负数。
+                val budget = ((config.contextLength - config.maxTokens).coerceAtLeast(512) *
+                    policy.compressThreshold).toInt()
                 val window = if (policy.compressContext) {
                     compressor.compress(working, budget)
                 } else {
@@ -1064,9 +1071,17 @@ class AgentRunner(
                     val autoApproved = tool.spec.dangerous && policy.autoApproveDangerous
                     if (needsApproval && !autoApproved) {
                         // 审批缓存命中 = 用户此前显式授权仍在 TTL 内（同参重试免弹卡）。
+                        // 档位入 key（Wave 28 P1-1）：授权是「某档位下的放行」，降档
+                        // （如 WORKSPACE_WRITE → READ_ONLY）必须重新弹卡，否则 30min TTL
+                        // 内档位收窄会被缓存静默绕过。
                         // 未命中（含过期/未授权/无缓存实例）继续走正常审批。
                         val cachedDecision = request.approvalCache
-                            ?.peek(call.name, ToolApprovalCache.argsDigest(call.argumentsJson), request.conversationId)
+                            ?.peek(
+                                call.name,
+                                ToolApprovalCache.argsDigest(call.argumentsJson),
+                                request.conversationId,
+                                request.capabilityMode.name,
+                            )
                         if (cachedDecision != ToolApprovalDecision.APPROVED) {
                             // 拒绝熔断：同一工具连续被拒 N 次后跳过审批直接拒 ——
                             // 防止模型换参数反复触发授权卡（熔断按工具名计数，
