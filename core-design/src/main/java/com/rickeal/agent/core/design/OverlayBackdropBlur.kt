@@ -298,13 +298,16 @@ fun Modifier.overlayBackdropBlur(
                 layer = thumbLayer,
                 size = thumbSize,
             ) {
-                // 这里的 drawContent() 调用的是**外层 ContentDrawScope 的**（闭包捕获）——
-                // recordLayer 的 block receiver 是它内部 layer.record 新建的 DrawScope，
-                // 而 record 内部共享同一个 drawContext（LayerRecorder 手动换 density 正是
-                // 这一机制的注脚），所以外层 receiver 的 drawContent 在 record 画布上重放。
-                // 同款在仓先例：LayerBackdropModifier 的 LayerBackdropNode.draw() 同一
-                // draw pass 里先 drawContent() 再经 backdrop.onDraw(this@draw) 二次调用。
-                scale(scale, scale, Offset.Zero) { drawContent() }
+                // 这里的 drawContent() 调用的是**外层 ContentDrawScope 的**，必须写
+                // `this@drawWithContent.` 显式限定：recordLayer 的 block receiver 和
+                // scale 的 lambda receiver 都是 DrawScope（带 @DrawScopeMarker DSL 标记），
+                // Kotlin 禁止在标记过的内层接收者作用域里**隐式**访问外层接收者的成员
+                //（CI 编译错 "cannot be called in this context with an implicit receiver"），
+                // 显式限定即合法。机制上 record 内部共享同一个 drawContext（LayerRecorder
+                // 手动换 density 正是这一事实的注脚），所以外层的 drawContent 会在 record
+                // 画布上重放。同款在仓先例：LayerBackdropModifier 的 LayerBackdropNode.draw()
+                // 同一 draw pass 里先 drawContent() 再经 backdrop.onDraw(this@draw) 二次调用。
+                scale(scale, scale, Offset.Zero) { this@drawWithContent.drawContent() }
             }
             cache.capturedSize = thumbSize
         }
