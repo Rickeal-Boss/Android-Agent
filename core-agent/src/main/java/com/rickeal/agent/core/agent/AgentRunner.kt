@@ -421,6 +421,11 @@ class AgentRunner(
             // 名字不认识的 JSON 一律按最终答案处理（见 TextToolProtocol.parse 注释），
             // 否则模型输出普通 JSON（如 {"name":"张三"}）时会被误判成工具调用而反复重试。
             val registeredToolNames: Set<String> = availableTools.map { it.name }.toSet()
+            // 披露之前的「用户启用集合」口径（allToolSpecs 已按 toolNames 白名单过滤，
+            // 见 :393）。ON_DEMAND 转发放行用它做判据：比元工具白名单宽（否则合法转发
+            // 全被误杀，审查4 P0）、比 registry 全量严（编造未启用名经转发通道同样被拒，
+            // 与直达封堵同口径）。FULL 模式下与 registeredToolNames 是同一集合。
+            val allToolNames: Set<String> = allToolSpecs.map { it.name }.toSet()
 
             val working = ArrayList<ChatMessage>()
             // 提前把系统指令拼成局部变量：供下方系统消息发送（内容与旧实现逐字节一致）
@@ -1038,7 +1043,20 @@ class AgentRunner(
                     // 这行同时封住了「toolNames 白名单在原生通道被绕过」的既有缺口
                     // （FULL 模式下 registeredToolNames = 已启用 ∩ 白名单，与 get() 语义等价，
                     //  故对既有行为零影响）。
-                    val tool = if (call.name in registeredToolNames) toolRegistry.get(call.name) else null
+                    //
+                    // 【审查4 P0 修复】转发放行：call_tool 解包换名后 call.name 已是**目标
+                    // 工具名**，必然不在元工具白名单内 —— 旧判据把一切合法转发当未注册名
+                    // 拒绝，错误文案还诱导模型重试 → 同参死循环，ON_DEMAND 整体不可用。
+                    // 以 rawCall.name（解包**前**的原始名）识别转发来源；放行后仍要求目标
+                    // 在用户启用集合（allToolNames）内。封堵面逐一复核不变：
+                    // ① 文本协议编造隐藏名 → TextToolProtocol 协议层已拒（不到这里）；
+                    // ② 原生通道幻觉隐藏名 → rawCall.name ≠ call_tool 且 ∉ registeredToolNames → 仍拒；
+                    // ③ 转发到元工具 → unpackCall 保留名递归防护已拦（解包失败 continue）；
+                    // ④ 编造未启用名 → viaForward 但 ∉ allToolNames → 拒；
+                    // ⑤ FULL 模式 → viaForward 恒 false → 行为逐字节不变。
+                    val viaForward = disclosureActive && rawCall.name == DisclosureTools.CALL_TOOL_NAME
+                    val allowedNames = if (viaForward) allToolNames else registeredToolNames
+                    val tool = if (call.name in allowedNames) toolRegistry.get(call.name) else null
                     if (tool == null) {
                         emitUnregisteredTool(
                             call,
