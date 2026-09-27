@@ -53,6 +53,30 @@ import java.util.Locale
  *     代码缩进可合法地有几十个空格）。Wave 22 真机：模型退化为数百个「`」且
  *     **不带换行** ⇒ 判定⑦刷不出句、判定⑤要等 4096 字符才截 —— 这是唯一
  *     能在第 24 个字符就介入的判据。
+ *  9. 字符级滚动指纹（P0-A，与 ⑥ 并存不替代）：把系统提示词归一化成连续字符流
+ *     （去空白、去标点、小写），在输出流上做**抗标点/换行差异**的逐字匹配，
+ *     连续 [ECHO_CHAR_STREAK] 次窗口命中 → 循环。
+ *
+ * ## 为什么有了 ⑥ 还要 ⑨
+ *
+ * ⑥ 依赖「句界逐字对齐」：它按 [SENTENCE_TERMINATORS] 把提示词切句、逐句归一化
+ * 建指纹，输出侧同样切句比对。模型只要**不保留相同的换行/标点**（把两句话并成
+ * 一句、把「。」换成「\n」或「！」、在句中插逗号），句子边界就错位、⑥ 永不命中。
+ * Wave 24 用户反复反馈「只输出提示词然后胡言乱语仍未解决」，根因之一即 ⑥ 的这个
+ * 脆弱面。⑨ 把比对下沉到**字符流**：标点/空白全部丢弃，只看「连续字符是否逐字
+ * 复述提示词」，边界错位不再影响命中。两条判定**并存**：⑥ 覆盖「整句照抄」的
+ * 典型形态（阈值低、介入早），⑨ 覆盖「标点/换行被改写」的变体（阈值高、抗变形），
+ * 互补而非替代。
+ *
+ * ## ⑨ 的误伤面（已知且可接受的取舍）
+ *
+ * 触发要求 ≥ [ECHO_CHAR_WINDOW] + ([ECHO_CHAR_STREAK]-1)×[ECHO_CHAR_STRIDE] = 64 个
+ * **归一化字符连续逐字复述系统提示词**。正常回答不会命中；唯一例外是用户明确要求
+ * 「复述你的系统提示词 / 把上面的指令重复一遍」—— 此时模型如实复述会被截断。这是
+ * 已知取舍：端侧小模型的退化刷屏（Wave 21 真机整段复述工具提示词）危害远大于
+ * 「用户要求复述被截」这一罕见场景；且被截时已产出文本保留（不丢内容）。
+ * 记忆段已在 AgentRunner 侧被 `MEMORY_SECTION_PREFIX` 过滤，故**不在指纹语料内**
+ * —— 模型引用记忆条目不会被 ⑨ 误伤（与 ⑥ 同口径，见 AgentRunner.kt:381-383）。
  */
 class StreamRepetitionDetector(
     /**
@@ -126,6 +150,25 @@ class StreamRepetitionDetector(
         /** 判定⑧ 单字符 run：当前已连续重复几个（含首个）。 */
         var runLength = 0
 
+        /**
+         * 判定⑨ 字符级滚动指纹：长度为 [Companion.ECHO_CHAR_WINDOW] 的环形缓冲，
+         * 保存最近 WINDOW 个**归一化**字符（[echoRingPos] 指向下一个被覆盖的位置）。
+         * 用外层类名限定 companion 常量，避免嵌套类作用域歧义。
+         */
+        val echoRing = CharArray(StreamRepetitionDetector.ECHO_CHAR_WINDOW)
+
+        /** 判定⑨ 环形缓冲写指针（0 until [Companion.ECHO_CHAR_WINDOW]）。 */
+        var echoRingPos = 0
+
+        /** 判定⑨ 当前窗口的滚动哈希（Horner 展开，见 [Companion.ECHO_CHAR_POW]）。 */
+        var echoHash = 0L
+
+        /** 判定⑨ 已消费的归一化字符总数（`% [Companion.ECHO_CHAR_STRIDE]` 决定何时查表）。 */
+        var echoCharCount = 0
+
+        /** 判定⑨ 连续命中指纹集的检查次数（未命中即清零）。 */
+        var echoCharHits = 0
+
         fun reset() {
             pendingSentence.setLength(0)
             recentSignatures.clear()
@@ -140,6 +183,11 @@ class StreamRepetitionDetector(
             cycleDistanceStreak = 0
             runChar = '\u0000'
             runLength = 0
+            echoRing.fill('\u0000')
+            echoRingPos = 0
+            echoHash = 0L
+            echoCharCount = 0
+            echoCharHits = 0
         }
     }
 
@@ -161,6 +209,43 @@ class StreamRepetitionDetector(
             .mapNotNull { normalizedSignature(it) }
             .toSet()
     }
+
+    /**
+     * 判定⑨ 字符级滚动指纹集：系统提示词归一化后的**全部** [ECHO_CHAR_WINDOW] 长
+     * 窗口哈希（**步长 1**）。O(|prompt|) 个 Long，构造期一次性建好。
+     *
+     * 为什么必须步长 1（不能按 [ECHO_CHAR_STRIDE] 抽样）：模型回显的起始偏移任意，
+     * 抽样建集只能对齐 1/16 的偏移，其余 15/16 的偏移全部漏检。内存换正确性是
+     * 划算的 —— 系统提示词量级几 KB ⇒ 指纹集几千个 Long。
+     * prompt 归一化后 < [ECHO_CHAR_WINDOW] → 空集 → 判定⑨永不触发（等价既有行为）。
+     */
+    private val echoCharHashes: Set<Long> = buildEchoCharHashes(systemPrompt)
+
+    private fun buildEchoCharHashes(prompt: String?): Set<Long> {
+        if (prompt.isNullOrBlank()) return emptySet()
+        val chars = normalizeEchoChars(prompt)
+        if (chars.length < ECHO_CHAR_WINDOW) return emptySet()
+        val hashes = HashSet<Long>(chars.length - ECHO_CHAR_WINDOW + 1)
+        var hash = 0L
+        for (i in chars.indices) {
+            // 「先移除被淘汰字符的贡献、再乘 base 加新字符」——与流侧滑动严格同序，
+            // 否则指纹集与流侧口径分叉、检测静默失效。
+            if (i >= ECHO_CHAR_WINDOW) {
+                hash -= chars[i - ECHO_CHAR_WINDOW].code * ECHO_CHAR_POW
+            }
+            hash = hash * ECHO_CHAR_BASE + chars[i].code
+            if (i >= ECHO_CHAR_WINDOW - 1) hashes.add(hash)
+        }
+        return hashes
+    }
+
+    /**
+     * 判定⑨ 的归一化口径：与 [normalizedSignature] 的**预处理**同口径（去空白、
+     * 去标点、[Locale.ROOT] 小写），但**不施加** 8 字门槛 —— ⑨ 需要的是完整连续
+     * 字符流（含 <8 字片段）来做滚动窗口。
+     */
+    private fun normalizeEchoChars(text: String): String =
+        text.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
 
     fun observeText(delta: String): Verdict = observe(textState, delta, inThinking = false)
 
@@ -211,6 +296,47 @@ class StreamRepetitionDetector(
             if (SENTENCE_TERMINATORS.indexOf(ch) >= 0) {
                 val verdict = flushSentence(state, inThinking)
                 if (verdict is Verdict.LoopDetected) return verdict
+            }
+        }
+        // 判定⑨：字符级滚动指纹（P0-A）。独立于句界，抗标点/换行差异 —— 见方法 KDoc。
+        return observeEchoChars(state, delta, inThinking)
+    }
+
+    /**
+     * 判定⑨：字符级滚动指纹（P0-A 输出侧 backstop，与 ⑥ 并存不替代）。
+     *
+     * 复杂度：O(delta)，每归一化字符 O(1)（一次乘加 + 一次环形写），每
+     * [ECHO_CHAR_STRIDE] 个字符一次 HashSet 查询。**不**对累积全文做扫描 ——
+     * 延续文件头的复杂度纪律。
+     *
+     * 算法：把 delta 归一化成连续字符流后逐字符滚动。环形缓冲保存最近
+     * [ECHO_CHAR_WINDOW] 个字符，[StreamState.echoHash] 是其 Horner 哈希；
+     * 每消费满 [ECHO_CHAR_STRIDE] 的整数倍且窗口已满，查一次 [echoCharHashes]：
+     * 命中则连击 +1，达 [ECHO_CHAR_STREAK] 判循环；未命中即清零（连续性是硬要求）。
+     */
+    private fun observeEchoChars(state: StreamState, delta: String, inThinking: Boolean): Verdict {
+        // 指纹集为空（未传 prompt / prompt 归一化后过短）→ ⑨ 完全关闭，等价既有行为。
+        if (echoCharHashes.isEmpty()) return Verdict.Ok
+        for (c in normalizeEchoChars(delta)) {
+            if (state.echoCharCount >= ECHO_CHAR_WINDOW) {
+                // 窗口已满：先减去即将被覆盖的「最老字符」的贡献（权重 = POW）。
+                state.echoHash -= state.echoRing[state.echoRingPos].code * ECHO_CHAR_POW
+            }
+            state.echoHash = state.echoHash * ECHO_CHAR_BASE + c.code
+            state.echoRing[state.echoRingPos] = c
+            state.echoRingPos = (state.echoRingPos + 1) % ECHO_CHAR_WINDOW
+            state.echoCharCount++
+            if (state.echoCharCount >= ECHO_CHAR_WINDOW &&
+                state.echoCharCount % ECHO_CHAR_STRIDE == 0
+            ) {
+                if (state.echoHash in echoCharHashes) {
+                    state.echoCharHits++
+                    if (state.echoCharHits >= ECHO_CHAR_STREAK) {
+                        return Verdict.LoopDetected(inThinking, PROMPT_ECHO_CHAR_MARKER)
+                    }
+                } else {
+                    state.echoCharHits = 0
+                }
             }
         }
         return Verdict.Ok
@@ -434,6 +560,57 @@ class StreamRepetitionDetector(
          * **空白不计入**（代码缩进可以合法地有几十个空格），见 [observe]。
          */
         const val CHAR_RUN_LOOP = 24
+
+        /**
+         * 判定⑨ 字符级滚动指纹的窗口宽度（归一化字符数）。
+         * 取 32：远高于正常回答里偶发引用提示词的片段长度，又远低于真机回显
+         * （Wave 21：整段工具系统提示词，数百字符）的长度；窗口越长越稳（抗单字符
+         * 噪声）、漏检延迟越大，32 是折中。与 [ECHO_CHAR_STRIDE]=16 配合，每 16 个
+         * 归一化字符一次哈希查询，开销可忽略。
+         */
+        const val ECHO_CHAR_WINDOW = 32
+
+        /**
+         * 判定⑨ 流侧检查步长：每消费 [ECHO_CHAR_STRIDE] 个归一化字符查一次指纹集。
+         * **必须 < [ECHO_CHAR_WINDOW]**（这里 16 = 32/2）：相邻两次检查的窗口重叠
+         * 16 字符，任何 ≥16 字符的连续匹配段都不会被步长跳过。取 16 而非 1 是为了
+         * 省掉每字符一次 HashSet 查询（端侧 0.5B 推理下仍不必要的开销）。
+         */
+        const val ECHO_CHAR_STRIDE = 16
+
+        /**
+         * 判定⑨ 连续命中次数阈值。取 3：配合 WINDOW=32 / STRIDE=16 ⇒ 至少
+         * 32 + 16 + 16 = **64** 个归一化字符连续逐字复述系统提示词才触发。
+         * 取 3 而非 2 是进一步压低误伤：正常回答里 48 字符的偶发引用（引用一段
+         * 需求/规范）不该被判循环；真回显是数百字符级的，64 字符门槛毫无压力。
+         */
+        const val ECHO_CHAR_STREAK = 3
+
+        /** 判定⑨ 触发时的固定标记（日志可辨识，非具体签名）。 */
+        const val PROMPT_ECHO_CHAR_MARKER = "prompt_echo_chars"
+
+        /**
+         * 判定⑨ 滚动哈希的进制。131 是字符串多项式哈希的常用小质数：乘法快、在
+         * Z/2^64 下溢出分布均匀。字符码（UTF-16 ≤ 0xFFFF）大于 base 不影响滚动
+         * 递推的正确性；碰撞概率由 2^64 的哈希空间决定（几千个窗口下可忽略）。
+         */
+        private const val ECHO_CHAR_BASE = 131L
+
+        /**
+         * 判定⑨ 滚动哈希里「窗口内最老字符」的权重 = [ECHO_CHAR_BASE]^([ECHO_CHAR_WINDOW]-1)。
+         *
+         * 哈希约定（Horner 展开）：对窗口 c[0..W-1]，
+         * `hash = c[0]*B^(W-1) + c[1]*B^(W-2) + … + c[W-1]*B^0`。
+         * 滑动一步（丢掉 c[0]、加入 c[W]）：`hash = (hash - c[0]*POW) * B + c[W]`。
+         * 因此 POW 是 **B^(W-1)**（不是 B^W —— B^W 属于「先乘后减」的另一种写法，
+         * 两种写法不能混用，否则指纹集与流侧口径分叉、检测静默失效）。
+         * 所有运算在 Z/2^64 下自然溢出，Long 乘法即模运算，无需显式取模。
+         */
+        private val ECHO_CHAR_POW: Long = run {
+            var p = 1L
+            repeat(ECHO_CHAR_WINDOW - 1) { p *= ECHO_CHAR_BASE }
+            p
+        }
 
         /** 句子终止符集合：中英句读 + 换行（换行是流式输出最常见的句界）。 */
         private const val SENTENCE_TERMINATORS = "。！？!?.\n"

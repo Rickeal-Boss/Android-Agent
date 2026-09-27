@@ -41,4 +41,11 @@ kotlin {
 dependencies {
     // api：领域模型要暴露给所有上层模块
     api(libs.kotlinx.serialization.json)
+
+    // JVM 单测（src/test/java，AGP 默认源集）。AGP 不自动提供 junit，必须显式声明；
+    // kotlin-test 提供断言 API。测试只覆盖纯函数（StreamRepetitionDetector），
+    // 不触任何 Android 类，因此无需 Robolectric / returnDefaultValues。
+    // 样板与 :core-data 的 build.gradle.kts 一致（同一 catalog 键，不新增依赖版本）。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }
