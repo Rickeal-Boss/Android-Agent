@@ -26,6 +26,8 @@ package com.rickeal.agent.core.model
  *
  *  - temperature → clamp 进 [temperatureRange]；
  *  - topK → clamp 进 1..[maxTopK]；
+ *  - topP → min(用户值, [recommendedTopP])：档案值是**上限**（topP 越小越聚焦，与 topK 同一
+ *    口径），只降不升，绝不把用户主动调低的 topP 抬回去；
  *  - repetitionPenalty → max(用户值, [recommendedRepetitionPenalty])：档案值是**下限**
  *    而非改写（Qwen2.5 官方 1.1，用户想更狠可以拉到 1.3，但默认 1.0 会被抬到 1.1）；
  *  - maxTokens → max(用户值, [minMaxTokens])：思考模型的思维链被截断就交不出答案
@@ -44,6 +46,10 @@ data class ModelSamplingProfile(
     val temperatureRange: ClosedFloatingPointRange<Float>,
     val recommendedTopK: Int,
     val maxTopK: Int,
+    /**
+     * topP 上限（越小越聚焦）。**参与运行时钳制**：`appliedTo` 取 `min(用户值, 本值)`，
+     * 只降不升（此前是只记录不生效的死字段，Wave 24 起接入钳制）。
+     */
     val recommendedTopP: Float = 0.95f,
     /** 重复惩罚下限。1.0 = 该模型不需要（保持关闭）。 */
     val recommendedRepetitionPenalty: Float = 1.0f,
@@ -205,6 +211,7 @@ object ModelSamplingProfiles {
         val clampedSampling = s.copy(
             temperature = s.temperature.coerceIn(profile.temperatureRange.start, profile.temperatureRange.endInclusive),
             topK = s.topK.coerceIn(1, profile.maxTopK),
+            topP = minOf(s.topP, profile.recommendedTopP),
             repetitionPenalty = maxOf(s.repetitionPenalty, profile.recommendedRepetitionPenalty),
         )
         val clamped = config.copy(
@@ -213,9 +220,10 @@ object ModelSamplingProfiles {
             contextLength = minOf(config.contextLength, profile.maxContextLength),
         ).coerce()
         if (clamped != config) {
+            val topPNote = if (clamped.sampling.topP != s.topP) "(钳自 ${s.topP})" else ""
             AgentLogStore.info(
                 "模型采样档案生效：${fileName ?: "?"} → temp ${clamped.sampling.temperature}" +
-                    "/topK ${clamped.sampling.topK}/topP ${clamped.sampling.topP}" +
+                    "/topK ${clamped.sampling.topK}/topP ${clamped.sampling.topP}$topPNote" +
                     "/repPen ${clamped.sampling.repetitionPenalty}" +
                     "/maxTok ${clamped.maxTokens}/ctx ${clamped.contextLength}（${profile.evidence}）"
             )
