@@ -56,11 +56,16 @@ data class PerfSample(
  * App 启动即常驻 1s 采样线程（方案 A 被否的理由）。
  *
  * - [acquire] 幂等（计数 0→1 时创建线程）；[release] 归零即停（interrupt + join(1000)，
- *   绝不用已废弃的 `Thread.stop()`）。
+ *   绝不用已废弃的 `Thread.stop()`）。join 在后台 reaper 线程里做 —— [release] 常从
+ *   UI 线程调用（诊断页 DisposableEffect），就地 join 有钉住主线程的风险（详见
+ *   stopWorker 的注释）。
  * - 线程为 **daemon** + 命名 `perf-sampler`：进程退出不被拖延，泄漏判定可用
  *   `adb shell ps -T <pid>` 验证（真机验收项）。
  * - [reason] 落日志：谁拿了没放，事后可查（引用计数的经典病灶）。
  * - 归一化防御：release 过计数（<0）按 0 钳制并记 warn —— 多 release 不崩，但要留痕。
+ * - 已知微小竞态（可接受，不加锁）：release 归零（旧线程 join 中未死）与 acquire 到 1
+ *   同时发生时，两个采样线程会短暂共存，旧线程可能在 startWorker 清空之后再写一个
+ *   样本进新窗口。影响上限是一个多写样本，不值得为此给整条路径加锁。
  *
  * 数据出口：[samples] StateFlow（环形 180 个 = 3 分钟 @1s，超限 removeFirst —— 与
  * BLOCK_CYCLE_HISTORY 同款环形纪律）+ [latest]（GenerationNotifier 通知文案的低开销读点）。
@@ -126,7 +131,7 @@ class PerformanceMonitorManager(private val context: Context) {
         }
     }
 
-    /** 退出观测窗口（幂等）。归零即 interrupt + join 停线程。 */
+    /** 退出观测窗口（幂等）。归零即停线程：UI 线程调用也立即返回（join 走后台，见 stopWorker 注释）。 */
     fun release(reason: String) {
         val n = interests.decrementAndGet()
         if (n < 0) {
@@ -158,10 +163,27 @@ class PerformanceMonitorManager(private val context: Context) {
         thread.start()
     }
 
+    /**
+     * 停线程：句柄就地摘除，interrupt + join 挪到后台 reaper 线程做。
+     *
+     * 为什么不就地 join：release 常从 UI 线程调用（诊断页 DisposableEffect 的
+     * onDispose），一旦采样线程卡在 /proc 读（OEM SELinux 异常等），join(1000) 会把
+     * 主线程钉住 1s。采样线程是 daemon 且循环每次都查 isInterrupted，interrupt 后
+     * 必然自行退出 —— 不需要调用方等它。
+     *
+     * 超时语义不变：join 超时（线程仍存活）记 warn 留痕，不重试、不升级（daemon 线程
+     * 随进程回收，不会拖住退出）。
+     */
     private fun stopWorker() {
-        worker?.interrupt()
-        runCatching { worker?.join(JOIN_TIMEOUT_MILLIS) }
+        val thread = worker ?: return
         worker = null
+        Thread({
+            thread.interrupt()
+            runCatching { thread.join(JOIN_TIMEOUT_MILLIS) }
+            if (thread.isAlive) {
+                AgentLogStore.warn("perf-sampler 未在 ${JOIN_TIMEOUT_MILLIS}ms 内退出（daemon 线程，随进程回收）")
+            }
+        }, "perf-sampler-reaper").apply { isDaemon = true }.start()
     }
 
     private fun sampleLoop() {
@@ -178,7 +200,9 @@ class PerformanceMonitorManager(private val context: Context) {
             // 绝不影响推理主流程。计数归零交由下一次 release / acquire 恢复。
             AgentLogStore.warn("性能采样线程异常终止（${t.javaClass.simpleName}: ${t.message}）")
             interests.set(0)
-            worker = null
+            // 只清自己的句柄：本线程异常退出与新窗口已 startWorker 登记了新线程可能
+            // 交叠，无条件置 null 会抹掉新线程的句柄（进而漏停新线程）。
+            if (worker === Thread.currentThread()) worker = null
         }
     }
 
