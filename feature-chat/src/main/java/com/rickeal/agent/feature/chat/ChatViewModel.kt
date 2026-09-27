@@ -11,6 +11,7 @@ import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.AgentRequest
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
 import com.rickeal.agent.core.agent.approval.ToolApprovalHandler
+import com.rickeal.agent.core.agent.breaker.BottleneckReport
 import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.agent.plan.PlanStep
 import java.io.File
@@ -148,6 +149,15 @@ data class ChatUiState(
     val pendingApproval: PendingApproval? = null,
     /** 崩溃恢复 offer：上次 run 被进程死亡打断（journal 无 settled 行）。 */
     val recovery: RecoveryOffer? = null,
+    /**
+     * 最近一次终态附带的诊断卡（Wave 30 §2.4/§2.5）。非空 = 这一轮是被熔断（热闸 /
+     * 墙钟 / 失败连击 / 振荡）或轮次耗尽收掉的，UI 据此渲染「卡在哪 + 建议」。
+     *
+     * 与 [error] 的分工：error 是「出错了」这一句结论，本字段是「为什么 + 下一步」
+     * 的完整归因；两者同屏展示（诊断卡挂在错误卡下方，见 ChatScreen 的渲染纪律）。
+     * 起 run 时与 error 同一处清 null —— 上一次任务的诊断不该粘到下一次任务上。
+     */
+    val lastReport: BottleneckReport? = null,
 )
 
 class ChatViewModel(
@@ -559,7 +569,15 @@ class ChatViewModel(
             _uiState.update { it.copy(error = rejection) }
             return
         }
-        _uiState.update { it.copy(recovery = null, error = null, toolTraces = emptyList()) }
+        _uiState.update {
+            it.copy(
+                recovery = null,
+                error = null,
+                toolTraces = emptyList(),
+                // 同 onSend / onSendFrom：续跑也是一次新任务，上一次的诊断卡必须撤掉。
+                lastReport = null,
+            )
+        }
         runJob?.cancel()
         runJob = viewModelScope.launch {
             val journal = AgentRunJournal.open(File(container.journalRoot, cid), offer.runId)
@@ -773,6 +791,8 @@ class ChatViewModel(
                 error = null,
                 notice = null,
                 recovery = null,
+                // 上一次任务的诊断卡不该粘到这一次（与 error / notice 同一处纪律）。
+                lastReport = null,
             )
         }
         resetStreaming(role = Role.MODEL, isStreaming = true)
@@ -895,6 +915,8 @@ class ChatViewModel(
                 error = null,
                 notice = null,
                 recovery = null,
+                // 同 onSend：重跑是一次新任务，上一次的诊断卡必须撤掉。
+                lastReport = null,
             )
         }
         // 同上：覆盖 runJob 之前先取消旧的，绝不让两个 run 同时活着。
@@ -1121,6 +1143,9 @@ class ChatViewModel(
                         toolTraces = emptyList(),
                         contextTokens = if (promptTokens > 0) promptTokens else it.contextTokens,
                         notice = null,
+                        // 诊断卡（Wave 30 §2.8）：轮次耗尽路径挂 report 走 Finished 而非
+                        // Failed；正常结束恒 null，等于没这个字段 —— 零行为回归。
+                        lastReport = event.report,
                     )
                 }
                 resetStreaming(role = null, isStreaming = false)
@@ -1137,6 +1162,12 @@ class ChatViewModel(
                         isGenerating = false,
                         error = AgentLogStore.sanitizeUserFacing(event.message),
                         notice = null,
+                        // 诊断卡（Wave 30 §2.4）：熔断路径（热闸 / 墙钟 / 失败连击 /
+                        // 振荡）挂 report，既有 4 处 emit Failed 恒 null —— 零回归。
+                        // 数据本身不 sanitize：报告里带工具报错原文与熔断证据，脱敏
+                        // 统一在 UI 渲染出口做（ChatScreen 走 sanitizeUserFacing），
+                        // 免得同一段文本被脱两次、把证据里的合法字符也吃掉。
+                        lastReport = event.report,
                     )
                 }
                 _streaming.update { it.copy(isStreaming = false) }

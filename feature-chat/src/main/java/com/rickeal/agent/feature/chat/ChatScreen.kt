@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.rickeal.agent.core.agent.breaker.render
 import com.rickeal.agent.core.agent.plan.PlanStepStatus
 import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.GlassButton
@@ -58,6 +59,7 @@ import com.rickeal.agent.core.design.overlayBackdropBlur
 import com.rickeal.agent.core.design.rememberGlassHaptics
 import com.rickeal.agent.core.design.rememberOverlayBlurProgress
 import com.rickeal.agent.core.design.rememberWindowSizeClass
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.Role
 import kotlinx.coroutines.launch
 
@@ -481,6 +483,44 @@ fun ChatScreen(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
+                    }
+                }
+            }
+
+            // ── 任务诊断卡（Wave 30 §2.4/§2.5 熔断归因）────────────────────
+            // 与错误卡同款玻璃卡，挂在错误卡下方：错误卡只说「出错了」，这里补
+            // 「卡在哪 + 下一步」。本波按评审口径「文本渲染即达标」—— 不做折叠、
+            // 不加交互、不新造组件，直接用报告自带的 render() 分节文本（任务 /
+            // 轮次 / 尝试过的工具 / 熔断记录 / 卡点 / 建议）。
+            // 独立成一个 if 而不是塞进错误卡：轮次耗尽走的是 Finished 不是 Failed，
+            // 那条路径没有 error，诊断卡必须能单独出现。
+            val report = state.lastReport
+            if (report != null) {
+                GlassCard(
+                    material = GlassMaterial.THICK,
+                    cornerRadius = tokens.radiusMd,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        // 标题带卡点：一眼看到归因结论，细节在正文里逐条展开。
+                        Text(
+                            text = "任务诊断 · ${report.blocker.title}",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = colors.onGlass,
+                        )
+                        Spacer(modifier = Modifier.height(tokens.gapSm))
+                        // sanitize 与 error 走同一条出口：报告正文里带工具报错原文
+                        // 与熔断证据（外部自由文本），口径必须和 AgentEvent.Failed
+                        // 的 message 一致 —— 脱敏统一在渲染出口做，数据层不脱。
+                        // trimEnd：render() 逐行 appendLine，末行会多带一个换行，
+                        // 卡片底部凭空空一截。
+                        Text(
+                            text = AgentLogStore.sanitizeUserFacing(report.render()).trimEnd(),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = colors.onGlassMuted,
+                        )
                     }
                 }
             }
