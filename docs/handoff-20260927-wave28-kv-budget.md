@@ -120,3 +120,36 @@ fail-closed 默认 + ask_actor 双继承；Wave 27 披露八项修法复验无�
 - Release 侧 16KB ELF 对齐、APK/AAB 验签、arch-guard 11 项全过。
 - 本地静态闸门先行：`scripts/arch-guard.sh` 11/11、`balance_check.py` 7 个改动文件全配平。
 - 本文档为 docs-only 提交，按惯例随下波代码一起推（`build.yml` 无 paths 过滤，单独推 docs 白跑全量 CI）。
+
+---
+
+## 7. 追记：外部核验（莫斯复审4）对照 + 审查4 P0 修复（`3ff9ad6`）
+
+> 2026-09-27 晚。外部核验报告基线即本波 tip `443689a`；主理人对照核验 + 严质衡补深审（call_tool 转发链逐行实证 + Wave 26/27 UI/设置层/53 单测补核）。
+
+### 7.1 对照结论
+
+- 报告无虚报：五波闭环结论与代码一致；8 项挂账逐项过代码**全部属实**（含记忆 pull 化链路实证：`memoryText` 拼进 systemText（AgentRunner:435）→ systemText 变化触发会话重建 = 全量 re-prefill（LiteRtLmEngine:449）——Wave 28 加的重建原因日志正好是真机观测点）。
+- 报告 §6.2 自报核验边界（call_tool 转发链仅 diff 级抽验）经逐行实证**果然抓到 P0**（下）——「披露模式只是可见性不是权限」的结论本身成立，但转发链的可用性判据有阻断级 bug。
+
+### 7.2 P0：ON_DEMAND 合法转发被元工具白名单误杀（已修，`3ff9ad6`）
+
+- **缺陷**：`AgentRunner.kt:1041` 旧判据 `call.name in registeredToolNames`——call_tool 解包换名后 `call.name` 已是**目标工具名**，必然 ∉ 元工具白名单 `{search_tools, call_tool}` → 一切合法转发被当未注册名拒绝，错误文案还诱导模型重试 → 同参死循环直至 maxRounds。**ON_DEMAND 披露模式整体不可用**。53 个单测全在 core-model（解包/目录/枚举），core-agent 零测试覆盖，故 CI 绿不报。
+- **修法**：`viaForward = disclosureActive && rawCall.name == DisclosureTools.CALL_TOOL_NAME`（以解包**前**的原始名判来源）；放行后目标仍须 ∈ `allToolNames`（用户启用集合，`:393` allToolSpecs 已按 toolNames 过滤）——比元工具白名单宽、比 registry 全量严（编造未启用名经转发通道同样被拒）。
+- **封堵面 5 路复核不变**：文本协议编造隐藏名（TextToolProtocol 协议层拒）/ 原生通道幻觉隐藏名（仍拒）/ 转发到元工具（unpackCall 保留名防护拦）/ 编造未启用名（∉ allToolNames 拒）/ FULL 模式（viaForward 恒 false，逐字节不变）。
+- **历史坑点形态（新检查清单条目）**：白名单/口径类约束改动必须枚举**所有喂名来源**（原生通道 / 文本协议 / 解包换名）逐一推演——Wave 27 §4.3 只按 FULL 视角设计，与「unpackCall 别名集 vs TextToolProtocol.argumentsOf 口径分叉」同族。
+
+### 7.3 补深审其余结论（严质衡）
+
+- **通过**：审批四判据在转发链全部目标工具口径；审批卡展示目标工具；解包 fail-closed；子代理档位+披露双继承无漏网；隐藏名直达封堵（文本+原生双路）；设置 UI→DataStore→回退链；53 单测断言质量；arch-guard 11 条。
+- **挂账新增**：P2-A SettingsRepository 解析失败回退无单测（DataStore 扩展属性委托不可注入，补测需重构构造函数）；P2-B core-agent 无测试源集（转发链×审批×白名单零覆盖，**P0 放大器**，结构性工作独立排）；P3 grant/peek 档位快照时刻不同致 run 中切档多弹一次卡（fail-closed 方向，不修）。
+
+### 7.4 CI 验收（tip `3ff9ad6`）
+
+| Run | 结论 | 产物 |
+|---|---|---|
+| Build `36315539738` | **success**（Unit tests 全绿） | debug 39.24 MB（30 天） |
+| Release `36315539775` | **success** | 正式包 **70.04 MB**（90 天）/ mapping 4.23 MB |
+
+- 本节为 docs-only 提交，按惯例本地入库随下波代码一起推（避免 docs 单独触发全量 CI 白跑）。
+- **真机清单新增一条**：ON_DEMAND 模式让模型 search_tools 后 call_tool 转发执行——修复前 100% 被拒，修复后应正常走审批/执行。
