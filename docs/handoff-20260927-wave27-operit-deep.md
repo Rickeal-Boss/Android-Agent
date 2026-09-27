@@ -129,6 +129,33 @@ I1 初版实现的**检索评分阶梯**（`300/140/100/40`、逐词项 `40/16/1
 
 ---
 
+### 4.5 一次编译失败与修法：JVM 单方法 64KB 上限（重要教训）
+首轮 CI **双 job 红**（Assemble Debug + Unit tests），日志：
+`e: java.lang.RuntimeException: Error generating class file AgentRunner.class:
+ Method too large: AgentRunner.executeBodyUnchecked(...)`。
+`executeBodyUnchecked` 是**整个工具循环**（`FlowCollector<AgentEvent>` 的扩展函数），已逼近
+JVM 单方法 64KB bytecode 上限 —— I1 的 ~30 行内联逻辑把它推过了线。
+
+**同一轮日志显示 `:core-model:testDebugUnitTest` 已执行且未失败** ⇒ 43 个新用例全部通过，
+这次红与测试无关，纯粹是 core-agent 的方法体体积。
+
+修法：把循环内联块**外提为 `FlowCollector` 扩展方法**（调用点只生成 `invokestatic`，体积远
+小于内联代码），共外提 6 块（`resolveDisclosureCall` / `emitDisclosureSearch` /
+`emitUnregisteredTool` / `emitRepeatedCallIgnored` / `emitToolFailure` + 审批块四处 commit），
+循环内内联 `commitToolMessage` 从 5 处降到 1 处。
+
+**两条留档**：
+- **结构性技术债**：该方法是整个工具循环，逼近上限是**结构性**问题（非本波引入）。后续往
+  循环里加逻辑**先评估体积、优先外提**；中期应把循环体整体抽成独立方法 —— 需先把 6 个跨轮
+  可变状态（`toolCallStreak` / `lastToolCallSignature` / `toolAnomalyReminders` /
+  `pendingReminder` / `toolDenialCounts` / `denialReminderSent`）收进 holder，属独立重构。
+- **外提时必须保持既有 emit 语义**：「无审批通道」分支原本**只 commit 不 emit**
+  `ToolResultReceived`（同族的熔断 / 拒绝都会 emit，唯独它没有）。这看起来像既有不一致，但
+  顺手统一会改变 UI 事件流（工具卡可能多收一条结果通知）⇒ `emitToolFailure` 加 `notifyResult`
+  参数保持原样，留待单独评估。
+
+---
+
 ## 5. 明确不做（附理由，别再重复调研）
 
 | 项 | 理由 |
@@ -179,3 +206,24 @@ I1 初版实现的**检索评分阶梯**（`300/140/100/40`、逐词项 `40/16/1
 - 跟随手势竞争（Wave 25 defer，需真机逐帧观感）
 - 判定实验重设计（输入侧基线已被 Wave 24 改变）
 - 原生工具通道 `nativeToolChannel`（Wave 24 起挂账，独立波次）
+- **`executeBodyUnchecked` 拆分**（Wave 27 新增挂账）：该方法是整个工具循环，已逼近 JVM
+  单方法 64KB 上限（本波实测 `Method too large`）。修法是外提（已做），但**根治**需把循环体
+  整体抽成独立方法 —— 需先把 6 个跨轮可变状态收进 holder，属独立重构。
+
+---
+
+## 9. CI 验收（tip `d015d0e`）
+
+| Run | 结论 | 产物 |
+|---|---|---|
+| Build `36307810384` | **success**（Assemble Debug 2m18s / Unit tests 2m28s） | `liquidagent-debug-d015d0e…` **39.23 MB** |
+| Release `36307810262` | **success** | **正式包 70.03 MB** / mapping 4.23 MB / debug 39.23 MB |
+
+`Unit tests` job success（`BUILD SUCCESSFUL in 1m 55s`）；日志实证
+`:core-model:compileDebugUnitTestKotlin` + `:core-model:testDebugUnitTest` **真跑**
+（非 NO-SOURCE，08:59:15 执行）⇒ 本波新增的 **43 个用例全部通过**（任一失败会使 task 与
+job 变红）。`:core-data` 的 12 个既有用例同样通过。16KB ELF 对齐、APK/AAB 验签、
+arch-guard 11 项全过。
+
+⚠️ 本波 CI 跑了**两轮**：首轮红于 `Method too large`（详见 §4.5），修后一次通过。
+推送范围 `39393f3..d015d0e`（5 commit，含 Wave 26 留存的 docs `89e6a6d`）。
