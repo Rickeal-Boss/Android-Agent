@@ -366,8 +366,10 @@ class ToolDisclosureTest {
         assertEquals(listOf("file"), HiddenToolCatalog.tokenize("file"))
         // 混排：CJK bigram 与英文整词分段互不污染。
         assertEquals(listOf("读取", "取文", "文件", "file"), HiddenToolCatalog.tokenize("读取文件file"))
-        // 大小写归一化发生在 normalize，tokenize 只管切分。
-        assertEquals(listOf("file"), HiddenToolCatalog.tokenize("FILE"))
+        // 大小写归一化在 normalize 层：tokenize 只管切分、直通原大小写；
+        // 生产路径（search）先 normalize 再 tokenize，两段串联后等价于小写。
+        assertEquals(listOf("FILE"), HiddenToolCatalog.tokenize("FILE"))
+        assertEquals(listOf("file"), HiddenToolCatalog.tokenize(HiddenToolCatalog.normalize("FILE")))
     }
 
     @Test
