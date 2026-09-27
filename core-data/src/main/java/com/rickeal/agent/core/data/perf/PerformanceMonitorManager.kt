@@ -69,8 +69,12 @@ data class PerfSample(
  *
  * 数据出口：[samples] StateFlow（环形 180 个 = 3 分钟 @1s，超限 removeFirst —— 与
  * BLOCK_CYCLE_HISTORY 同款环形纪律）+ [latest]（GenerationNotifier 通知文案的低开销读点）。
+ *
+ * @param context 仅用于取 [ActivityManager.MemoryInfo]。可空是**测试缝**：JVM 单测无
+ *   Robolectric、构造不出 Context，故允许 `null`（此时可用内存恒为 0，采样其余部分照跑）；
+ *   生产路径（AppContainer）恒传非 null。
  */
-class PerformanceMonitorManager(private val context: Context) {
+class PerformanceMonitorManager(private val context: Context?) {
 
     private val clkTckSource: ClkTckSource
     private val clkTck: Long
@@ -121,6 +125,15 @@ class PerformanceMonitorManager(private val context: Context) {
 
     /** /proc 失败是否已在**本窗口**内留过 warn（防 1s 一次刷日志）。仅采样线程读写。 */
     private var procWarned = false
+
+    /**
+     * 采样线程句柄观测口 —— **仅供 JVM 单测**（`PerfLifecycleTest`），生产代码禁止依赖。
+     *
+     * 单测只断言确定性不变量：句柄的有/无、是否为同一实例（acquire 幂等、release 归零）。
+     * **不**断言「线程已死亡」：reaper 是异步 join，等死亡必然偶发失败；线程是否真的
+     * 退出由真机 `adb shell ps -T <pid>` 验收。
+     */
+    internal fun workerHandleForTest(): Thread? = worker
 
     /** 进入观测窗口（幂等）。首 acquiring 启动 daemon 采样线程。 */
     fun acquire(reason: String) {
@@ -247,7 +260,7 @@ class PerformanceMonitorManager(private val context: Context) {
             lastPssKb = runCatching { Debug.getPss().toLong() }.getOrDefault(lastPssKb)
         }
         val availMem = runCatching {
-            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val am = context?.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
             val info = ActivityManager.MemoryInfo()
             am?.getMemoryInfo(info)
             // availMem（当前可用），不用 advertisedMem（标称内存）—— 口径纪律同
