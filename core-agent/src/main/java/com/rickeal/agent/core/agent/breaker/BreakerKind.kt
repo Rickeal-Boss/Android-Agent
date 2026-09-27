@@ -12,28 +12,28 @@ package com.rickeal.agent.core.agent.breaker
  */
 enum class BreakerKind(val severity: Severity, val userLabel: String) {
     // ── 既有 6 判据登记（本波只登记不改变其行为）──
-    EmptyOutput(HARD, "模型连续多轮没有输出任何内容"),
-    StreamLoop(HARD, "模型输出陷入重复循环"),
-    PromptEcho(HARD, "模型在逐字复述系统提示词"),
-    SameParamDeadlock(HARD, "同一个工具以完全相同的参数被反复调用"),
-    DenialCircuit(HARD, "该工具已被你多次拒绝"),
-    RoundBudget(HARD, "达到轮次上限"),
+    EmptyOutput(Severity.HARD, "模型连续多轮没有输出任何内容"),
+    StreamLoop(Severity.HARD, "模型输出陷入重复循环"),
+    PromptEcho(Severity.HARD, "模型在逐字复述系统提示词"),
+    SameParamDeadlock(Severity.HARD, "同一个工具以完全相同的参数被反复调用"),
+    DenialCircuit(Severity.HARD, "该工具已被你多次拒绝"),
+    RoundBudget(Severity.HARD, "达到轮次上限"),
     // ── 新增 5 判据（本波接线）──
     /** §3.2(c)：工具调用在几个选项之间来回打转（周期距离 + 窗口塌缩双判据）。 */
-    ToolCallOscillation(HARD, "工具调用在几个选项之间来回打转"),
+    ToolCallOscillation(Severity.HARD, "工具调用在几个选项之间来回打转"),
     /** §3.2(d)：同一个工具连续执行失败（含换参），成功即清零。 */
-    ToolFailureStreak(HARD, "同一个工具连续失败"),
+    ToolFailureStreak(Severity.HARD, "同一个工具连续失败"),
     /**
      * §3.2(a)：墙钟预算 3min SOFT → 5min HARD。落成单一 kind（方案 §2.4 调整①）：
      * [severity] 取 HARD，但**首次 SOFT trip 只进 ledger 不中断**、HARD 再 trip 一次
      * —— 档位语义由 record 点控制（evidence 区分 3min/5min），不拆两个 kind，
      * 避免「同一预算两个名字」的口径分叉（对齐 §3.5 对 maxRounds 重复设判据的否决理由）。
      */
-    WallClockBudget(HARD, "本次任务耗时超出预算"),
+    WallClockBudget(Severity.HARD, "本次任务耗时超出预算"),
     /** §3.2(b)：上下文 token 消耗超出预算（接发送侧 sentTokens 累计）。只 SOFT 登记，不中断。 */
-    TokenBudget(SOFT, "上下文 token 消耗超出预算"),
+    TokenBudget(Severity.SOFT, "上下文 token 消耗超出预算"),
     /** B.2 ②：设备热状态触发熔断（B3 ThermalGovernor 接线）。 */
-    ThermalThrottle(HARD, "设备热状态触发熔断"),
+    ThermalThrottle(Severity.HARD, "设备热状态触发熔断"),
     ;
 
     /** SOFT = 只登记不中断；HARD = trip 后熔断终态。中断语义在 record 点控制，不在枚举上分支。 */
