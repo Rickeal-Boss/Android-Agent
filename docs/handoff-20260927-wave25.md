@@ -89,8 +89,23 @@ CI 查不出来、只能靠用户肉眼发现。
 
 ---
 
-## 5. 挂账（未动，非本波范围）
+## 5. CI 验收（`4b910e4`，双绿一次通过）
 
+| Run | 结论 | 时长 | 产物 |
+|---|---|---|---|
+| Build `36304241154` | **success** | — | `liquidagent-debug-4b910e4…` 39.20 MB（30 天） |
+| Release `36304241269` | **success** | — | `liquidagent-release-apk-harness-improve` **70.0 MB** / `-mapping-` 4.22 MB / `-debug-` 39.20 MB |
+
+- `unit-tests` job 随 Build 一起绿（`:core-model:testDebugUnitTest` 24 用例继续实跑）。
+- Release 侧 16KB ELF 对齐断言 / APK 验签 / AAB 验签 / arch-guard 全部 success。
+- 本地静态闸门先行：`scripts/arch-guard.sh` 10/10、`balance_check.py` 四个改动文件全配平。
+- 编译面风险点已验证：`AgentEvent` 是 sealed ⇒ 新增 `StreamReset` 必须同步所有 `when`
+  （`ChatViewModel` 无 `else`，已补分支；`AskSubagentTool:198` 有 `else`，不受影响）；
+  `const val A = "x"; const val B = A + "y"` 的常量拼接合法。
+- ⚠️ 本节（CI 验收结果）随 `3977336` **留在本地**，按惯例随下波代码一起推 —— `build.yml` 无
+  paths 过滤，单独推 docs 会白跑一轮全量 CI。代码与 handoff 正文已在 `4b910e4` 上远端。
+
+## 6. 挂账（未动，非本波范围）
 - **THIN 0.21 底色裁决**（Wave 21 明确留给用户，唯一半条挂账）。
 - **判定实验重设计**：输入侧基线已被 bbfa3c9 改变，原实验前提失效，需在 70195d8+ 上重设计（强度档 1.0 锁定 + 角色通道生效确认双前提）。
 - **路径 B 列表优化**（滑动降级 / 源指纹跳录 / 参数不变跳重建）：待真机帧时间实测结果决定是否派单。
