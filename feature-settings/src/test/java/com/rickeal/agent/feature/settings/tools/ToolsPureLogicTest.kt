@@ -93,9 +93,9 @@ class ToolsPureLogicTest {
     fun refilteredCombinesCategoryEnabledAndKeywordFilters() {
         val state = ToolsUiState(
             tools = listOf(
-                toolOf("file_read", "读文件", category = "file", enabled = true),
-                toolOf("file_write", "写文件", category = "file", enabled = false),
-                toolOf("memory_write", "写记忆", category = "memory", enabled = true),
+                toolOf(name = "file_read", category = "file", description = "读文件", enabled = true),
+                toolOf(name = "file_write", category = "file", description = "写文件", enabled = false),
+                toolOf(name = "memory_write", category = "memory", description = "写记忆", enabled = true),
             ),
             category = "file",
             enabledOnly = true,

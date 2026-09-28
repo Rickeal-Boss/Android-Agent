@@ -51,7 +51,7 @@ class AppPureLogicTest {
         assertEquals("1 小时前", relativeTimeBetween(now, now - 60L * 60_000L)) // 恰 60 分钟
         assertEquals("23 小时前", relativeTimeBetween(now, now - (60L * 24L - 1L) * 60_000L))
         assertEquals("1 天前", relativeTimeBetween(now, now - 60L * 24L * 60_000L)) // 恰 24 小时
-        assertEquals("3 天前", relativeTimeBetween(now, now - 3L * 24L * 60_000L))
+        assertEquals("3 天前", relativeTimeBetween(now, now - 3L * 24L * 60L * 60_000L)) // 3 天 = 4320 分钟
     }
 
     @Test
