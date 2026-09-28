@@ -56,9 +56,15 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | 💾 **会话管理** | 多会话持久化（DataStore + JSON），崩溃恢复 | ⚠️ 部分 | 持久化 + 恢复已落地；**导入导出未实现** |
 | ✨ **Liquid Glass UI** | Compose 液态玻璃设计系统（基于 Kyant0/AndroidLiquidGlass 移植改造，见 [NOTICE](NOTICE)）：背景模糊、折射高光、内描边、噪声微纹理、弹性动效 | ✅ 已落地 | 底层可降级（API 31~32 / 无 RuntimeShader） |
 | 🔌 **模型市场** | 模型清单管理、下载状态、能力探测（speculative decoding 等） | ✅ 已落地 | 13+ 官方预设 + 双镜像；直链下载依赖系统 DownloadManager |
-| 🛑 **物理断路器** | run 级物理量熔断与诊断卡（Wave 30）：墙钟预算（3min 提醒 / 5min 终止）、工具失败连击、调用振荡检测、Token 软预算、热保护四档（降参数 / 轮间冷却 / 拒新 run / 释放引擎）、Token 账本（发送侧估算 + 引擎回报双口径）、熔断诊断卡（尝试清单 / 卡点 / 固定建议） | ✅ 已落地 | 纯函数判据 JVM 单测过；**热档位 / 墙钟 / 振荡真机未实测** |
+| 🛑 **物理断路器** | run 级物理量熔断与诊断卡（Wave 30）：墙钟预算（3min 提醒 / 5min 终止）、工具失败连击、调用振荡检测、Token 软预算、热保护四档（降参数 / 轮间冷却 / 拒新 run / 释放引擎）、熔断诊断卡（尝试清单 / 卡点 / 固定建议） | ✅ 已落地 | 纯函数判据 JVM 单测过；**热档位 / 墙钟 / 振荡真机未实测** |
+| 📒 **Token 账本** | run 级 token 账本（Wave 30/31）：发送侧估算（`sentTokens`）与引擎回报（`cumulativeIn` / `cumulativeOut`）双口径**并列、不换算不对账**；上下文占用条并列显示「估算≈ / 实测」 | ✅ 已落地 | 发送侧预估口径已接 UI（`ChatContextMeter`，Wave 31 流2）；**双口径一致性真机未实测** |
 
-> 状态说明：**「代码状态」= 代码实际状态；「验证状态」= 真机验证程度，未标注项表示尚无真机数据**。本项目刻意区分"代码完备"与"真机验证过"——后者只有真机数据才能背书。实际进度见 [路线图](#路线图) 与各模块代码。
+> 状态说明：**「代码状态」= 代码实际状态；「验证状态」= 真机验证程度，未标注项表示尚无真机数据**。代码状态分四态：
+> `✅ 已落地`（代码与单测完备，且生产路径上有构造点与消费方，运行时会执行）、
+> `🟡 已实现未接线`（代码与单测完备，但**生产路径上没有构造点 / 消费方，运行时不执行** —— 此类条目必须在同处写明「重启前提」，对齐 `SegmentedHistoryStore` 类头的三前提范式）、
+> `⚠️ 部分`（功能只落地一部分）、
+> `⛔ 已移除`（曾经存在、现已删除）。
+> 本项目刻意区分"代码完备"与"真机验证过"——后者只有真机数据才能背书。实际进度见 [路线图](#路线图) 与各模块代码。
 
 ---
 
@@ -256,8 +262,16 @@ Android-Agent/
 
 | 工作流 | 触发 | 产物 |
 |---|---|---|
-| [`build.yml`](.github/workflows/build.yml) | push `main` / `UI` / `harness` / PR → 三者 / 手动 | debug APK（artifact，保留 30 天）；失败时上传 `**/build/reports` |
-| [`release.yml`](.github/workflows/release.yml) | push `UI` / `harness` / tag `v*` / 手动 | debug APK（保底）+ 可选签名 release APK / AAB + GitHub Release |
+| [`build.yml`](.github/workflows/build.yml) | push `main` / `UI` / `harness` / `harness-improve` / PR → `main`·`UI`·`harness` / 手动 | debug APK（artifact，保留 30 天）；失败时上传 `**/build/reports` |
+| [`release.yml`](.github/workflows/release.yml) | push `UI` / `harness` / `harness-improve` / tag `v*` / 手动 | debug APK（保底）+ 可选签名 release APK / AAB + GitHub Release |
+
+> **分支口径**：`harness-improve` 与 `harness` 同规格 —— `release.yml` 在两条分支上都出
+> 「仓库密钥签名正式包 + debug 包」双产物（`push.branches` 同时列了二者）。PR 不触发
+> `release.yml`（PR 门禁走 `build.yml` 的零密钥快速轨）。
+>
+> **纯文档改动**：`build.yml` 的 `on.push` / `on.pull_request` 已加 `paths-ignore`
+> （`docs/**`、`**/*.md`、`.github/ISSUE_TEMPLATE/**`），纯文档提交不再触发构建；
+> `release.yml` 本就用 `paths:` 白名单，无需再改。
 
 **设计要点：**
 
@@ -285,7 +299,11 @@ Android-Agent/
   [`docs/11-harness-blueprint.md`](docs/11-harness-blueprint.md)
   - [x] Wave 1：Journal、参数 Schema 校验、审批闸门、ask_actor 子代理、长期记忆
   - [x] Wave 2：崩溃恢复接线、计划机制（plan_set/plan_update + 时间线）、真审批 UI、
-    Actor 会话持久化、结算语义对齐（ProviderStop/Interrupted）
+    Actor 会话持久化、结算语义对齐（`Interrupted` — 判据是「journal 无 `settled` 行」，不主动写入）
+  - [ ] 🟡 ProviderStop 写入点（结算语义的「模型侧确定性故障」分支）：枚举已定义、journal
+    终态分类已留位，但**生产路径零写入点**（`TerminationReason` 生产写入点实测仅
+    `AgentRunner.kt:1941` 的 ModelStopped/MaxRounds 与 `:1990` 的 BreakerTripped，
+    无 ProviderStop）—— 待接 UI 端点诊断页后启用。
   - [ ] Wave 3：历史版本化、定时任务、检索记忆、人格系统、插件化装载
 
 ---
