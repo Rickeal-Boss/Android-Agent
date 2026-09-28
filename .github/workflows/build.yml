@@ -10,10 +10,12 @@ name: Build
 #      因此工作流需要自愈：用 setup-gradle 安装 Gradle、自动接受 SDK 许可、
 #      缓存依赖、失败时输出可读日志。
 #   3. Build job 出 debug 包；unit-tests job 跑 JVM 单测。测试源集已点火：
-#      core-agent 133 例 / core-model 88 例 / core-data 44 例（共 18 个测试
-#      文件 / 265 例）。`test` 聚合 task 对**尚未点火**的模块（core-engine /
-#      core-design / feature-* / app）是 NO-SOURCE、直接跳过、exit 0 ——
-#      后续补 JVM 单测无需再改流水线。lint 由下方独立的 lint job 并行跑：
+#      core-agent 145 例 / core-model 96 例 / core-data 48 例 / core-engine 18 例
+#      / feature-chat 4 例（共 23 个测试文件 / 311 例）。`test` 聚合 task 对
+#      **尚未点火**的模块（core-design / feature-settings / app）是 NO-SOURCE、
+#      直接跳过、exit 0 —— 后续补 JVM 单测无需再改流水线。
+#      ⚠️ 上述用例数是 Wave 31 末的快照；本注释刻意不复述模块级细节，用例增长
+#      时只需改这一处。lint 由下方独立的 lint job 并行跑：
 #      独立并行 = 不挤占构建关键路径（正面回应旧注释「不跑 lint，避免无关
 #      任务拖垮构建」——拖垮的前提是 lint 串进 assemble 链，这里没有）；
 #      warn-only（:app lint{} 设 abortOnError=false）= 存量问题不阻断 CI，
@@ -335,10 +337,11 @@ jobs:
   # ---------------------------------------------------------------------------
   # JVM 单测门禁位
   #
-  # 测试源集已点火：core-agent 133 例 / core-model 88 例 / core-data 44 例
-  # （共 18 个测试文件 / 265 例）。`test` 聚合 task 对尚未点火的模块
-  # （core-engine / core-design / feature-* / app）标为 NO-SOURCE 并直接跳过，
-  # 整体仍 exit 0 —— 后续补 JVM 单测时零改动生效。
+  # 测试源集已点火：core-agent 145 例 / core-model 96 例 / core-data 48 例 /
+  # core-engine 18 例 / feature-chat 4 例（共 23 个测试文件 / 311 例，Wave 31
+  # 末快照）。`test` 聚合 task 对尚未点火的模块（core-design /
+  # feature-settings / app）标为 NO-SOURCE 并直接跳过，整体仍 exit 0 ——
+  # 后续补 JVM 单测时零改动生效。
   #
   # 工具链与 Build job 完全同源（JDK 21 temurin / Gradle 9.7.1 via
   # setup-gradle / 同一份 ci-gradle.properties），保证两个 job 共享同一套
