@@ -63,6 +63,41 @@ import kotlinx.coroutines.launch
  */
 private const val VERTICAL_INTENT_TAN30 = 0.577f
 
+/**
+ * 「本次手势是纵向意图」的判据：**累积位移** [accumulatedY] 是否压过
+ * [accumulatedX] × tan30°（[VERTICAL_INTENT_TAN30]）。
+ *
+ * 从 [DampedDragAnimation.modifier] 的轴向锁定分支**原样外提**（逐字节等价，
+ * 判据常量与比较运算符都未改），目的是让这条判据能被 JVM 单测直接覆盖 ——
+ * 它是「手指按在滑块/开关上纵向滑时页面能不能滚」的唯一开关，写错的症状是
+ * 真机上极难复现的「有时拖不动 / 滚动被吃掉」。
+ *
+ * ⚠️ 阈值不能"简化"成 `|dy| > |dx|`（45°）：30°~45° 那一段斜滑会留残余死区
+ * （判成横向 → 本手势消费事件 → 父级 verticalScroll 起不来）。本函数的单测
+ * 用 35° 斜滑钉住这个边界。
+ */
+internal fun isVerticalDragIntent(accumulatedX: Float, accumulatedY: Float): Boolean =
+    abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30
+
+/**
+ * 归一化进度 0~1（相对 [valueRange]），从 [DampedDragAnimation.progress] 的
+ * getter **原样外提**（逐字节等价）：轨道填充宽度与 thumb 位移都按它排版，
+ * 所以「量程退化（span ≤ 0）」与「越界钳制」两条分支都不能写反。
+ *
+ * - `span <= 0f` ⇒ 恒 0f：退化量程下除零会得到 NaN，NaN 传进布局会让整个
+ *   节点消失（Compose 对 NaN 尺寸直接抛/不绘制），宁可退化成 0；
+ * - 其余 ⇒ 线性映射后 `coerceIn(0f, 1f)`：拖动期 [value] 可能被外部 snap 到
+ *   量程之外，不钳制会让 thumb 画到轨道外。
+ */
+internal fun dampedDragProgress(value: Float, valueRange: ClosedFloatingPointRange<Float>): Float {
+    val span = valueRange.endInclusive - valueRange.start
+    return if (span <= 0f) {
+        0f
+    } else {
+        ((value - valueRange.start) / span).coerceIn(0f, 1f)
+    }
+}
+
 class DampedDragAnimation(
     private val animationScope: CoroutineScope,
     initialValue: Float,
@@ -264,16 +299,14 @@ class DampedDragAnimation(
 
     private val isDraggingState = mutableStateOf(false)
 
-    /** 归一化进度 0~1（相对 [valueRange]）。轨道填充宽度、thumb 位移都用它。 */
+    /**
+     * 归一化进度 0~1（相对 [valueRange]）。轨道填充宽度、thumb 位移都用它。
+     *
+     * 判定式已外提为 [dampedDragProgress]（纯函数，可被 JVM 单测覆盖），
+     * 这里只负责把 [value] / [valueRange] 喂进去 —— 语义与外提前逐字节一致。
+     */
     val progress: Float
-        get() {
-            val span = valueRange.endInclusive - valueRange.start
-            return if (span <= 0f) {
-                0f
-            } else {
-                ((value - valueRange.start) / span).coerceIn(0f, 1f)
-            }
-        }
+        get() = dampedDragProgress(value, valueRange)
 
     /**
      * 按下时放大的 X 缩放（[initialScale] → [pressedScale]）。
@@ -449,7 +482,7 @@ class DampedDragAnimation(
                         if (!axisDecided && reach >= slop) {
                             axisDecided = true
                             if (canYieldToParent &&
-                                abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30
+                                isVerticalDragIntent(accumulatedX, accumulatedY)
                             ) {
                                 // 让位给父级滚动。置位后本手势"吞掉"后续事件。
                                 yieldedToParentState = true

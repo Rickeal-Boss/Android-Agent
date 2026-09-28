@@ -66,4 +66,12 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+
+    // JVM 单测（src/test/java，AGP 默认源集）—— 与 :core-engine / :core-design /
+    // :feature-models 同款配置（同一 catalog 键，不新增依赖版本）。只覆盖**不触碰
+    // Android / Compose / ViewModel 运行时**的纯函数：工具分类展示名映射
+    // （ToolCategories.kt）与搜索/分类/启用筛选归约（ToolsViewModel.kt 文件级
+    // internal 函数）。Composable 一律不在 JVM 上测。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }

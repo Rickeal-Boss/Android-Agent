@@ -181,8 +181,13 @@ class ToolsViewModel(
  *
  * 分类集合 = 规范顺序中**存在**的那些 + 表外分类（按字典序追加，防止将来新增分类
  * 因不在 [TOOL_CATEGORY_ORDER] 里而漏出 chip 行）。
+ *
+ * `internal`（原为 `private`）：纯函数（只做 data class copy + filter），是工具库
+ * 「搜索 / 分类 / 启用筛选」的唯一实现 —— 与 [com.rickeal.agent.feature.models.refiltered]
+ * 同款处理（Wave 32 流 B 为拆分先建测试网），改可见性只为让 JVM 单测能直接钉住
+ * 「表外分类按字典序追加」与「enabledOnly」两条语义，函数体一字未动。
  */
-private fun ToolsUiState.refiltered(): ToolsUiState {
+internal fun ToolsUiState.refiltered(): ToolsUiState {
     val present = tools.map { it.category }.toSet()
     val ordered = TOOL_CATEGORY_ORDER.filter { it in present } +
         present.filterNot { it in TOOL_CATEGORY_ORDER }.sorted()

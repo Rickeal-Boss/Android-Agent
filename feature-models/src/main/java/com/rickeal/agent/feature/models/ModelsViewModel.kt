@@ -1058,112 +1058,11 @@ class ModelsViewModel(
         val backendText = backends.joinToString("/") { it.name }
         return "能力：${caps.joinToString("·")}　后端：$backendText"
     }
-    /**
-     * 下载完成后的体积体检。**返回的是一句提示，不是判决；本函数永远不会删文件。**
-     *
-     * ## 为什么不能拿体积当删除依据（这曾经是个死循环）
-     *
-     * 旧实现是「实际体积 < 预设 `sizeBytes` × 0.98 → 删掉文件并报错」。问题在于
-     * `sizeBytes` 是**手写进源码的估算值**，谁也没在真机上验过。一旦某个预设填大了
-     * （例如上游换成了更大的打包，或当初就是估的），用户每次下完 2~4GB 都会被判成
-     * 「不完整」→ 删除 → 提示重新下载 → 再下再删。用户永远下不完一个模型，而且
-     * 每次都要重新花流量和时间。**拿估算值当真相，就必然出现这种循环。**
-     *
-     * ## 完整性只认 DownloadManager 的账本
-     *
-     * `bytesDownloaded == totalBytes` 是唯一能区分「下完了」与「下了一半」的信息源，
-     * 它是真实传输过程的记录，不是估算。DM 说下完了，我们就认为下完了：
-     * 照常登记、照常设为当前模型，`sizeBytes` 只用来提示「上游仓库可能换过文件」。
-     *
-     * ## 拿不到 DM 总数时
-     *
-     * 才退回体积比对，且阈值放宽到 0.70、**只警告不删**。放宽是因为这个兜底同样
-     * 建立在估算值上，宁可漏报（让用户自己去试加载）也不能误报（删掉一个可能是好的文件）。
-     *
-     * 就地登记后 [ModelDescriptor.path] 指向的就是下载目录里的那个文件，
-     * 所以这里曾经删的确实是「下载落盘文件」本身——口径没错，错的是判据。
-     */
-    private fun sizeHint(
-        descriptor: ModelDescriptor,
-        preset: ModelPreset?,
-        downloadedBytes: Long,
-        totalBytes: Long,
-    ): String? {
-        val expected = preset?.sizeBytes ?: return null
-        val actual = descriptor.sizeBytes
-        if (expected <= 0L || actual <= 0L) return null
 
-        // 偏小 30% 以上 → 更可能是真的没下完（截断）
-        val looksTruncated = actual < expected * 0.70
-        // 偏离 ±2% → 更可能是上游换了打包（估算值本身的误差不会到这个量级）
-        val looksChanged = actual < expected * 0.98 || actual > expected * 1.02
-        // DownloadManager 的账本：它说下完了，就不能因为体积不符而拒绝登记
-        val dmSaysComplete = totalBytes > 0L && downloadedBytes >= totalBytes
-
-        return when {
-            looksTruncated ->
-                "警告：文件体积（${formatBytes(actual)}）明显小于预期（${formatBytes(expected)}），" +
-                    "可能没有下载完整。建议删掉后重新下载；如仍要使用，加载失败时请删除它。"
-            looksChanged && dmSaysComplete ->
-                "提示：文件体积（${formatBytes(actual)}）与预期（${formatBytes(expected)}）不一致，" +
-                    "上游仓库可能换过文件。如果加载失败，请删掉后重新下载。"
-            // 拿不到 DM 总数时，±2% 的小偏差不足以下结论（预期值本身就是估算），
-            // 所以只有「明显偏小」才提醒 —— 阈值放宽到 0.70 的理由。
-            else -> null
-        }
-    }
-
-    // Locale 必须钉死：默认 Locale 在部分欧洲语区把小数点输出成逗号（1,5 GB），
-    // 在阿拉伯语区输出阿拉伯数字 —— 与同仓 ChatContextMeter 的口径保持一致。
-    private fun formatBytes(bytes: Long): String = when {
-        bytes >= 1_073_741_824L -> "%.1f GB".format(Locale.US, bytes / 1_073_741_824.0)
-        bytes >= 1_048_576L -> "%.0f MB".format(Locale.US, bytes / 1_048_576.0)
-        else -> "%.0f KB".format(Locale.US, bytes / 1024.0)
-    }
-
-    /**
-     * 内存需求估算：`max((W × f_backend + O) × [tail], MIN_REQUIRED_RAM_BYTES)`，其中
-     * `f_backend` = CPU 1.05 / GPU 1.25 / NPU **未实测**（理由见下面 `when` 里的注释），
-     * `O = max(200MB, 0.12 × W)`。
-     *
-     * [tail] 是尾部余量，**按支路分开传**，两处用途语义不同，别混：
-     *  1. **有预设**：用默认 `1.25`（= Android 安全余量：无 swap + LMK + App 自身 150~300MB），
-     *     调用方再和预设取 `maxOf`。返回值只用来兜「用户把后端从 CPU 切到 GPU/NPU」那一支 ——
-     *     预设已经显式算了 KV(n)，所以这里**不能**传 [NO_PRESET_KV_COMPENSATION]，
-     *     否则闸门会高于预设值（Phi-4-mini 5.6 → 6.0 GiB，卡片文案与实际闸门对不上）。
-     *  2. **无预设**：传 [NO_PRESET_KV_COMPENSATION]（1.41），补上这条式子缺掉的 KV 项。
-     *     缺口存在的理由与反算过程见该常量的注释。
-     *
-     * 余量作用在 [MIN_REQUIRED_RAM_BYTES] **之前**：下限代表的是不随权重缩放的固定开销，
-     * 而余量补的是 KV(n)，两者不该相乘（否则小模型的下限会被抬成 2.82 GiB 而不是 2.00）。
-     *
-     * 已知偏乐观之处：**不含 KV cache**（需要层数 / kv 头数 / head_dim，只有真正打开模型文件
-     * 才探得到），所以长上下文场景下这个值是偏低的 —— 缺口由上面第 2 条补。
-     */
-    private fun estimateRequiredRamBytes(
-        weights: Long,
-        backend: InferenceBackend,
-        tail: Double = 1.25,
-    ): Long {
-        val factor = when (backend) {
-            InferenceBackend.CPU -> 1.05
-            InferenceBackend.GPU -> 1.25
-            // NPU：**没有实测数据，所以刻意不写一个"看起来精确"的系数。**
-            //
-            // 这里原来写 1.15（比 GPU 的 1.25 还低），那是**危险方向**：NPU 的峰值约等于
-            // 「权重 + N × HTP scratch」，而 scratch 是 GB 量级的，所以 NPU 的实际需求几乎必然
-            // **高于** GPU。用比 GPU 更低的系数会往「低估」走 —— 而低估的结果是**加载时崩溃**，
-            // 不是被拦下来（内存闸门放行 → native OOM → 用户看到闪退）。
-            //
-            // 因此：在真机测出 HTP scratch 开销之前，取「**不低于 GPU**」，并明确这是**保守占位**、
-            // 不是校准值。绝不为 NPU 写一个未经验证的具体倍率（例如 3.0）——那会把一个编出来的
-            // 数字伪装成已知事实，后人再也不会去质疑它。
-            InferenceBackend.NPU -> 1.25
-        }
-        val overhead = maxOf(200L * 1024 * 1024, (weights * 0.12).toLong())
-        val raw = ((weights * factor + overhead) * tail).toLong()
-        return maxOf(raw, MIN_REQUIRED_RAM_BYTES)
-    }
+    // 三个纯逻辑成员（formatBytes / sizeHint / estimateRequiredRamBytes）已外提为
+    // 文件级 `internal` 顶层函数（见本文件末尾），调用点零改动。理由：它们是模型库
+    // 里唯一能被 JVM 单测覆盖的判据（内存闸门 / 体积体检 / 文案格式化），留在
+    // ViewModel 内部就只能等真机复现缺陷 —— Wave 32 流 B 为拆分先建测试网。
 }
 
 /**
@@ -1174,8 +1073,12 @@ class ModelsViewModel(
  *
  * 家族集合按 [ModelFamily] 的**声明顺序**排列（用 `values()` 而不是「按出现顺序去重」）：
  * 顺序稳定，用户记住的 chip 位置不会因为模型增删而变。
+ *
+ * `internal`（原为 `private`）：纯函数（只做 data class copy + filter），是模型库
+ * 「搜索 / 分类筛选」的唯一实现，改 `internal` 只为让 JVM 单测能直接钉住筛选与
+ * chip 顺序两条语义 —— 函数体一字未动。
  */
-private fun ModelsUiState.refiltered(): ModelsUiState {
+internal fun ModelsUiState.refiltered(): ModelsUiState {
     val present = models.map { it.family }.toSet()
     val ordered = ModelFamily.values().filter { it in present }
     val keyword = query.trim()
@@ -1188,4 +1091,123 @@ private fun ModelsUiState.refiltered(): ModelsUiState {
                 )
     }
     return copy(visibleModels = visible, families = ordered)
+}
+
+// Locale 必须钉死：默认 Locale 在部分欧洲语区把小数点输出成逗号（1,5 GB），
+// 在阿拉伯语区输出阿拉伯数字 —— 与同仓 ChatContextMeter 的口径保持一致。
+//
+// 从 [ModelsViewModel] 的私有成员**原样外提**（逐字节等价），只为让 JVM 单测能覆盖
+// 三档量纲的边界（GB / MB / KB）—— 闸门文案里的数字全靠它，串档会让「需要 5.6 GB」
+// 印成「5632 MB」这种用户读不懂的量级。
+internal fun formatBytes(bytes: Long): String = when {
+    bytes >= 1_073_741_824L -> "%.1f GB".format(Locale.US, bytes / 1_073_741_824.0)
+    bytes >= 1_048_576L -> "%.0f MB".format(Locale.US, bytes / 1_048_576.0)
+    else -> "%.0f KB".format(Locale.US, bytes / 1024.0)
+}
+
+/**
+ * 下载完成后的体积体检。**返回的是一句提示，不是判决；本函数永远不会删文件。**
+ *
+ * 从 [ModelsViewModel] 的私有成员**原样外提**（逐字节等价）：判据三件套
+ * （0.70 截断 / ±2% 偏离 / DM 账本）是「用户永远下不完一个模型」那个死循环的
+ * 直接成因，值得先钉一层回归网。
+ *
+ * ## 为什么不能拿体积当删除依据（这曾经是个死循环）
+ *
+ * 旧实现是「实际体积 < 预设 `sizeBytes` × 0.98 → 删掉文件并报错」。问题在于
+ * `sizeBytes` 是**手写进源码的估算值**，谁也没在真机上验过。一旦某个预设填大了
+ * （例如上游换成了更大的打包，或当初就是估的），用户每次下完 2~4GB 都会被判成
+ * 「不完整」→ 删除 → 提示重新下载 → 再下再删。用户永远下不完一个模型，而且
+ * 每次都要重新花流量和时间。**拿估算值当真相，就必然出现这种循环。**
+ *
+ * ## 完整性只认 DownloadManager 的账本
+ *
+ * `bytesDownloaded == totalBytes` 是唯一能区分「下完了」与「下了一半」的信息源，
+ * 它是真实传输过程的记录，不是估算。DM 说下完了，我们就认为下完了：
+ * 照常登记、照常设为当前模型，`sizeBytes` 只用来提示「上游仓库可能换过文件」。
+ *
+ * ## 拿不到 DM 总数时
+ *
+ * 才退回体积比对，且阈值放宽到 0.70、**只警告不删**。放宽是因为这个兜底同样
+ * 建立在估算值上，宁可漏报（让用户自己去试加载）也不能误报（删掉一个可能是好的文件）。
+ *
+ * 就地登记后 [ModelDescriptor.path] 指向的就是下载目录里的那个文件，
+ * 所以这里曾经删的确实是「下载落盘文件」本身——口径没错，错的是判据。
+ */
+internal fun sizeHint(
+    descriptor: ModelDescriptor,
+    preset: ModelPreset?,
+    downloadedBytes: Long,
+    totalBytes: Long,
+): String? {
+    val expected = preset?.sizeBytes ?: return null
+    val actual = descriptor.sizeBytes
+    if (expected <= 0L || actual <= 0L) return null
+
+    // 偏小 30% 以上 → 更可能是真的没下完（截断）
+    val looksTruncated = actual < expected * 0.70
+    // 偏离 ±2% → 更可能是上游换了打包（估算值本身的误差不会到这个量级）
+    val looksChanged = actual < expected * 0.98 || actual > expected * 1.02
+    // DownloadManager 的账本：它说下完了，就不能因为体积不符而拒绝登记
+    val dmSaysComplete = totalBytes > 0L && downloadedBytes >= totalBytes
+
+    return when {
+        looksTruncated ->
+            "警告：文件体积（${formatBytes(actual)}）明显小于预期（${formatBytes(expected)}），" +
+                "可能没有下载完整。建议删掉后重新下载；如仍要使用，加载失败时请删除它。"
+        looksChanged && dmSaysComplete ->
+            "提示：文件体积（${formatBytes(actual)}）与预期（${formatBytes(expected)}）不一致，" +
+                "上游仓库可能换过文件。如果加载失败，请删掉后重新下载。"
+        // 拿不到 DM 总数时，±2% 的小偏差不足以下结论（预期值本身就是估算），
+        // 所以只有「明显偏小」才提醒 —— 阈值放宽到 0.70 的理由。
+        else -> null
+    }
+}
+
+/**
+ * 内存需求估算：`max((W × f_backend + O) × [tail], MIN_REQUIRED_RAM_BYTES)`，其中
+ * `f_backend` = CPU 1.05 / GPU 1.25 / NPU **未实测**（理由见下面 `when` 里的注释），
+ * `O = max(200MB, 0.12 × W)`。
+ *
+ * 从 [ModelsViewModel] 的私有成员**原样外提**（逐字节等价）：这是模型库内存闸门的
+ * 唯一阈值来源 —— 写低了是 native OOM 闪退（Kotlin 层抓不到），写高了是「我的手机
+ * 不行」的误拦，两个方向都是真机才看得见的代价。
+ *
+ * [tail] 是尾部余量，**按支路分开传**，两处用途语义不同，别混：
+ *  1. **有预设**：用默认 `1.25`（= Android 安全余量：无 swap + LMK + App 自身 150~300MB），
+ *     调用方再和预设取 `maxOf`。返回值只用来兜「用户把后端从 CPU 切到 GPU/NPU」那一支 ——
+ *     预设已经显式算了 KV(n)，所以这里**不能**传 [NO_PRESET_KV_COMPENSATION]，
+ *     否则闸门会高于预设值（Phi-4-mini 5.6 → 6.0 GiB，卡片文案与实际闸门对不上）。
+ *  2. **无预设**：传 [NO_PRESET_KV_COMPENSATION]（1.41），补上这条式子缺掉的 KV 项。
+ *     缺口存在的理由与反算过程见该常量的注释。
+ *
+ * 余量作用在 [MIN_REQUIRED_RAM_BYTES] **之前**：下限代表的是不随权重缩放的固定开销，
+ * 而余量补的是 KV(n)，两者不该相乘（否则小模型的下限会被抬成 2.82 GiB 而不是 2.00）。
+ *
+ * 已知偏乐观之处：**不含 KV cache**（需要层数 / kv 头数 / head_dim，只有真正打开模型文件
+ * 才探得到），所以长上下文场景下这个值是偏低的 —— 缺口由上面第 2 条补。
+ */
+internal fun estimateRequiredRamBytes(
+    weights: Long,
+    backend: InferenceBackend,
+    tail: Double = 1.25,
+): Long {
+    val factor = when (backend) {
+        InferenceBackend.CPU -> 1.05
+        InferenceBackend.GPU -> 1.25
+        // NPU：**没有实测数据，所以刻意不写一个"看起来精确"的系数。**
+        //
+        // 这里原来写 1.15（比 GPU 的 1.25 还低），那是**危险方向**：NPU 的峰值约等于
+        // 「权重 + N × HTP scratch」，而 scratch 是 GB 量级的，所以 NPU 的实际需求几乎必然
+        // **高于** GPU。用比 GPU 更低的系数会往「低估」走 —— 而低估的结果是**加载时崩溃**，
+        // 不是被拦下来（内存闸门放行 → native OOM → 用户看到闪退）。
+        //
+        // 因此：在真机测出 HTP scratch 开销之前，取「**不低于 GPU**」，并明确这是**保守占位**、
+        // 不是校准值。绝不为 NPU 写一个未经验证的具体倍率（例如 3.0）——那会把一个编出来的
+        // 数字伪装成已知事实，后人再也不会去质疑它。
+        InferenceBackend.NPU -> 1.25
+    }
+    val overhead = maxOf(200L * 1024 * 1024, (weights * 0.12).toLong())
+    val raw = ((weights * factor + overhead) * tail).toLong()
+    return maxOf(raw, MIN_REQUIRED_RAM_BYTES)
 }

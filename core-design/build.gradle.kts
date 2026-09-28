@@ -57,4 +57,16 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
 
     implementation(libs.kotlinx.coroutines.android)
+
+    // JVM 单测（src/test/java，AGP 默认源集）—— 与 :core-engine 同款配置
+    // （同一 catalog 键，不新增依赖版本）：AGP 不自动提供 junit，必须显式声明；
+    // kotlin-test 提供断言 API（catalog 里 kotlin-test 键指向 kotlin-test-junit 变体，
+    // 见 gradle/libs.versions.toml 注释）。
+    // ⚠️ 本模块是纯 Compose，**Composable 一律不在 JVM 上测**（需要 Compose runtime
+    // 与 androidx.compose.ui 在 JVM 上的支持，本仓未配）。这里只覆盖被 Composable
+    // 调用、且**不触碰任何 Android / Compose 类型**的纯函数：拖拽轴向判据与进度归一化
+    // （liquid/interactive/DampedDragAnimation.kt）、窗口尺寸分档（WindowSizeClass.kt）。
+    // 因此无需 Robolectric / coroutines-test / Compose UI test。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }

@@ -764,8 +764,13 @@ private fun DrawerBackHandler(
  * startDestination 用的是 PATTERN，所以栈底那条目的 route 是
  * `chat?conversationId={conversationId}`；而切页签时导航用的是 ROUTE(`chat`)，
  * 带具体会话时又会变成 `chat?conversationId=xxx`。三种形态都要认。
+ *
+ * `internal`（原为 `private`）：纯字符串判据（只比对 [ChatRoute] 常量），是「底部
+ * 页签高亮 / 返回手势该不该先收抽屉」这类行为判定的入口 —— 写错一种形态的症状是
+ * 「从会话页切页签后高亮丢失」这类 UI 怪象。改可见性只为 JVM 单测能直接钉住三种
+ * 形态（Wave 32 流 B），函数体一字未动。
  */
-private fun isChatRoute(route: String): Boolean =
+internal fun isChatRoute(route: String): Boolean =
     route == ChatRoute.ROUTE ||
         route == ChatRoute.PATTERN ||
         route.startsWith("${ChatRoute.ROUTE}?")

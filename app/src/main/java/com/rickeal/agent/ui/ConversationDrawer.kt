@@ -288,9 +288,17 @@ private fun ConversationRow(
 /**
  * 相对时间（纯 Kotlin，不引 java.time / 不做本地化）：抽屉是「扫一眼最近用过哪些」的场景，
  * 精确到秒没有意义。取整即可，不需要随秒刷新。
+ *
+ * 判定核已外提为 [relativeTimeBetween]（纯函数：`now` 显式传入），本包装只负责取
+ * 当前墙钟 —— 语义与外提前逐字节一致。拆出的理由：时间判据是「刚刚 / N 分钟前 /
+ * N 小时前 / N 天前」四档的边界，依赖 `System.currentTimeMillis()` 就只能等真机复现，
+ * 纯函数版 JVM 单测可直接钉住四档边界（Wave 32 流 B）。
  */
-private fun relativeTime(millis: Long): String {
-    val minutes = (System.currentTimeMillis() - millis) / 60_000L
+private fun relativeTime(millis: Long): String = relativeTimeBetween(System.currentTimeMillis(), millis)
+
+/** [relativeTime] 的纯核：`now` 与目标时刻都由调用方给出，可测、可复现。 */
+internal fun relativeTimeBetween(nowMillis: Long, millis: Long): String {
+    val minutes = (nowMillis - millis) / 60_000L
     return when {
         minutes < 1L -> "刚刚"
         minutes < 60L -> "$minutes 分钟前"

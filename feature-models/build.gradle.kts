@@ -66,4 +66,11 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+
+    // JVM 单测（src/test/java，AGP 默认源集）—— 与 :core-engine / :core-design 同款
+    // 配置（同一 catalog 键，不新增依赖版本）。只覆盖**不触碰 Android / Compose /
+    // ViewModel 运行时**的纯函数：内存闸门估算、下载体积体检提示、量纲格式化、
+    // 搜索/分类筛选归约（ModelsViewModel.kt 文件级 internal 函数）。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }
