@@ -76,9 +76,9 @@ class ToolsPureLogicTest {
     fun refilteredMatchesKeywordCaseInsensitivelyOnNameAndDescription() {
         val state = ToolsUiState(
             tools = listOf(
-                toolOf("file_read", "读取沙箱目录内的文本文件"),
-                toolOf("memory_write", "写入长期记忆"),
-                toolOf("calculator", "四则运算"),
+                toolOf(name = "file_read", category = "file", description = "读取沙箱目录内的文本文件"),
+                toolOf(name = "memory_write", category = "memory", description = "写入长期记忆"),
+                toolOf(name = "calculator", category = "utility", description = "四则运算"),
             ),
             query = "FILE",
         )
@@ -103,8 +103,9 @@ class ToolsPureLogicTest {
         // 家族=file 过滤掉 memory_write；enabledOnly 过滤掉 file_write
         val out = state.refiltered()
         assertEquals(listOf("file_read"), out.visibleTools.map { it.name })
-        // categories 仍反映全集（chips 不随筛选消失）
-        assertEquals(TOOL_CATEGORY_ORDER, out.categories)
+        // categories 反映**存在的**分类（与 models 的 refiltered 同款语义），
+        // 不随筛选消失 —— 本 fixture 全集只有 file / memory 两类
+        assertEquals(listOf("file", "memory"), out.categories)
     }
 
     @Test
