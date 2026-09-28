@@ -378,7 +378,6 @@ class ChatViewModel(
         pending.decision.complete(ToolApprovalDecision.APPROVED)
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
     init {
         viewModelScope.launch {
             container.conversationRepository.refresh()
