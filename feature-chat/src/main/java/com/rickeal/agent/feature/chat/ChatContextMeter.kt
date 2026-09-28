@@ -107,11 +107,16 @@ private fun contextLabel(estimate: Long?, measured: Int?, limit: Int): String {
 /**
  * 4096 → "4.1K"，2100 → "2.1K"，800 → "800"。
  * 纯整数运算，避开 `String.format` 在部分 Locale 下把小数点写成逗号的问题。
+ *
+ * ⚠️ 入参是 `Long`（Wave 31 起，为接收 token 账本的发送侧估算 `Long`）。**改宽类型时
+ * 必须同步把函数体里的整数字面量加上 `L`** —— `fraction == 0` 在 `fraction: Long` 下
+ * 是 `Long == Int`，Kotlin 直接编译报错（Wave 31 首轮 CI 唯一一处红点，本仓无本地 JDK
+ * 无法预演，代价是一整轮 CI 往返）。
  */
 private fun formatTokenCount(value: Long): String {
     if (value < 1000L) return value.toString()
     val tenths = (value * 10 + 500) / 1000
     val whole = tenths / 10
     val fraction = tenths % 10
-    return if (fraction == 0) "${whole}K" else "$whole.${fraction}K"
+    return if (fraction == 0L) "${whole}K" else "$whole.${fraction}K"
 }

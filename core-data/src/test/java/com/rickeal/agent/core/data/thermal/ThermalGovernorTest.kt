@@ -214,8 +214,20 @@ class ThermalGovernorTest {
     private class DeferredHarness {
         val busy = MutableStateFlow(false)
         var releases = 0
+
+        /**
+         * 每次「真正释放」（`busy == false` 时进入 `releaseEngineIfIdle` 的那次）之后回调。
+         * 测试可在构造后赋值，用它模拟「释放调用窗口内新 run 起来」（`busy` 被置回 true）。
+         */
+        var onRelease: () -> Unit = {}
+
         val governor = ThermalGovernor(
-            releaseEngineIfIdle = { if (!busy.value) releases++ },
+            releaseEngineIfIdle = {
+                if (!busy.value) {
+                    releases++
+                    onRelease()
+                }
+            },
             isBusy = busy,
             scope = CoroutineScope(Dispatchers.Unconfined),
         )
@@ -267,5 +279,27 @@ class ThermalGovernorTest {
         h.on(STATUS_NONE) // 降温回落 → releaseDeferred 复位
         h.busy.value = false // 转闲，但档位非 CRITICAL → 不补释放
         assertEquals(0, h.releases)
+    }
+
+    @Test
+    fun `补释放调用窗口内新 run 起来则保留待补标志、转闲后再次补释放`() {
+        val h = DeferredHarness()
+        h.busy.value = true
+        h.on(STATUS_CRITICAL) // 忙 → 跳过，置 releaseDeferred
+        assertEquals(0, h.releases)
+        // 模拟「补释放调用窗口内新 run 起来」：仅第一次真正释放期间把 busy 置回 true。
+        var occupiedOnce = false
+        h.onRelease = {
+            if (!occupiedOnce) {
+                occupiedOnce = true
+                h.busy.value = true
+            }
+        }
+        h.busy.value = false // 转闲 → 触发补释放；释放期间 busy 被置回 true（内部闸门会跳过）
+        assertEquals(1, h.releases)
+        // 若此时误清 releaseDeferred，则档位仍 CRITICAL、busy 不会再触发释放 ⇒ 永不补。
+        // 下方再次转闲能触发第二次释放，即证明 releaseDeferred 被正确保留。
+        h.busy.value = false
+        assertEquals(2, h.releases)
     }
 }

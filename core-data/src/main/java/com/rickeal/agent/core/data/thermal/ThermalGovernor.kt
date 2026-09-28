@@ -65,8 +65,11 @@ class ThermalGovernor(
      * 「CRITICAL 释放被 isBusy 闸门跳过、待补释放」标志（Wave 31 流2）。
      *
      * 置位：CRITICAL 跃迁且此刻引擎忙（`isBusy?.value == true`）。
-     * 复位：① 观察者看到引擎转闲且档位仍为 CRITICAL → 补释放并复位；② 降温回落
-     * （new < CRITICAL）→ 复位（此时引擎按需懒加载，无需再补释放）。
+     * 复位：① 观察者看到引擎转闲且档位仍为 CRITICAL → 尝试补释放，**补释放后复查
+     * isBusy**，只有确认本次释放没有被内部硬闸门跳过（仍不忙）才复位（若调用窗口内
+     * 新 run 起来导致释放被跳过，保留标志，下一次 busy=false 再补 —— 否则该次回调被
+     * 消费后档位仍 CRITICAL、`onThermalStatus` 因 old==new 早退不再回调，补释放永不
+     * 发生）；② 降温回落（new < CRITICAL）→ 复位（引擎按需懒加载，无需再补释放）。
      *
      * 跨线程：listener 回调（主线程）写、观察协程（应用级 scope）读写 —— @Volatile
      * 保证可见性。`isBusy == null`（未接线）时恒 false，机制整体不激活。
@@ -85,11 +88,17 @@ class ThermalGovernor(
                     // 只在「引擎转闲 + 此前被跳过 + 档位仍是 CRITICAL」三者同时成立时动作；
                     // 其余情况零开销（无日志、无副作用）。
                     if (!busy && releaseDeferred && _tier.value == ThermalTier.CRITICAL) {
-                        releaseDeferred = false
                         runCatching { releaseEngineIfIdle() }
                             .onFailure {
                                 AgentLogStore.warn("热 CRITICAL 补释放引擎失败（${it.javaClass.simpleName}）")
                             }
+                        // ⚠️ 只在「调用后仍不忙」时清位。releaseEngineIfIdle 内部有 isBusy
+                        // 硬闸门（防 native use-after-free，不能动）：若在本次调用窗口内新
+                        // run 起来（busy 回 true），释放会被闸门跳过。此时若清位，「run 结束
+                        // → busy=false」这唯一一次回调已被本次消费掉，而档位仍 CRITICAL
+                        // （onThermalStatus 的 old == new 早退不再回调）⇒ 补释放永不发生，
+                        // 正是本波要修的失效点。保留标志则下一次 busy=false 会再补一次。
+                        if (!observedBusy.value) releaseDeferred = false
                     }
                 }
             }

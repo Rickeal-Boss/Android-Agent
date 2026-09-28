@@ -169,8 +169,9 @@ data class ChatUiState(
      *
      * `null` / `<= 0` = 还没有可用估算（账本未接 / 新 run 尚未首轮回写），此时 UI 不显示
      * 估算口径。⚠️ 账本按会话池化、跨 run 存活，而 sentTokens 是 run 级（新 run 首轮回写即
-     * 覆盖）—— 新 run 起点由 [ChatViewModel.observeTokenLedger] 先把本字段清 null，避免
-     * 首轮回写前的窗口里显示上一轮遗留值（账本实例本身无 reset API，见该函数 KDoc）。
+     * 覆盖）—— 新 run 起点由 [ChatViewModel.observeTokenLedger] 用账本时间戳做基线、**只
+     * 接受本轮的新回写**，避免首轮回写前的窗口里显示上一轮遗留值（账本实例本身无 reset
+     * API，见该函数 KDoc）。
      */
     val sentTokensEstimate: Long? = null,
     /**
@@ -282,8 +283,14 @@ class ChatViewModel(
      *
      * 账本按 cid 池化、跨 run 存活（AppContainer.tokenLedger），而
      * [com.rickeal.agent.core.agent.token.RunTokenSnapshot.sentTokens] 是 **run 级**
-     * （新 run 首轮回写即覆盖）。为消除「新 run 首轮回写前」的窗口里显示上一轮遗留值，
-     * 这里先把 UI 字段清 null，再由 collect 的首个有效值填回。
+     * （新 run 首轮回写即覆盖）。`snapshot` 是 **StateFlow**：订阅会**立即重放当前值**，
+     * 若不处理，新 run 首轮回写之前（4B 引擎加载数十秒）UI 显示的是**上一次 run** 的
+     * 残留估算（先清 null 只造成一帧闪烁，随即被重放值覆盖）。故用账本**自己的时间戳**
+     * 做基线：只接受**严格更新**（`updatedAtWallClockMillis > baseline`）的快照。
+     * 账本初值为 0；[com.rickeal.agent.core.agent.token.RunTokenLedger.onSendEstimated] /
+     * [com.rickeal.agent.core.agent.token.RunTokenLedger.onEngineUsage] 每次回写都用
+     * `System.currentTimeMillis()` 覆盖该时间戳 ⇒ 上一轮残留值时间戳 == baseline（被滤掉），
+     * 本轮首个回写必然严格更新（两轮之间隔着用户操作 + 引擎加载，墙钟前进）。
      *
      * ⚠️ 账本实例本身**不重置** —— [com.rickeal.agent.core.agent.token.RunTokenLedger]
      * 无 reset API，且其 KDoc 明确本波不引入；因此
@@ -296,9 +303,14 @@ class ChatViewModel(
      */
     private fun observeTokenLedger(cid: String) {
         ledgerJob?.cancel()
+        val ledger = container.tokenLedger(cid)
+        // 基线取「订阅前」的快照时间戳：StateFlow 立即重放的正是这一版，`<= baseline` 一律
+        // 滤掉；只有本轮 run 的新回写（时间戳严格更大）才会写进 UI。
+        val baseline = ledger.snapshot.value.updatedAtWallClockMillis
         _uiState.update { it.copy(sentTokensEstimate = null) }
         ledgerJob = viewModelScope.launch {
-            container.tokenLedger(cid).snapshot.collect { snap ->
+            ledger.snapshot.collect { snap ->
+                if (snap.updatedAtWallClockMillis <= baseline) return@collect
                 _uiState.update { it.copy(sentTokensEstimate = snap.sentTokens.takeIf { v -> v > 0L }) }
             }
         }
