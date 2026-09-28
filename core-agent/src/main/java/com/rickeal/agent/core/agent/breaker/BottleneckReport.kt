@@ -133,9 +133,10 @@ private const val MISSING_MAX_CHARS = 80
  * 嵌套括号读起来是病句（= D4）。
  */
 private fun summarizeMissing(lastToolError: String?): String {
+    // \s+ 折叠而非逐字符替换："\r\n" 会被逐字符替换打成两个空格（审查 10 号
+    // 用例在 CI 上抓到），连续空白折叠为单空格才是「压平」的本意。
     val flat = lastToolError
-        ?.replace('\n', ' ')
-        ?.replace('\r', ' ')
+        ?.replace(Regex("\\s+"), " ")
         ?: return "无失败工具记录"
     if (flat.length <= MISSING_MAX_CHARS) return flat
     val head = flat.take(MISSING_MAX_CHARS)
