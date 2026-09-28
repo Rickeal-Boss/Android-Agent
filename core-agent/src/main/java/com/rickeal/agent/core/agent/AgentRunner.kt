@@ -255,10 +255,8 @@ private class StreamLoopException(
 /**
  * Agent 主循环（架构文档 §4.1 / §4.6）。
  *
- * 兼容策略（重点）：优先用「模型原生 tool 通道」（EngineCapabilities.nativeToolChannel == true，
- * 即 OpenAI 兼容后端）；否则（LiteRT-LM 本地，nativeToolChannel=false）走文本协议。
- * 两者结果统一成 ToolCall，后续流程完全一致 —— 这样即便 LiteRT-LM 的 ToolProvider API
- * 我们不敢用，工具能力也不会缺失。
+ * 工具通道策略：引擎声明支持 `EngineCapabilities.nativeToolChannel` 时走原生 tool
+ * 通道，否则走文本协议。两者结果统一成 [ToolCall]，后续流程完全一致。
  *
  * 停止策略：让模型**自己会停**（系统提示词里的停止条件 + 重复检测提醒），
  * maxRounds 只作为异常兜底，不再是常态退出路径。
@@ -361,7 +359,7 @@ class AgentRunner(
             // agent 会话采样折衷（Wave 19 P1-1）：调用方（ChatViewModel）对 enableTools
             // 的主对话填 policy.agentSamplingOverride 时覆写采样参数。默认 null = 零
             // 行为变化。阈值可调，真机输出质量反馈后校准；采样变更触发 Conversation
-            // 重建已由 LiteRtLmEngine.kt:208-218 处理，无需额外版本操作。
+            // 重建已由 LiteRtLmEngine.load/ensureConversation 处理，无需额外版本操作。
             val baseConfig: InferenceConfig = policy.agentSamplingOverride
                 ?.let { override -> request.config.coerce().copy(sampling = override.coerce()) }
                 ?: request.config.coerce()
@@ -409,9 +407,8 @@ class AgentRunner(
                     emit(AgentEvent.Failed("引擎加载失败：${retry.message}", retry))
                     return
                 }
-                // 重建成功、即将重新 load：发一次重试信号，避免 UI 在重建期间静默卡在旧状态。
-                // 日志只记后端类型与异常类型/消息：这里拿得到 loadConfig 和端点对象，
-                // 但**绝不**把它们写进日志（端点上带 API Key）。
+                // 重建和重新 load 已成功：发一次重试信号，避免 UI 在恢复期间静默卡在旧状态。
+                // 日志只记引擎类型与异常类型/消息，绝不记录含模型路径等细节的 loadConfig。
                 AgentLogStore.warn(
                     "引擎重建：$kind 加载失败（${t.javaClass.simpleName}: ${t.message}），已换新实例重试"
                 )
@@ -421,6 +418,7 @@ class AgentRunner(
             val capabilities = try {
                 engine.capabilities()
             } catch (t: Throwable) {
+                if (t is CancellationException) throw t
                 null
             }
             val useNativeTools = (capabilities?.nativeToolChannel == true) && config.enableTools
@@ -457,8 +455,8 @@ class AgentRunner(
             // 名字不认识的 JSON 一律按最终答案处理（见 TextToolProtocol.parse 注释），
             // 否则模型输出普通 JSON（如 {"name":"张三"}）时会被误判成工具调用而反复重试。
             val registeredToolNames: Set<String> = availableTools.map { it.name }.toSet()
-            // 披露之前的「用户启用集合」口径（allToolSpecs 已按 toolNames 白名单过滤，
-            // 见 :393）。ON_DEMAND 转发放行用它做判据：比元工具白名单宽（否则合法转发
+            // 披露之前的「用户启用集合」口径（allToolSpecs 已按 toolNames 白名单过滤）。
+            // ON_DEMAND 转发放行用它做判据：比元工具白名单宽（否则合法转发
             // 全被误杀，审查4 P0）、比 registry 全量严（编造未启用名经转发通道同样被拒，
             // 与直达封堵同口径）。FULL 模式下与 registeredToolNames 是同一集合。
             val allToolNames: Set<String> = allToolSpecs.map { it.name }.toSet()
@@ -709,7 +707,7 @@ class AgentRunner(
                 val accumulator = generation.accumulator
                 val intraStreamLoop = generation.intraStreamLoop
 
-                // 重试成功才走到这里（break 只在 collect 正常结束后执行）。
+                // 终态失败会由 runGenerationRound 返回 null；其余产物才走到这里。
                 // 新实例的 Conversation 是空的：本轮请求已全量重放（水印为空，buildContents
                 // 全发），而本轮记账在此之前已按增量口径执行 —— bump 版本让下一轮记账
                 // 检测到版本变化、整包重记，与引擎实际持有量重新对齐。
@@ -841,7 +839,7 @@ class AgentRunner(
                 // 提醒作为下一轮 messages 里的合成 user 消息（槽位是单值，所以每轮最多注入一次）。
                 val reminder = state.pendingReminder
                 if (reminder != null) {
-                    // 合成提醒统一用稳定派生 id（严质衡审查 P2-3，口径对齐 :496/:529 两处：
+                    // 合成提醒统一用稳定派生 id（严质衡审查 P2-3；与 loop/inject 提醒同口径：
                     // 引擎按 id 做增量水印去重，合成消息不该每轮拿新 UUID）。
                     val reminderMessage = ChatMessage(
                         id = "reminder:${state.round}:tool",
@@ -939,7 +937,7 @@ class AgentRunner(
         // ── 同工具+同参调用守卫状态（ZCode model-anomaly 形态，Wave 19 P0）──
         // ⚠️ 必须留在 executeBody 栈上，不设类字段：ask_actor 子代理会在父 run 的
         // 工具阶段嵌套执行完整子 run，类字段会被子 run 覆写、父 run 恢复后拿着
-        // 脏状态继续计数（同 :313-316 记账状态的隔离教训）。
+        // 脏状态继续计数（与本类上下文记账状态的隔离纪律相同）。
         var lastToolCallSignature: String? = null
         var toolCallStreak = 0
         var toolAnomalyReminders = 0
@@ -1004,11 +1002,11 @@ class AgentRunner(
             // 每次生成都重新解析引擎引用（不能依赖上一轮的 engine 变量）：
             // 嵌套子 run（ask_actor）在父 run 的工具阶段内运行，若子 run 内部
             // 走了 rebuildEngine（evict+close 旧实例），父 run 手里那个引用
-            // 已经被 close，下一轮 generateStream 必失败一次、且再次 rebuild
+            // 已经被 close；若不重新解析，下一轮 generateStream 必失败一次、且再次 rebuild
             // 会把子 run 刚建好的实例又挤掉 —— 一次故障放大成三次全量重载
             // （4B 模型每次数十秒）。EngineFactory.create 是缓存型查询，
             // 每轮取最新缓存实例的成本可忽略。
-            var engine = engineFactory.create(kind)
+            val engine = engineFactory.create(kind)
             try {
                 engine.generateStream(generationRequest).collect { chunk ->
                     accumulator.append(chunk)
@@ -1074,7 +1072,7 @@ class AgentRunner(
                 // 检测器同步清零（与累加器同口径）：上一半尝试的句子计数不属于重试。
                 detector.reset()
                 try {
-                    engine = rebuildEngine(kind, loadConfig)
+                    rebuildEngine(kind, loadConfig)
                 } catch (retry: Throwable) {
                     if (retry is CancellationException) throw retry
                     // ERROR：生成失败之后连重建都失败，本轮已经没有恢复手段了。
@@ -1103,12 +1101,12 @@ class AgentRunner(
     }
 
     /**
-     * for 单次工具调用体的控制流映射（Wave 29 A1 Step 3）：NextCall = 原 for 级
-     * continue；Terminal = 断路器 HARD 熔断终态（Wave 30）：journal / emit 已在
-     * [emitBreakerFailed] 内置位，调用点直接 return 结束整个 run。
+     * for 单次工具调用体的控制流映射：NextCall = 原 for 级 continue；
+     * Terminal = 断路器 HARD 熔断终态，journal / emit 已在 [emitBreakerFailed] 内置位，
+     * 调用点直接 return 结束整个 run。
      *
-     * ⚠️ R4-1：调用点必须 when 穷举。若沿用旧 `if (== NextCall) continue` 写法，
-     * 新增的 Terminal 会静默落成「继续执行后续 call」—— 编译不报错的行为回归。
+     * ⚠️ R4-1：调用点必须 when 穷举。若只判断 NextCall，新增枚举值会静默落成
+     * 「继续执行后续 call」—— 编译不报错的行为回归。
      */
     private enum class ToolCallStep { NextCall, Proceed, Terminal }
 
@@ -1116,8 +1114,8 @@ class AgentRunner(
      * 单次工具调用体（Wave 29 A1 Step 3 自 executeBodyUnchecked 的 for 循环外提）。
      *
      * 返回 [ToolCallStep.NextCall] = 原 8 处 for 级 `continue`（本条调用不走完，继续
-     * 下一条）；[ToolCallStep.Proceed] = 本条调用正常走完。调用点 `== NextCall` 时
-     * `continue`，与原 for 循环控制流逐条等价。
+     * 下一条）；[ToolCallStep.Proceed] = 本条调用正常走完；[ToolCallStep.Terminal] =
+     * HARD 熔断并结束整个 run。调用点以穷举 `when` 显式映射三态。
      *
      * 跨轮可变量全部经 [state]（RunState，每 run 局部对象）读写；[working] 与
      * `state.working` 是同一列表实例（按方案签名经参数直传）。
@@ -1179,7 +1177,7 @@ class AgentRunner(
         if (state.toolCallStreak == REPEAT_TOOL_CALL_THRESHOLD &&
             state.toolAnomalyReminders < MAX_TOOL_ANOMALY_REMINDERS &&
             // 单槽纪律：已有待注入提醒时不覆盖（同参信息最具体，优先级
-            // 同参 > 重复回答 > 零工具，与 :569 判据同构）。
+            // 同参 > 重复回答 > 零工具，与无进展检测的判据同构）。
             state.pendingReminder == null
         ) {
             state.toolAnomalyReminders++
@@ -1477,8 +1475,8 @@ class AgentRunner(
         // ── 轮内循环的处置（Wave 19 P0）────────────────────────────────
         // 被轮内重复检测截断的轮次**不得**直接当最终答案交付：循环中产出的
         // 工具调用同样不可信（参数大概率是循环复读），无论 calls 空不空一律
-        // 丢弃。复用「重复回答提醒」的路径形态（同 :578-609 结构）：模型回显
-        // 入 working + 合成提醒（稳定派生 id）+ round++，给模型一轮实质改写
+        // 丢弃。复用「重复回答提醒」的路径形态：模型回显入 working + 合成提醒
+        // （稳定派生 id）+ round++，给模型一轮实质改写
         // 的机会；连续超过 MAX_INTRA_STREAM_LOOP_ROUNDS 按失败收尾。
         // 本分支必须在下方 calls.isEmpty() 判定之前分流，否则会与既有
         // repeat/empty 逻辑叠加产生双重 continue。检测器判了循环的文本不再
@@ -1511,9 +1509,8 @@ class AgentRunner(
             )
             working.add(repeatModel)
             journal?.appendMessage(repeatModel)
-            // 单槽纪律：已有待注入提醒时不覆盖（同参 > 重复回答 > 零工具的
-            // 优先级对齐 :569 判据）；随后立刻消费成合成消息，不留到下一轮
-            // 造成双重注入。
+            // 单槽纪律：已有待注入提醒时不覆盖（同参 > 重复回答 > 零工具）；
+            // 随后立刻消费成合成消息，不留到下一轮造成双重注入。
             if (state.pendingReminder == null) {
                 state.pendingReminder = INTRA_LOOP_REMINDER
             }
@@ -1737,8 +1734,11 @@ class AgentRunner(
                 // Wave 30 §2.8：轮次耗尽路径装配诊断卡（Finished 扩 report 字段，
                 // §2.8 裁决 —— 保持 Finished 不改判 Failed，原文案不动，UI 收到
                 // report 渲染诊断卡）。正常结束 report = null。
-                report = buildBottleneckReportFor(state, journal, registeredToolNames)
-                    .takeIf { exhausted },
+                report = if (exhausted) {
+                    buildBottleneckReportFor(state, journal, registeredToolNames)
+                } else {
+                    null
+                },
             )
         )
     }
@@ -1817,7 +1817,7 @@ class AgentRunner(
      *
      * 为什么要收口到这一个函数：`ToolResult.callId` 的默认值是空串，内置工具只填 name/output，
      * 于是「成功路径忘记填 callId」这种不对称（失败路径手写了、成功路径漏了）会直接导致
-     * `sanitizeForProvider` 把真实结果当孤儿丢弃、远端端点因空 tool_call_id 报 400。
+     * `sanitizeForProvider` 把真实结果当孤儿丢弃，破坏 tool call/result 配对协议。
      * 成功 / 未注册 / 未授权三条路径都从这里出，保证不会再漏。
      */
     private suspend fun commitToolMessage(
@@ -1848,8 +1848,7 @@ class AgentRunner(
                 // 内置工具（Calculator / File / System / DateTime）只填 name/output，
                 // ToolResult.callId 的默认值是空串，从不填。这里必须补上真实 callId：
                 //   - 空 callId 的 TOOL 消息会被 sanitizeForProvider 当「孤儿结果」整条丢弃，
-                //     模型永远收到「工具结果缺失」而不是真实结果；
-                //   - OpenAI 兼容端点的 tool_call_id 也会是空串，直接 400。
+                //     模型永远收到「工具结果缺失」而不是真实结果，原生工具协议也会失配。
                 // 失败路径本来就填了 callId，成功路径漏了 —— 这种不对称正是 bug 温床。
                 callId = raw.callId.ifBlank { call.id },
                 output = if (truncated) output.take(policy.maxToolOutputChars) + "\n…(已截断)" else output,
@@ -1975,12 +1974,11 @@ class AgentRunner(
      * 解析按需披露的转发调用（Wave 27）：把 `call_tool` 的载荷解包成一次**真实工具调用**。
      *
      * 返回重定向后的调用；解包失败时就地完成 commit + emit 并返回 **null**（调用方
-     * `?: continue` 结束本轮）。与披露无关的调用原样返回，故 FULL 模式下它是恒等函数
+     * 映射为 [ToolCallStep.NextCall]）。与披露无关的调用原样返回，故 FULL 模式下它是恒等函数
      * —— 对既有行为零影响。
      *
-     * ⚠️ 外提为独立方法不是风格偏好：`executeBodyUnchecked` 是整个工具循环体，已逼近
-     * JVM **单方法 64KB bytecode 上限**（Wave 27 实测编译期 `Method too large` 失败）。
-     * 往那个方法里加代码前请先评估体积，**优先外提**。
+     * ⚠️ 外提为独立方法不是风格偏好：Wave 27 曾因工具循环内联逻辑把
+     * `executeBodyUnchecked` 推过 JVM **单方法 64KB bytecode 上限**；后续同类逻辑仍应外提。
      */
     private suspend fun FlowCollector<AgentEvent>.resolveDisclosureCall(
         rawCall: ToolCall,
