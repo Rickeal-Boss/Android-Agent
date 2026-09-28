@@ -44,6 +44,7 @@ import com.rickeal.agent.core.agent.breaker.render
 import com.rickeal.agent.core.agent.TerminationReason
 import com.rickeal.agent.core.agent.plan.PlanStepStatus
 import com.rickeal.agent.core.design.LocalBottomBarOverlay
+import com.rickeal.agent.core.engine.EngineSessionDiagnostics
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassIconButton
@@ -542,6 +543,21 @@ fun ChatScreen(
                 )
             }
 
+            // ── 引擎会话诊断小字（Wave 33：sessionDiagnostics 接 UI）────────
+            // 极轻量：仅对三类「引擎已自动降级但用户不可见」的状态渲染一行小字
+            // （legacy 回退 / 系统提示词并入用户消息 / GPU 降级 CPU）；诊断正常
+            // （角色通道 active 且后端一致）不渲染任何东西 —— 正常路径零 UI 变化。
+            // 与终止原因小字同款样式（labelSmall + onGlassSubtle），复用 Wave 31 先例形态。
+            val diagnosticsHint = sessionDiagnosticsHintOf(state.sessionDiagnostics)
+            if (diagnosticsHint != null) {
+                Text(
+                    text = diagnosticsHint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onGlassSubtle,
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                )
+            }
+
             // ── 轻量操作反馈（Snackbar）────────────────────────────────
             // 挂在状态卡片列的末尾：M3 默认样式，不另做玻璃 Snackbar（宿主级
             // 状态信息已有完整玻璃卡体系，瞬时 toast 级反馈不值得再造一层）。
@@ -617,4 +633,37 @@ private fun terminationHintOf(reason: TerminationReason?): String? = when (reaso
     TerminationReason.BreakerTripped -> "（已被安全熔断，详见任务诊断）"
     TerminationReason.MaxRounds -> "（达到轮次上限）"
     else -> null
+}
+
+/**
+ * 引擎会话诊断 → 一行小字（Wave 33）。
+ *
+ * 只对三类**静默降级**渲染（引擎已自动处理、但用户此前完全不可见）：
+ *  1. legacy 回退（角色通道未激活）：「引擎已回退纯文本模式（<原因截断 80 字>）」；
+ *  2. 中档回退（系统提示词并入用户消息，Gemma 系模板兼容模式）；
+ *  3. 后端降级：「请求 GPU 已降级 CPU 运行」。
+ *
+ * 其余情况（诊断 null / 角色通道 active 且后端一致）返回 null = **不渲染任何东西**，
+ * 正常路径零 UI 变化。优先级：legacy > 中档 > 后端降级（降级链上越靠前的信息
+ * 越本质 —— legacy 回退时后端信息照常可用，不必同屏两条）。
+ */
+private fun sessionDiagnosticsHintOf(diagnostics: EngineSessionDiagnostics?): String? {
+    if (diagnostics == null) return null
+    if (!diagnostics.roleChannelActive) {
+        val reason = diagnostics.legacyFallbackReason
+        return if (reason.isNullOrBlank()) {
+            "引擎已回退纯文本模式"
+        } else {
+            "引擎已回退纯文本模式（${reason.take(80)}）"
+        }
+    }
+    if (diagnostics.systemMergedIntoUser) {
+        return "系统提示词已并入用户消息（模型模板兼容模式）"
+    }
+    val requested = diagnostics.requestedBackend
+    val actual = diagnostics.actualBackend
+    if (requested != null && actual != null && requested != actual) {
+        return "请求 $requested 已降级 $actual 运行"
+    }
+    return null
 }

@@ -17,8 +17,10 @@ import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.agent.plan.PlanStep
 import java.io.File
 import com.rickeal.agent.core.data.AppContainer
+import com.rickeal.agent.core.engine.EngineSessionDiagnostics
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
+import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.Role
@@ -27,10 +29,14 @@ import com.rickeal.agent.core.model.TokenUsage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -184,6 +190,16 @@ data class ChatUiState(
      * 起 run 时与 error / lastReport 同一处清 null（上一次的终止原因不粘到下一次）。
      */
     val lastTermination: TerminationReason? = null,
+    /**
+     * 引擎会话级诊断快照（Wave 33，`LlmEngine.sessionDiagnostics` 的 UI 透传）。
+     *
+     * `null` = 引擎侧尚无已建会话（未加载 / 已释放），UI 不渲染任何东西。
+     * 非 null 也仅在三类静默降级时上屏一行小字（legacy 回退 / 系统提示词并入用户
+     * 消息 / 后端降级，映射见 ChatScreen 的 sessionDiagnosticsHintOf）：角色通道
+     * active 且后端一致时不渲染 —— 正常路径零 UI 变化。快照由引擎在会话建成 /
+     * 回退事件时整体发布，这里只做透传不加工。
+     */
+    val sessionDiagnostics: EngineSessionDiagnostics? = null,
 )
 
 class ChatViewModel(
@@ -362,6 +378,7 @@ class ChatViewModel(
         pending.decision.complete(ToolApprovalDecision.APPROVED)
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     init {
         viewModelScope.launch {
             container.conversationRepository.refresh()
@@ -401,6 +418,22 @@ class ChatViewModel(
             container.settingsRepository.activeModelId.collect { id ->
                 _uiState.update { it.copy(activeModel = container.modelRepository.find(id)) }
             }
+        }
+        // 引擎会话诊断（Wave 33）：观察 LlmEngine.sessionDiagnostics 并透传进 UI 状态。
+        // 默认同源：engineFactory.create 按 kind 缓存（DefaultEngineFactory），拿到的就是
+        // AgentRunner 实际生成用的同一实例；但 AgentRunner.rebuildEngine 的 evict+create
+        // 会**换出全新引擎实例**，init 时刻绑定的旧实例诊断流从此失联。故经
+        // engineInitStatus 状态变化重订阅（rebuildEngine 必经 load → status 必转变 →
+        // flatMapLatest 切到新缓存实例），保证诊断流始终跟随当前引擎实例。
+        // LoadObservedEngine 是接口委托，新实例的状态流原样透传。
+        viewModelScope.launch {
+            container.engineInitStatus
+                .map { container.engineFactory.create(EngineKind.LOCAL) }
+                .distinctUntilChanged()
+                .flatMapLatest { it.sessionDiagnostics }
+                .collect { diag ->
+                    _uiState.update { it.copy(sessionDiagnostics = diag) }
+                }
         }
         if (initialConversationId != null) {
             viewModelScope.launch { maybeOfferRecovery(initialConversationId) }
