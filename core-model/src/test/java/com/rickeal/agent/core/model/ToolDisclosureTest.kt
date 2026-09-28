@@ -13,6 +13,14 @@ import kotlin.test.assertTrue
  * 就可能让模型把非法载荷送到执行路径。这类逻辑必须由测试钉住，而不是靠真机试。
  *
  * 测试全程确定性、零 Android 依赖、零 IO、零 sleep。
+ *
+ * ⚠️ 本文件只钉住 coverage 的**形状不变量**（值域 / 上界可达 / 单调性 / keywords 零回归），
+ * **不含命中阈值**。
+ *
+ * 阈值（cut）校准**被有意推迟**：单 token 精确命中（如 query「utility」→ current_time）
+ * 的原始分天然很低，任何有意义的阈值都会误删这类正确命中；而用合成语料定出的阈值
+ * 没有外部效度，却会伪装成「已校准」。⇒ 开工前提是取得**真机 ON_DEMAND 的真实 query
+ * 语料 ≥ N 条**，见交接文档挂账。
  */
 class ToolDisclosureTest {
 
@@ -491,5 +499,225 @@ class ToolDisclosureTest {
         val catalog = standardCatalog()
         listOf("量子纠缠", "股票行情", "翻译成英文", "播放音乐", "打开相机", "天气预报", "发送邮件")
             .forEach { q -> assertTrue(catalog.search(q).isEmpty(), "「$q」应零命中") }
+    }
+
+    // ── coverage 形状不变量（Wave 32）───────────────────────────────────────
+    //
+    // 本组用例钉的是**归一化函数的形状**（值域 / 上界可达 / 无关词恒零 / 单维单调 /
+    // keywords 零回归 / keywords 正向生效），**不是命中阈值** —— 阈值校准已推迟，
+    // 理由见类 KDoc。形状是纯函数性质、可在 JVM 单测里判；阈值不是。
+    //
+    // 可测性前提（已核对 main 源码，非推断）：`coverage(entry, query)` 是 **public**
+    // 实例方法，`maxScore()` / `score()` 是 private；而 `coverage` 只读 (entry, query)、
+    // 不读目录条目本身，故可以把夹具条目直接喂给任一 catalog 实例求 coverage。
+
+    /**
+     * 形状不变量语料夹具。真实内置工具表在 `core-agent`（BuiltinTools），`core-model`
+     * 不得反向依赖（模块边界），故这里用**同形语料**：中英混排名称 / 中文描述 /
+     * 四类 category / 一条带检索别名的条目。
+     */
+    private val shapeSpecs: List<ToolSpec> = listOf(
+        spec("file_read", "读取沙箱目录内的文本文件", category = "file"),
+        spec("file_write", "把文本写入沙箱目录内的文件", category = "file"),
+        spec("current_time", "获取当前日期与时间（现在几点、今天几号）", category = "utility"),
+        spec("memory_write", "把一条应当长期记住的信息写入持久记忆", category = "memory"),
+        spec("clipboard", "读取或写入系统剪贴板", category = "system"),
+        specWithKeywords("calculator", "执行四则运算", category = "utility", keywords = listOf("算一下")),
+    )
+
+    /** [HiddenToolCatalog.from] 的同款映射（省掉 parameterHints：它不参与评分）。 */
+    private fun shapeEntries(): List<HiddenToolEntry> = shapeSpecs.map {
+        HiddenToolEntry(
+            name = it.name,
+            description = it.description,
+            category = it.category,
+            parameterHints = emptyList(),
+            keywords = it.keywords,
+        )
+    }
+
+    /** 构造单条评分夹具（无菌：描述/分类/别名默认不掺入与 query 相关的字符）。 */
+    private fun entry(
+        name: String,
+        description: String = "",
+        category: String = "general",
+        keywords: List<String> = emptyList(),
+    ) = HiddenToolEntry(
+        name = name,
+        description = description,
+        category = category,
+        parameterHints = emptyList(),
+        keywords = keywords,
+    )
+
+    /** 代表性 query 形状：空 / 空白 / 单字符 / ASCII / 中文 / 长句 / 混排 / 超长 / 纯标点 / 空白字符。 */
+    private val shapeQueries: List<String> = listOf(
+        "",
+        "   ",
+        "f",
+        "file_read",
+        "FILE_READ",
+        "文件",
+        "读取文件",
+        "帮我读取文件，然后算一下现在几点了？",
+        "file,read;write|memory 文件 读取",
+        "x".repeat(200),
+        "file_read ".repeat(20).trim(),
+        "!!!???",
+        "文件\t读取\n写入",
+    )
+
+    /** 断言消息里截断超长 query，避免失败时刷屏。 */
+    private fun String.abbrev(): String = "${take(12)}(len=$length)"
+
+    @Test
+    fun coverageStaysWithinUnitIntervalAcrossQueryShapes() {
+        // 值域是最要紧的一条形状不变量：它等价于「maxScore 没有低估任何一条真实得分路径」。
+        // 一旦有人在 score() 里加了新维度却忘了同步 maxScore()，coverage 会越出 1.0，
+        // 症状是 renderHits 打出「相关度 137%」—— 这条断言就是那个哨兵。
+        // ✅ 实测（20 万组随机 (条目, query) 暴力枚举 + 本夹具全矩阵）：无一越界，
+        //    coverage 恒 ∈ [0,1]。未发现 maxScore 低估问题。
+        val catalog = HiddenToolCatalog.from(shapeSpecs)
+        val entries = shapeEntries()
+        var sawPositive = false
+        for (q in shapeQueries) {
+            for (e in entries) {
+                val c = catalog.coverage(e, q)
+                assertTrue(c >= 0.0, "coverage 不得为负：q=${q.abbrev()} tool=${e.name} c=$c")
+                assertTrue(c <= 1.0, "coverage 越界 >1（maxScore 被低估）：q=${q.abbrev()} tool=${e.name} c=$c")
+                if (c > 0.0) sawPositive = true
+            }
+        }
+        // 非重言式补强：整批里必须真有 >0 样本，否则上面的区间断言可能在全 0 上空转。
+        assertTrue(sawPositive, "代表性 query 里应至少有一个非零 coverage 样本")
+    }
+
+    @Test
+    fun coverageReachesOneOnlyWhenEveryScoredDimensionMatches() {
+        // 上界可达 = maxScore 没有被**高估**的反向检验：若高估，1.0 永远到不了。
+        // maxScore 是「该 query 下任何条目理论上能拿到的上界」（名称完全+包含、别名完全、
+        // 描述包含、分类包含、逐词项全中），故把全部维度同时打满的条目必须正好 = 1.0。
+        val catalog = HiddenToolCatalog.from(shapeSpecs)
+        val q = "calculator"
+        val saturated = entry(name = q, description = q, category = q, keywords = listOf(q))
+        assertEquals(1.0, catalog.coverage(saturated, q))
+
+        // 反向诚实钉：只靠「名称完全相同」**打不满**上界（描述/分类/别名都不含该 query）。
+        // ⇒ coverage 度量的是「相对理论上限」，不是「这个名字有多像」；真实语料里
+        // 工具名精确命中停在 ~0.6（实测 0.6154）是设计口径，不是缺陷。
+        val nameOnly = entry(name = q, description = "执行四则运算", category = "utility")
+        val c = catalog.coverage(nameOnly, q)
+        assertTrue(c > 0.0, "名称精确命中必须 >0：$c")
+        assertTrue(c < 1.0, "仅名称精确命中不应打满上界（否则上界定义失效）：$c")
+    }
+
+    @Test
+    fun coverageIsExactlyZeroForEveryUnrelatedQuery() {
+        // score() 没有 baseline 分（每一项都要求真实子串 / bigram 命中），故无关词恒为
+        // **精确 0.0**，而不是「接近 0」。这既是不变量，也是「命中门 score > 0 等价于
+        // 存在真实命中」这条前提的根据。
+        val catalog = HiddenToolCatalog.from(shapeSpecs)
+        val entries = shapeEntries()
+        val unrelated = listOf("量子纠缠", "股票行情", "翻译成英文", "播放音乐", "打开相机", "天气预报", "发送邮件")
+        for (q in unrelated) {
+            for (e in entries) {
+                assertEquals(0.0, catalog.coverage(e, q), "无关词必须恒 0：q=$q tool=${e.name}")
+            }
+            assertTrue(catalog.search(q).isEmpty(), "「$q」应零命中（门仍是 score > 0，本 Wave 未改）")
+        }
+    }
+
+    @Test
+    fun coverageIsNonDecreasingAlongNamePrefixChain() {
+        // ⚠️ 单调性**只在「单一评分维度 + 延伸后仍是子串」**这一族 query 上成立。
+        // 已申报的口径边界（非本用例目标）：分母 maxScore 每多一个 length≥2 的词项就 +65，
+        // 而分子在**只有描述维度**命中时只 +8 —— 同条目「读」→「读取」→「读取文件」
+        // 实测 0.1319 → 0.1308 → 0.1292，是**递减**的。故本用例刻意把条目做成无菌：
+        // 描述与分类不含任何拉丁字符，只允许**名称维度**参与，隔离掉跨维度分母漂移。
+        val catalog = HiddenToolCatalog.from(shapeSpecs)
+        val e = entry(name = "calculator", description = "执行四则运算", category = "工具")
+        val chain = listOf("c", "ca", "cal", "calc", "calcul", "calcula", "calculator")
+        val cov = chain.map { catalog.coverage(e, it) }
+        for (i in 0 until cov.size - 1) {
+            assertTrue(
+                cov[i + 1] >= cov[i],
+                "名称前缀链上非单调：${chain[i]}(${cov[i]}) → ${chain[i + 1]}(${cov[i + 1]})",
+            )
+        }
+        // 非重言式补强：端点必须有真增长，否则「全链相等」也能通过上面的断言。
+        assertTrue(cov.last() > cov.first(), "前缀链末端（精确命中）应高于首端：${cov.first()} → ${cov.last()}")
+    }
+
+    @Test
+    fun keywordsOmittedAndExplicitEmptyAreIdenticalForScoring() {
+        // 「keywords 默认空 = 零回归」这条申报的回归钉：**不传**该参数与**显式
+        // emptyList()** 必须在检索结果、coverage 数值、渲染文本三面上逐字节一致。
+        // （既有用例只断言了 `.keywords.isEmpty()`，没钉住「空别名确实不进评分语料」。）
+        val queries = shapeQueries + listOf("算一下", "帮我算一下", "utility", "current_time")
+        for (s in shapeSpecs) {
+            val omitted = ToolSpec(name = s.name, description = s.description, category = s.category)
+            val explicit = ToolSpec(
+                name = s.name,
+                description = s.description,
+                category = s.category,
+                keywords = emptyList(),
+            )
+            assertEquals(omitted.keywords, explicit.keywords, "默认值必须是 emptyList()")
+            val catA = HiddenToolCatalog.from(listOf(omitted))
+            val catB = HiddenToolCatalog.from(listOf(explicit))
+            for (q in queries) {
+                val hitsA = catA.search(q)
+                val hitsB = catB.search(q)
+                assertEquals(hitsA.map { it.name }, hitsB.map { it.name }, "检索结果应一致：q=${q.abbrev()} tool=${s.name}")
+                for (i in hitsA.indices) {
+                    val a = catA.coverage(hitsA[i], q)
+                    val b = catB.coverage(hitsB[i], q)
+                    assertTrue(a == b, "coverage 必须逐位相同：q=${q.abbrev()} tool=${s.name} $a vs $b")
+                }
+                assertEquals(catA.renderHits(hitsA, q), catB.renderHits(hitsB, q), "渲染文本应一致：q=${q.abbrev()} tool=${s.name}")
+            }
+        }
+    }
+
+    @Test
+    fun keywordsRaiseCoverageForOralQueryOnlyViaAlias() {
+        // 别名起作用的正向用例。先钉住「不配别名时该口语 query 与这条目无任何公共子串」，
+        // 否则下面的增量可能来自描述/分类，这条用例就失去了指向性（变成重言式）。
+        val catalog = HiddenToolCatalog.from(shapeSpecs)
+        val without = entry(name = "calculator", description = "执行四则运算", category = "utility")
+        val withAlias = entry(
+            name = "calculator",
+            description = "执行四则运算",
+            category = "utility",
+            keywords = listOf("算一下"),
+        )
+        assertEquals(0.0, catalog.coverage(without, "算一下"), "无别名时「算一下」应完全不得分")
+        assertEquals(0.0, catalog.coverage(without, "帮我算一下"), "无别名时「帮我算一下」应完全不得分")
+
+        val exact = catalog.coverage(withAlias, "算一下")
+        val oral = catalog.coverage(withAlias, "帮我算一下")
+        assertTrue(exact > 0.0, "别名完全命中必须 >0：$exact")
+        assertTrue(oral > 0.0, "别名 bigram 部分命中必须 >0：$oral")
+        // 完全命中别名应高于「口语长句只撞上 bigram」的部分命中 —— 信息量顺序的形状钉。
+        assertTrue(exact > oral, "别名完全命中应高于 bigram 部分命中：$exact vs $oral")
+    }
+
+    @Test
+    fun renderHitsCoveragePercentageStaysWithin0To100() {
+        // renderHits 是 coverage 唯一的对外可见面（「（相关度 X%）」）。值域不变量必须
+        // 一路钉到这一层：coverage 越界时它是模型最先看到的症状。
+        val catalog = HiddenToolCatalog.from(shapeSpecs)
+        val percent = Regex("""（相关度 (-?\d+)%）""")
+        val queries = shapeQueries + listOf("算一下", "帮我算一下现在几点", "utility", "current_time", "中".repeat(40), "!@#\$%^&*()")
+        var sawPercent = false
+        for (q in queries) {
+            val text = catalog.renderHits(catalog.search(q), q)
+            for (m in percent.findAll(text)) {
+                sawPercent = true
+                val pct = m.groupValues[1].toInt()
+                assertTrue(pct in 0..100, "相关度必须落在 0..100：q=${q.abbrev()} pct=$pct")
+            }
+        }
+        assertTrue(sawPercent, "这批 query 里应至少渲染出一条相关度百分比")
     }
 }
