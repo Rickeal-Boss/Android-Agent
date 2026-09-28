@@ -1072,12 +1072,6 @@ class AgentRunner(
                         AgentRunJournal.KIND_SETTLED,
                         AgentRunJournal.settledPayload("Failed", round),
                 )
-                // EngineFailure 归因接线（Wave 30 复审 4 号）：只写账不改文案。
-                state.breaker.trip(
-                    BreakerKind.EngineFailure,
-                    round = round,
-                    evidence = "生成失败（${t.javaClass.simpleName}），重试仍失败",
-                )
                 emit(
                     AgentEvent.Failed(
                         "生成失败：${t.message}",
@@ -1105,12 +1099,6 @@ class AgentRunner(
                     journal?.append(
                         AgentRunJournal.KIND_SETTLED,
                         AgentRunJournal.settledPayload("Failed", round),
-                    )
-                    // EngineFailure 归因接线（Wave 30 复审 4 号）：只写账不改文案。
-                    state.breaker.trip(
-                        BreakerKind.EngineFailure,
-                        round = round,
-                        evidence = "生成失败后引擎重载也失败（${retry.javaClass.simpleName}）",
                     )
                     emit(
                         AgentEvent.Failed(
