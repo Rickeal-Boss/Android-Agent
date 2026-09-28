@@ -33,13 +33,6 @@ enum class TerminationReason {
     BreakerTripped,
 
     /**
-     * 确定性模型侧故障（认证失效 / 配额耗尽 / 模型不可用）—— ZCode RunSettlement 的
-     * `stopped(provider)` 语义。重试大概率无用，UI 应引导检查端点配置而非盲目重试。
-     * 当前仅用于 journal 终态分类（UI 仍走 Failed 事件），后续接端点诊断页。
-     */
-    ProviderStop,
-
-    /**
      * 宿主/进程级中断（进程被杀、App 关闭）—— ZCode 的 `stopped(interrupted)` 语义。
      * 这个值**不会**被主动写入 journal：进程死亡时来不及写，「journal 无 settled 行」
      * 就是它的判据（恢复路径据此提示用户继续）。
@@ -127,13 +120,23 @@ sealed interface AgentEvent {
     data class PlanUpdated(val steps: List<com.rickeal.agent.core.agent.plan.PlanStep>) : AgentEvent
 }
 
+/**
+ * 一次 run 的请求。可空字段的**接线归属**由字段上方一行的 `@wire-owner` 标记申报
+ * （`host` = 宿主源集赋值 / `internal` = 仅 core-agent 内部透传 / `pending:理由` = 已挂账待接线），
+ * `scripts/arch-guard.sh` 第 13 条按标记在**对应源集**校验赋值点，并要求 `pending` 理由
+ * 能在 README 的挂账台账节 grep 到 —— 改字段或改挂账都必须同步另一边。
+ */
 data class AgentRequest(
+    // @wire-owner: host
     val conversationId: String? = null,
     val history: List<ChatMessage> = emptyList(),
     val userInput: ChatMessage,
     val config: InferenceConfig = InferenceConfig(),
+    // @wire-owner: host
     val model: ModelDescriptor? = null,
     /** null = 使用全部已启用工具；否则只用白名单内的 */
+    // 宿主从不限制工具集（无 host 赋值点）；只有 core-agent 的子 run 会按 allowedTools 传入。
+    // @wire-owner: internal
     val toolNames: Set<String>? = null,
     val policy: AgentPolicy = AgentPolicy(),
     /**
@@ -142,28 +145,33 @@ data class AgentRequest(
      * journal 让下一次 run 能从已完成的推理与工具结果处继续（ZCode Journal 语义移植）。
      * null = 关闭（与历史行为一致）。写入永远 best-effort，绝不影响主流程。
      */
+    // @wire-owner: host
     val journal: AgentRunJournal? = null,
     /**
      * 工具审批通道（可选）。非 null 时，危险工具（`dangerous`）与声明需确认的工具
      * （`requiresConfirmation`）会在执行前通过它请求用户裁决（Octop tool_guard +
      * ZCode 命令审批语义移植）；null = 危险工具直接拒绝执行。
      */
+    // @wire-owner: host
     val approvalHandler: ToolApprovalHandler? = null,
     /**
      * 审批缓存（可选，「计划级授权」轻量降级）：用户显式授权过的
      * 「会话 × 工具 × 参数摘要」在 TTL 内免再弹卡（Octop 批量审批 + TTL 同构，
      * 拒绝永不缓存）。null = 每次都弹。子代理 run 应保持 null（不继承授权）。
      */
+    // @wire-owner: host
     val approvalCache: com.rickeal.agent.core.agent.approval.ToolApprovalCache? = null,
     /**
      * 长期记忆片段（harness-memory 移植）。非空时追加为系统提示词的「长期记忆」节；
      * 由调用方在发请求前从 [com.rickeal.agent.core.agent.memory.AgentMemory] 渲染取得。
      */
+    // @wire-owner: host
     val memoryText: String? = null,
     /**
      * 会话级计划仓库（ZCode Phase Graph 降级移植）。非 null 时工具循环内检测 plan_set /
      * plan_update 引起的版本变化并发 [AgentEvent.PlanUpdated]；null = 本 run 不感知计划。
      */
+    // @wire-owner: host
     val planStore: com.rickeal.agent.core.agent.plan.AgentPlanStore? = null,
     /**
      * 用户给 AI 的**整体能力档位**（Wave 26 / Operit2 四层能力模型裁剪移植）。
@@ -191,6 +199,7 @@ data class AgentRequest(
      * null = 不记账（与历史行为一致）。子 run 应保持 null：子 run 独立短命，
      * 不进父 run 账本（与审批缓存「子 run 不继承」同一隔离纪律）。
      */
+    // @wire-owner: host
     val tokenLedger: RunTokenLedger? = null,
     /**
      * 热状态门（Wave 30 §2.1，可选）。非 null 时主循环轮头（墙钟检查之后）每轮调
@@ -199,6 +208,7 @@ data class AgentRequest(
      * 子 run 保持 null：子 run 不单独过热闸，由父 run 的轮头 Abort 兜底（R7-2，
      * 与审批缓存 / tokenLedger「子 run 不继承」同一隔离纪律）。
      */
+    // @wire-owner: host
     val thermalGate: RunThermalGate? = null,
     /**
      * 绝对硬截止时刻（`System.nanoTime()` 刻度）。null = 由本 run 自己的
@@ -210,5 +220,7 @@ data class AgentRequest(
      * —— 修「父 run 进入本轮后墙钟不再约束本轮、子 run 又自带一份全新 5 分钟预算」导致的
      * 上界放大（Wave 31）。
      */
+    // 宿主不知道绝对截止时刻（它在 RunState 里由墙钟算出），只有 core-agent 内部往下传。
+    // @wire-owner: internal
     val deadlineNanos: Long? = null,
 )

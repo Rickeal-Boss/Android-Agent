@@ -948,8 +948,8 @@ core-data/src/test/java/.../JsonFileStoreTest.kt          // 并发写 / 损坏�
 | P1-1 | 用户消息被塞进上下文两次 | ✅ `AgentRunner` 按 message id 去重后再追加 |
 | P1-2 | 轮次耗尽把原始工具 JSON 当答案提交 | ✅ 回退到最后一轮可见文本并剥离工具协议片段 |
 | P1-3 | 加载/卸载与在途推理无互斥，可能抽掉 native 引擎 | ✅ `close()` 前先 `cancelProcess()`；`unload()` / `load()` 前等待在途生成结束 |
-| P1-4 | 上下文压缩拆散 tool_calls / tool 配对导致 400 | ⏳ 未修：需要重写 `ContextCompressor` 的裁剪边界（按「一轮 tool_calls + 其全部 tool 结果」为最小单元），改动面较大，留到真机联调时一并处理 |
-| P1-5 | 文本协议对最终答案也解析，用户要 JSON 就死循环 | ⏳ 未修：需要引入「仅在 finishReason=TOOL_CALLS 时解析」的判定，与 P1-4 同一批改动 |
+| P1-4 | 上下文压缩拆散 tool_calls / tool 配对导致 400 | ✅ 已闭合：采纳报告建议的「按工具组边界裁剪」—— `ContextCompressor.kt:57` 调用 `safeCutIndex(...)`、`:72` 定义它（落点是 TOOL 时按 `toolCallId` 回溯到声明它的 assistant(toolCalls)，整组一起进保留区；回溯不到宿主就**无损放弃压缩**）。闭合于 `31c1414`（2026-09-19，同提交修了 tool-protocol loop 与 history loss） |
+| P1-5 | 文本协议对最终答案也解析，用户要 JSON 就死循环 | ✅ 已闭合，但**未采纳报告建议的修法**：没有引入「仅在 `finishReason=TOOL_CALLS` 时解析」的判定，而是用**另一种机制**闭合 —— `TextToolProtocol.kt:19` 起 `ProtocolResult` 三态（`Calls` / `FinalAnswer` / `NoProtocol`，`FinalAnswer` = 有工具形状但不可执行，按原文提交、永不重试）+ `AgentRunner.kt:654-655` 的 gating（仅在 `nativeCalls.isEmpty() && policy.enableTextProtocol` 时解析）。闭合于 `31c1414`（2026-09-19） |
 | P1-6 | 点「停止」后半截答案丢失 | ✅ `Cancelled` 事件已携带 `partialText`，`ChatViewModel` 会落库半截答案 |
 | P1-7 | 工具在主线程做文件 IO 与剪贴板 | ✅ 工具执行统一切到 `Dispatchers.IO`（AgentRunner 与工具试跑页） |
 | P1-8 | 远程图片原图直传 base64 → OOM / 413 | ✅ 统一降采样到最长边 1024px 再压 JPEG(85) |

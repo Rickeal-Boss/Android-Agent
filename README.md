@@ -300,11 +300,46 @@ Android-Agent/
   - [x] Wave 1：Journal、参数 Schema 校验、审批闸门、ask_actor 子代理、长期记忆
   - [x] Wave 2：崩溃恢复接线、计划机制（plan_set/plan_update + 时间线）、真审批 UI、
     Actor 会话持久化、结算语义对齐（`Interrupted` — 判据是「journal 无 `settled` 行」，不主动写入）
-  - [ ] 🟡 ProviderStop 写入点（结算语义的「模型侧确定性故障」分支）：枚举已定义、journal
-    终态分类已留位，但**生产路径零写入点**（`TerminationReason` 生产写入点实测仅
-    `AgentRunner.kt:1941` 的 ModelStopped/MaxRounds 与 `:1990` 的 BreakerTripped，
-    无 ProviderStop）—— 待接 UI 端点诊断页后启用。
+  - [x] ~~🟡 ProviderStop 写入点~~ **已裁定删除（Wave 32）**：该分支的语义前提
+    （「REMOTE+EngineException → journal ProviderStop」）随远程供应商通道整体移除而失效，
+    接线等于给架构上不存在的分支写死代码，还会与 `BreakerTripped` / 引擎异常路径制造第二种口径；
+    且全仓零生产写入点、无 `valueOf` 反解析 ⇒ **删除枚举值**（零持久化兼容风险），而非接线。
+    详见下文「挂账台账」节的「已裁定（不再是挂账）」小节。
   - [ ] Wave 3：历史版本化、定时任务、检索记忆、人格系统、插件化装载
+
+---
+
+## 挂账台账（🟡 已实现未接线）
+
+「代码状态」四态里的 🟡 条目集中记在这里（不再散落在路线图里），每条必须写明**重启前提**
+（对齐 `SegmentedHistoryStore` 类头的三前提范式）：
+
+| 条目 | 现状与挂账理由 | 重启前提 |
+|---|---|---|
+| **完整 i18n（含 RTL）** | `app/src/main/res/values/strings.xml` 只有 1 条串（`app_name`），Composable 里 ~145 处中文硬编码 ⇒ RTL 布局从未被验证、也无从验证。Wave 32 已撤下 `AndroidManifest.xml` 的 `android:supportsRtl="true"` —— 先不声明未验证过的能力 | ① 硬编码中文串抽到 `strings.xml`；② 补 `values-ldrtl` / 布局镜像的真机或预览验证；③ 验证通过后才恢复 `supportsRtl` 声明 |
+
+### 已裁定（不再是挂账）
+
+- **`TerminationReason.ProviderStop`**（结算语义的「模型侧确定性故障」分支）—— **Wave 32 裁定删除枚举值，不接线**。
+  理由：语义前提（「REMOTE+EngineException → journal ProviderStop」）随远程供应商通道整体移除而失效；
+  全仓零生产写入点、无 `valueOf` 反解析（journal 只写 `termination.name` 字符串）⇒ 删除零持久化兼容风险。
+  模型侧确定性故障现统一归入 `BreakerTripped` / 引擎异常路径，不再保留第二种口径。
+
+### `AgentRequest` 可空字段的接线归属（`@wire-owner` 三态）
+
+`AgentRequest` 的每个 `= null` 字段都在字段上方一行用 `// @wire-owner: <值>` **自申报**接线归属，
+`scripts/arch-guard.sh` 第 13 条据此在**对应源集**校验赋值点（旧实现是全局 grep，对
+`deadlineNanos` 只命中内核透传点，属「碰巧正确」）：
+
+| 标记 | 含义 | 守卫校验 |
+|---|---|---|
+| `host` | 由宿主装配（`app/` `feature-*/` `core-data/`） | 宿主源集必须有 `<字段> = ` 赋值点 |
+| `internal` | 仅内核内部透传 / 子 run 自装配（如 `deadlineNanos` 由父 run 传给子 run） | 只在 `core-agent/` 内查赋值点 |
+| `pending:理由串` | 已挂账、尚未接线 | **理由串必须能在本节 grep 到** —— 标记与挂账双向交叉，一边清掉另一边立刻判红 |
+
+当前 11 个可空字段：9 个 `host`、2 个 `internal`（`toolNames` / `deadlineNanos`，宿主侧刻意不传）、
+0 个 `pending`。新增可空字段**必须**先申报归属（无标记即判红），字段删除时标记也要一并删
+（标记总数 != 可空字段总数即判红，防僵尸标记）。
 
 ---
 

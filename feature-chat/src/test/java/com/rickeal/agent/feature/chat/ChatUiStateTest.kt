@@ -74,8 +74,8 @@ class ChatUiStateTest {
         assertEquals(TerminationReason.MaxRounds, finished.lastTermination)
 
         val failed = ChatUiState().applyTerminalEvent(
-            AgentEvent.Failed(message = "boom", terminatedBy = TerminationReason.ProviderStop),
+            AgentEvent.Failed(message = "boom", terminatedBy = TerminationReason.ModelStopped),
         )
-        assertEquals(TerminationReason.ProviderStop, failed.lastTermination)
+        assertEquals(TerminationReason.ModelStopped, failed.lastTermination)
     }
 }

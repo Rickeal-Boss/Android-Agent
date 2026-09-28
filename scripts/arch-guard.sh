@@ -160,20 +160,70 @@ check "主循环方法体积未超预算（executeBodyUnchecked ≤ 550 行）" 
            n=$((e - s))
            if [ "$n" -gt 550 ]; then echo "executeBodyUnchecked 当前 $n 行，超 550 行预算（JVM 单方法 64KB 上限风险，请外提为 FlowCollector<AgentEvent> 扩展方法）"; fi'
 
-# 13) AgentRequest 可空字段孤儿守卫（Wave 31）：`AgentRequest` 每个 `= null` 字段
-#     都必须有宿主侧的非默认赋值点，否则就是「代码完备但未接线」的死字段
-#     （history_v2 / SummarizingContextCompressor / ProviderStop / RunTokenLedger 同族）。
-#     ⚠️ 已知局限：grep 是启发式的 —— 同名字段的其它赋值点会造成假阴性（例如 `model = `）。
-#     故本守卫的定位是「防新增孤儿」而非「证明已接线」；其自身有效性由 arch-guard-selftest.sh 背书
-#     （case5 钉住触发面）。
-#     字段抽取（Wave 31 P2-C1 加固）：旧写法 `val [A-Za-z]+: [A-Za-z.<>?]+ = null` 的字符类
-#     不含逗号与空格，`Map<String, Int>? = null` 这类泛型 / 函数类型字段会被**静默漏检**。
-#     改为 sed 按「`val <名字>: … = null`」只抽名字，不限制类型字符集。
+# 13) AgentRequest 可空字段接线台账守卫（Wave 31 建 / Wave 32 改「字段自申报意图」三态）：
+#     `AgentRequest` 每个 `= null` 字段都必须**自己申报接线归属** —— 标记与字段同处一行上方：
+#       // @wire-owner: host          = 由宿主装配 ⇒ 赋值点必须在 app/ feature-*/ core-data/
+#       // @wire-owner: internal      = 内核内部透传/子 run 自装配 ⇒ 只在 core-agent/ 查
+#       // @wire-owner: pending:理由串 = 已挂账未接线 ⇒ 理由串必须能在 README 挂账台账节 grep 到
+#
+#     为什么从「全局 grep 找赋值点」改成「字段自申报」：旧实现用 `grep -rn "$fld = "` 全仓找，
+#     对 `deadlineNanos` 命中的其实是 core-agent 内部透传点（AgentRunner 父 run 传给子 run）。
+#     宿主侧（ChatViewModel 的 3 个构造点）一个都不传 —— 那是**by design**（宿主不知道绝对截止
+#     时刻）。所以旧守卫今天是「碰巧正确」：谁把搜索面收紧到宿主侧，deadlineNanos 就恒红，
+#     逼后来者加白名单或写无用实参。让字段自己说清「我该在哪儿被赋值」，守卫才是在校验意图。
+#
+#     四段断言（每段都由 arch-guard-selftest.sh 的 case 钉住触发面）：
+#       ① 无 `@wire-owner` 标记即红 —— 防新字段忘了申报（case5 / case7）
+#       ② 按标记在**对应源集**查赋值点 —— host 查宿主源集、internal 查 core-agent（case8 钉
+#          住「internal + 只在 core-agent 有赋值点」不红，即 deadlineNanos 形态）
+#       ③ `pending:` 的理由串必须能在 README 挂账台账节 grep 到（case9）—— 标记 ↔ 挂账双向
+#          交叉：挂账清掉、标记还在（或反之）立刻红，杜绝「挂账台账与代码各说各话」
+#       ④ 标记总数 == 可空字段总数 —— 双向：既防漏标，也防字段删了标记留下变僵尸标记
+#     字段抽取沿用 Wave 31 P2-C1 加固后的 sed（按「`val <名字>: … = null`」只抽名字，不限类型
+#     字符集 —— 泛型 / 函数类型字段也能抽到，由 case5b 钉住）。
+#     ⚠️ 仍是 grep 型启发式「防新增孤儿 / 防标记漂移」，不是「证明已接线」；同名字段赋值点
+#     造成假阴性是已知局限（例如 `model = `）。
 check "AgentRequest 可空字段无孤儿（代码完备但未接线）" \
   bash -c 'f=core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt
-           for fld in $(sed -n "/^data class AgentRequest(/,/^)/p" "$f" | sed -n "s/^ *val \([A-Za-z][A-Za-z0-9]*\): .*= null.*/\1/p"); do
-             grep -rn --include="*.kt" "$fld = " . | grep -v "AgentEvents.kt" | grep -q . \
-               || echo "AgentRequest.$fld 在宿主侧零传入点（代码完备但未接线）"
+           if [ ! -f "$f" ]; then echo "找不到 $f（被改名/删除？第 13 条守卫面已失效）"; exit 0; fi
+           blk=$(sed -n "/^data class AgentRequest(/,/^)/p" "$f")
+           # ④ 标记总数 == 可空字段总数（双向：漏标 / 僵尸标记都在此暴露）
+           nf=$(printf "%s\n" "$blk" | grep -cE "^ *val [A-Za-z][A-Za-z0-9]*: .*= null")
+           nm=$(printf "%s\n" "$blk" | grep -cF "@wire-owner:")
+           if [ "$nf" -ne "$nm" ]; then
+             echo "AgentRequest 的 @wire-owner 标记数($nm) != 可空字段数($nf)：新增可空字段必须申报归属，删字段必须同时删标记"
+           fi
+           # ①②③：逐字段（顺序扫描，标记归属于紧随其后的那个可空字段）
+           owner=""
+           printf "%s\n" "$blk" | while IFS= read -r line; do
+             if printf "%s" "$line" | grep -qF "@wire-owner:"; then
+               owner=$(printf "%s" "$line" | sed -n "s/.*@wire-owner:[[:space:]]*\([^[:space:]]*\).*/\1/p")
+               continue
+             fi
+             fld=$(printf "%s" "$line" | sed -n "s/^ *val \([A-Za-z][A-Za-z0-9]*\): .*= null.*/\1/p")
+             if [ -z "$fld" ]; then continue; fi
+             if [ -z "$owner" ]; then
+               echo "AgentRequest.$fld 缺 @wire-owner 标记：新增可空字段必须先申报归属（host / internal / pending:理由）"
+             elif [ "$owner" = "host" ]; then
+               grep -rn --include="*.kt" "$fld = " app/ feature-chat/ feature-models/ feature-settings/ core-data/ 2>/dev/null | grep -v "AgentEvents.kt" | grep -q . \
+                 || echo "AgentRequest.$fld 申报 host 但宿主源集（app/ feature-*/ core-data/）零赋值点（代码完备但未接线）"
+             elif [ "$owner" = "internal" ]; then
+               grep -rn --include="*.kt" "$fld = " core-agent/ 2>/dev/null | grep -v "AgentEvents.kt" | grep -q . \
+                 || echo "AgentRequest.$fld 申报 internal 但 core-agent/ 内零赋值点（标记与事实不符：改判 host 或 pending:理由）"
+             elif [ "${owner#pending:}" != "$owner" ]; then
+               reason=${owner#pending:}
+               if [ -z "$reason" ]; then
+                 echo "AgentRequest.$fld 的 pending 标记缺理由串（写法：// @wire-owner: pending:理由串）"
+               elif [ ! -f README.md ]; then
+                 echo "AgentRequest.$fld 的 pending 理由「$reason」无处挂账：README.md 不存在（守卫面失效）"
+               else
+                 sed -n "/^## 挂账台账/,/^## /p" README.md | grep -qF "$reason" \
+                   || echo "AgentRequest.$fld 的 pending 理由「$reason」未在 README.md 的挂账台账节出现（标记与挂账必须双向交叉）"
+               fi
+             else
+               echo "AgentRequest.$fld 的 @wire-owner 取值「$owner」非法（只允许 host / internal / pending:理由串）"
+             fi
+             owner=""
            done'
 
 echo "-----------------------------------------"

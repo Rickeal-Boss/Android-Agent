@@ -72,6 +72,15 @@ scaffold() {
 </manifest>
 XML
   write_runner "$root" 5
+  # 第 13 条（Wave 32 起）在 AgentEvents.kt 缺失时会判「守卫面失效」⇒ 骨架必须提供它。
+  # 这里给一个**没有可空字段**的 AgentRequest：字段数 0 == 标记数 0，干净树保持绿。
+  cat > "$root/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+data class AgentRequest(
+    val userInput: ChatMessage,
+)
+KT
 }
 
 run_guard() { ( cd "$1" && bash "$GUARD" 2>&1 ); }
@@ -203,6 +212,132 @@ KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case6 方法在类尾 (第 12 条守卫面失效)" "$rc" "$out" \
   "主循环方法体积未超预算（executeBodyUnchecked ≤ 550 行）"
+
+# ---------------------------------------------------------------------------
+# case 7：可空字段**有**宿主侧赋值点、但**没有** @wire-owner 标记 ⇒ 第 13 条必须报红。
+#         钉死「① 无标记即红」是独立断言 —— 若只靠旧的「零赋值点」判定，本 case
+#         会因为赋值点存在而漏判（新增字段忘了申报就静默过关）。
+# ---------------------------------------------------------------------------
+d="$TMP/case7-unmarked"
+scaffold "$d"
+mkdir -p "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat"
+cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+data class AgentRequest(
+    val wiredButUnmarked: String? = null,
+)
+KT
+cat > "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt" <<'KT'
+package com.rickeal.agent.feature.chat
+
+val req = AgentRequest(wiredButUnmarked = "x")
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case7 可空字段无 @wire-owner 标记 (第 13 条①)" "$rc" "$out" \
+  "AgentRequest 可空字段无孤儿（代码完备但未接线）"
+if printf '%s\n' "$out" | grep -qF "缺 @wire-owner 标记"; then
+  echo "PASS [case7b] 报出「缺 @wire-owner 标记」（无标记即红，与是否有赋值点无关）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case7b] 未报出「缺 @wire-owner 标记」（① 断言失效：忘申报的新字段会静默过关）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 8：`internal` 标记 + 赋值点**只在 core-agent/** ⇒ 第 13 条必须**不红**。
+#         钉死 `deadlineNanos` 的真实形态（宿主侧刻意不传、由父 run 透传给子 run）——
+#         旧实现「全局 grep」对它只是碰巧正确；收紧搜索面到宿主侧会让它恒红。
+# ---------------------------------------------------------------------------
+d="$TMP/case8-internal"
+scaffold "$d"
+cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+data class AgentRequest(
+    // @wire-owner: internal
+    val deadlineNanos: Long? = null,
+)
+KT
+cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/SubRun.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+val subRequest = AgentRequest(deadlineNanos = 1L)
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case8 internal 标记 + core-agent 内赋值点 (第 13 条②)] 退出 0（未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case8] internal 标记且 core-agent 内有赋值点应不红，实际退出 $rc"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 9：`pending:理由串` 但该理由串**不在** README 挂账台账节 ⇒ 第 13 条必须报红
+#         （③ 交叉断言的「红」面）。case9b 再钉「绿」面，防本条变成永远红的僵尸规则。
+# ---------------------------------------------------------------------------
+d="$TMP/case9-pending-unledgered"
+scaffold "$d"
+cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+data class AgentRequest(
+    // @wire-owner: pending:示例未接线理由
+    val pendingField: String? = null,
+)
+KT
+cat > "$d/README.md" <<'MD'
+# 项目
+
+## 挂账台账（🟡 已实现未接线）
+
+- 完整 i18n：strings.xml 只有 1 条串
+MD
+out="$(run_guard "$d")"; rc=$?
+assert_red "case9 pending 理由未挂账 (第 13 条③)" "$rc" "$out" \
+  "AgentRequest 可空字段无孤儿（代码完备但未接线）"
+if printf '%s\n' "$out" | grep -qF "未在 README.md 的挂账台账节出现"; then
+  echo "PASS [case9b] 报出「未在 README.md 的挂账台账节出现」（标记 ↔ 挂账交叉生效）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case9b] 未报出挂账缺失（③ 交叉断言失效）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 10：同一 fixture 里把理由串**补进** README 挂账台账节 ⇒ 第 13 条必须**不红**。
+#          钉死 ③ 的「绿」面：只有红面会让它成为永远红的僵尸规则（挂着账就必须放行）。
+# ---------------------------------------------------------------------------
+d="$TMP/case10-pending-ledgered"
+scaffold "$d"
+cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+data class AgentRequest(
+    // @wire-owner: pending:示例未接线理由
+    val pendingField: String? = null,
+)
+KT
+cat > "$d/README.md" <<'MD'
+# 项目
+
+## 挂账台账（🟡 已实现未接线）
+
+- 示例未接线理由：已挂账，待接线
+MD
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case10 pending 理由已挂账 (第 13 条③绿面)] 退出 0（未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case10] pending 理由已在 README 挂账台账节出现，应不红，实际退出 $rc"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
 
 # ---------------------------------------------------------------------------
 echo "-----------------------------------------"

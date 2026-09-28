@@ -42,7 +42,7 @@ data class TurnRecord(
     val messageRefs: List<BlobRef> = emptyList(),
     /** 最终回答正文（最后一条 MODEL 可见文本）。 */
     val finalTextRef: BlobRef? = null,
-    /** 终止原因名（ModelStopped/MaxRounds/Failed/Cancelled/ProviderStop）。 */
+    /** 终止原因名（ModelStopped/MaxRounds/BreakerTripped/Cancelled/Interrupted）。 */
     val termination: String? = null,
     val toolCallCount: Int = 0,
     val startedAtMillis: Long = 0L,

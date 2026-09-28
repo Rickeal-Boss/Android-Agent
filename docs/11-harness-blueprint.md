@@ -123,7 +123,7 @@ ACP/浏览器/远程桌面/IM 通道 **不适用端侧**（无服务器、无桌
 | 崩溃恢复接线 | `findUnsettled`（无 settled 行 = Interrupted）→ 恢复卡「从中断处继续」；onRecover 用 journal 重建完整上下文（工具调用/结果只有 journal 有）；markDismissed 改名归档 | ZCode Journal |
 | 真审批 UI | `approvalHandler`（CompletableDeferred 挂起等点击）+ 授权卡（工具名+参数+授权/拒绝），run 取消随协程取消 | Octop tool_guard 人在回路闭环 |
 | Actor 会话持久化 | SubagentSessionStore(persistDir)：每「会话×Actor」一 JSON，append 即落盘、snapshot 惰性加载 | ZCode 持久化 Actor |
-| 结算语义 | TerminationReason + ProviderStop / Interrupted；REMOTE+EngineException → journal ProviderStop；Interrupted 以「无 settled 行」表达 | ZCode RunSettlement |
+| 结算语义 | TerminationReason（ModelStopped / MaxRounds / BreakerTripped / Interrupted）+ journal 终态分类；Interrupted 以「无 settled 行」表达。⚠️ 原规划的「REMOTE+EngineException → journal ProviderStop」分支**已不存在**：远程供应商通道整体移除后该语义前提失效，`ProviderStop` 枚举值于 Wave 32 删除（全仓零生产写入点、无 `valueOf` 反解析 ⇒ 零持久化兼容风险）；模型侧确定性故障现统一归入 `BreakerTripped` / 引擎异常路径 | ZCode RunSettlement |
 
 ### Wave 3（✅ 第一批已落地，HEAD `7f9a905`，CI run 35844699918 绿）
 
