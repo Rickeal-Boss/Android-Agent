@@ -53,6 +53,24 @@ abstract class SandboxedFileTool(protected val context: ToolContext) : Tool {
         ToolParameter(name, ToolParamType.STRING, description, required)
 }
 
+/**
+ * `file_read` 工具（Wave 31 起支持 offset/limit 分页续读）。
+ *
+ * ⚠️ **提示词面变化申报**（Wave 31，有意改动，非疏漏）：本工具 [spec] 的描述与参数列表
+ * 会经 [ToolSpec.toPromptLine] 进入 **FULL 披露模式**的系统提示词工具段，故该段与
+ * `AgentRunner` 的 `echoCorpus`（回显指纹语料）**逐字节变化**：
+ * `- file_read：读取沙箱目录内的文本文件 参数(path)` →
+ * `- file_read：读取沙箱目录内的文本文件；大文件可用 offset/limit 分页续读 参数(path,offset,limit)`。
+ *
+ * 影响面已评估（**无原有指纹失效**）：`echoCorpus` 判定⑥按 `\n` 切句建句子级指纹集、
+ * 判定⑨对归一化字符流建 32 窗口哈希集 —— 工具行之间是 `\n`，故**只有 file_read 那一句
+ * 的指纹被替换**，其余 section / 工具行的指纹逐字节不变（⑨ 中完全落在未改区的窗口哈希
+ * 不变、仍在集合内）。旧 file_read 文本已不在提示词里、模型不可回显，其旧指纹消失无副作用。
+ * 方向是纯增量（语料变多，只增强不削弱）。
+ *
+ * 取舍：这是分页功能可用的**必要代价** —— 不把 offset/limit 写进描述与参数，模型就不知道
+ * 能分页，功能等于不存在。
+ */
 class FileReadTool(context: ToolContext) : SandboxedFileTool(context) {
 
     override val spec: ToolSpec = ToolSpec(
@@ -114,6 +132,9 @@ class FileReadTool(context: ToolContext) : SandboxedFileTool(context) {
  * [ToolContext]（含 android `Context`），在纯 JVM 测试里无法构造；把读取/分页/
  * 钳制逻辑下沉到这个零依赖对象，就能用 `File` 直接单测（见 FileReadPagerTest），
  * 而工具类只留参数解析与 `ToolResult` 组装。
+ *
+ * ⚠️ 本对象是 `file_read` 的实现细节；其**工具面**（描述/参数）改动会改变 FULL 模式
+ * 系统提示词工具段与 `echoCorpus` 指纹语料 —— 申报见 [FileReadTool] 的类 KDoc。
  */
 internal object FileReadPager {
 
@@ -131,11 +152,13 @@ internal object FileReadPager {
 
     /**
      * 分页标记的预算字符数（Wave 31）。分页路径尾部拼接的续读指引长度上界 ——
-     * 正文含 offset / 总数 / 「继续读请传 offset=」等，实测最长约 60 字符，
-     * 取 80 留足余量，保证 `内容 + 换行 + 标记 ≤ READ_LIMIT_CHARS`，
-     * 从而 Runner 的二次截断（会砍掉标记本身）永不触发。
+     * 正文含 offset / 总数 / 「继续读请传 offset=」等，实测最长约 73 字符（offset 取
+     * Int 满值时的最长形态），取 80 留足余量。`limit > MARKER_BUDGET_CHARS + 1` 时
+     * 据此为指引预留预算，使完整输出 ≤ limit；否则（极小 limit）不预留、输出可略超
+     * limit（精确不变量见 [readRange] 的 KDoc）。
+     * 非 private：单测需按同一常量断言长度上界，避免在测试里写魔数。
      */
-    private const val MARKER_BUDGET_CHARS = 80
+    const val MARKER_BUDGET_CHARS = 80
 
     /** offset 归一化：负数按 0（真正的越界由 [readRange] 处理）。 */
     fun normalizeOffset(raw: Int): Int = raw.coerceAtLeast(0)
@@ -209,10 +232,18 @@ internal object FileReadPager {
      * 前置条件（由 [normalizeOffset] / [normalizeLimit] 保证）：`offset >= 0`、
      * `1 <= limit <= READ_LIMIT_CHARS`。
      *
-     * 边界：
-     *  - offset 越界（≥ 文件长度）→ 空内容 + 明确提示「已超出文件长度」；
-     *  - 输出长度恒 ≤ [READ_LIMIT_CHARS]：截断时按 [MARKER_BUDGET_CHARS] 预留标记空间；
-     *    EOF 时优先保内容（放不下标记则省略标记），绝不因预算裁剪而丢失尾部内容。
+     * 长度不变量（精确口径，勿简化为「输出恒 ≤ READ_LIMIT_CHARS」）：
+     *  - **内容部分恒 ≤ limit**：`contentLen = min(filled, keep)` 且 `keep ≤ limit`；
+     *  - 完整输出 = 内容 + `\n` + 指引（指引 ≤ [MARKER_BUDGET_CHARS] 字符）；
+     *  - `limit >= MARKER_BUDGET_CHARS + 2`（即 `keep = limit − MARKER_BUDGET_CHARS − 1 > 0`）：
+     *    **先为指引预留预算再决定内容长度**，故完整输出 ≤ limit —— 默认 limit =
+     *    [READ_LIMIT_CHARS] 时即 ≤ READ_LIMIT_CHARS，Runner 单层截断不变量成立；
+     *  - `limit <= MARKER_BUDGET_CHARS + 1`（keep = 0，**不预留**）：完整输出 =
+     *    limit + 1 + 指引长度，上界 `limit + 1 + MARKER_BUDGET_CHARS` —— **可略超 limit**；
+     *    该分支仅在显式传极小 limit 时可达，生产默认路径不经过它；
+     *  - EOF 分支另有一道保险：指引放不下时整条省略，输出 = 内容 ≤ limit。
+     *
+     * 边界：offset 越界（≥ 文件长度）→ 空内容，输出 = 指引（≤ [MARKER_BUDGET_CHARS] 字符）。
      */
     fun readRange(file: File, offset: Int, limit: Int): String {
         val buffer = CharArray(limit)

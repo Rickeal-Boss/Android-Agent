@@ -118,4 +118,45 @@ class FileReadPagerTest {
         assertEquals(limit, FileReadPager.normalizeLimit(999_999))
         assertEquals(100, FileReadPager.normalizeLimit(100))
     }
+
+    // ── 长度不变量边界（P2-C3）────────────────────────────────────────────────
+
+    @Test
+    fun `limit 为 1 时内容不超 limit 且完整输出不超 limit 加指引预算`() {
+        // keep = limit − MARKER_BUDGET_CHARS − 1 ≤ 0 ⇒ 不预留指引空间：完整输出可略超 limit，
+        // 但恒 ≤ limit + 1（换行）+ 指引长度（≤ MARKER_BUDGET_CHARS）。见 readRange 的 KDoc。
+        val file = tempFile("0123456789")
+        val limit = 1
+        try {
+            val out = FileReadPager.readRange(file, offset = 0, limit = limit)
+            // 内容部分（首个换行前）恒 ≤ limit。
+            assertTrue(out.substringBefore('\n').length <= limit, "内容部分应 ≤ limit：$out")
+            // 完整输出上界 = limit + 换行 + 指引预算。
+            assertTrue(
+                out.length <= limit + 1 + FileReadPager.MARKER_BUDGET_CHARS,
+                "完整输出应 ≤ limit+1+指引预算：len=${out.length}",
+            )
+            assertTrue(out.contains("offset=1"), "应给出续读指引：$out")
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun `limit 为 0 钳为默认后完整输出不超 READ_LIMIT_CHARS`() {
+        val limit = FileReadPager.normalizeLimit(0)
+        assertEquals(FileReadPager.READ_LIMIT_CHARS, limit)
+        val file = tempFile("a".repeat(limit + 10))
+        try {
+            val out = FileReadPager.readRange(file, offset = 0, limit = limit)
+            // keep = limit − MARKER_BUDGET_CHARS − 1 > 0 ⇒ 预留指引空间 ⇒ 完整输出 ≤ limit。
+            assertTrue(
+                out.length <= FileReadPager.READ_LIMIT_CHARS,
+                "默认 limit 下完整输出应 ≤ READ_LIMIT_CHARS：len=${out.length}",
+            )
+            assertTrue(out.substringBefore('\n').length <= limit)
+        } finally {
+            file.delete()
+        }
+    }
 }
