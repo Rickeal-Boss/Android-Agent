@@ -86,7 +86,7 @@ class BreakerLedgerTest {
         recordFail(ledger, tool = "file_read")
         assertEquals(2, ledger.failureStreak("file_read"))
         assertEquals(1, ledger.failureStreak("file_write"))
-        assertEquals(0, ledger.failureStreak("file_read" + "_other"))
+        assertEquals(0, ledger.failureStreak("never_called"), "未入账的工具连击恒为 0")
     }
 
     @Test
@@ -118,9 +118,47 @@ class BreakerLedgerTest {
     // ── 墙钟换算纯函数 ───────────────────────────────────────────────────────
 
     @Test
-    fun `elapsedMillisSince 对非负差值给出毫秒`() {
+    fun `elapsedMillisSince 把 nanoTime 偏移换算成毫秒`() {
         val now = System.nanoTime()
-        assertTrue(elapsedMillisSince(now) >= 0L)
-        assertTrue(elapsedMillisSince(now - 5_000_000L) >= 5L)
+        val millis = elapsedMillisSince(now - 5_000_000L)
+        // 下界只是单调性的必然结论；真正咬住换算系数的是**上界**：
+        // 除数写成 1_000（微秒）会得到 5000，写成 1_000_000_000（秒）会得到 0 ——
+        // 只断言 >= 5 的话，这两种错数都会静默通过。
+        assertTrue(millis >= 5L, "偏移 5ms 应至少换算 5ms，实际 $millis")
+        assertTrue(millis < 5_000L, "换算系数错误：5ms 被放大成 $millis")
+        // 未来刻度（不应出现）不能给出正数
+        assertTrue(elapsedMillisSince(now + 5_000_000L) <= 0L)
+    }
+
+    // ── 空账本与快照纪律 ──────────────────────────────────────────────────────
+
+    @Test
+    fun `空账本 firstHard 与 lastFailureError 均为 null 且 attemptSummary 为空`() {
+        val ledger = BreakerLedger()
+        assertNull(ledger.firstHard())
+        assertNull(ledger.lastFailureError())
+        assertEquals(emptyList<ToolAttemptSummary>(), ledger.attemptSummary())
+    }
+
+    @Test
+    fun `trips 取出来是快照 —— 后续 trip 不污染已取出的列表`() {
+        val ledger = BreakerLedger()
+        ledger.trip(BreakerKind.TokenBudget, 1, evidence = "soft")
+        val snapshot = ledger.trips
+        ledger.trip(BreakerKind.ToolFailureStreak, 2, evidence = "hard")
+        assertEquals(1, snapshot.size, "trips 必须是防御拷贝，不能把内部可变列表泄出去")
+        assertEquals(2, ledger.trips.size)
+    }
+
+    @Test
+    fun `全部成功的 attempt 不产生 lastError 且 successes 等于 calls`() {
+        val ledger = BreakerLedger()
+        recordOk(ledger)
+        recordOk(ledger, tool = "file_write")
+        assertNull(ledger.lastFailureError(), "没有失败就没有失败摘要")
+        val summary = ledger.attemptSummary()
+        assertEquals(2, summary.size)
+        assertTrue(summary.all { it.lastError == null }, "全成功账不应带 lastError")
+        assertTrue(summary.all { it.successes == it.calls }, "全成功账 successes 应等于 calls")
     }
 }

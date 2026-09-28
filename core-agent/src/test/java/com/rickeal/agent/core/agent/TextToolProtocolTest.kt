@@ -124,6 +124,54 @@ class TextToolProtocolTest {
         assertEquals("{\"x\":1}", calls[0].argumentsJson)
     }
 
+    @Test
+    fun `args 与 input 同为 arguments 的合法别名`() {
+        // 参数键的叫法在不同模型间五花八门（arguments / parameters / args / input），
+        // 别名是「宁可放过」侧的兼容面 —— 少一个别名就是一次无谓的 Schema 违规。
+        val byArgs = (TextToolProtocol.parse(
+            "```json\n{\"tool\": \"calc\", \"args\": {\"x\": 1}}```", registered,
+        ) as ProtocolResult.Calls).calls
+        assertEquals("{\"x\":1}", byArgs[0].argumentsJson)
+        val byInput = (TextToolProtocol.parse(
+            "```json\n{\"tool\": \"calc\", \"input\": {\"y\": 2}}```", registered,
+        ) as ProtocolResult.Calls).calls
+        assertEquals("{\"y\":2}", byInput[0].argumentsJson)
+    }
+
+    @Test
+    fun `function 是 tool 名的合法别名`() {
+        // OpenAI 系形态用 "function" 当工具名键；不认就会把一次正常调用降级成 FinalAnswer。
+        val calls = (TextToolProtocol.parse(
+            "```json\n{\"function\": \"time\"}```", registered,
+        ) as ProtocolResult.Calls).calls
+        assertEquals("time", calls[0].name)
+        assertEquals("{}", calls[0].argumentsJson)
+    }
+
+    @Test
+    fun `arguments 为数组时合法通过`() {
+        val calls = (TextToolProtocol.parse(
+            "```json\n{\"tool\": \"calc\", \"arguments\": [1, 2]}```", registered,
+        ) as ProtocolResult.Calls).calls
+        assertEquals("[1,2]", calls[0].argumentsJson)
+    }
+
+    @Test
+    fun `arguments 为空串时归一化为空对象`() {
+        val calls = (TextToolProtocol.parse(
+            "```json\n{\"tool\": \"calc\", \"arguments\": \"\"}```", registered,
+        ) as ProtocolResult.Calls).calls
+        assertEquals("{}", calls[0].argumentsJson)
+    }
+
+    @Test
+    fun `数组内含未知工具时整块不执行 —— 数组内同样不部分执行`() {
+        // 与「多块混合」同一纪律：数组里有一个未知工具 → 整段按最终答案，
+        // 绝不执行数组里另一个已知工具（否则下一轮模型原样重复输出，仍然绕圈）。
+        val text = "```json\n[{\"tool\": \"calc\"}, {\"tool\": \"ghost\"}]```"
+        assertEquals(ProtocolResult.FinalAnswer(text), TextToolProtocol.parse(text, registered))
+    }
+
     // ── FinalAnswer：形状对但不可执行（永不重试） ────────────────────────────
 
     @Test

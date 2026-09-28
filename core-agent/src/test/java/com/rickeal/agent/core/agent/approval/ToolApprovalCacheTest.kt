@@ -55,19 +55,19 @@ class ToolApprovalCacheTest {
         // 对齐 ZCode allowAlways:false：输入每次不同的工具不能记住决策
         // （典型：clipboard set 换了文本就换摘要，照样弹卡）。
         grant(digest = "digest-a")
-        assertNull(peek(digest = "digest-b"))
+        assertNull(peek(digest = "digest-b"), "换了参数摘要必须重新弹卡")
     }
 
     @Test
     fun `换工具名必 miss`() {
         grant(toolName = "clipboard_set")
-        assertNull(peek(toolName = "file_write"))
+        assertNull(peek(toolName = "file_write"), "换工具必须重新弹卡")
     }
 
     @Test
     fun `换会话必 miss`() {
         grant(conversationId = "c1")
-        assertNull(peek(conversationId = "c2"))
+        assertNull(peek(conversationId = "c2"), "授权不跨会话")
     }
 
     // ── 档位维度（Wave 28 修复，P1-1） ──────────────────────────────────────
@@ -75,13 +75,16 @@ class ToolApprovalCacheTest {
     @Test
     fun `降档必 miss —— 不得用高档位授权放行低档位调用`() {
         grant(capabilityMode = "WORKSPACE_WRITE")
-        assertNull(peek(capabilityMode = "READ_ONLY"))
+        assertNull(
+            peek(capabilityMode = "READ_ONLY"),
+            "降档后必须重新弹卡 —— 否则 READ_ONLY 档被高档位存量授权静默绕过",
+        )
     }
 
     @Test
     fun `升档同样 miss`() {
         grant(capabilityMode = "READ_ONLY")
-        assertNull(peek(capabilityMode = "WORKSPACE_WRITE"))
+        assertNull(peek(capabilityMode = "WORKSPACE_WRITE"), "升档也是换了一个档位语义，必须重新弹卡")
     }
 
     @Test
@@ -124,11 +127,38 @@ class ToolApprovalCacheTest {
 
     @Test
     fun `ttl 非正数时回退到构造默认 TTL`() {
-        val shortCache = InMemoryToolApprovalCache(defaultTtlMillis = 40)
-        shortCache.grant("t", "d", "c", "m", ttlMillis = 0)
-        assertEquals(ToolApprovalDecision.APPROVED, shortCache.peek("t", "d", "c", "m"))
-        Thread.sleep(80)
-        assertNull(shortCache.peek("t", "d", "c", "m"))
+        // 抖动面说明：旧写法用「默认 40ms + sleep(80)」判命中，命中断言本身要靠
+        // 「两次调用之间不能卡过 40ms」—— CI 抖动会把它打红。改成默认 60s：
+        // 显式 ttl=0 若被实现直接采用，expiresAt = now，peek 的 `now >= expiresAt`
+        // 立即成立 → 必然 miss。所以「命中」本身就证明回退到了默认 TTL，零 sleep。
+        val cache = InMemoryToolApprovalCache(defaultTtlMillis = 60_000)
+        cache.grant("t", "d", "c", "m", ttlMillis = 0)
+        assertEquals(
+            ToolApprovalDecision.APPROVED,
+            cache.peek("t", "d", "c", "m"),
+            "ttl=0 必须回退默认 TTL，否则授予即过期",
+        )
+        // 负数同样回退（不能被当成「已过去 1ms」而判废）
+        cache.grant("t2", "d", "c", "m", ttlMillis = -1)
+        assertEquals(
+            ToolApprovalDecision.APPROVED,
+            cache.peek("t2", "d", "c", "m"),
+            "ttl<0 必须回退默认 TTL",
+        )
+    }
+
+    @Test
+    fun `同 key 重复 grant 以后一次的 TTL 覆盖前一次`() {
+        // 先授 1ms 再授 60s：若第二次 grant 没覆盖（沿用 1ms 的 expiresAt），
+        // sleep 之后必然 miss —— 这条是「覆盖写」而非「只写首次」的证据。
+        grant(ttlMillis = 1)
+        grant(ttlMillis = 60_000)
+        Thread.sleep(50)
+        assertEquals(
+            ToolApprovalDecision.APPROVED,
+            peek(),
+            "重复 grant 必须覆盖旧的 expiresAt",
+        )
     }
 
     @Test

@@ -229,10 +229,36 @@ class BottleneckReportTest {
     fun `MissingInput 无失败记录时用兜底摘要`() {
         val report = buildBottleneckReport("t", 1, 1_000L, BreakerLedger(), emptySet())
         assertEquals(Blocker.MissingInput, report.blocker)
-        assertTrue(
-            report.suggestions.single().contains("未知阻塞（无失败工具记录）"),
-            report.suggestions.single(),
+        val s = report.suggestions.single()
+        // 兜底句会被塞进「（最近失败：{missing}）」，自身不能再带括号 = D4。
+        assertTrue(s.contains("（最近失败：无失败工具记录）"), s)
+        assertTrue(!s.contains("（无失败工具记录））"), "不应出现嵌套括号：$s")
+    }
+
+    @Test
+    fun `missing 压平换行 —— 不破坏建议行的单行结构（D5）`() {
+        val ledger = BreakerLedger()
+        ledger.recordAttempt(
+            "file_read", "d", ok = false,
+            error = "第一行报错\r\n第二行报错\n第三行报错", elapsedMillis = 1L,
         )
+        val s = buildBottleneckReport("t", 1, 1_000L, ledger, emptySet()).suggestions.single()
+        assertTrue(!s.contains("\n"), "建议句必须保持单行：$s")
+        assertTrue(!s.contains("\r"), "必须一并压平 CR：$s")
+        assertTrue(s.contains("第一行报错 第二行报错 第三行报错"), s)
+    }
+
+    @Test
+    fun `missing 代理对安全截断 —— 不得切出半个代理对（D5）`() {
+        // 'a' + 100 个 emoji（每个 2 个 UTF-16 code unit）：截到 80 unit 时，
+        // 尾端正好停在一个高位代理上 —— 直接 take 会留下半个代理对。
+        val emoji = "\uD83D\uDE00"
+        val ledger = BreakerLedger()
+        ledger.recordAttempt("x", "d", ok = false, error = "a" + emoji.repeat(100), elapsedMillis = 1L)
+        val s = buildBottleneckReport("t", 1, 1_000L, ledger, emptySet()).suggestions.single()
+        val expected = "a" + emoji.repeat(39)
+        assertTrue(s.contains(expected), "应截断到 79 unit（回退一格）：$s")
+        assertTrue(!s.contains(expected + "\uD83D"), "高位代理必须被回退：$s")
     }
 
     @Test
