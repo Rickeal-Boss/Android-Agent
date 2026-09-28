@@ -45,4 +45,15 @@ dependencies {
 
     // 端侧推理（仅本模块）
     implementation(libs.litertlm.android)
+
+    // JVM 单测（src/test/java，AGP 默认源集）。与 :core-agent / :core-model 同款配置
+    // （同一 catalog 键，不新增依赖版本）：AGP 不自动提供 junit，必须显式声明；
+    // kotlin-test 提供断言 API（catalog 里 kotlin-test 键指向 kotlin-test-junit 变体，
+    // 见 gradle/libs.versions.toml 注释）。
+    // 测试只覆盖**不触 native / Android API 的纯逻辑**（EngineLoadCoordinator 状态机、
+    // EngineEnvironment 的 GPU 白名单回落、AttachmentBytesReader 的字节读取边界），
+    // 因此无需 Robolectric / coroutines-test：runBlocking 来自 kotlinx-coroutines-core
+    // （经 kotlinx.coroutines.android 传递引入，已在 implementation 依赖里）。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }
