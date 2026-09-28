@@ -36,7 +36,9 @@ import com.rickeal.agent.core.engine.EngineLoadCoordinator
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.data.notify.GenerationNotifier
 import com.rickeal.agent.core.data.perf.PerformanceMonitorManager
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -250,12 +252,28 @@ class AppContainer(
     )
 
     /**
+     * 低频观察用应用级协程作用域（Wave 31 流2）。
+     *
+     * 唯一用途：为 [thermalGovernor] 观察 [AgentRunner.isBusy] 提供作用域（热 CRITICAL
+     * 被 isBusy 闸门跳过的释放，在引擎转闲时补释放）。它只跑一个**低频**的 StateFlow
+     * 观察协程（仅在 busy 翻转时唤醒），不做任何耗时/阻塞工作，故 Dispatchers.Default
+     * 足够。SupervisorJob：单次观察协程异常不影响其它（且当前仅此一个子协程）。
+     * 生命周期与 AppContainer 同终（进程级单例，不注销）。
+     */
+    private val observationScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
      * 热状态治理器（Wave 30 §2.1）：PowerManager 热档位 → 四档策略。
      * [releaseEngineIfIdle] 与 onTrimMemory 共用同一条引擎释放路径（isBusy 硬闸门
-     * 在其内部防 native use-after-free）。
+     * 在其内部防 native use-after-free）。Wave 31 流2 起补传 [AgentRunner.isBusy] 与
+     * [observationScope]：CRITICAL 跃迁时若引擎忙，本次释放被跳过 → 由 ThermalGovernor
+     * 在引擎转闲且档位仍为 CRITICAL 时补释放一次（此前该场景释放永不发生）。
      */
     val thermalGovernor: ThermalGovernor = ThermalGovernor(
         releaseEngineIfIdle = { releaseEngineIfIdle() },
+        isBusy = agentRunner.isBusy,
+        scope = observationScope,
     )
 
     // ---- 子代理框架（ZCode Actor / Octop ask_agent 移植）----

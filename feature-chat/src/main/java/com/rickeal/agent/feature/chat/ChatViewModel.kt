@@ -9,6 +9,7 @@ import com.rickeal.agent.core.model.AiCapabilityMode
 import com.rickeal.agent.core.model.ToolDisclosureMode
 import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.AgentRequest
+import com.rickeal.agent.core.agent.TerminationReason
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
 import com.rickeal.agent.core.agent.approval.ToolApprovalHandler
 import com.rickeal.agent.core.agent.breaker.BottleneckReport
@@ -158,6 +159,30 @@ data class ChatUiState(
      * 起 run 时与 error 同一处清 null —— 上一次任务的诊断不该粘到下一次任务上。
      */
     val lastReport: BottleneckReport? = null,
+    /**
+     * 本次 run 的**发送侧估算**上下文规模（`RunTokenLedger.sentTokens`，Wave 31 流2 生产接线）。
+     *
+     * 与 [contextTokens]（引擎回报实测）是**并列的第二口径**，两者**不做换算也不做对账**
+     * （[com.rickeal.agent.core.agent.token.RunTokenLedger] KDoc 红线）。它由 AgentRunner
+     * 发送侧记账块经 `AgentRequest.tokenLedger` 回写，故在**发送前/首轮**即可给出预估 ——
+     * 这是 [contextTokens]（要等引擎回报）给不出的信息。
+     *
+     * `null` / `<= 0` = 还没有可用估算（账本未接 / 新 run 尚未首轮回写），此时 UI 不显示
+     * 估算口径。⚠️ 账本按会话池化、跨 run 存活，而 sentTokens 是 run 级（新 run 首轮回写即
+     * 覆盖）—— 新 run 起点由 [ChatViewModel.observeTokenLedger] 先把本字段清 null，避免
+     * 首轮回写前的窗口里显示上一轮遗留值（账本实例本身无 reset API，见该函数 KDoc）。
+     */
+    val sentTokensEstimate: Long? = null,
+    /**
+     * 最近一次终态的**终止原因**（`AgentEvent.Finished.terminatedBy` /
+     * `AgentEvent.Failed.terminatedBy`，Wave 31 流2）。
+     *
+     * 此前该字段零消费者；本波只把「非正常终止」中语义明确的两档渲染为一行小字
+     * （见 ChatScreen 的 terminationHintOf）：[TerminationReason.BreakerTripped] /
+     * [TerminationReason.MaxRounds]。其余值 / null ⇒ 不渲染（正常结束路径零 UI 变化）。
+     * 起 run 时与 error / lastReport 同一处清 null（上一次的终止原因不粘到下一次）。
+     */
+    val lastTermination: TerminationReason? = null,
 )
 
 class ChatViewModel(
@@ -248,6 +273,36 @@ class ChatViewModel(
 
     private var runJob: Job? = null
     private var conversationId: String? = initialConversationId
+
+    /** token 账本观察作业（Wave 31 流2）：把发送侧估算镜像进 [ChatUiState.sentTokensEstimate]。 */
+    private var ledgerJob: Job? = null
+
+    /**
+     * 开始观察某会话的 token 账本（Wave 31 流2 生产接线）。
+     *
+     * 账本按 cid 池化、跨 run 存活（AppContainer.tokenLedger），而
+     * [com.rickeal.agent.core.agent.token.RunTokenSnapshot.sentTokens] 是 **run 级**
+     * （新 run 首轮回写即覆盖）。为消除「新 run 首轮回写前」的窗口里显示上一轮遗留值，
+     * 这里先把 UI 字段清 null，再由 collect 的首个有效值填回。
+     *
+     * ⚠️ 账本实例本身**不重置** —— [com.rickeal.agent.core.agent.token.RunTokenLedger]
+     * 无 reset API，且其 KDoc 明确本波不引入；因此
+     * [com.rickeal.agent.core.agent.token.RunTokenSnapshot.cumulativeIn] /
+     * [com.rickeal.agent.core.agent.token.RunTokenSnapshot.cumulativeOut]
+     * （单调累加、跨 run 不归零）在第二次 run 起与本次 run 的估算口径不再可比 ——
+     * 本波 UI **只消费 sentTokens（发送侧估算）**，不消费那两个累计口径，从而规避该
+     * 生命周期错配（这是「接受现状 + 只取安全口径」的取舍，与 RunTokenLedger KDoc 的
+     * 「真正接线前必须先解决生命周期错配」同向）。
+     */
+    private fun observeTokenLedger(cid: String) {
+        ledgerJob?.cancel()
+        _uiState.update { it.copy(sentTokensEstimate = null) }
+        ledgerJob = viewModelScope.launch {
+            container.tokenLedger(cid).snapshot.collect { snap ->
+                _uiState.update { it.copy(sentTokensEstimate = snap.sentTokens.takeIf { v -> v > 0L }) }
+            }
+        }
+    }
 
     /**
      * 审批通道：把「危险/需确认工具的执行前裁决」挂起到用户点击为止。
@@ -576,6 +631,7 @@ class ChatViewModel(
                 toolTraces = emptyList(),
                 // 同 onSend / onSendFrom：续跑也是一次新任务，上一次的诊断卡必须撤掉。
                 lastReport = null,
+                lastTermination = null,
             )
         }
         runJob?.cancel()
@@ -641,6 +697,10 @@ class ChatViewModel(
             val config = thermallyCappedConfig(_uiState.value.config)
             val request = AgentRequest(
                 conversationId = cid,
+                // run 级 token 账本（Wave 31 流2 生产接线）：按会话池化的实例，发送侧
+                // 估算 / 引擎回报由 AgentRunner 单点回写。子 run（AskSubagentTool）不传
+                // （by design：子 run 独立短命，不进父账本）。
+                tokenLedger = container.tokenLedger(cid),
                 history = history,
                 userInput = userMessage,
                 config = config,
@@ -702,6 +762,9 @@ class ChatViewModel(
     fun onNewConversation() {
         runJob?.cancel()
         runJob = null
+        // 账本观察随会话一起停（新会话的观察在 collectRunWithPerfWindow 里按新 cid 重建）。
+        ledgerJob?.cancel()
+        ledgerJob = null
         conversationId = null
         // 会话销毁 = 授权作用域消失：审批缓存全清（key 含 cid 本就隔离，这里保超额清）。
         container.toolApprovalCache.revokeAll(null)
@@ -791,8 +854,9 @@ class ChatViewModel(
                 error = null,
                 notice = null,
                 recovery = null,
-                // 上一次任务的诊断卡不该粘到这一次（与 error / notice 同一处纪律）。
+                // 上一次任务的诊断卡 / 终止原因不该粘到这一次（与 error / notice 同一处纪律）。
                 lastReport = null,
+                lastTermination = null,
             )
         }
         resetStreaming(role = Role.MODEL, isStreaming = true)
@@ -812,6 +876,10 @@ class ChatViewModel(
             )
             val request = AgentRequest(
                 conversationId = cid,
+                // run 级 token 账本（Wave 31 流2 生产接线）：按会话池化的实例，发送侧
+                // 估算 / 引擎回报由 AgentRunner 单点回写。子 run（AskSubagentTool）不传
+                // （by design：子 run 独立短命，不进父账本）。
+                tokenLedger = container.tokenLedger(cid),
                 history = history,
                 userInput = userMessage,
                 config = config,
@@ -917,6 +985,7 @@ class ChatViewModel(
                 recovery = null,
                 // 同 onSend：重跑是一次新任务，上一次的诊断卡必须撤掉。
                 lastReport = null,
+                lastTermination = null,
             )
         }
         // 同上：覆盖 runJob 之前先取消旧的，绝不让两个 run 同时活着。
@@ -934,6 +1003,10 @@ class ChatViewModel(
             )
             val request = AgentRequest(
                 conversationId = cid,
+                // run 级 token 账本（Wave 31 流2 生产接线）：按会话池化的实例，发送侧
+                // 估算 / 引擎回报由 AgentRunner 单点回写。子 run（AskSubagentTool）不传
+                // （by design：子 run 独立短命，不进父账本）。
+                tokenLedger = container.tokenLedger(cid),
                 history = history,
                 userInput = userMessage,
                 config = config,
@@ -999,6 +1072,9 @@ class ChatViewModel(
      * release：散点接线是 Wave 27 以降的已知事故形态（方案 §2.2 裁决）。
      */
     private suspend fun collectRunWithPerfWindow(cid: String, request: AgentRequest) {
+        // token 账本观察（Wave 31 流2）：与 run 窗口同起，把发送侧估算镜像进 UI 状态。
+        // 放在这个共享入口 = 三条 run 路径（onSend / onSendFrom / onRecover）一次接线。
+        observeTokenLedger(cid)
         container.perfMonitorManager.acquire("chat-run:$cid")
         try {
             container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -1143,10 +1219,10 @@ class ChatViewModel(
                         toolTraces = emptyList(),
                         contextTokens = if (promptTokens > 0) promptTokens else it.contextTokens,
                         notice = null,
-                        // 诊断卡（Wave 30 §2.8）：轮次耗尽路径挂 report 走 Finished 而非
-                        // Failed；正常结束恒 null，等于没这个字段 —— 零行为回归。
-                        lastReport = event.report,
-                    )
+                        // 诊断卡 + 终止原因（Wave 30 §2.8 / Wave 31 流2）：轮次耗尽路径挂
+                        // report 走 Finished 而非 Failed；正常结束恒 null，等于没这两个字段
+                        // —— 零行为回归。映射收在 applyTerminalEvent（纯函数，可 JVM 单测）。
+                    ).applyTerminalEvent(event)
                 }
                 resetStreaming(role = null, isStreaming = false)
                 // （history_v2 判死，Wave 30：COMPLETE 终态不再写回合归档。）
@@ -1162,13 +1238,13 @@ class ChatViewModel(
                         isGenerating = false,
                         error = AgentLogStore.sanitizeUserFacing(event.message),
                         notice = null,
-                        // 诊断卡（Wave 30 §2.4）：熔断路径（热闸 / 墙钟 / 失败连击 /
-                        // 振荡）挂 report，既有 4 处 emit Failed 恒 null —— 零回归。
-                        // 数据本身不 sanitize：报告里带工具报错原文与熔断证据，脱敏
-                        // 统一在 UI 渲染出口做（ChatScreen 走 sanitizeUserFacing），
+                        // 诊断卡 + 终止原因（Wave 30 §2.4 / Wave 31 流2）：熔断路径
+                        // （热闸 / 墙钟 / 失败连击 / 振荡）挂 report，既有 4 处 emit Failed
+                        // 恒 null —— 零回归。数据本身不 sanitize：报告里带工具报错原文与
+                        // 熔断证据，脱敏统一在 UI 渲染出口做（ChatScreen 走 sanitizeUserFacing），
                         // 免得同一段文本被脱两次、把证据里的合法字符也吃掉。
-                        lastReport = event.report,
-                    )
+                        // 映射收在 applyTerminalEvent（纯函数，可 JVM 单测）。
+                    ).applyTerminalEvent(event)
                 }
                 _streaming.update { it.copy(isStreaming = false) }
                 // 失败也是终态，必须撤通知（Wave 9 审查修正）：Failed 分支走的是
@@ -1276,4 +1352,28 @@ class ChatViewModel(
         container.generationNotifier.stop()
         super.onCleared()
     }
+}
+
+/**
+ * 「终态事件 → 诊断卡 + 终止原因」的纯映射（Wave 31 流2 提取，供 JVM 单测）。
+ *
+ * 把 [AgentEvent.Finished] / [AgentEvent.Failed] 携带的 [BottleneckReport]（诊断卡）与
+ * [TerminationReason]（终止原因）落到 [ChatUiState] 的两个字段上；其余事件与两个字段无关，
+ * 原样返回。提取成**纯函数**（不触 Compose / Android API / ViewModel）是为了让 feature-chat
+ * 这个此前无测试源集的模块也能对「事件 → 状态」这一层做真正的 JVM 单测 —— 见
+ * `ChatUiStateTest`。生产路径（[ChatViewModel.handleEvent] 的 Finished / Failed 分支）实际
+ * 调用本函数，故测试覆盖的是真实逻辑而非镜像。
+ */
+internal fun ChatUiState.applyTerminalEvent(event: AgentEvent): ChatUiState = when (event) {
+    is AgentEvent.Finished -> copy(
+        lastReport = event.report,
+        lastTermination = event.terminatedBy,
+    )
+
+    is AgentEvent.Failed -> copy(
+        lastReport = event.report,
+        lastTermination = event.terminatedBy,
+    )
+
+    else -> this
 }

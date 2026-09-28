@@ -66,4 +66,12 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+
+    // JVM 单测（Wave 31 流2 点亮 src/test 源集）。与 :core-agent 同款坐标（同一
+    // catalog 键，不新增依赖版本）：AGP 不自动提供 junit 必须显式声明；kotlin-test
+    // 提供断言 API（kotlin-test-junit 变体，见 gradle/libs.versions.toml）。
+    // 测试只覆盖纯逻辑（ChatUiState 的事件 → 状态映射），不触 Compose / Android API /
+    // ViewModel 的 Android 依赖，因此无需 Robolectric / coroutines-test。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }

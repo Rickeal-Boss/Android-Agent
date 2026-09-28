@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.agent.breaker.render
+import com.rickeal.agent.core.agent.TerminationReason
 import com.rickeal.agent.core.agent.plan.PlanStepStatus
 import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.GlassButton
@@ -221,6 +222,8 @@ fun ChatScreen(
                 ChatContextMeter(
                     usedTokens = state.contextTokens,
                     limitTokens = state.config.contextLength,
+                    // 发送侧估算（Wave 31 流2）：与引擎实测并列，UI 用「估算≈/实测」区分。
+                    sentTokensEstimate = state.sentTokensEstimate,
                 )
                 ChatInputBar(
                     draft = state.draftInput,
@@ -525,6 +528,20 @@ fun ChatScreen(
                 }
             }
 
+            // ── 终止原因小字（Wave 31 流2：Failed.terminatedBy 接 UI）────────
+            // 极轻量：仅对「非正常终止」里语义明确的两档渲染一行小字；其余值 / null
+            // 不渲染任何东西 —— 正常结束路径（ModelStopped）UI 零变化。独立于诊断卡：
+            // 诊断卡只在有 report 时出现，而这行小字对「无 report 的终止」也能给出提示。
+            val terminationHint = terminationHintOf(state.lastTermination)
+            if (terminationHint != null) {
+                Text(
+                    text = terminationHint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onGlassSubtle,
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                )
+            }
+
             // ── 轻量操作反馈（Snackbar）────────────────────────────────
             // 挂在状态卡片列的末尾：M3 默认样式，不另做玻璃 Snackbar（宿主级
             // 状态信息已有完整玻璃卡体系，瞬时 toast 级反馈不值得再造一层）。
@@ -587,4 +604,17 @@ fun ChatScreen(
             modifier = Modifier.fillMaxSize(),
         )
     }
+}
+
+/**
+ * 终止原因 → 一行小字（Wave 31 流2）。
+ *
+ * 只对「用户需要知道、且当前有表达力」的两档渲染；其余值（ModelStopped / ProviderStop /
+ * Interrupted）与 null 返回 null = **不渲染任何东西**（正常结束路径零 UI 变化）。
+ * `when` 带 `else`：`TerminationReason` 枚举将来加值时不崩、不渲染。
+ */
+private fun terminationHintOf(reason: TerminationReason?): String? = when (reason) {
+    TerminationReason.BreakerTripped -> "（已被安全熔断，详见任务诊断）"
+    TerminationReason.MaxRounds -> "（达到轮次上限）"
+    else -> null
 }

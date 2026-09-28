@@ -4,9 +4,11 @@ import android.os.PowerManager
 import com.rickeal.agent.core.agent.thermal.RunThermalGate
 import com.rickeal.agent.core.agent.thermal.ThermalDecision
 import com.rickeal.agent.core.model.AgentLogStore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /** 热档位（core-agent 只见决策类型，不见本档位数值 —— 方案 §2.1 的层次边界）。 */
 enum class ThermalTier { NONE, LIGHT, MODERATE, SEVERE, CRITICAL }
@@ -36,17 +38,63 @@ enum class ThermalTier { NONE, LIGHT, MODERATE, SEVERE, CRITICAL }
  * 降温回落（CRITICAL → NONE）**不需要配套的「重载引擎」动作**：引擎是按需懒加载
  * 的，下一次 run 触发 engineFactory 重新装载 —— 与 onTrimMemory(TRIM_MEMORY_UI_HIDDEN)
  * 释放后回前台的路径完全同一条，用户无感（AppContainer.releaseEngineIfIdle KDoc
- * 同款结论）。反过来，CRITICAL 跃迁时若有 run 在跑，isBusy 闸门会跳过本次释放
- * （防 native use-after-free），等下一次跃迁或下一次 onTrimMemory 再试。
+ * 同款结论）。
+ *
+ * ⚠️ CRITICAL 跃迁时若有 run 在跑，isBusy 硬闸门会跳过本次释放（防 native
+ * use-after-free）—— Wave 31 流2 起，这次**被跳过的释放由 [releaseDeferred] 补上**：
+ * 观察 [isBusy]，在引擎转闲（!busy）且档位仍为 CRITICAL 时补释放一次。此前该场景
+ * 是「设备持续 CRITICAL → 不再有跃迁回调 → 释放永远不发生」的保护失效点。
+ * [isBusy] == null（未接线）时 releaseDeferred 恒 false，[onThermalStatus] 行为与
+ * 引入本机制前**逐字节一致**。
  *
  * @param releaseEngineIfIdle CRITICAL 跃迁时的引擎释放路径（AppContainer 传入，
  *   与 onTrimMemory 共用同一条；isBusy 硬闸门在其内部）。
+ * @param isBusy 全应用唯一的「引擎忙」真值源（AppContainer.agentRunner.isBusy）。
+ *   null = 不启用补释放（与引入本机制前的行为逐字节一致）。
+ * @param scope 观察 [isBusy] 的协程作用域（应用级）。null = 不观察。
  */
 class ThermalGovernor(
     private val releaseEngineIfIdle: () -> Unit,
+    private val isBusy: StateFlow<Boolean>? = null,
+    private val scope: CoroutineScope? = null,
 ) {
     private val _tier = MutableStateFlow(ThermalTier.NONE)
     val tier: StateFlow<ThermalTier> = _tier.asStateFlow()
+
+    /**
+     * 「CRITICAL 释放被 isBusy 闸门跳过、待补释放」标志（Wave 31 流2）。
+     *
+     * 置位：CRITICAL 跃迁且此刻引擎忙（`isBusy?.value == true`）。
+     * 复位：① 观察者看到引擎转闲且档位仍为 CRITICAL → 补释放并复位；② 降温回落
+     * （new < CRITICAL）→ 复位（此时引擎按需懒加载，无需再补释放）。
+     *
+     * 跨线程：listener 回调（主线程）写、观察协程（应用级 scope）读写 —— @Volatile
+     * 保证可见性。`isBusy == null`（未接线）时恒 false，机制整体不激活。
+     */
+    @Volatile
+    private var releaseDeferred = false
+
+    init {
+        // 仅当 isBusy 与 scope 都接线时才观察（两者任一为 null ⇒ 不启动协程、
+        // releaseDeferred 恒 false、行为与引入本机制前逐字节一致）。
+        val observedBusy = isBusy
+        val observerScope = scope
+        if (observedBusy != null && observerScope != null) {
+            observerScope.launch {
+                observedBusy.collect { busy ->
+                    // 只在「引擎转闲 + 此前被跳过 + 档位仍是 CRITICAL」三者同时成立时动作；
+                    // 其余情况零开销（无日志、无副作用）。
+                    if (!busy && releaseDeferred && _tier.value == ThermalTier.CRITICAL) {
+                        releaseDeferred = false
+                        runCatching { releaseEngineIfIdle() }
+                            .onFailure {
+                                AgentLogStore.warn("热 CRITICAL 补释放引擎失败（${it.javaClass.simpleName}）")
+                            }
+                    }
+                }
+            }
+        }
+    }
 
     /** PowerManager.addThermalStatusListener 的回调入口。 */
     fun onThermalStatus(status: Int) {
@@ -70,8 +118,15 @@ class ThermalGovernor(
         if (old == new) return
         AgentLogStore.info("热状态：$old → $new（PowerManager status=$status）")
         if (new == ThermalTier.CRITICAL) {
+            // 双判据（tier + isBusy），**不依赖 releaseEngineIfIdle() 的返回值** ——
+            // 后者的语义是「是否至少删掉一个 target」，不表达「被 isBusy 闸门跳过」。
+            // isBusy == null ⇒ releaseDeferred 恒 false ⇒ 行为与今天一致。
+            releaseDeferred = isBusy?.value == true
             runCatching { releaseEngineIfIdle() }
                 .onFailure { AgentLogStore.warn("CRITICAL 释放引擎失败（${it.javaClass.simpleName}）") }
+        } else if (new < ThermalTier.CRITICAL) {
+            // 降温回落：引擎按需懒加载，无需补释放；撤销待补标志。
+            releaseDeferred = false
         }
     }
 

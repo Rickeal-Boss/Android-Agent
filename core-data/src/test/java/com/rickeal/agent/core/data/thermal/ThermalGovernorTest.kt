@@ -1,6 +1,9 @@
 package com.rickeal.agent.core.data.thermal
 
 import com.rickeal.agent.core.agent.thermal.ThermalDecision
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -39,7 +42,10 @@ class ThermalGovernorTest {
 
     private class Harness(release: () -> Unit = {}) {
         var releases = 0
-        val governor = ThermalGovernor { releases++; release() }
+        // 具名实参：Wave 31 流2 给构造函数新增了 isBusy / scope 两个默认参数后，
+        // releaseEngineIfIdle 不再是最后一个参数，尾随 lambda 语法失效（会去绑 scope），
+        // 故必须具名。isBusy / scope 保持 null = 不启用补释放（旧行为）。
+        val governor = ThermalGovernor(releaseEngineIfIdle = { releases++; release() })
         fun on(status: Int) = governor.onThermalStatus(status)
     }
 
@@ -195,5 +201,71 @@ class ThermalGovernorTest {
         h.on(STATUS_CRITICAL)
         assertEquals(1, h.releases)
         assertEquals(ThermalTier.CRITICAL, h.governor.tier.value)
+    }
+
+    // ── CRITICAL 补释放（Wave 31 流2：isBusy 闸门跳过后的补偿）─────────────────
+
+    /**
+     * 观察协程用 `Dispatchers.Unconfined`：`scope.launch` 同步执行到首次挂起（StateFlow
+     * 订阅建立），此后每次 `busy.value = x` 同步驱动 collect 体 —— 无需 coroutines-test
+     * 即可**确定性**断言（本仓禁用未声明的测试依赖）。`releaseEngineIfIdle` 内模拟
+     * AppContainer 的真实硬闸门（忙时跳过），以验证「跳过 → 转闲补释放」的闭环。
+     */
+    private class DeferredHarness {
+        val busy = MutableStateFlow(false)
+        var releases = 0
+        val governor = ThermalGovernor(
+            releaseEngineIfIdle = { if (!busy.value) releases++ },
+            isBusy = busy,
+            scope = CoroutineScope(Dispatchers.Unconfined),
+        )
+
+        fun on(status: Int) = governor.onThermalStatus(status)
+    }
+
+    @Test
+    fun `isBusy 为 null 时不启用补释放：行为与引入本机制前一致`() {
+        // Harness 用默认的 isBusy = null / scope = null：CRITICAL 跃迁照常释放一次，
+        // 降温回落不产生任何补偿。
+        val h = Harness()
+        h.on(STATUS_CRITICAL)
+        assertEquals(1, h.releases)
+        h.on(STATUS_NONE)
+        assertEquals(1, h.releases)
+    }
+
+    @Test
+    fun `CRITICAL 时引擎忙则本次释放被跳过、引擎转闲后补释放一次`() {
+        val h = DeferredHarness()
+        h.busy.value = true
+        h.on(STATUS_CRITICAL)
+        // 忙：闸门跳过 → 0 次；但 releaseDeferred 已置位。
+        assertEquals(0, h.releases)
+        h.busy.value = false
+        // 转闲且档位仍 CRITICAL → 补释放一次。
+        assertEquals(1, h.releases)
+        // 同值再写不产生新发射 → 不重复释放。
+        h.busy.value = false
+        assertEquals(1, h.releases)
+    }
+
+    @Test
+    fun `CRITICAL 时引擎闲则立即释放、且不留下待补标志`() {
+        val h = DeferredHarness()
+        h.on(STATUS_CRITICAL)
+        assertEquals(1, h.releases) // 立即释放
+        h.busy.value = false
+        assertEquals(1, h.releases) // 无待补 → 不重复
+    }
+
+    @Test
+    fun `降温回落撤销待补释放：转闲后不再补释放`() {
+        val h = DeferredHarness()
+        h.busy.value = true
+        h.on(STATUS_CRITICAL) // 忙 → 跳过，置 releaseDeferred
+        assertEquals(0, h.releases)
+        h.on(STATUS_NONE) // 降温回落 → releaseDeferred 复位
+        h.busy.value = false // 转闲，但档位非 CRITICAL → 不补释放
+        assertEquals(0, h.releases)
     }
 }
