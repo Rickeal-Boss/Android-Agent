@@ -19,7 +19,9 @@ name: Build
 #      独立并行 = 不挤占构建关键路径（正面回应旧注释「不跑 lint，避免无关
 #      任务拖垮构建」——拖垮的前提是 lint 串进 assemble 链，这里没有）；
 #      warn-only（:app lint{} 设 abortOnError=false）= 存量问题不阻断 CI，
-#      报告先行、门禁后置。
+#      报告先行、门禁后置。Wave 32 起走「两轮 baseline 计划」把 lint 毕业成
+#      真门禁，步骤写在 lint job 的头注释里（第一轮生成并上传
+#      app/lint-baseline.xml，第二轮翻 abortOnError=true）。
 #   4. 【绝不下载模型】4B 模型 > 2GB，CI 只产出 APK/AAR，模型由用户自行导入。
 #
 # 已知回退路径（禁止提前自行改动，完整版见 docs/02-ci.md §3.2.3 / §5.2-C）：
@@ -453,7 +455,7 @@ jobs:
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
-  # Lint 门禁位（warn-only 起步）
+  # Lint 门禁位（Wave 32：warn-only → baseline 门禁，分两轮落地）
   #
   # 为什么是独立并行 job，而不是塞进 unit-tests 或 assemble-debug：
   #   1. 不拖垮构建（历史顾虑见文件头注释）：本 job 与 assemble-debug 并行，
@@ -463,12 +465,31 @@ jobs:
   #      lint{} 块）即可覆盖 :app 与全部 8 个 library 模块的源码，
   #      而不是 9 个模块各跑一遍 lint——后者并行展开会成倍拉高 runner 占用，
   #      且每个模块还要各自维护 lint 配置。
-  #   3. warn-only：第一次全量 lint 必然爆出存量问题（未用资源 / 硬编码 /
-  #      缺 contentDescription 等），abortOnError=false 保证它们只出现在
-  #      报告里、绝不让 CI 变红。等存量清完（或建立 baseline）再翻成阻断。
-  #   4. 不用 baseline 起步：生成 baseline 文件需要先跑一轮 lint 拿到结果
-  #      再提交 XML，多一次 CI 往返；abortOnError=false 已经达到同样的
-  #      「不阻断」效果，机制更少、失败面更小。后续翻转门禁时再考虑。
+  #   3. 【Wave 32 两轮计划】—— 本机没有 JDK / Android SDK，baseline 只能
+  #      由 lint 自己在 CI 里生成，因此必然是两轮：
+  #      第一轮（本次改动，abortOnError 仍为 false）：
+  #        · app/lint-baseline.xml 不在仓库里 ⇒ :app:lintDebug 首次运行时
+  #          由 lint 自动生成该文件（冻结 83 条存量 issue）；
+  #        · 本 job 新增的 "Upload lint baseline" 步骤把它作为 artifact
+  #          `lint-baseline-<sha>` 上传 ⇒ 主理人下载后放进
+  #          app/lint-baseline.xml 并提交；
+  #        · job 结论不变，仍然 success。
+  #      第二轮（拿到 baseline 之后，接手人照做）：
+  #        · 把 app/build.gradle.kts 的 abortOnError 翻成 true；
+  #        · 建议**同时**给下面 "Run Android Lint" 步骤加一行
+  #          `continue-on-error: true` 观察一轮 —— 若 baseline 因路径/格式
+  #          没匹配上，会当场暴露成红 step 而不打红 CI；确认干净后再摘掉；
+  #        · 只翻 abortOnError 只能拦 Error/Fatal 级 issue；想让 83 条
+  #          全量进门禁需再追加 warningsAsErrors = true（必须在确认 baseline
+  #          真的覆盖了全部存量 issue 之后才做）。
+  #   4. 重新生成基线：删掉 app/lint-baseline.xml 再跑一次本 job。
+  #      ⛔ 不要手工从 lint-results XML 合成 baseline —— 报告里的 file 属性
+  #      是 CI 绝对路径（/home/runner/work/...），与 baseline 的形态不一定
+  #      一致，猜错就是门禁失效。让 lint 自己写。
+  #
+  # ⚠️ 本 job **从来没有** continue-on-error：warn-only 完全由
+  #    app/build.gradle.kts 的 abortOnError=false 提供。第二轮翻 true 时
+  #    不要误以为这里已经有兜底 —— 兜底要自己加。
   #
   # 工具链与 Build / unit-tests job 完全同源（JDK 21 temurin / Gradle 9.7.1
   # via setup-gradle / 同一份 ci-gradle.properties），三个 job 的 Gradle
@@ -570,6 +591,59 @@ jobs:
             "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
             :app:lintDebug
 
+      - name: Regenerate lint baseline if missing
+        # 兜底：某些 AGP/lint 版本只在 "UpdateBaselineTask" 里写 baseline，
+        # 普通 :app:lintDebug 不落盘。这里只在确实没生成时才补跑一次。
+        # continue-on-error: true + `|| true` 双重兜底 —— 任务名不存在也绝不
+        # 打断本 job（本 job 的结论语义在 Wave 32 第二轮之前必须是「不影响」）。
+        id: regen
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f app/lint-baseline.xml ]; then
+            echo "::notice::app/lint-baseline.xml 已存在，跳过兜底再生。"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::warning::lint 未落盘 baseline，尝试 :app:updateLintBaseline 兜底再生"
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
+            :app:updateLintBaseline || true
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+
+      - name: Locate lint baseline
+        # 拿到 baseline 是 Wave 32 第一轮的**唯一目的**：找不到就明确报 error
+        # 注解（会进 Annotations 面板），不静默失败。
+        id: baseline
+        if: always()
+        run: |
+          path="$(find . -path ./.git -prune -o -type f -name 'lint-baseline.xml' -print 2>/dev/null | head -n 1 || true)"
+          if [ -n "$path" ]; then
+            echo "path=$path" >> "$GITHUB_OUTPUT"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::group::lint-baseline.xml ($path)"
+            echo "bytes: $(wc -c < "$path") / issue 条目: $(grep -c '<issue' "$path" || true)"
+            head -n 25 "$path" || true
+            echo "::endgroup::"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::error::未生成 app/lint-baseline.xml —— 第一轮拿不到基线，第二轮无法翻转门禁。检查上方 'Run Android Lint' 与 'Regenerate lint baseline if missing' 日志。"
+            find . -path ./.git -prune -o -type d -name build -print 2>/dev/null | head -n 20 || true
+          fi
+
+      - name: Upload lint baseline
+        # Wave 32 第一轮的产出物：下载后放进 app/lint-baseline.xml 并提交，
+        # 第二轮才能把 abortOnError 翻成 true。只在确实存在时上传。
+        if: always() && steps.baseline.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-baseline-${{ github.sha }}
+          path: ${{ steps.baseline.outputs.path }}
+          retention-days: 30
+          if-no-files-found: error
+
       - name: Upload lint reports
         # warn-only 阶段报告就是全部价值：无论 job 红绿都上传，供存量清障与
         # 将来建 baseline 使用。
@@ -595,7 +669,20 @@ jobs:
             if [ -f "$xml" ]; then
               count="$(sed -n 's/.*issues[^>]*count="\([0-9]*\)".*/\1/p' "$xml" | head -n 1)"
               echo "Issues found: **${count:-0}** — abortOnError=false，不阻断；完整报告见 artifact \`lint-reports-\`。"
+              echo "（Wave 32 第一轮：baseline 首轮生成后这里多半是 0，属预期）"
             else
               echo "未找到 lint XML 报告 —— 检查上方 Run Android Lint 日志。"
+            fi
+            if [ "${{ steps.baseline.outputs.exists }}" = "true" ]; then
+              echo ""
+              echo "Baseline：**已生成** → \`${{ steps.baseline.outputs.path }}\`，"
+              echo "已作为 artifact \`lint-baseline-\` 上传（保留 30 天）。"
+              echo ""
+              echo "> 第二轮操作步骤：下载该 artifact → 放进 \`app/lint-baseline.xml\` 并提交"
+              echo "> → 把 \`app/build.gradle.kts\` 的 \`abortOnError\` 翻成 \`true\`。"
+              echo "> 完整 XML 见上方 \`Locate lint baseline\` 步骤的日志折叠块（前 25 行）。"
+            else
+              echo ""
+              echo "Baseline：**未生成** ❌ —— 第二轮暂时不能翻 abortOnError，先看 Annotations 面板。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

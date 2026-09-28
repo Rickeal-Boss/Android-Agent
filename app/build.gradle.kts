@@ -106,10 +106,24 @@ android {
     // Lint（AGP 自带 Android Lint，不引入 detekt/ktlint 等第三方依赖）
     //
     // 由 .github/workflows/build.yml 的 lint job 单点调用 :app:lintDebug：
-    //   * abortOnError = false —— 【warn-only 起步】第一次全量 lint 必然
-    //     爆出存量问题（未用资源 / 硬编码 / 缺 contentDescription 等），
-    //     直接阻断会把 CI 打红。本阶段 lint 只产出报告不阻断；
-    //     存量清完后再翻转成门禁。
+    //   * abortOnError = false —— 【Wave 32 两轮计划·第一轮，仍 warn-only】
+    //     第一次全量 lint 必然爆出存量问题（未用资源 / 硬编码 / 缺
+    //     contentDescription 等），直接阻断会把 CI 打红。
+    //     ⚠️ 本轮保持 false 是**硬性前提**而不是保守：baseline 文件尚不存在，
+    //     而 lint 在 abortOnError=true 且遇到 error 时**不会**写 baseline，
+    //     那样第一轮就白跑了。
+    //     第二轮：主理人把 CI 产出的 app/lint-baseline.xml 提交进仓库后，
+    //     把这里翻成 true —— CI 从此只拦**新增**的 lint 问题。
+    //     ⚠️ 翻转时必须同时知道：abortOnError 只拦 Error/Fatal 级 issue，
+    //     Warning 级（83 条里的绝大多数）不拦；想让 83 条全量进门禁要再加
+    //     warningsAsErrors = true，且必须在确认 baseline 覆盖全部存量之后。
+    //   * baseline = file("lint-baseline.xml") —— 冻结的是 Wave 32 首轮实测
+    //     lint 9.3.2 报出的 83 条存量问题（GradleDependency 19 /
+    //     AutoboxingStateCreation 17 / ObsoleteSdkInt 11 / UseKtx 9 /
+    //     NewerVersionAvailable 6 / ModifierParameter 4 / ... ）。
+    //     存量之外的**任何新问题**都会被 lint 抓到。
+    //     重新生成基线 = 删掉 app/lint-baseline.xml 再跑一次 :app:lintDebug；
+    //     ⛔ 不要手工编辑该 XML —— 路径形态与 id 匹配规则由 lint 决定。
     //   * checkReleaseBuilds = false —— 关掉 assembleRelease 附带的
     //     lintVital（fatal-only），release 构建不再被 lint 意外卡住。
     //   * checkDependencies = true —— 单点 :app:lintDebug 即覆盖 :app 与
@@ -119,9 +133,14 @@ android {
     //     也是 com.android.library），因此没有盲区。
     // ---------------------------------------------------------------------
     lint {
+        // ⚠️ 本轮仍是 warn-only —— 下一轮提交生成的基线后才翻 abortOnError = true。
         abortOnError = false
         checkReleaseBuilds = false
         checkDependencies = true
+        // Wave 32：文件不存在 ⇒ :app:lintDebug 首次运行时由 lint 自动生成
+        // app/lint-baseline.xml，再由 build.yml 的 lint job 作为 artifact 上传。
+        // 第二轮翻转 abortOnError 后本行保持不变，它负责吞掉存量问题。
+        baseline = file("lint-baseline.xml")
     }
 }
 
@@ -161,4 +180,11 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+
+    // JVM 单测（src/test/java，AGP 默认源集）—— 与其余模块同款配置（同一 catalog 键，
+    // 不新增依赖版本）。:app 的源码几乎全是 Compose / Navigation 脚手架，唯一可测的
+    // 纯逻辑是对话路由判据（LiquidAgentApp.isChatRoute）与相对时间分档
+    // （ConversationDrawer.relativeTimeBetween）。
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
 }
