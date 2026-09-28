@@ -1155,6 +1155,7 @@ class AgentRunner(
                             report = buildBottleneckReportFor(
                                 state, journal, registeredToolNames, engineCause = to,
                             ),
+                            terminatedBy = TerminationReason.BreakerTripped,
                         ),
                     )
                     return null
@@ -1701,6 +1702,7 @@ class AgentRunner(
                     AgentEvent.Failed(
                         "模型输出陷入重复循环，已停止本轮任务",
                         report = buildBottleneckReportFor(state, journal, registeredToolNames),
+                        terminatedBy = TerminationReason.BreakerTripped,
                     ),
                 )
                 return PostStreamStep.Terminal
@@ -1858,6 +1860,7 @@ class AgentRunner(
                     AgentEvent.Failed(
                         "模型连续多轮输出为空，已停止本轮任务",
                         report = buildBottleneckReportFor(state, journal, registeredToolNames),
+                        terminatedBy = TerminationReason.BreakerTripped,
                     ),
                 )
                 return NoCallStep.Terminal
@@ -1962,17 +1965,26 @@ class AgentRunner(
     }
 
     /**
-     * 断路器 HARD 熔断的统一终态（Wave 30 §2.4）：既有 Failed 终态三段式
+     * 断路器 HARD 熔断的**主要**终态出口（Wave 30 §2.4）：既有 Failed 终态三段式
      * （journal settled → emit Failed → return）升级为四段式（+ report 装配）。
      *
      * 不抛异常：熔断路径走 [ToolCallStep.Terminal] 结构化返回（A1 建立的控制流
      * 映射），抛异常要穿过 for 循环 + withContext(SubagentRunContext)，绕开控制流
      * 底账，review 面爆炸。
      *
-     * terminatedBy（Wave 31）：无条件 [TerminationReason.BreakerTripped] —— 本函数是
-     * 「被 Harness 主动掐断」的统一出口（墙钟 / 热 / 振荡 / 同参死锁 / 失败连击 / 空输出 /
-     * 流式循环 / 生成超时），旧实现只在熔断面含轮次判据时补 MaxRounds、其余为 null，
-     * 使五种熔断在 UI 上全无标记。具体判据见 report.tripped 清单。
+     * terminatedBy（Wave 31）：无条件 [TerminationReason.BreakerTripped]。
+     *
+     * ⚠️ 本函数**不是**「被 Harness 主动掐断」的唯一出口（Wave 30 旧 KDoc 的「统一出口」
+     * 表述失实）：[BreakerKind] 的 HARD 判据共 11 个 kind，其中真正终止 run 的有 8 个，
+     * 分三条出口 ——
+     *  - 走本函数（4）：WallClockBudget(HARD) / ThermalThrottle / ToolCallOscillation /
+     *    ToolFailureStreak；
+     *  - 走各自既有 plain Failed 路径（3，Wave 31 补齐 terminatedBy）：StreamLoop /
+     *    EmptyOutput / GenerationTimeout；
+     *  - 走 [emitFinished] → Finished(MaxRounds)（1）：RoundBudget。
+     * 其余 HARD 判据只登记不中断（SameParamDeadlock / DenialCircuit；PromptEcho 从不 trip，
+     * 折入 StreamLoop），WallClockBudget 的 3min SOFT 留痕同理不中断。具体判据见
+     * report.tripped 清单。
      */
     private suspend fun FlowCollector<AgentEvent>.emitBreakerFailed(
         state: RunState,
