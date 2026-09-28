@@ -62,13 +62,19 @@ private val BUDGET_KINDS =
  */
 private const val BUDGET_TAIL_THERMAL =
     "补充：本次是设备热保护触发的中断，与任务复杂度无关 —— 建议等机身降温后再重试，并避免边充电边跑长任务。"
-private const val BUDGET_TAIL_TOKEN =
-    "补充：本次是上下文 token 用满触发的中断，未必是耗时问题 —— 建议缩短单次任务范围（少贴长文本 / 少带历史），拆成几次短任务。"
 
-/** 按 trip 取预算族收尾；不需要补刀的判据返回 null。同样不新增 Blocker 档。 */
-private fun budgetTail(trips: List<Trip>): String? = when {
-    trips.any { it.kind == BreakerKind.ThermalThrottle } -> BUDGET_TAIL_THERMAL
-    trips.any { it.kind == BreakerKind.TokenBudget } -> BUDGET_TAIL_TOKEN
+/**
+ * 按**终止者**取预算族收尾；不需要补刀的判据返回 null。同样不新增 Blocker 档。
+ *
+ * Wave 31：入参从 `trips: List<Trip>` 换成终止者 [BreakerLedger.terminator] 的结果。
+ * 原实现用 `trips.any { ... }` 判据 —— RoundBudget(HARD) 与 TokenBudget(SOFT) 并存时会
+ * 输出「本次是上下文 token 用满触发的中断，未必是耗时问题」，与同一张卡的「已运行 N 轮 /
+ * 耗时 M 秒」自相矛盾。TokenBudget 是 SOFT、结构上永不终止 run（report 只在 HARD 终态
+ * 装配），根本不该参与归因 ⇒ 一并**删除 BUDGET_TAIL_TOKEN 常量**。能走到本函数的只有
+ * 真正的终止者，只有 ThermalThrottle 需要专属收尾（墙钟 / 轮次与通用句语义自洽）。
+ */
+private fun budgetTail(terminator: Trip?): String? = when (terminator?.kind) {
+    BreakerKind.ThermalThrottle -> BUDGET_TAIL_THERMAL
     else -> null
 }
 
@@ -109,8 +115,9 @@ data class BottleneckReport(
     val tripped: List<Trip>,
     val blocker: Blocker,
     /**
-     * 建议条目：第一条恒为 [Blocker.template] 渲染出来的通用句；预算族的热 / token
-     * 判据会再补一条判据专属收尾（见 [budgetTail]，仍是编译期常量）。UI 逐条渲染。
+     * 建议条目：第一条恒为 [Blocker.template] 渲染出来的通用句；预算族的**热**判据
+     * （终止者 = ThermalThrottle 时）会再补一条判据专属收尾（见 [budgetTail]，仍是
+     * 编译期常量）。UI 逐条渲染。
      */
     val suggestions: List<String>,
 )
@@ -189,7 +196,7 @@ fun buildBottleneckReport(
         blocker = blocker,
         suggestions = buildList {
             add(suggestion)
-            if (blocker == Blocker.BudgetExhausted) budgetTail(ledger.trips)?.let(::add)
+            if (blocker == Blocker.BudgetExhausted) budgetTail(ledger.terminator())?.let(::add)
         },
     )
 }

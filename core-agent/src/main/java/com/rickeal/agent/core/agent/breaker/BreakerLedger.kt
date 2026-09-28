@@ -79,8 +79,23 @@ class BreakerLedger {
         }
     }
 
-    /** 第一条 HARD 触发（emitBreakerFailed 的 userLabel 取值处）；纯 SOFT 账本返回 null。 */
+    /**
+     * 第一条 HARD 档触发；纯 SOFT 账本返回 null。
+     *
+     * ⚠️ 仅表示**第一条 HARD 档 trip**，**不表示终止者** —— 3 分钟 SOFT 墙钟留痕的
+     * kind 是 WallClockBudget，而该 kind 的 severity 恒为 HARD（档位语义由 record 点
+     * 控制，见 BreakerKind KDoc）⇒ 它可能是第一条 HARD 却从未终止 run。终止者用 [terminator]。
+     */
     fun firstHard(): Trip? = _trips.firstOrNull { it.kind.severity == BreakerKind.Severity.HARD }
+
+    /**
+     * 实际终止 run 的那条 trip = **最后一条** HARD 档 trip。
+     *
+     * ⚠️ 不能用 [firstHard]：3 分钟 SOFT 墙钟留痕的 kind 是 WallClockBudget，而该 kind 的
+     * severity 恒为 HARD（档位语义由 record 点控制，见 BreakerKind KDoc）⇒ firstHard 可能
+     * 返回一条从未终止 run 的 trip。熔断终态总是「先 trip 再 emit」，故取最后一条。
+     */
+    fun terminator(): Trip? = _trips.lastOrNull { it.kind.severity == BreakerKind.Severity.HARD }
 
     /** 指定工具的当前失败连击数（0 = 无连击）。 */
     fun failureStreak(tool: String): Int = failureStreaks[tool] ?: 0

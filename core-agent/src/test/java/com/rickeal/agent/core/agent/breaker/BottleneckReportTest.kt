@@ -105,6 +105,11 @@ class BottleneckReportTest {
             BreakerKind.TokenBudget to Blocker.BudgetExhausted,
             BreakerKind.RoundBudget to Blocker.BudgetExhausted,
             BreakerKind.ThermalThrottle to Blocker.BudgetExhausted,
+            // GenerationTimeout 刻意**不进任何归因族**（Wave 31）：它的 report 恒带
+            // engineCause（生成超时的异常）⇒ resolveBlocker 落到 EngineFailure。本用例
+            // 不传 engineCause，故走 else 兜底档（MissingInput）—— 记录的是「无家族归属」
+            // 这一事实，不是它的生产归因。
+            BreakerKind.GenerationTimeout to Blocker.MissingInput,
         )
         assertEquals(
             BreakerKind.entries.toSet(), expected.keys,
@@ -158,6 +163,48 @@ class BottleneckReportTest {
             lastToolError = null,
         )
         assertEquals(Blocker.ModelDegraded, b)
+    }
+
+    // ── budgetTail 归因（Wave 31：终止者口径）────────────────────────────────
+
+    @Test
+    fun `RoundBudget 与 TokenBudget 并存 —— 不输出 token 用满收尾`() {
+        // 轮次耗尽（HARD）与 TokenBudget（SOFT）同时存在：TokenBudget 结构上永不终止
+        // run，report 只在 HARD 终态装配 ⇒ tail 必须为 null（旧实现会输出「上下文 token
+        // 用满」，与同卡「已运行 8 轮 / 耗时 300 秒」自相矛盾）。
+        val report = buildBottleneckReport(
+            task = "t",
+            rounds = 8,
+            elapsedMillis = 300_500L,
+            ledger = ledgerWith(BreakerKind.RoundBudget, BreakerKind.TokenBudget),
+            registeredToolNames = emptySet(),
+        )
+        assertEquals(Blocker.BudgetExhausted, report.blocker)
+        assertEquals(1, report.suggestions.size, report.suggestions.toString())
+        assertTrue(!report.suggestions.single().contains("上下文 token 用满"), report.suggestions.single())
+    }
+
+    @Test
+    fun `ThermalThrottle 终止 —— 补热保护收尾`() {
+        val report = buildBottleneckReport(
+            task = "t",
+            rounds = 3,
+            elapsedMillis = 60_000L,
+            ledger = ledgerWith(BreakerKind.ThermalThrottle, BreakerKind.TokenBudget),
+            registeredToolNames = emptySet(),
+        )
+        assertEquals(Blocker.BudgetExhausted, report.blocker)
+        assertEquals(2, report.suggestions.size, report.suggestions.toString())
+        assertTrue(report.suggestions.last().contains("设备热保护"), report.suggestions.toString())
+    }
+
+    @Test
+    fun `terminator 取最后一条 HARD —— 3min 墙钟留痕不误当终止者`() {
+        // WallClockBudget 的 severity 恒为 HARD（3min SOFT 留痕也落这个 kind）⇒
+        // firstHard 会返回「从未终止 run 的留痕」；terminator 取最后一条 HARD = 真终止者。
+        val ledger = ledgerWith(BreakerKind.WallClockBudget, BreakerKind.ThermalThrottle)
+        assertEquals(BreakerKind.WallClockBudget, ledger.firstHard()?.kind)
+        assertEquals(BreakerKind.ThermalThrottle, ledger.terminator()?.kind)
     }
 
     // ── buildBottleneckReport 装配 ───────────────────────────────────────────

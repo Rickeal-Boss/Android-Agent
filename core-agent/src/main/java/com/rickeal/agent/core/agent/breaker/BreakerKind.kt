@@ -34,6 +34,8 @@ enum class BreakerKind(val severity: Severity, val userLabel: String) {
     TokenBudget(Severity.SOFT, "上下文 token 消耗超出预算"),
     /** B.2 ②：设备热状态触发熔断（B3 ThermalGovernor 接线）。 */
     ThermalThrottle(Severity.HARD, "设备热状态触发熔断"),
+    /** Wave 31：单轮生成超过 policy.generationTimeoutMillis 未返回。 */
+    GenerationTimeout(Severity.HARD, "模型单轮生成超时未返回"),
     ;
 
     /** SOFT = 只登记不中断；HARD = trip 后熔断终态。中断语义在 record 点控制，不在枚举上分支。 */

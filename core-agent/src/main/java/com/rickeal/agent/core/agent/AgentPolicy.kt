@@ -34,4 +34,8 @@ data class AgentPolicy(
      * LiteRtLmEngine.kt 处理，无需新代码。
      */
     val agentSamplingOverride: SamplingParams? = null,
+    /** 单轮生成的墙钟上限（毫秒）。默认 300_000 = 与 WALL_CLOCK_HARD_MILLIS 同量级：
+     *  健康的 4B 单轮生成远短于此，只有 native 生成真卡死时才会触发 —— 那本就是墙钟
+     *  HARD 的猎杀目标（轮头检查要等下一轮，本超时能在轮内先打断）。 */
+    val generationTimeoutMillis: Long = 300_000L,
 )

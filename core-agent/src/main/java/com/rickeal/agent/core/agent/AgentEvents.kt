@@ -26,6 +26,13 @@ enum class TerminationReason {
     MaxRounds,
 
     /**
+     * Harness 主动熔断（墙钟 / 热 / 振荡 / 同参死锁 / 失败连击 / 空输出 / 流式循环 / 生成超时）。
+     * 具体判据见 [AgentEvent.Failed.report] 的 tripped 清单 —— 本值只回答「是模型自己停的，
+     * 还是被 Harness 掐断的」这一层。
+     */
+    BreakerTripped,
+
+    /**
      * 确定性模型侧故障（认证失效 / 配额耗尽 / 模型不可用）—— ZCode RunSettlement 的
      * `stopped(provider)` 语义。重试大概率无用，UI 应引导检查端点配置而非盲目重试。
      * 当前仅用于 journal 终态分类（UI 仍走 Failed 事件），后续接端点诊断页。
@@ -193,4 +200,15 @@ data class AgentRequest(
      * 与审批缓存 / tokenLedger「子 run 不继承」同一隔离纪律）。
      */
     val thermalGate: RunThermalGate? = null,
+    /**
+     * 绝对硬截止时刻（`System.nanoTime()` 刻度）。null = 由本 run 自己的
+     * [AgentRunner.WALL_CLOCK_HARD_MILLIS] 起算；非 null = 直接采用该时刻。
+     *
+     * ⚠️ 必须是**绝对时刻**而非「剩余时长」：子 run 从构造到真正开始执行之间隔着父 run 的
+     * 工具准备与引擎切换，传相对值会把这段间隔重复计入子 run 的额度。
+     * 子 run 由 [com.rickeal.agent.core.agent.subagent.AskSubagentTool] 继承父 run 的同一堵墙
+     * —— 修「父 run 进入本轮后墙钟不再约束本轮、子 run 又自带一份全新 5 分钟预算」导致的
+     * 上界放大（Wave 31）。
+     */
+    val deadlineNanos: Long? = null,
 )

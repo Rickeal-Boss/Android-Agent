@@ -38,7 +38,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -518,68 +521,19 @@ class AgentRunner(
                 request.planStore
                     ?.peek(request.conversationId ?: "")?.version ?: 0L,
                 request.history.lastOrNull { it.usage != null }?.usage,
+                // Wave 31 6d：子 run 继承父 run 的绝对硬截止（null = 自起算）。
+                hardDeadlineOverrideNanos = request.deadlineNanos,
             )
 
             while (state.round < policy.maxRounds) {
                 emit(AgentEvent.RoundStarted(state.round, policy.maxRounds))
 
-                // ── 墙钟预算（Wave 30 §2.7）：SOFT 3min 留痕 → HARD 5min 熔断 ──
-                // 检查点在轮头（RoundStarted 之后；B3 的热闸将排在本检查之后，
-                // 顺序：墙钟 → 热闸，失败语义一致）。
-                // 边界如实申报：轮粒度检查 ⇒ 实际上限 = 5min + 一轮时长 —— 接受的
-                // 近似（轮内打断需要生成流上的取消语义改动，超出本波机械保守约束）。
-                val wallClockElapsed = state.elapsedMillis()
-                if (state.breaker.trips.none { it.kind == BreakerKind.WallClockBudget } &&
-                    wallClockElapsed >= WALL_CLOCK_SOFT_MILLIS
-                ) {
-                    // SOFT：只 trip 留痕不中断；幂等由「已有 WallClockBudget 则不再
-                    // trip」保证 —— HARD 到点时会再 trip 一次（两条 evidence 时间线）。
-                    state.breaker.trip(
-                        BreakerKind.WallClockBudget,
-                        state.round,
-                        atElapsedMillis = wallClockElapsed,
-                        evidence = "已运行 ${wallClockElapsed / 1000} 秒，" +
-                            "超过 ${WALL_CLOCK_SOFT_MILLIS / 1000} 秒软预算（继续，等待收敛）",
-                    )
-                    AgentLogStore.warn(
-                        "墙钟软预算：run 已运行 ${wallClockElapsed / 1000}s" +
-                            "（HARD 上限 ${WALL_CLOCK_HARD_MILLIS / 1000}s）"
-                    )
-                }
-                if (wallClockElapsed >= WALL_CLOCK_HARD_MILLIS) {
-                    state.breaker.trip(
-                        BreakerKind.WallClockBudget,
-                        state.round,
-                        atElapsedMillis = wallClockElapsed,
-                        evidence = "已运行 ${wallClockElapsed / 1000} 秒，" +
-                            "达到 ${WALL_CLOCK_HARD_MILLIS / 1000} 秒硬预算",
-                    )
-                    AgentLogStore.error("墙钟硬预算：run 已运行 ${wallClockElapsed / 1000}s，熔断收尾")
-                    emitBreakerFailed(state, journal, registeredToolNames)
-                    return
-                }
-
-                // ── 热闸（Wave 30 §2.1）：每轮主循环开始前的热状态决策 ─────
-                // 顺序在墙钟之后（两者同属轮头预算检查，失败语义一致）。
-                // Cooldown 的 delay 在 flow 内可取消：用户点停止立即生效，无需
-                // NonCancellable（R7-3）。gate 为 null（默认 / 子 run）= 无热干预。
-                when (val thermal = request.thermalGate?.beforeRound(state.round)) {
-                    is ThermalDecision.Cooldown -> delay(thermal.millis)
-                    is ThermalDecision.Abort -> {
-                        // ThermalThrottle trip 回灌（Wave 30 C9）：Abort 决策 → ledger
-                        // trip + 诊断卡报告 —— 与墙钟 / 失败连击 / 振荡同一条
-                        // emitBreakerFailed 四段式终态（C7 的 plain Failed 占位在此升级）。
-                        state.breaker.trip(
-                            BreakerKind.ThermalThrottle,
-                            state.round,
-                            atElapsedMillis = state.elapsedMillis(),
-                            evidence = thermal.evidence,
-                        )
-                        AgentLogStore.warn("热熔断：${thermal.evidence}（第 ${state.round} 轮轮头）")
-                        emitBreakerFailed(state, journal, registeredToolNames)
-                        return
-                    }
-                    null, ThermalDecision.Proceed -> Unit
+                // 轮头预算闸（Wave 31 自 executeBodyUnchecked 外提）：墙钟 SOFT 留痕 →
+                // HARD 熔断 → 热闸决策。Terminal = 已 emitBreakerFailed 并落 journal，
+                // 必须直接 return 结束整个 run（与原内联 `return` 语义一致）。
+                when (gateRoundHead(request, state, journal, registeredToolNames)) {
+                    RoundHeadStep.Terminal -> return
+                    RoundHeadStep.Proceed -> Unit
                 }
 
                 journal?.append(
@@ -658,48 +612,7 @@ class AgentRunner(
                 // 已知残余误差：生成失败后**重试也失败**（终态 Failed 直接返回）不记账
                 // 也无影响；真正无法覆盖的是引擎在轮内被外部整体重置的场景 —— 当前
                 // 记账状态只写不读（尚未接入压缩门控），启用门控前必须先补齐该口径。
-                val requestMessages = generationRequest.messages
-                if (state.contextVersion != state.accountedVersion || request.conversationId != state.lastCid) {
-                    state.accountedIds = requestMessages.map { it.id }.toMutableSet()
-                    state.sentTokens = TokenEstimator.estimate(requestMessages).toLong()
-                    state.accountedVersion = state.contextVersion
-                } else {
-                    val fresh = requestMessages.filter { it.id !in state.accountedIds }
-                    state.sentTokens += TokenEstimator.estimate(fresh)
-                    state.accountedIds.addAll(fresh.map { it.id })
-                }
-                state.lastCid = request.conversationId
-
-                // RunTokenLedger 回写（Wave 30）：sentTokens 的读侧投影。⚠️ 下方这一行
-                // 是**全仓唯一的 sentTokens → 账本回写点** —— 记账块今后若新增写点
-                // （全量/增量之外的新分支、新的兜底路径），必须在本处之后同步回写，
-                // 否则 UI / 断路器（TokenBudget）消费的账本口径会与 sentTokens 静默漂移。
-                // 投影语义：onSendEstimated 收「当前累计总量」覆盖写，非增量；压缩触发
-                // 全量重记使累计值回落时，账本如实镜像（不做「只增不减」二次加工）。
-                // 不替代 RunState.sentTokens：记账块本体是 Wave 29 A1 刚终审的结构，
-                // 账本只在其后镜像（方案 §2.3 裁决 B）。
-                request.tokenLedger?.onSendEstimated(state.sentTokens)
-
-                // ── TokenBudget SOFT（Wave 30 §2.7）：压缩没救回来的信号 ─────
-                // 只登记不中断（§3.5：它是「压缩没救回来」的信号，不是熔断判据）。
-                // 预算常量取 config.contextLength × 2 —— run 全生命周期累计口径
-                // （非单轮），保守首版待真机校准；误 trip 只产生 SOFT 日志不中断，
-                // 行为风险≈0。幂等由「已有 TokenBudget 则不再 trip」保证。
-                if (state.sentTokens > config.contextLength * 2L &&
-                    state.breaker.trips.none { it.kind == BreakerKind.TokenBudget }
-                ) {
-                    state.breaker.trip(
-                        BreakerKind.TokenBudget,
-                        state.round,
-                        atElapsedMillis = state.elapsedMillis(),
-                        evidence = "发送侧累计估算 ${state.sentTokens} token，" +
-                            "超过上下文预算（contextLength ${config.contextLength} × 2）",
-                    )
-                    AgentLogStore.warn(
-                        "TokenBudget 软预算：发送侧累计 ${state.sentTokens} token " +
-                            "超出 ${config.contextLength * 2L}，登记不中断（压缩未救回）"
-                    )
-                }
+                accountSendTokens(request, state, config, generationRequest)
 
                 val generation = runGenerationRound(
                     kind = kind,
@@ -710,6 +623,7 @@ class AgentRunner(
                     journal = journal,
                     state = state,
                     registeredToolNames = registeredToolNames,
+                    policy = policy,
                 ) ?: return
                 val accumulator = generation.accumulator
                 val intraStreamLoop = generation.intraStreamLoop
@@ -782,6 +696,7 @@ class AgentRunner(
                     working = state.working,
                     journal = journal,
                     state = state,
+                    registeredToolNames = registeredToolNames,
                 )) {
                     PostStreamStep.NextRound -> continue
                     PostStreamStep.Terminal -> return
@@ -802,6 +717,7 @@ class AgentRunner(
                         working = state.working,
                         journal = journal,
                         state = state,
+                        registeredToolNames = registeredToolNames,
                     )) {
                         NoCallStep.NextRound -> continue
                         NoCallStep.Terminal -> return
@@ -870,6 +786,144 @@ class AgentRunner(
             )
     }
 
+    /** 轮头预算闸的控制流映射（Wave 31）：Terminal = 已熔断终态，调用方必须 return。 */
+    private enum class RoundHeadStep { Proceed, Terminal }
+
+    /** 轮头预算闸（Wave 31 自 executeBodyUnchecked 外提）：墙钟 SOFT 留痕 → HARD 熔断 → 热闸决策。
+     *  返回 [RoundHeadStep.Terminal] 表示已 emitBreakerFailed 并落 journal，调用方必须直接 `return`。 */
+    private suspend fun FlowCollector<AgentEvent>.gateRoundHead(
+        request: AgentRequest,
+        state: RunState,
+        journal: AgentRunJournal?,
+        registeredToolNames: Set<String>,
+    ): RoundHeadStep {
+        // ── 墙钟预算（Wave 30 §2.7）：SOFT 3min 留痕 → HARD 5min 熔断 ──
+        // 检查点在轮头（RoundStarted 之后；B3 的热闸将排在本检查之后，
+        // 顺序：墙钟 → 热闸，失败语义一致）。
+        // 边界如实申报：轮粒度检查 ⇒ 实际上限 = 5min + 一轮时长 —— 接受的
+        // 近似（轮内打断需要生成流上的取消语义改动，超出本波机械保守约束）。
+        //
+        // Wave 31 6d：判据从「已运行多久」换成「距硬截止还剩多少」——
+        // remaining = (hardDeadlineNanos - now)。hardDeadlineNanos 默认 =
+        // startedElapsedNanos + WALL_CLOCK_HARD_MILLIS（无外部 override 时），故
+        //   remaining <= WALL_CLOCK_HARD_MILLIS - WALL_CLOCK_SOFT_MILLIS
+        // 与「已运行 ≥ WALL_CLOCK_SOFT_MILLIS」等价；remaining <= 0 与「已运行 ≥
+        // WALL_CLOCK_HARD_MILLIS」等价（两者均为毫秒取整，与原判据边界差 ≤1s）。
+        // 用剩余量表达是为了让子 run 继承父 run 的 **绝对**硬截止后同一判据直接生效
+        // （不再各起算一份预算，修上界放大）。
+        val remaining = (state.hardDeadlineNanos - System.nanoTime()) / 1_000_000L
+        // evidence 文案沿用「run 相对时长」口径（用户可见，逐字不动）。
+        val wallClockElapsed = state.elapsedMillis()
+        if (state.breaker.trips.none { it.kind == BreakerKind.WallClockBudget } &&
+            remaining <= WALL_CLOCK_HARD_MILLIS - WALL_CLOCK_SOFT_MILLIS
+        ) {
+            // SOFT：只 trip 留痕不中断；幂等由「已有 WallClockBudget 则不再
+            // trip」保证 —— HARD 到点时会再 trip 一次（两条 evidence 时间线）。
+            state.breaker.trip(
+                BreakerKind.WallClockBudget,
+                state.round,
+                atElapsedMillis = wallClockElapsed,
+                evidence = "已运行 ${wallClockElapsed / 1000} 秒，" +
+                    "超过 ${WALL_CLOCK_SOFT_MILLIS / 1000} 秒软预算（继续，等待收敛）",
+            )
+            AgentLogStore.warn(
+                "墙钟软预算：run 已运行 ${wallClockElapsed / 1000}s" +
+                    "（HARD 上限 ${WALL_CLOCK_HARD_MILLIS / 1000}s）"
+            )
+        }
+        if (remaining <= 0L) {
+            state.breaker.trip(
+                BreakerKind.WallClockBudget,
+                state.round,
+                atElapsedMillis = wallClockElapsed,
+                evidence = "已运行 ${wallClockElapsed / 1000} 秒，" +
+                    "达到 ${WALL_CLOCK_HARD_MILLIS / 1000} 秒硬预算",
+            )
+            AgentLogStore.error("墙钟硬预算：run 已运行 ${wallClockElapsed / 1000}s，熔断收尾")
+            emitBreakerFailed(state, journal, registeredToolNames)
+            return RoundHeadStep.Terminal
+        }
+
+        // ── 热闸（Wave 30 §2.1）：每轮主循环开始前的热状态决策 ─────
+        // 顺序在墙钟之后（两者同属轮头预算检查，失败语义一致）。
+        // Cooldown 的 delay 在 flow 内可取消：用户点停止立即生效，无需
+        // NonCancellable（R7-3）。gate 为 null（默认 / 子 run）= 无热干预。
+        when (val thermal = request.thermalGate?.beforeRound(state.round)) {
+            is ThermalDecision.Cooldown -> delay(thermal.millis)
+            is ThermalDecision.Abort -> {
+                // ThermalThrottle trip 回灌（Wave 30 C9）：Abort 决策 → ledger
+                // trip + 诊断卡报告 —— 与墙钟 / 失败连击 / 振荡同一条
+                // emitBreakerFailed 四段式终态（C7 的 plain Failed 占位在此升级）。
+                state.breaker.trip(
+                    BreakerKind.ThermalThrottle,
+                    state.round,
+                    atElapsedMillis = state.elapsedMillis(),
+                    evidence = thermal.evidence,
+                )
+                AgentLogStore.warn("热熔断：${thermal.evidence}（第 ${state.round} 轮轮头）")
+                emitBreakerFailed(state, journal, registeredToolNames)
+                return RoundHeadStep.Terminal
+            }
+            null, ThermalDecision.Proceed -> Unit
+        }
+        return RoundHeadStep.Proceed
+    }
+
+    /** 发送侧 token 记账 + TokenBudget SOFT 登记（Wave 31 自 executeBodyUnchecked 外提）。
+     *
+     *  偏离申报：方案给定签名为 (request, state, config)，但被外提块以
+     *  `generationRequest.messages` 为唯一数据源，故补一个 [generationRequest] 形参
+     *  （方法体逐字节不变）。 */
+    private fun accountSendTokens(
+        request: AgentRequest,
+        state: RunState,
+        config: InferenceConfig,
+        generationRequest: GenerationRequest,
+    ) {
+        val requestMessages = generationRequest.messages
+        if (state.contextVersion != state.accountedVersion || request.conversationId != state.lastCid) {
+            state.accountedIds = requestMessages.map { it.id }.toMutableSet()
+            state.sentTokens = TokenEstimator.estimate(requestMessages).toLong()
+            state.accountedVersion = state.contextVersion
+        } else {
+            val fresh = requestMessages.filter { it.id !in state.accountedIds }
+            state.sentTokens += TokenEstimator.estimate(fresh)
+            state.accountedIds.addAll(fresh.map { it.id })
+        }
+        state.lastCid = request.conversationId
+
+        // RunTokenLedger 回写（Wave 30）：sentTokens 的读侧投影。⚠️ 下方这一行
+        // 是**全仓唯一的 sentTokens → 账本回写点** —— 记账块今后若新增写点
+        // （全量/增量之外的新分支、新的兜底路径），必须在本处之后同步回写，
+        // 否则 UI / 断路器（TokenBudget）消费的账本口径会与 sentTokens 静默漂移。
+        // 投影语义：onSendEstimated 收「当前累计总量」覆盖写，非增量；压缩触发
+        // 全量重记使累计值回落时，账本如实镜像（不做「只增不减」二次加工）。
+        // 不替代 RunState.sentTokens：记账块本体是 Wave 29 A1 刚终审的结构，
+        // 账本只在其后镜像（方案 §2.3 裁决 B）。
+        request.tokenLedger?.onSendEstimated(state.sentTokens)
+
+        // ── TokenBudget SOFT（Wave 30 §2.7）：压缩没救回来的信号 ─────
+        // 只登记不中断（§3.5：它是「压缩没救回来」的信号，不是熔断判据）。
+        // 预算常量取 config.contextLength × 2 —— run 全生命周期累计口径
+        // （非单轮），保守首版待真机校准；误 trip 只产生 SOFT 日志不中断，
+        // 行为风险≈0。幂等由「已有 TokenBudget 则不再 trip」保证。
+        if (state.sentTokens > config.contextLength * 2L &&
+            state.breaker.trips.none { it.kind == BreakerKind.TokenBudget }
+        ) {
+            state.breaker.trip(
+                BreakerKind.TokenBudget,
+                state.round,
+                atElapsedMillis = state.elapsedMillis(),
+                evidence = "发送侧累计估算 ${state.sentTokens} token，" +
+                    "超过上下文预算（contextLength ${config.contextLength} × 2）",
+            )
+            AgentLogStore.warn(
+                "TokenBudget 软预算：发送侧累计 ${state.sentTokens} token " +
+                    "超出 ${config.contextLength * 2L}，登记不中断（压缩未救回）"
+            )
+        }
+    }
+
     /** 单轮生成的产物（Wave 29 A1 Step 1）：accumulator / intraStreamLoop 经返回值带出。 */
     private class GenerationOutcome(
         val accumulator: StreamAccumulator,
@@ -890,6 +944,12 @@ class AgentRunner(
         val working: MutableList<ChatMessage>,
         lastPlanVersion: Long,
         lastUsage: TokenUsage?,
+        /**
+         * 硬截止绝对时刻的外部 override（Wave 31）。非 null 时采用该绝对时刻作为本 run
+         * 的墙钟硬截止（子 run 继承父 run 的同一堵墙）；null = 自起算 WALL_CLOCK_HARD_MILLIS。
+         * 由 [AgentRequest.deadlineNanos] 透传（构造点 = executeBodyUnchecked）。
+         */
+        hardDeadlineOverrideNanos: Long? = null,
     ) {
         var round = 0
         // ── 上下文版本与 token 记账（外部审查报告2 §2，B1 压缩语义失效的根治）──
@@ -969,6 +1029,9 @@ class AgentRunner(
         // 墙钟锚点（Wave 30 §2.7）：nanoTime 是单调刻度，减法比较安全；
         // 禁止拿它与 Date 互转（非墙钟语义）。
         val startedElapsedNanos = System.nanoTime()
+        /** 硬截止绝对时刻：外部显式传入则采用，否则自起算 WALL_CLOCK_HARD_MILLIS。 */
+        val hardDeadlineNanos: Long = hardDeadlineOverrideNanos
+            ?: (startedElapsedNanos + WALL_CLOCK_HARD_MILLIS * 1_000_000L)
 
         /** run 相对时长（毫秒）。墙钟预算检查与诊断卡耗时共用这一个换算口径。 */
         fun elapsedMillis(): Long = elapsedMillisSince(startedElapsedNanos)
@@ -994,6 +1057,7 @@ class AgentRunner(
         journal: AgentRunJournal?,
         state: RunState,
         registeredToolNames: Set<String>,
+        policy: AgentPolicy,
     ): GenerationOutcome? {
         var accumulator = StreamAccumulator()
         // 本轮生成是否被轮内重复检测截断：while(true) 重试循环内置位，
@@ -1017,26 +1081,30 @@ class AgentRunner(
             // 每轮取最新缓存实例的成本可忽略。
             val engine = engineFactory.create(kind)
             try {
-                engine.generateStream(generationRequest).collect { chunk ->
-                    accumulator.append(chunk)
-                    // 检测器只消费增量 delta（O(delta)，无全文扫描）：text / thinking
-                    // 两条流各自独立判定，命中即抛 StreamLoopException 提前终止本次
-                    // 生成 —— 已产出的文本保留在 accumulator（deepseek-harness
-                    // agent.ts:428-460 的 interrupted blocks 语义）。
-                    if (chunk.textDelta.isNotEmpty()) {
-                        emit(AgentEvent.TextDelta(chunk.textDelta))
-                        when (val verdict = detector.observeText(chunk.textDelta)) {
-                            is StreamRepetitionDetector.Verdict.LoopDetected ->
-                                throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
-                            StreamRepetitionDetector.Verdict.Ok -> Unit
+                // Wave 31 6b：单轮生成墙钟上限（默认 300s）—— native 生成真卡死时
+                // 轮头检查要等下一轮才生效，本超时能在**轮内**先打断。
+                withTimeout(policy.generationTimeoutMillis) {
+                    engine.generateStream(generationRequest).collect { chunk ->
+                        accumulator.append(chunk)
+                        // 检测器只消费增量 delta（O(delta)，无全文扫描）：text / thinking
+                        // 两条流各自独立判定，命中即抛 StreamLoopException 提前终止本次
+                        // 生成 —— 已产出的文本保留在 accumulator（deepseek-harness
+                        // agent.ts:428-460 的 interrupted blocks 语义）。
+                        if (chunk.textDelta.isNotEmpty()) {
+                            emit(AgentEvent.TextDelta(chunk.textDelta))
+                            when (val verdict = detector.observeText(chunk.textDelta)) {
+                                is StreamRepetitionDetector.Verdict.LoopDetected ->
+                                    throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
+                                StreamRepetitionDetector.Verdict.Ok -> Unit
+                            }
                         }
-                    }
-                    if (chunk.thinkingDelta.isNotEmpty()) {
-                        emit(AgentEvent.ThinkingDelta(chunk.thinkingDelta))
-                        when (val verdict = detector.observeThinking(chunk.thinkingDelta)) {
-                            is StreamRepetitionDetector.Verdict.LoopDetected ->
-                                throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
-                            StreamRepetitionDetector.Verdict.Ok -> Unit
+                        if (chunk.thinkingDelta.isNotEmpty()) {
+                            emit(AgentEvent.ThinkingDelta(chunk.thinkingDelta))
+                            when (val verdict = detector.observeThinking(chunk.thinkingDelta)) {
+                                is StreamRepetitionDetector.Verdict.LoopDetected ->
+                                    throw StreamLoopException(verdict.inThinking, verdict.repeatedSignature)
+                                StreamRepetitionDetector.Verdict.Ok -> Unit
+                            }
                         }
                     }
                 }
@@ -1053,6 +1121,72 @@ class AgentRunner(
                 )
                 intraStreamLoop = true
                 break
+            } catch (to: TimeoutCancellationException) {
+                // Wave 31 6c：生成超时 ≠ 用户取消。TimeoutCancellationException 是
+                // CancellationException 子类，若不在此显式接住，会被下方
+                // `t is CancellationException` 当成静默取消上抛 —— 既无 Failed 也无诊断卡。
+                // 语义与「生成失败」完全一致：走重建 + 重试一次；重试仍超时 → Failed + 诊断卡。
+                //
+                // 竞态加固：TimeoutCancellationException 与「父协程被取消」在竞态下可能
+                // 同时发生（例如用户在超时那一刻点了停止）。若本次取消其实来自父协程，
+                // 下方会先跑完 rebuildEngine（4B 权重重新 load，数十秒）才在 emit 上撞到
+                // 取消 —— 白烧一次全量重载。故取消语义优先：ensureActive 在上下文已取消时
+                // 抛出该上下文自己的取消原因；真超时时 withTimeout 只取消它自己的子作用域，
+                // 外层上下文仍 active ⇒ 本行不抛，继续走重建 + 重试。
+                currentCoroutineContext().ensureActive()
+                AgentLogStore.error(
+                    "生成超时：$kind 单轮超过 ${policy.generationTimeoutMillis}ms，按生成失败处理"
+                )
+                if (generationAttempt >= 1) {
+                    state.breaker.trip(
+                        BreakerKind.GenerationTimeout,
+                        round = round,
+                        atElapsedMillis = state.elapsedMillis(),
+                        evidence = "单轮生成超过 ${policy.generationTimeoutMillis / 1000} 秒仍未返回",
+                    )
+                    journal?.append(
+                        AgentRunJournal.KIND_SETTLED,
+                        AgentRunJournal.settledPayload("Failed", round),
+                    )
+                    emit(
+                        AgentEvent.Failed(
+                            "生成超时：模型超过 ${policy.generationTimeoutMillis / 1000} 秒未返回",
+                            to,
+                            report = buildBottleneckReportFor(
+                                state, journal, registeredToolNames, engineCause = to,
+                            ),
+                        ),
+                    )
+                    return null
+                }
+                generationAttempt++
+                // 重试前换干净累加器 / 清零检测器（与生成失败路径同口径）。
+                accumulator = StreamAccumulator()
+                detector.reset()
+                try {
+                    rebuildEngine(kind, loadConfig)
+                } catch (retry: Throwable) {
+                    if (retry is CancellationException) throw retry
+                    AgentLogStore.error(
+                        "引擎重载失败：$kind 生成超时后重建也失败（${retry.javaClass.simpleName}: ${retry.message}），已放弃本轮"
+                    )
+                    journal?.append(
+                        AgentRunJournal.KIND_SETTLED,
+                        AgentRunJournal.settledPayload("Failed", round),
+                    )
+                    emit(
+                        AgentEvent.Failed(
+                            "引擎重载失败：${retry.message}",
+                            retry,
+                            report = buildBottleneckReportFor(
+                                state, journal, registeredToolNames, engineCause = retry,
+                            ),
+                        ),
+                    )
+                    return null
+                }
+                generationRetried = true
+                emit(AgentEvent.Retrying("生成超时，已重建引擎并重试本轮"))
             } catch (t: Throwable) {
                 if (t is CancellationException) {
                     // settled("Cancelled") 由 executeBody 外层统一收尾（NonCancellable）——
@@ -1419,6 +1553,10 @@ class AgentRunner(
             // 披露模式同理必须往下传（Wave 27）：子 run 未声明 allowedTools
             // 时白名单取全量注册表，不传就会在子 run 里把隐藏面整个还原。
             disclosureMode = request.disclosureMode,
+            // 绝对硬截止（Wave 31）：子 run 继承父 run 的同一堵墙（传绝对时刻，
+            // 不是剩余时长），修「父 run 进入本轮后墙钟不再约束本轮、子 run 又
+            // 自带一份全新 5 分钟预算」导致的上界放大。
+            deadlineNanos = state.hardDeadlineNanos,
         )
         val result = withContext(SubagentRunContext(parentContext)) {
             executeWithGuard(call, tool, policy)
@@ -1524,6 +1662,7 @@ class AgentRunner(
         working: MutableList<ChatMessage>,
         journal: AgentRunJournal?,
         state: RunState,
+        registeredToolNames: Set<String>,
     ): PostStreamStep {
         // ── 轮内循环的处置（Wave 19 P0）────────────────────────────────
         // 被轮内重复检测截断的轮次**不得**直接当最终答案交付：循环中产出的
@@ -1558,7 +1697,12 @@ class AgentRunner(
                     AgentRunJournal.KIND_SETTLED,
                     AgentRunJournal.settledPayload("Failed", state.round),
                 )
-                emit(AgentEvent.Failed("模型输出陷入重复循环，已停止本轮任务"))
+                emit(
+                    AgentEvent.Failed(
+                        "模型输出陷入重复循环，已停止本轮任务",
+                        report = buildBottleneckReportFor(state, journal, registeredToolNames),
+                    ),
+                )
                 return PostStreamStep.Terminal
             }
             val cleanText = if (policy.enableTextProtocol) TextToolProtocol.strip(accumulator.text) else accumulator.text
@@ -1645,6 +1789,7 @@ class AgentRunner(
         working: MutableList<ChatMessage>,
         journal: AgentRunJournal?,
         state: RunState,
+        registeredToolNames: Set<String>,
     ): NoCallStep {
         val cleanText = protocolFinalAnswer ?: visibleText
         val reminder = state.pendingReminder
@@ -1709,7 +1854,12 @@ class AgentRunner(
                     AgentRunJournal.KIND_SETTLED,
                     AgentRunJournal.settledPayload("Failed", state.round),
                 )
-                emit(AgentEvent.Failed("模型连续多轮输出为空，已停止本轮任务"))
+                emit(
+                    AgentEvent.Failed(
+                        "模型连续多轮输出为空，已停止本轮任务",
+                        report = buildBottleneckReportFor(state, journal, registeredToolNames),
+                    ),
+                )
                 return NoCallStep.Terminal
             }
             val nudge = ChatMessage(
@@ -1819,8 +1969,10 @@ class AgentRunner(
      * 映射），抛异常要穿过 for 循环 + withContext(SubagentRunContext)，绕开控制流
      * 底账，review 面爆炸。
      *
-     * terminatedBy：仅当熔断面含轮次判据（RoundBudget）时补 MaxRounds，保持与
-     * Finished 的对称性；其余熔断为 null（语义 = 「不是轮次耗尽」，UI 不必区分）。
+     * terminatedBy（Wave 31）：无条件 [TerminationReason.BreakerTripped] —— 本函数是
+     * 「被 Harness 主动掐断」的统一出口（墙钟 / 热 / 振荡 / 同参死锁 / 失败连击 / 空输出 /
+     * 流式循环 / 生成超时），旧实现只在熔断面含轮次判据时补 MaxRounds、其余为 null，
+     * 使五种熔断在 UI 上全无标记。具体判据见 report.tripped 清单。
      */
     private suspend fun FlowCollector<AgentEvent>.emitBreakerFailed(
         state: RunState,
@@ -1833,11 +1985,9 @@ class AgentRunner(
         )
         emit(
             AgentEvent.Failed(
-                message = "任务已被安全熔断：${state.breaker.firstHard()?.kind?.userLabel.orEmpty()}",
+                message = "任务已被安全熔断：${state.breaker.terminator()?.kind?.userLabel.orEmpty()}",
                 report = buildBottleneckReportFor(state, journal, registeredToolNames),
-                terminatedBy = TerminationReason.MaxRounds.takeIf {
-                    state.breaker.trips.any { t -> t.kind == BreakerKind.RoundBudget }
-                },
+                terminatedBy = TerminationReason.BreakerTripped,
             )
         )
     }

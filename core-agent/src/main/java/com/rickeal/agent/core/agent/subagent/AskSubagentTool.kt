@@ -166,6 +166,15 @@ class AskSubagentTool(
          * 继承只会让子 run 更省上下文，不会放宽任何闸门（转发照走完整审批链路）。
          */
         val disclosureMode: ToolDisclosureMode = ToolDisclosureMode.FULL,
+        /**
+         * 父 run 的**绝对**硬截止时刻（`System.nanoTime()` 刻度，Wave 31）。子 run 继承
+         * 父 run 的同一堵墙 —— 修「父 run 进入本轮后墙钟不再约束本轮、子 run 又自带
+         * 一份全新 5 分钟预算」导致的上界放大（真实最坏 ≈ 父 run 5min + 子 run 5min +
+         * 一轮）。⚠️ 传的是绝对时刻而非剩余时长：子 run 从构造到真正开始执行之间隔着
+         * 父 run 的工具准备与引擎切换，相对值会把这段间隔重复计入子额度。null = 子 run
+         * 自起算（默认，行为与引入前一致）。
+         */
+        val deadlineNanos: Long? = null,
     )
 
     private suspend fun ask(
@@ -210,8 +219,14 @@ class AskSubagentTool(
             //（onSend / onSendFrom / onRecover 的 SEVERE 拒绝 + LIGHT 降档），子 run 不挡。
             // 已知边界：父 run 的最后一轮内若触发 SEVERE，由于主入口已放行，该次
             // ask_actor 子 run 不会被热闸拦下——但子 run 轮次上限（definition.maxRounds）
-            // 与父 run 的墙钟预算仍是兜底，故不额外引���热闸穿透路径（避免过度工程）。
+            // 与父 run 的墙钟预算仍是兜底，故不额外引入热闸穿透路径（避免过度工程）。
             // 若真机观测到「过热时仍能通过子 run 长时间跑」，再在此处显式传门。
+            //
+            // 墙钟（Wave 31 修正）：子 run **继承父 run 的绝对硬截止**（[ParentContext.deadlineNanos]
+            // → [AgentRequest.deadlineNanos]），故父 run 进入本轮后子 run 仍在同一堵墙内
+            // —— 原「父 run 的墙钟预算仍是兜底」的推理不成立（子 run 自带一份全新 5 分钟
+            // 预算、父 run 的墙钟检查又只在轮头，真实上界会放大到约 12 分钟）。
+            deadlineNanos = parent.deadlineNanos,
         )
 
         // Actor 上下文累积：任务本身 + 子 run 提交的所有消息（含工具调用与结果）
