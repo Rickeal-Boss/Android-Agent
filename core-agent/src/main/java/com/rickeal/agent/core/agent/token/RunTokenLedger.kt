@@ -24,14 +24,25 @@ data class RunTokenSnapshot(
     val cumulativeIn: Long = 0L,
     val cumulativeOut: Long = 0L,
     /**
-     * ⚠️ 名字里的 Elapsed 是方案 §2.3 的遗留：实际装的是**进程墙钟**
-     * （[System.currentTimeMillis]），**不是** run 起点相对耗时 —— 不要拿它与
-     * `RunState.elapsedMillis()`（run 级相对毫秒）做差值或比较，两者原点不同、量级也不同。
+     * 最后一次回写的**进程墙钟**（[System.currentTimeMillis]）。
+     *
+     * ⚠️ 它是墙钟、不是流逝耗时：不要拿它与 `RunState.elapsedMillis()`（run 级相对毫秒）
+     * 做差值或比较 —— 两者原点不同、量级也不同。字段原名 `updatedAtWallClockMillis`
+     * 沿用了方案 §2.3 的命名（Wave 30 复审 2 改名），那个名字会诱导上述误用。
+     *
      * 0 表示「该账本从未被回写过」。语义细节见 [InMemoryRunTokenLedger] 类头。
      */
-    val updatedAtElapsedMillis: Long = 0L,
+    val updatedAtWallClockMillis: Long = 0L,
 ) {
-    /** 引擎回报侧的真实消耗（进+出），与估算口径的 [sentTokens] 并列呈现。 */
+    /**
+     * 引擎回报侧的真实消耗（进+出），与估算口径的 [sentTokens] 并列呈现。
+     *
+     * ⚠️ 它是 `cumulativeIn + cumulativeOut` 的**派生口径**，不是引擎自己报的总量：
+     * [TokenUsage.totalTokens] 由引擎自算，可能含 cached / reasoning 等不计入
+     * prompt+completion 的部分，二者**未必相等**。因此 UI 上不要把本值与
+     * `usage.totalTokens` 并列展示或相减对比 —— 那会制造第四种口径。要对比就
+     * 固定用本派生口径（口径纯净优先于与引擎对齐）。
+     */
     val engineTotalTokens: Long get() = cumulativeIn + cumulativeOut
 }
 
@@ -100,9 +111,10 @@ interface RunTokenLedger {
  * （要么账本改按 run 实例化，要么新增 run 起点重置入口并由 AgentRunner 在 run 头调用）。
  *
  * 时间戳口径：账本按会话池化（AppContainer），**没有 run 起点锚**，因此
- * [RunTokenSnapshot.updatedAtElapsedMillis] 记录的是最后一次写入的进程墙钟
+ * [RunTokenSnapshot.updatedAtWallClockMillis] 记录的是最后一次写入的进程墙钟
  * （[System.currentTimeMillis]）——语义是「这个账本最后活跃在什么时候」，不参与
- * 任何预算/耗时计算（字段名沿用方案 §2.3 原名，语义按池化实际如实申报）。
+ * 任何预算/耗时计算（字段名已由方案 §2.3 的 `updatedAtWallClockMillis` 改为如实申报的
+ * 现名：它装的是墙钟，不是流逝耗时）。
  * 测试可注入 [clock] 钉死时间行为。
  */
 class InMemoryRunTokenLedger(
@@ -114,7 +126,7 @@ class InMemoryRunTokenLedger(
 
     override fun onSendEstimated(totalSentTokens: Long) {
         val now = clock()
-        _snapshot.update { it.copy(sentTokens = totalSentTokens, updatedAtElapsedMillis = now) }
+        _snapshot.update { it.copy(sentTokens = totalSentTokens, updatedAtWallClockMillis = now) }
     }
 
     override fun onEngineUsage(usage: TokenUsage?) {
@@ -124,7 +136,7 @@ class InMemoryRunTokenLedger(
             it.copy(
                 cumulativeIn = it.cumulativeIn + usage.promptTokens,
                 cumulativeOut = it.cumulativeOut + usage.completionTokens,
-                updatedAtElapsedMillis = now,
+                updatedAtWallClockMillis = now,
             )
         }
     }

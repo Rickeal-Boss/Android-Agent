@@ -117,14 +117,14 @@ class RunTokenLedgerTest {
     // ── 时间戳 ───────────────────────────────────────────────────────────────
 
     @Test
-    fun `每次回写都刷新 updatedAtElapsedMillis`() {
+    fun `每次回写都刷新 updatedAtWallClockMillis`() {
         var now = 42L
         val l = ledger { now }
         l.onSendEstimated(1L)
-        assertEquals(42L, l.snapshot.value.updatedAtElapsedMillis)
+        assertEquals(42L, l.snapshot.value.updatedAtWallClockMillis)
         now = 43L
         l.onEngineUsage(TokenUsage(promptTokens = 1))
-        assertEquals(43L, l.snapshot.value.updatedAtElapsedMillis)
+        assertEquals(43L, l.snapshot.value.updatedAtWallClockMillis)
     }
 
     @Test
@@ -134,6 +134,6 @@ class RunTokenLedgerTest {
         l.onSendEstimated(1L)
         now = 99L
         l.onEngineUsage(null)
-        assertEquals(42L, l.snapshot.value.updatedAtElapsedMillis)
+        assertEquals(42L, l.snapshot.value.updatedAtWallClockMillis)
     }
 }
