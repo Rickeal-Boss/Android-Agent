@@ -16,6 +16,9 @@ import com.rickeal.agent.feature.settings.memory.MemoryScreen
 import com.rickeal.agent.feature.settings.memory.MemoryViewModel
 import com.rickeal.agent.feature.settings.storage.StorageScreen
 import com.rickeal.agent.feature.settings.storage.StorageViewModel
+import com.rickeal.agent.feature.settings.tools.SandboxFilesRoute
+import com.rickeal.agent.feature.settings.tools.SandboxFilesScreen
+import com.rickeal.agent.feature.settings.tools.SandboxFilesViewModel
 import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.feature.settings.tools.ToolsScreen
 import com.rickeal.agent.feature.settings.tools.ToolsViewModel
@@ -114,6 +117,23 @@ fun NavGraphBuilder.settingsGraph(
             viewModel = viewModel(
                 factory = viewModelFactory { ToolsViewModel(container) },
             ),
+            onBack = { navController.popBackStack() },
+            // Wave 33：沙箱工作区入口卡 → 文件子页。push 进栈（非 navigateTop）：
+            // 子页返回应回到工具页，这与 Diagnostics / Storage 子页同一形态。
+            onOpenSandboxFiles = { navController.navigate(SandboxFilesRoute.build()) },
+        )
+    }
+
+    // Wave 33：沙箱文件子页。route 前缀 `tools/` 使 routeTop() 最长前缀匹配自动
+    // 归到 TOOLS 页签（见 SandboxFilesRoute KDoc），composable 注册在本 graph builder
+    // 的理由与上面的工具页 / 记忆页一致（B-P1-8 零构建脚本改动原则）。
+    composable(route = SandboxFilesRoute.ROUTE) {
+        val container = LocalAppContainer.current
+        SandboxFilesScreen(
+            viewModel = viewModel(
+                factory = viewModelFactory { SandboxFilesViewModel(container) },
+            ),
+            sandboxRoot = container.sandboxDir,
             onBack = { navController.popBackStack() },
         )
     }

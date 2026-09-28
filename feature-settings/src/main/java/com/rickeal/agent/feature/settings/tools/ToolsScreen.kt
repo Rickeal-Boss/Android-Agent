@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -53,6 +54,7 @@ import com.rickeal.agent.core.design.LocalGlassTokens
 fun ToolsScreen(
     viewModel: ToolsViewModel,
     onBack: () -> Unit,
+    onOpenSandboxFiles: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -100,6 +102,29 @@ fun ToolsScreen(
                 .padding(bottom = LocalBottomBarOverlay.current),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // ── 沙箱工作区入口卡（Wave 33）：Agent 工具产出文件的可视入口 ─────────
+            // 放在工具列表**之上**：它是「产出物」的查看入口，与下方「工具开关」
+            // 不是一类操作，视觉上先行。摘要与沙箱文件子页共用 SandboxFileScanner
+            // 一份实现；「根层」字样必须保留 —— 它与存储页的递归统计口径不同。
+            GlassSettingRow(
+                title = "沙箱工作区",
+                subtitle = if (state.sandboxLoading) {
+                    "统计中…"
+                } else {
+                    val count = if (state.sandboxTruncated) "${state.sandboxEntryCount}+ 项" else "${state.sandboxEntryCount} 项"
+                    "$count（根层） · ${formatSandboxBytes(state.sandboxTotalBytes)}"
+                },
+                onClick = onOpenSandboxFiles,
+                trailing = {
+                    Icon(
+                        imageVector = Icons.Filled.ChevronRight,
+                        contentDescription = null,
+                        tint = colors.accent,
+                        modifier = Modifier.size(18.dp),
+                    )
+                },
+            )
+
             if (state.tools.isEmpty()) {
                 GlassEmptyState(
                     title = "没有已注册的工具",
