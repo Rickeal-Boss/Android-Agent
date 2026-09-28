@@ -399,4 +399,97 @@ class ToolDisclosureTest {
         assertTrue(catalog.search("写入 文件").any { it.name == "file_write" })
         assertTrue(catalog.search("file").any { it.name == "file_write" })
     }
+
+    // ── 检索别名 keywords（Wave 31）───────────────────────────────────────────
+
+    private fun specWithKeywords(
+        name: String,
+        description: String = "",
+        category: String = "general",
+        keywords: List<String> = emptyList(),
+    ) = ToolSpec(name = name, description = description, category = category, keywords = keywords)
+
+    @Test
+    fun keywordsDefaultToEmptyForZeroRegression() {
+        // 字段默认空 = 评分与引入本字段前逐字节一致（既有用例全部基于此默认值）。
+        assertTrue(spec("file_read", "读取文件").keywords.isEmpty())
+    }
+
+    @Test
+    fun keywordsBridgeVocabGapForOralQuery() {
+        // 「算一下」既不在 name、也不在 description/category —— 仅靠 keywords 命中。
+        val catalog = catalogOf(
+            specWithKeywords(
+                name = "calculator",
+                description = "计算数学表达式",
+                category = "utility",
+                keywords = listOf("算一下", "计算", "算数"),
+            ),
+            spec("file_read", "读取文件", category = "file"),
+        )
+        assertEquals(listOf("calculator"), catalog.search("算一下").map { it.name })
+    }
+
+    @Test
+    fun keywordsMatchByBigramTerms() {
+        // 口语长句「帮我算一下」：整句不命中别名，但 bigram「算一/一下」命中别名 → 召回。
+        val catalog = catalogOf(
+            specWithKeywords(
+                name = "calculator",
+                description = "计算数学表达式",
+                category = "utility",
+                keywords = listOf("算一下"),
+            ),
+        )
+        assertEquals(listOf("calculator"), catalog.search("帮我算一下").map { it.name })
+    }
+
+    @Test
+    fun keywordsExactMatchOutranksKeywordContains() {
+        // 别名完全匹配（+80）应排在仅别名包含（+70）之前。
+        val catalog = catalogOf(
+            specWithKeywords("a_tool", "", keywords = listOf("算一下")),
+            specWithKeywords("b_tool", "", keywords = listOf("帮我算一下哦")),
+        )
+        assertEquals("a_tool", catalog.search("算一下").first().name)
+    }
+
+    // ── 覆盖率 coverage（Wave 31，仅信息面、不改命中门）─────────────────────
+
+    @Test
+    fun coverageIsZeroForBlankOrNonMatch() {
+        val catalog = standardCatalog()
+        val entry = catalog.search("file").first()
+        assertEquals(0.0, catalog.coverage(entry, ""))
+        assertEquals(0.0, catalog.coverage(entry, "   "))
+        assertEquals(0.0, catalog.coverage(entry, "量子纠缠"))
+    }
+
+    @Test
+    fun coverageStaysWithinUnitInterval() {
+        val catalog = standardCatalog()
+        catalog.search("file").forEach { entry ->
+            val c = catalog.coverage(entry, "file")
+            assertTrue(c > 0.0 && c <= 1.0, "coverage 应落在 (0,1]：$c")
+        }
+    }
+
+    @Test
+    fun coverageRanksExactNameAboveDescriptionOnly() {
+        val catalog = catalogOf(
+            spec("read", "通用读取", category = "general"),
+            spec("file_read", "读取沙箱目录内的文本文件", category = "file"),
+        )
+        val exact = catalog.search("read").first { it.name == "read" }
+        val weak = catalog.search("read").first { it.name == "file_read" }
+        assertTrue(catalog.coverage(exact, "read") > catalog.coverage(weak, "read"))
+    }
+
+    @Test
+    fun weakOrUnrelatedQueriesStillReturnEmpty() {
+        // 零命中回归钉（门仍是 score > 0，本 Wave 未改判据）：这些查询与语料无公共子串。
+        val catalog = standardCatalog()
+        listOf("量子纠缠", "股票行情", "翻译成英文", "播放音乐", "打开相机", "天气预报", "发送邮件")
+            .forEach { q -> assertTrue(catalog.search(q).isEmpty(), "「$q」应零命中") }
+    }
 }

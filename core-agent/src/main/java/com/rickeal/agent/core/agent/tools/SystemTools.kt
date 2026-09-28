@@ -24,6 +24,8 @@ class ClipboardTool(private val context: ToolContext) : ParamGatedTool, EffectAw
         // 静态声明取保守值 WRITE：只有 action 解析明确为 get 时才由 effectFor 降为 READ。
         // （若只依赖静态声明，只读档位下连 get 都要弹卡 —— 那是噪音，会训练用户无脑点同意。）
         effect = ToolEffect.WRITE,
+        // 检索别名（Wave 31）：用户说「复制/粘贴」而非「clipboard」。
+        keywords = listOf("复制", "粘贴", "剪贴板"),
     )
 
     /**

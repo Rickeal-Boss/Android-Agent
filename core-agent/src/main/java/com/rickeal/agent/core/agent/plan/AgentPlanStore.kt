@@ -219,6 +219,8 @@ abstract class PlanToolBase(
     name: String,
     description: String,
     parameters: List<ToolParameter>,
+    /** 检索别名（Wave 31，[ToolSpec.keywords]）：由子类各自声明，默认空 = 零回归。 */
+    keywords: List<String> = emptyList(),
 ) : Tool {
     final override val spec: ToolSpec = ToolSpec(
         name = name,
@@ -227,6 +229,7 @@ abstract class PlanToolBase(
         category = "plan",
         // plan_set / plan_update 都改会话级计划仓库（有状态副作用），显式声明 WRITE。
         effect = ToolEffect.WRITE,
+        keywords = keywords,
     )
 
     protected suspend fun conversationKey(): String? {
@@ -257,6 +260,7 @@ class PlanSetTool(private val store: AgentPlanStore) : PlanToolBase(
             description = "步骤描述数组，每项一句话、以动词开头，不超过 6 步",
         ),
     ),
+    keywords = listOf("做计划", "列步骤", "任务拆解"),
 ) {
     override suspend fun invoke(argumentsJson: String): ToolResult {
         val key = conversationKey()
@@ -297,6 +301,7 @@ class PlanUpdateTool(private val store: AgentPlanStore) : PlanToolBase(
             enumValues = listOf("pending", "in_progress", "completed"),
         ),
     ),
+    keywords = listOf("更新进度", "标记完成", "完成一步"),
 ) {
     override suspend fun invoke(argumentsJson: String): ToolResult {
         val key = conversationKey()

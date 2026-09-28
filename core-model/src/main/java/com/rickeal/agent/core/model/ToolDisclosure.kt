@@ -18,6 +18,10 @@ data class HiddenToolEntry(
     val category: String,
     /** 参数名 + 类型 + 是否必填的紧凑提示，供模型拼出正确参数。 */
     val parameterHints: List<String>,
+    /**
+     * 检索别名（Wave 31，来自 [ToolSpec.keywords]）。默认空 = 不参与评分（零回归）。
+     */
+    val keywords: List<String> = emptyList(),
 )
 
 /**
@@ -31,15 +35,29 @@ data class HiddenToolEntry(
  * ```
  * 工具名完全等于 query        +200
  * 工具名包含 query            +90
+ * 检索别名完全等于 query      +80
+ * 检索别名包含 query          +70
  * 描述包含 query              +60
  * 分类包含 query              +25
- * 逐词项（query 按空白切分）：名 +30 / 分类 +12 / 描述 +8
+ * 逐词项（query 分词后长度≥2）：名 +30 / 别名 +15 / 分类 +12 / 描述 +8
  * ```
  * 排序**思路**（精确匹配优先于子串匹配、名称优先于描述）属通用检索常识；**具体倍率
  * 按本方语料独立推导**，不取自任何外部实现：① 我方工具名是短英文标识
  * （file_read / memory_write），模型说对名字即最强信号，故完全匹配 200、名称包含 90；
  * ② 描述是中文长句，含任意查询词的概率天然很高（噪音大），故只给 60；③ 分类只有
  * 个位数取值，命中即命中一大片，故只给 25。逐词项按同一信息量顺序给权重。
+ *
+ * 检索别名（Wave 31，[ToolSpec.keywords]）的权重取在「名称」与「描述」之间：
+ * 它是**人工维护的中文口语别名**（如 calculator → 「算一下」），信息量高于泛化的中文
+ * 描述（描述里任何工具都可能撞到查询词），但低于工具的真实英文标识 —— 故单条别名
+ * 完全匹配 80（低于名称包含 90、高于描述 60），逐词项 +15（低于名称 +30、高于描述 +8）。
+ *
+ * [coverage] 把原始分除以「该 query 的理论最高分」得到 [0,1] 的相关度，作为
+ * `search_tools` 结果的**附带信息**暴露给模型。⚠️ **命中门仍是 `> 0`**：本仓工具语料里
+ * 分类/描述单命中的分数相对全局理论上限天然很低（实测分类命中 ≈ 0.09、描述命中 ≈ 0.16），
+ * 任何有意义的 coverage 阈值都会**误删这些正确命中**（例如 query「utility」应召回
+ * current_time）；而「相对最高分」式阈值又对「只有一条弱命中」的查询恒判 1.0、过滤不掉。
+ * 因此本轮只**暴露** coverage、不改判据（Wave 31 的有意取舍，详见交接说明）。
  */
 class HiddenToolCatalog private constructor(
     private val entries: List<HiddenToolEntry>,
@@ -90,6 +108,9 @@ class HiddenToolCatalog private constructor(
         sb.append("匹配「").append(query).append("」的工具（").append(hits.size).append(" 条）：\n")
         for (entry in hits) {
             sb.append("- ").append(entry.name).append("：").append(entry.description)
+            // Wave 31：附带相关度（coverage），供模型在同分命中间做取舍 —— 纯信息面，
+            // 不参与命中判定（门仍是 score > 0，理由见类 KDoc）。
+            sb.append("（相关度 ").append((coverage(entry, query) * 100).toInt()).append("%）")
             if (entry.parameterHints.isNotEmpty()) {
                 sb.append("\n  参数：").append(entry.parameterHints.joinToString("，"))
             }
@@ -102,25 +123,74 @@ class HiddenToolCatalog private constructor(
         return sb.toString()
     }
 
+    /**
+     * 单条检索覆盖率 = 原始分 / 「该 query 的理论最高分」，落在 `[0,1]`。
+     *
+     * 只作信息面（`search_tools` 结果里展示、供模型取舍），**不参与命中判定** ——
+     * 命中门仍是 [search] 里的 `score > 0`（理由见类 KDoc）。
+     * 空白 query 或无 term 时返回 0.0。
+     */
+    fun coverage(entry: HiddenToolEntry, query: String): Double {
+        val normalizedQuery = normalize(query)
+        if (normalizedQuery.isEmpty()) return 0.0
+        val terms = tokenize(normalizedQuery)
+        val max = maxScore(terms)
+        if (max <= 0) return 0.0
+        return score(entry, normalizedQuery, terms).toDouble() / max
+    }
+
+    /**
+     * 该 query 下任何单一工具条目能达到的分数上界（用于 [coverage] 归一化）。
+     * 各权重取 [score] 里的最大值：名称完全匹配同时满足「名称包含」，
+     * 别名取「完全匹配」一支（其值 ≥ 包含支），逐词项预算按长度≥2 的 term 计。
+     */
+    private fun maxScore(terms: List<String>): Int {
+        val termBudget = terms.count { it.length >= 2 } *
+            (W_TERM_NAME + W_TERM_KEYWORD + W_TERM_CAT + W_TERM_DESC)
+        return W_NAME_EXACT + W_NAME_CONTAINS + W_KEYWORD_EXACT + W_DESC_CONTAINS +
+            W_CAT_CONTAINS + termBudget
+    }
+
     private fun score(entry: HiddenToolEntry, normalizedQuery: String, terms: List<String>): Int {
         val name = normalize(entry.name)
         val description = normalize(entry.description)
         val category = normalize(entry.category)
+        val keywords = entry.keywords.map { normalize(it) }
         var score = 0
-        if (name == normalizedQuery) score += 200
-        if (name.contains(normalizedQuery)) score += 90
-        if (description.contains(normalizedQuery)) score += 60
-        if (category.contains(normalizedQuery)) score += 25
+        if (name == normalizedQuery) score += W_NAME_EXACT
+        if (name.contains(normalizedQuery)) score += W_NAME_CONTAINS
+        if (description.contains(normalizedQuery)) score += W_DESC_CONTAINS
+        if (category.contains(normalizedQuery)) score += W_CAT_CONTAINS
+        // 别名：完全匹配与包含二选一（完全匹配已是包含的子集，避免重复计分）。
+        if (keywords.any { it == normalizedQuery }) {
+            score += W_KEYWORD_EXACT
+        } else if (keywords.any { it.contains(normalizedQuery) }) {
+            score += W_KEYWORD_CONTAINS
+        }
         for (term in terms) {
             if (term.length < 2) continue
-            if (name.contains(term)) score += 30
-            if (category.contains(term)) score += 12
-            if (description.contains(term)) score += 8
+            if (name.contains(term)) score += W_TERM_NAME
+            if (keywords.any { it.contains(term) }) score += W_TERM_KEYWORD
+            if (category.contains(term)) score += W_TERM_CAT
+            if (description.contains(term)) score += W_TERM_DESC
         }
         return score
     }
 
     companion object {
+        // 评分权重（相对量，非概率）。推导见类 KDoc —— 数值按本仓工具语料独立确定，
+        // 改动任一权重都会同时影响排序与 [coverage]，需同步复核 ToolDisclosureTest。
+        private const val W_NAME_EXACT = 200
+        private const val W_NAME_CONTAINS = 90
+        private const val W_KEYWORD_EXACT = 80
+        private const val W_KEYWORD_CONTAINS = 70
+        private const val W_DESC_CONTAINS = 60
+        private const val W_CAT_CONTAINS = 25
+        private const val W_TERM_NAME = 30
+        private const val W_TERM_KEYWORD = 15
+        private const val W_TERM_CAT = 12
+        private const val W_TERM_DESC = 8
+
         /**
          * 单次检索返回条数上限。按「一次回灌不超过 ~600 字符」反推：每条含描述与参数
          * 提示约 100 字符，故取 6 —— 检索结果走的是既有工具结果回灌通道（受 AgentPolicy
@@ -147,6 +217,7 @@ class HiddenToolCatalog private constructor(
                         description = spec.description,
                         category = spec.category,
                         parameterHints = spec.parameters.map { renderParameterHint(it) },
+                        keywords = spec.keywords,
                     )
                 }
                 .toList()

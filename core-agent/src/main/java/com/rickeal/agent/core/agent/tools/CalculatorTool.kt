@@ -17,6 +17,8 @@ class CalculatorTool : Tool {
         ),
         category = "utility",
         effect = ToolEffect.READ,
+        // 检索别名（Wave 31）：跨越「用户说『算一下』、工具叫 calculator」的词汇鸿沟。
+        keywords = listOf("算一下", "计算", "算数", "算个数"),
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {

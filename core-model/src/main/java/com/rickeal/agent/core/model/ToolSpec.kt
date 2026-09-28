@@ -69,6 +69,12 @@ data class ToolSpec(
      * 旧 JSON 前后兼容（ignoreUnknownKeys + explicitNulls=false）。
      */
     val timeoutMillisOverride: Long? = null,
+    /**
+     * 检索别名（Wave 31）。披露模式（[ToolDisclosureMode.ON_DEMAND]）下 `search_tools`
+     * 的检索语料之一，用于跨越「用户说『算一下』、工具叫 calculator」的词汇鸿沟。
+     * 默认空 = 评分与引入本字段前逐字节一致（零行为回归）。
+     */
+    val keywords: List<String> = emptyList(),
 ) {
     /** 生成文本协议模式下写进 system prompt 的一行描述。 */
     fun toPromptLine(): String =

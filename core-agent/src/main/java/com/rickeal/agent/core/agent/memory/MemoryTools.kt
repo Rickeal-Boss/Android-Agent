@@ -32,6 +32,8 @@ class MemoryWriteTool(private val memory: AgentMemory) : Tool {
         // 与 file_write 同级 —— 执行前过审批闸门；子 run 无审批通道时按 fail-closed 拒绝
         // （子代理本就不该有沉淀长期记忆的权限，这正是想要的边界）。
         requiresConfirmation = true,
+        // 检索别名（Wave 31）：用户口语「记住/备忘」。
+        keywords = listOf("记住", "记一下", "备忘", "长期记忆"),
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {
@@ -74,6 +76,8 @@ class MemoryReadTool(private val memory: AgentMemory) : Tool {
         description = "读取全部长期记忆（用户偏好、项目事实等此前沉淀的信息）",
         category = "memory",
         effect = ToolEffect.READ,
+        // 检索别名（Wave 31）。
+        keywords = listOf("回忆", "之前记的", "读取记忆"),
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {
@@ -101,6 +105,8 @@ class MemoryDeleteTool(private val memory: AgentMemory) : Tool {
         effect = ToolEffect.WRITE,
         // 与 memory_write 同理：删除是不可逆的持久副作用，过审批闸门。
         requiresConfirmation = true,
+        // 检索别名（Wave 31）。
+        keywords = listOf("忘掉", "删除记忆", "不要再记"),
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {

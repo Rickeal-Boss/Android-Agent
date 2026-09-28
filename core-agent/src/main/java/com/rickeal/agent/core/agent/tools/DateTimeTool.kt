@@ -21,6 +21,8 @@ class DateTimeTool(private val context: ToolContext) : Tool {
         ),
         category = "utility",
         effect = ToolEffect.READ,
+        // 检索别名（Wave 31）：用户常以口语提问时间，而非「current_time」。
+        keywords = listOf("现在几点", "今天几号", "日期时间", "现在时间"),
     )
 
     override suspend fun invoke(argumentsJson: String): ToolResult {
