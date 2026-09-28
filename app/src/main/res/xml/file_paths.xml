@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 路径表（Wave 33「沙箱文件可视 + 跳转打开」）。
+
+     刻意**只有这一条**：暴露面 = filesDir/agent_sandbox/（Agent 工具产出落点）。
+     filesDir 下的 conversations / models / agent_memory / journal 等目录
+     （隐私与用户资产）不在此列 —— 不在路径表里的文件，FileProvider.getUriForFile
+     会直接抛 IllegalArgumentException，等于物理上不可经此 provider 泄露。
+     将来若要暴露新目录，必须在此显式加条目并说明理由，不要顺手放宽。 -->
+<paths>
+    <files-path
+        name="agent_sandbox"
+        path="agent_sandbox/" />
+</paths>
