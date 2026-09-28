@@ -405,6 +405,11 @@ class AgentRunner(
                         AgentRunJournal.settledPayload("Failed", 0),
                     )
                     emit(AgentEvent.Failed("引擎加载失败：${retry.message}", retry))
+                    // ⚠️ 此路径不装配诊断卡：发生在 RunState 构造之前（引擎加载是
+                    // run 的第一步），state.breaker 尚不存在。EngineFailure 档的
+                    // report 由 runGenerationRound 内两处失败路径承载（生成失败 /
+                    // 重载失败，state 可用）。本路径发生在任何消费开始之前，
+                    // 用户看到的是启动失败，无诊断需求。
                     return
                 }
                 // 重建和重新 load 已成功：发一次重试信号，避免 UI 在恢复期间静默卡在旧状态。
@@ -703,6 +708,8 @@ class AgentRunner(
                     detector = detector,
                     round = state.round,
                     journal = journal,
+                    state = state,
+                    registeredToolNames = registeredToolNames,
                 ) ?: return
                 val accumulator = generation.accumulator
                 val intraStreamLoop = generation.intraStreamLoop
@@ -985,6 +992,8 @@ class AgentRunner(
         detector: StreamRepetitionDetector,
         round: Int,
         journal: AgentRunJournal?,
+        state: RunState,
+        registeredToolNames: Set<String>,
     ): GenerationOutcome? {
         var accumulator = StreamAccumulator()
         // 本轮生成是否被轮内重复检测截断：while(true) 重试循环内置位，
@@ -1062,9 +1071,23 @@ class AgentRunner(
                     journal?.append(
                         AgentRunJournal.KIND_SETTLED,
                         AgentRunJournal.settledPayload("Failed", round),
-                    )
-                    emit(AgentEvent.Failed("生成失败：${t.message}", t))
-                    return null
+                )
+                // EngineFailure 归因接线（Wave 30 复审 4 号）：只写账不改文案。
+                state.breaker.trip(
+                    BreakerKind.EngineFailure,
+                    round = round,
+                    evidence = "生成失败（${t.javaClass.simpleName}），重试仍失败",
+                )
+                emit(
+                    AgentEvent.Failed(
+                        "生成失败：${t.message}",
+                        t,
+                        report = buildBottleneckReportFor(
+                            state, journal, registeredToolNames, engineCause = t,
+                        ),
+                    ),
+                )
+                return null
                 }
                 generationAttempt++
                 // 重试前必须换一个干净的累加器：否则会把两次尝试的半截输出拼成一条错误答案。
@@ -1083,7 +1106,21 @@ class AgentRunner(
                         AgentRunJournal.KIND_SETTLED,
                         AgentRunJournal.settledPayload("Failed", round),
                     )
-                    emit(AgentEvent.Failed("引擎重载失败：${retry.message}", retry))
+                    // EngineFailure 归因接线（Wave 30 复审 4 号）：只写账不改文案。
+                    state.breaker.trip(
+                        BreakerKind.EngineFailure,
+                        round = round,
+                        evidence = "生成失败后引擎重载也失败（${retry.javaClass.simpleName}）",
+                    )
+                    emit(
+                        AgentEvent.Failed(
+                            "引擎重载失败：${retry.message}",
+                            retry,
+                            report = buildBottleneckReportFor(
+                                state, journal, registeredToolNames, engineCause = retry,
+                            ),
+                        ),
+                    )
                     return null
                 }
                 // 重建成功、即将重新生成本轮。位置很关键：必须在 rebuildEngine 之后
@@ -1197,6 +1234,16 @@ class AgentRunner(
         // 同一副作用不会被反复触发。放在 toolRegistry 查询之前：
         // 未注册工具名同样不该被重复打。
         if (state.toolCallStreak >= REPEAT_TOOL_CALL_EXEC_LIMIT) {
+            // 既有判据登记（Wave 30）：只写账不改行为 —— 诊断卡需要这一行。
+            // none 守卫：账里至多一条，避免第 4/5/6 次忽略重复 trip。
+            if (state.breaker.trips.none { it.kind == BreakerKind.SameParamDeadlock }) {
+                state.breaker.trip(
+                    BreakerKind.SameParamDeadlock,
+                    round = state.round,
+                    tool = call.name,
+                    evidence = "同一调用以完全相同参数第 ${state.toolCallStreak} 次被忽略不执行",
+                )
+            }
             emitRepeatedCallIgnored(call, state.toolCallStreak, working, journal)
             return ToolCallStep.NextCall
         }
@@ -1237,6 +1284,17 @@ class AgentRunner(
                 registeredToolNames,
                 working,
                 journal,
+            )
+            // 归因接线（Wave 30 复审 4 号）：未注册拒绝也进 attempt 账 ——
+            // BottleneckReport 的 ToolUnavailable 档靠 lastFailureError 的线索前缀
+            // 归因，而线索文案只在这条路径产出（口径与 TOOL_UNAVAILABLE_CLUES
+            // 逐字一致，见 BottleneckReport.kt 的同步注释）。
+            state.breaker.recordAttempt(
+                tool = call.name,
+                argsDigest = ToolApprovalCache.argsDigest(call.argumentsJson),
+                ok = false,
+                error = "未注册的工具：${call.name}",
+                elapsedMillis = 0L,
             )
             return ToolCallStep.NextCall
         }
@@ -1280,6 +1338,13 @@ class AgentRunner(
                 if (denialCount >= DENIAL_CIRCUIT_LIMIT) {
                     AgentLogStore.warn(
                         "审批熔断：${call.name} 已连续拒绝 $denialCount 次，本任务内跳过审批直接拒绝"
+                    )
+                    // 既有判据登记（Wave 30）：只写账不改行为。
+                    state.breaker.trip(
+                        BreakerKind.DenialCircuit,
+                        round = state.round,
+                        tool = call.name,
+                        evidence = "工具 ${call.name} 已被用户连续拒绝 $denialCount 次，本任务内跳过审批直接拒绝",
                     )
                     emit(AgentEvent.ToolSkipped(call, "该工具已被多次拒绝，本任务内不再询问"))
                     emitToolFailure(
@@ -1492,6 +1557,15 @@ class AgentRunner(
                 AgentLogStore.error(
                     "连续 ${state.intraLoopStreak} 轮触发轮内重复循环（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发），终止 run"
                 )
+                // 既有判据登记（Wave 30）：只写账不改行为。prompt_echo 与其他 marker
+                // 混合计入 StreamLoop —— 不为区分改 detector 行为。
+                if (state.breaker.trips.none { it.kind == BreakerKind.StreamLoop }) {
+                    state.breaker.trip(
+                        BreakerKind.StreamLoop,
+                        round = state.round,
+                        evidence = "连续 ${state.intraLoopStreak} 轮触发轮内重复循环（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发）",
+                    )
+                }
                 journal?.append(
                     AgentRunJournal.KIND_SETTLED,
                     AgentRunJournal.settledPayload("Failed", state.round),
@@ -1636,6 +1710,12 @@ class AgentRunner(
             if (state.emptyAnswerStreak > MAX_EMPTY_ANSWER_ROUNDS) {
                 AgentLogStore.error(
                     "连续 ${state.emptyAnswerStreak} 轮空输出（已注入 $MAX_EMPTY_ANSWER_ROUNDS 次提醒仍无产出），终止 run"
+                )
+                // 既有判据登记（Wave 30）：只写账不改行为 —— 诊断卡的熔断记录需要它。
+                state.breaker.trip(
+                    BreakerKind.EmptyOutput,
+                    round = state.round,
+                    evidence = "连续 ${state.emptyAnswerStreak} 轮空输出（已注入 $MAX_EMPTY_ANSWER_ROUNDS 次提醒仍无产出）",
                 )
                 journal?.append(
                     AgentRunJournal.KIND_SETTLED,

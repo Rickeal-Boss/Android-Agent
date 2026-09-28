@@ -77,6 +77,10 @@ private fun budgetTail(trips: List<Trip>): String? = when {
  * DenialCircuit trip → PermissionDenied；未注册工具线索 → ToolUnavailable；
  * 输出退化族 trip → ModelDegraded；预算族 trip → BudgetExhausted；
  * 引擎故障（cause != null）→ EngineFailure；兜底 → MissingInput。
+ *
+ * ⚠️ MissingInput 是兜底档，**正常路径不可达**（HARD 熔断必有 trip、失败必有
+ * engineCause 或 lastToolError 之一）；保留它是为了让归因链穷尽时有明确落点，
+ * 而不是静默返回 null。
  */
 fun resolveBlocker(
     trips: List<Trip>,
