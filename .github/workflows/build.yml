@@ -18,7 +18,11 @@ name: Build
 #      容易陈旧的部分。lint 由下方独立的 lint job 并行跑：
 #      独立并行 = 不挤占构建关键路径（正面回应旧注释「不跑 lint，避免无关
 #      任务拖垮构建」——拖垮的前提是 lint 串进 assemble 链，这里没有）；
-#      warn-only（:app lint{} 设 abortOnError=false）= 存量问题不阻断 CI，
+#      lint 由独立 job 并行跑（同款工具链，不挤占构建关键路径）；Wave 32 起
+#      用 baseline 门禁：83 条存量被 app/lint-baseline.xml 冻结，**新增**的
+#      lint 问题（含 Warning 级）会阻断 CI —— 版本通告类（GradleDependency /
+#      NewerVersionAvailable / AndroidGradlePluginVersion）被显式 disable，
+#      避免「上游发版就没改代码也红」的坏门禁。
 #      报告先行、门禁后置。Wave 32 起走「两轮 baseline 计划」把 lint 毕业成
 #      真门禁，步骤写在 lint job 的头注释里（第一轮生成并上传
 #      app/lint-baseline.xml，第二轮翻 abortOnError=true）。
@@ -455,7 +459,7 @@ jobs:
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
-  # Lint 门禁位（Wave 32：warn-only → baseline 门禁，分两轮落地）
+  # Lint 门禁位（Wave 32：两轮落地完成 —— 第一轮 CI 生成基线，第二轮提交基线并翻转）
   #
   # 为什么是独立并行 job，而不是塞进 unit-tests 或 assemble-debug：
   #   1. 不拖垮构建（历史顾虑见文件头注释）：本 job 与 assemble-debug 并行，
@@ -465,38 +469,33 @@ jobs:
   #      lint{} 块）即可覆盖 :app 与全部 8 个 library 模块的源码，
   #      而不是 9 个模块各跑一遍 lint——后者并行展开会成倍拉高 runner 占用，
   #      且每个模块还要各自维护 lint 配置。
-  #   3. 【Wave 32 两轮计划】—— 本机没有 JDK / Android SDK，baseline 只能
-  #      由 lint 自己在 CI 里生成，因此必然是两轮：
-  #      第一轮（本次改动，abortOnError 仍为 false）：
-  #        · app/lint-baseline.xml 不在仓库里 ⇒ :app:lintDebug 首次运行时
-  #          由 lint 自动生成该文件（冻结 83 条存量 issue）；
-  #        · 本 job 新增的 "Upload lint baseline" 步骤把它作为 artifact
-  #          `lint-baseline-<sha>` 上传 ⇒ 主理人下载后放进
-  #          app/lint-baseline.xml 并提交；
-  #        · job 结论不变，仍然 success。
-  #      第二轮（拿到 baseline 之后，接手人照做）：
-  #        · 把 app/build.gradle.kts 的 abortOnError 翻成 true；
-  #        · 建议**同时**给下面 "Run Android Lint" 步骤加一行
-  #          `continue-on-error: true` 观察一轮 —— 若 baseline 因路径/格式
-  #          没匹配上，会当场暴露成红 step 而不打红 CI；确认干净后再摘掉；
-  #        · 只翻 abortOnError 只能拦 Error/Fatal 级 issue；想让 83 条
-  #          全量进门禁需再追加 warningsAsErrors = true（必须在确认 baseline
-  #          真的覆盖了全部存量 issue 之后才做）。
+  #   3. 【Wave 32 两轮计划 —— 两轮均已落地】本机没有 JDK / Android SDK，
+  #      baseline 只能由 lint 自己在 CI 里生成，因此分了两轮：
+  #      第一轮（Build #262，abortOnError=false）：lint 首跑自动生成
+  #        app/lint-baseline.xml（83 条 = 3 Error + 63 Warning + 17 Hints，
+  #        覆盖 :app 与全部 8 个 library 模块），经 "Upload lint baseline"
+  #        artifact 回传并提交。该轮 :app:lintDebug 以「Aborting build since
+  #        new baseline file was created」失败 —— 这是 lint 的设计行为
+  #        （生成基线后强制中止，逼你提交基线再重跑），不是缺陷。
+  #      第二轮（本次改动）：基线已进仓库 ⇒ 翻 abortOnError=true 并加
+  #        warningAsErrors=true（只翻 abortOnError 门禁面仅 3 条 Error，
+  #        形同虚设）；Run Android Lint 步骤暂留 continue-on-error 观察
+  #        一轮 —— 若基线没匹配上存量，会红 step 不红 job，确认干净后摘掉。
   #   4. 重新生成基线：删掉 app/lint-baseline.xml 再跑一次本 job。
   #      ⛔ 不要手工从 lint-results XML 合成 baseline —— 报告里的 file 属性
   #      是 CI 绝对路径（/home/runner/work/...），与 baseline 的形态不一定
   #      一致，猜错就是门禁失效。让 lint 自己写。
   #
-  # ⚠️ 本 job **从来没有** continue-on-error：warn-only 完全由
-  #    app/build.gradle.kts 的 abortOnError=false 提供。第二轮翻 true 时
-  #    不要误以为这里已经有兜底 —— 兜底要自己加。
+  # ⚠️ 观察期兜底：第二轮翻转后 "Run Android Lint" 步骤带 continue-on-error，
+  #    若基线没匹配上存量会红 step 不红 job —— 确认一轮干净后应摘掉，
+  #    让 lint 门禁恢复全量阻断力。
   #
   # 工具链与 Build / unit-tests job 完全同源（JDK 21 temurin / Gradle 9.7.1
   # via setup-gradle / 同一份 ci-gradle.properties），三个 job 的 Gradle
   # User Home 缓存由同一 action 以相同输入生成 key，天然共享、互相命中。
   # ---------------------------------------------------------------------------
   lint:
-    name: Lint (warn-only)
+    name: Lint (baseline gate)
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -578,7 +577,10 @@ jobs:
           fi
           gradle --version
 
-      - name: Run Android Lint (warn-only)
+      # 观察期（第二轮）：continue-on-error 让「基线没匹配上」暴露成红 step
+      # 而不打红 CI；确认一轮干净后删除本行，恢复全量阻断。
+      - name: Run Android Lint (baseline gate)
+        continue-on-error: true
         # 【只用 setup-gradle 安装的 gradle，与其他 job 同款】不调 ./gradlew。
         # :app:lintDebug + checkDependencies=true：单次调用覆盖 :app 及其全部
         # library 依赖的源码（AGP 会自动先编译依赖模块的 class 供 lint 分析）。
@@ -645,8 +647,8 @@ jobs:
           if-no-files-found: error
 
       - name: Upload lint reports
-        # warn-only 阶段报告就是全部价值：无论 job 红绿都上传，供存量清障与
-        # 将来建 baseline 使用。
+        # 报告无论 job 红绿都上传：供清障审查、与基线核对「存量是否被完整吸收」
+        # （观察期后应恒为 0 issue）。
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -659,11 +661,11 @@ jobs:
 
       - name: Write job summary
         # 从 lint XML 报告头部的 issues count 提取问题总数；所有分支都有
-        # 兜底，本 step 自身绝不失败（warn-only 阶段不能反过来打红 CI）。
+        # 兜底，本 step 自身绝不失败（不能让 summary 步骤反过来打红 job）。
         if: always()
         run: |
           {
-            echo "## Android Lint (warn-only)"
+            echo "## Android Lint (baseline gate)"
             echo ""
             xml="app/build/reports/lint-results-debug.xml"
             if [ -f "$xml" ]; then
