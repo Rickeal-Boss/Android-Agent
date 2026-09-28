@@ -54,6 +54,25 @@ private val BUDGET_KINDS =
     )
 
 /**
+ * 预算族差异化收尾（编译期常量，不拼运行时状态）。
+ *
+ * BudgetExhausted 这一档对用户的事实其实各不相同：**设备烫 ≠ 上下文装不下 ≠ 任务慢**，
+ * 但评审锁定的 Blocker 就是 6 档，不扩档 —— 故在通用句之后补一条按判据取值的常量句。
+ * 墙钟 / 轮次两种判据与通用句「跑了 N 轮、耗时 M 秒」语义自洽，不补。
+ */
+private const val BUDGET_TAIL_THERMAL =
+    "补充：本次是设备热保护触发的中断，与任务复杂度无关 —— 建议等机身降温后再重试，并避免边充电边跑长任务。"
+private const val BUDGET_TAIL_TOKEN =
+    "补充：本次是上下文 token 用满触发的中断，未必是耗时问题 —— 建议缩短单次任务范围（少贴长文本 / 少带历史），拆成几次短任务。"
+
+/** 按 trip 取预算族收尾；不需要补刀的判据返回 null。同样不新增 Blocker 档。 */
+private fun budgetTail(trips: List<Trip>): String? = when {
+    trips.any { it.kind == BreakerKind.ThermalThrottle } -> BUDGET_TAIL_THERMAL
+    trips.any { it.kind == BreakerKind.TokenBudget } -> BUDGET_TAIL_TOKEN
+    else -> null
+}
+
+/**
  * 卡点归因 = 优先级 if 链（方案 §2.5 归因表，纯函数可单测）：
  * DenialCircuit trip → PermissionDenied；未注册工具线索 → ToolUnavailable；
  * 输出退化族 trip → ModelDegraded；预算族 trip → BudgetExhausted；
@@ -85,6 +104,10 @@ data class BottleneckReport(
     val triedTools: List<ToolAttemptSummary>,
     val tripped: List<Trip>,
     val blocker: Blocker,
+    /**
+     * 建议条目：第一条恒为 [Blocker.template] 渲染出来的通用句；预算族的热 / token
+     * 判据会再补一条判据专属收尾（见 [budgetTail]，仍是编译期常量）。UI 逐条渲染。
+     */
     val suggestions: List<String>,
 )
 
@@ -93,6 +116,27 @@ private val BLOCKER_PLACEHOLDERS = Regex("\\{(?:tools|missing|rounds|elapsed)\\}
 
 /** [missing] 最长 char 数 —— 工具报错是自由文本，超长会淹没诊断卡。 */
 private const val MISSING_MAX_CHARS = 80
+
+/**
+ * {missing} 取值：压平换行 + 代理对安全截断。
+ *
+ * - 压平：工具报错是自由文本，带 `\n` 时会把「建议：」一行劈成多行，破坏分节格式
+ *   （render 的每个字段各自占一行）。
+ * - 截断：[String.take] 按 UTF-16 code unit 计数，可能停在半个代理对上；尾部落在
+ *   高位代理时回退一格，保证落库 / 渲染的串是合法 UTF-16。
+ *
+ * 无失败记录时不造带括号的句子 —— {missing} 会被塞进模板的「（最近失败：{missing}）」，
+ * 嵌套括号读起来是病句（= D4）。
+ */
+private fun summarizeMissing(lastToolError: String?): String {
+    val flat = lastToolError
+        ?.replace('\n', ' ')
+        ?.replace('\r', ' ')
+        ?: return "无失败工具记录"
+    if (flat.length <= MISSING_MAX_CHARS) return flat
+    val head = flat.take(MISSING_MAX_CHARS)
+    return if (head.last().isHighSurrogate()) head.dropLast(1) else head
+}
 
 /**
  * 装配诊断卡（纯函数，可 JVM 单测）。
@@ -119,7 +163,7 @@ fun buildBottleneckReport(
     val lastToolError = ledger.lastFailureError()
     val blocker = resolveBlocker(ledger.trips, engineCause, lastToolError)
     val tools = registeredToolNames.joinToString("、").ifBlank { "（无）" }
-    val missing = lastToolError?.take(MISSING_MAX_CHARS) ?: "未知阻塞（无失败工具记录）"
+    val missing = summarizeMissing(lastToolError)
     // 单趟扫描：占位符只认模板自带的那些。链式 replace 会让先填进去的运行时数据
     // （尤其 {missing} 的工具报错）再被后续 replace 扫一遍 —— 报错里若自带
     // "{rounds}" 字面量就会被二次展开。运行时数据只能填坑，不得参与模板解析。
@@ -138,7 +182,10 @@ fun buildBottleneckReport(
         triedTools = ledger.attemptSummary(),
         tripped = ledger.trips,
         blocker = blocker,
-        suggestions = listOf(suggestion),
+        suggestions = buildList {
+            add(suggestion)
+            if (blocker == Blocker.BudgetExhausted) budgetTail(ledger.trips)?.let(::add)
+        },
     )
 }
 
