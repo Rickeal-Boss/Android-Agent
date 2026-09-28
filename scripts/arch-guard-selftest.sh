@@ -81,6 +81,28 @@ data class AgentRequest(
     val userInput: ChatMessage,
 )
 KT
+  # 第 14 条（Wave 32 起）要求 app/lint-baseline.xml 存在且条目数 <= 冻结值 83：
+  # 骨架给 2 条条目（远低于冻结值），干净树保持绿。
+  mkdir -p "$root/app"
+  cat > "$root/app/lint-baseline.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<issues format="6" by="lint 9.3.2" type="baseline" client="gradle" dependencies="true">
+    <issue
+        id="AutoboxingStateCreation"
+        message="Entity state should be created with primitive values">
+        <location
+            file="src/main/java/com/rickeal/agent/LiquidAgentApplication.kt"
+            line="10"/>
+    </issue>
+    <issue
+        id="UseKtx"
+        message="Use Kotlin extensions instead">
+        <location
+            file="src/main/java/com/rickeal/agent/ui/LiquidAgentApp.kt"
+            line="20"/>
+    </issue>
+</issues>
+XML
 }
 
 run_guard() { ( cd "$1" && bash "$GUARD" 2>&1 ); }
@@ -335,6 +357,66 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case10] pending 理由已在 README 挂账台账节出现，应不红，实际退出 $rc"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 11：baseline 条目数超冻结值 ⇒ 第 14 条必须报红（防 baseline 变成
+#          「顺手把新问题 regen 进去」的僵尸豁免入口 —— 那会让整条 lint 门禁失效）。
+#          fixture 用 84 条 issue：验证计数只数 <issue 元素、不计根元素 <issues
+#          （若把 <issues 也算进去，85 > 83 恒红会让本 case 的判据失真）。
+# case11b：条目数低于冻结值（清了存量）⇒ 必须不红（「只许缩不许涨」的另一面）。
+# ---------------------------------------------------------------------------
+d="$TMP/case11-baseline-overage"
+scaffold "$d"
+python - "$d/app/lint-baseline.xml" <<'PYGEN'
+import sys
+p = sys.argv[1]
+one_issue = (
+    '    <issue\n'
+    '        id="AutoboxingStateCreation"\n'
+    '        message="Entity state should be created with primitive values">\n'
+    '        <location\n'
+    '            file="src/main/java/com/rickeal/agent/LiquidAgentApplication.kt"\n'
+    '            line="10"/>\n'
+    '    </issue>\n'
+)
+# 直接重写为恰好 84 条（骨架自带的 2 条不计入 —— 总数必须与断言的「现有 84 条」一致）
+open(p, 'w', encoding='utf-8').write(
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<issues format="6" by="lint 9.3.2" type="baseline" client="gradle" dependencies="true">\n'
+    + one_issue * 84
+    + '</issues>\n'
+)
+PYGEN
+out="$(run_guard "$d")"; rc=$?
+assert_red "case11 baseline 超冻结值 (第 14 条)" "$rc" "$out" \
+  "lint baseline 条目数未超冻结值（83，只许清障不许新增豁免）"
+if printf '%s\n' "$out" | grep -qF "现有 84 条"; then
+  echo "PASS [case11b] 报出「现有 84 条」（计数恰为 84 个 issue 元素，根元素 <issues 未被计入）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case11b] 未报出「现有 84 条」（第 14 条红面或计数模式失效）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case11b-baseline-shrunk"
+scaffold "$d"
+python - "$d/app/lint-baseline.xml" <<'PYGEN'
+import sys, re
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+s = re.sub(r'    <issue\n(?:.|\n)*?</issue>\n', '', s)
+open(p, 'w', encoding='utf-8').write(s)
+PYGEN
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case11c] baseline 缩到 0 条不红（清障合法；只有文件缺失或超冻结值才红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case11c] baseline 缩小被误红（第 14 条把「只许缩」实现成了「不许变」）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
