@@ -126,8 +126,10 @@ class BreakerLedgerTest {
         // 只断言 >= 5 的话，这两种错数都会静默通过。
         assertTrue(millis >= 5L, "偏移 5ms 应至少换算 5ms，实际 $millis")
         assertTrue(millis < 5_000L, "换算系数错误：5ms 被放大成 $millis")
-        // 未来刻度（不应出现）不能给出正数
-        assertTrue(elapsedMillisSince(now + 5_000_000L) <= 0L)
+        // 未来刻度（不应出现）不能给出正数。偏移放大到 5 秒：CI runner 的
+        // nanoTime 采样间隔可能被调度拉到毫秒级，5ms 偏移会被抖动吃掉导致假失败
+        //（实测 d79cb1f 上发生过）；5s 偏移对亚毫秒采样误差免疫。
+        assertTrue(elapsedMillisSince(now + 5_000_000_000L) <= 0L)
     }
 
     // ── 空账本与快照纪律 ──────────────────────────────────────────────────────
