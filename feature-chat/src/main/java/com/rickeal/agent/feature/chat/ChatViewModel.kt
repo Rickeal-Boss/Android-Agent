@@ -426,14 +426,18 @@ class ChatViewModel(
         // engineInitStatus 状态变化重订阅（rebuildEngine 必经 load → status 必转变 →
         // flatMapLatest 切到新缓存实例），保证诊断流始终跟随当前引擎实例。
         // LoadObservedEngine 是接口委托，新实例的状态流原样透传。
+        // ⚠️ flatMapLatest 是 ExperimentalCoroutinesApi：@OptIn 不能标在 init 块上
+        //（initializer 不是合法标注目标，CI 首轮实锤），标在承载它的局部变量上
+        //（作用域最窄，initializer 随声明一起被覆盖）。
+        @OptIn(ExperimentalCoroutinesApi::class)
+        val engineDiagnosticsFlow = container.engineInitStatus
+            .map { container.engineFactory.create(EngineKind.LOCAL) }
+            .distinctUntilChanged()
+            .flatMapLatest { it.sessionDiagnostics }
         viewModelScope.launch {
-            container.engineInitStatus
-                .map { container.engineFactory.create(EngineKind.LOCAL) }
-                .distinctUntilChanged()
-                .flatMapLatest { it.sessionDiagnostics }
-                .collect { diag ->
-                    _uiState.update { it.copy(sessionDiagnostics = diag) }
-                }
+            engineDiagnosticsFlow.collect { diag ->
+                _uiState.update { it.copy(sessionDiagnostics = diag) }
+            }
         }
         if (initialConversationId != null) {
             viewModelScope.launch { maybeOfferRecovery(initialConversationId) }
