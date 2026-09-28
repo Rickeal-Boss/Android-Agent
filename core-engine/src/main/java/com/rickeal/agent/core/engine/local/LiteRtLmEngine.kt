@@ -17,6 +17,7 @@ import com.google.ai.edge.litertlm.SamplerConfig
 import com.rickeal.agent.core.engine.EngineCapabilities
 import com.rickeal.agent.core.engine.EngineException
 import com.rickeal.agent.core.engine.EngineLoadConfig
+import com.rickeal.agent.core.engine.EngineSessionDiagnostics
 import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
 import com.rickeal.agent.core.model.AgentLogStore
@@ -37,6 +38,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.flow
@@ -44,6 +48,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 /** 简报 §3.1：思考文本走 channels["thought"]。 */
 internal const val THOUGHT_CHANNEL = "thought"
@@ -56,6 +61,54 @@ internal const val THOUGHT_CHANNEL = "thought"
  * （几 KB~几十 KB）。取 64MB 既不会误伤任何真实模型，也能拦住绝大多数残片。
  */
 private const val MODEL_MIN_BYTES: Long = 64L * 1024L * 1024L
+
+/**
+ * preface 校验用的**窗口长度**（Wave 33）：systemText 归一化后取前 64 个字符做子串匹配。
+ *
+ * 取 64 的理由：系统提示词开头是固定的角色/行为约束段，64 个归一化字符足以区分
+ * 「渲染进去了」与「渲染丢了」，又不至于要求整段提示词逐字出现在 preface 里
+ * （native 模板可能在提示词前后插入自己的标记）。
+ */
+private const val PREFACE_CHECK_WINDOW = 64
+
+/**
+ * [prefaceContainsSystem] 用的归一化（Wave 33）：lowercase(Locale.ROOT) 后仅保留
+ * 字母与数字字符。
+ *
+ * 纯函数（文件级 internal，可被单测直接调）。与 Wave 24 判定⑨回显指纹的归一化
+ * 同一口径 —— 模板插入的换行/标点/空白噪声必须被吃掉，否则校验会因格式差异误报。
+ */
+internal fun normalizeForPrefaceCheck(s: String): String =
+    s.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
+
+/**
+ * preface（systemInstruction + initialMessages 在 native chat template 下的实际渲染
+ * 结果）是否包含系统提示词正文（Wave 33）。
+ *
+ * 判定语义：取 [systemText] 归一化后的**前 [PREFACE_CHECK_WINDOW] 个字符**作为窗口，
+ * 判断它是否为 [preface] 归一化串的子串。窗口语义两侧必须同读：
+ *  - systemText 归一化后不足 64 字符 → 窗口退化为**全串**匹配；
+ *  - 负例的正确形态是「preface 只含有窗口前缀的一部分」（如仅前 40 个归一化字符
+ *    被渲染进来）—— 此时窗口（64 字符）不可能是 preface 的子串，判 false；
+ *  - systemText 归一化为空（无系统提示词）→ 无事可校验，恒 true。
+ *
+ * 纯函数（文件级 internal，可被单测直接调）。返回 false = 「角色通道第三态」
+ * （createConversation 成功但模板渲染丢失 system），调用方据此做中档回退。
+ */
+internal fun prefaceContainsSystem(preface: String, systemText: String): Boolean {
+    val normalizedSystem = normalizeForPrefaceCheck(systemText)
+    if (normalizedSystem.isEmpty()) return true
+    val window = normalizedSystem.take(PREFACE_CHECK_WINDOW)
+    return normalizeForPrefaceCheck(preface).contains(window)
+}
+
+/** GPU 失败的特征串（Wave 33，大小写不敏感）：命中即可断定是 GPU 委托层的问题。 */
+private val GPU_FAILURE_FEATURES = listOf("dlopen", "OpenCL", "INTERNAL", "CompiledModel", "ClGl")
+
+/** GPU 两段尝试都失败时的可操作文案（Wave 33：裸异常用户读不懂）。 */
+private const val GPU_FAILURE_HINT =
+    " —— GPU 委托不可用（驱动/OpenCL 库缺失或机型不支持），已回退 CPU 仍失败；" +
+        "请改用 CPU 后端重试或反馈机型信息"
 
 /**
  * LiteRT-LM 本地引擎。
@@ -176,6 +229,28 @@ class LiteRtLmEngine(
      * 提示词与历史，比原 bug 更糟。
      */
     private var roleChannelActive: Boolean = false
+    /**
+     * 中档回退挂起标记（Wave 33）：「角色通道第三态」命中后置 true —— 系统提示词
+     * 改由 [buildContents] 前置拼进**第一条未发过的 USER 消息**文本（只生效一次，
+     * 拼完即复位）。roleChannelActive **保持 true**（MODEL 回灌门控必须保留，这是
+     * 与 legacy 回退的本质区别）。复位点：生效后 / [releaseInternal] / 会话重建
+     * （cid/version/systemText 变化、conversationDirty、采样参数变化）—— 重建后
+     * 第三态判定会重新执行，不能带着旧标记进新会话。
+     */
+    private var systemMergedPending: Boolean = false
+
+    /** 会话诊断快照状态流（Wave 33）：会话建成 / 降级回退事件时整体发布。 */
+    private val _sessionDiagnostics = MutableStateFlow<EngineSessionDiagnostics?>(null)
+    override val sessionDiagnostics: StateFlow<EngineSessionDiagnostics?> =
+        _sessionDiagnostics.asStateFlow()
+
+    /**
+     * 本次加载**实际生效**的后端（Wave 33）：GPU 降级成功后为 CPU。与
+     * [loadedBackend]（恒记用户请求值，防误重建，by design）成对 —— 两者不等即
+     * 「请求 GPU 实际 CPU」的运行时事实，经 [EngineSessionDiagnostics] 暴露给 UI。
+     */
+    @Volatile
+    private var actualBackend: InferenceBackend? = null
     private var loadConfig: EngineLoadConfig? = null
 
     @Volatile
@@ -266,6 +341,8 @@ class LiteRtLmEngine(
                         // 会话重建 = 上下文从零开始，水印必须一起清：
                         // 留着的话新会话会把整段历史当成「已发送」而不再重发 —— 模型直接失忆。
                         sentMessageIds.clear()
+                        // 中档回退标记随会话作废（Wave 33，与其他重建点同一纪律）。
+                        systemMergedPending = false
                     }
                     loadedSampling = config.config.sampling
                     return@withLock
@@ -346,6 +423,10 @@ class LiteRtLmEngine(
                         add(InferenceBackend.CPU to if (wantsVision) InferenceBackend.CPU else null)
                     }
                 }
+                // GPU 提示的门控（复审 P1-2）：只有真的做过 GPU→CPU 的二段尝试
+                // （attempts 有第二段）才允许说「GPU 委托不可用」——用户请求 CPU、
+                // attempts 只有一段时，CPU 失败拼 GPU 文案是自相矛盾。
+                val hadGpuAttempt = attempts.size > 1
 
                 var lastError: Throwable? = null
                 for ((index, attempt) in attempts.withIndex()) {
@@ -381,6 +462,9 @@ class LiteRtLmEngine(
                         }.getOrNull()
                         loadedContextLength = config.config.contextLength
                         loadedBackend = config.config.backend
+                        // 实际生效后端（Wave 33）：index==0 = 请求值原样生效；
+                        // index>0 = GPU 降级成功，实际是 CPU（attempt.first 即本轮尝试值）。
+                        actualBackend = attempt.first
                         loadedSampling = config.config.sampling
                         // 记**解析后的值**，与 sameEngine 判据同源；记原始配置会让
                         // 「能力位从 false 改 true」时两侧都是同一个原始值而误判为可复用。
@@ -394,6 +478,21 @@ class LiteRtLmEngine(
                                     "请求的后端：${config.config.backend}）"
                             )
                         }
+                        // GPU 大上下文风险留档（Wave 33，log-only）：GPU 变体的 OpenCL
+                        // buffer + 编译缓存与 KV cache 双占内存，contextLength 拉大后低端机
+                        // 初始化失败风险显著升高。证据留档便于事后归因，不改任何行为。
+                        // 判据用**实际生效**后端（复审 P2-1）：actualBackend 已在上方赋值，
+                        // 请求 GPU 但降级成功跑 CPU 的场景下风险不存在，不应误报。
+                        if (
+                            actualBackend == InferenceBackend.GPU &&
+                            config.config.contextLength > 4096
+                        ) {
+                            AgentLogStore.warn(
+                                "GPU 后端上下文 ${config.config.contextLength} tok：" +
+                                    "GPU 变体 OpenCL buffer+编译缓存与 KV 双占内存，" +
+                                    "低端机初始化失败风险高（证据留档，不改行为）"
+                            )
+                        }
                         lastError = null
                         break
                     } catch (t: Throwable) {
@@ -405,8 +504,22 @@ class LiteRtLmEngine(
                     }
                 }
                 lastError?.let { t ->
-                    if (t is EngineException) throw t
-                    throw EngineException("LiteRT-LM: 创建 Engine 失败 (${t.message})", t)
+                    // 可操作文案（Wave 33）：两段尝试都失败且错误消息命中 GPU 特征串时，
+                    // 附加「驱动/OpenCL 缺失」的归因与下一步指引。纯字符串映射，不改行为。
+                    // 门控（复审 P1-2）：只在真的做过 GPU 尝试时才拼 GPU 文案。
+                    val gpuHint = if (
+                        hadGpuAttempt &&
+                        GPU_FAILURE_FEATURES.any { t.message.orEmpty().contains(it, ignoreCase = true) }
+                    ) {
+                        GPU_FAILURE_HINT
+                    } else {
+                        ""
+                    }
+                    if (t is EngineException) {
+                        // initialize 失败包装路径：保留原文案结构，特征命中则补指引。
+                        throw EngineException(t.message + gpuHint, t.cause)
+                    }
+                    throw EngineException("LiteRT-LM: 创建 Engine 失败 (${t.message})$gpuHint", t)
                 }
             }
         }
@@ -456,6 +569,9 @@ class LiteRtLmEngine(
             conversation = null
             // 换了会话/版本 = 换了 KV cache，水印必须一起清零，否则历史不会被重发 → 新会话丢上下文
             sentMessageIds.clear()
+            // 中档回退标记随会话一起作废（Wave 33）：重建后第三态判定会重新执行，
+            // 不能把旧会话的「待合并」状态带进新会话。
+            systemMergedPending = false
         }
         // 关键：上一条流若被取消或出错（cancelProcess / onError），Conversation 可能停留在
         // 半截状态（prefill 完成一半、KV cache 状态不完整）。带着这种状态继续 sendMessageAsync
@@ -466,6 +582,8 @@ class LiteRtLmEngine(
             conversationDirty = false
             // 同上：重建后的会话是空的，水印不清零会让「已发过」的历史永远不再发送
             sentMessageIds.clear()
+            // 中档回退标记同步作废（Wave 33，理由同上：新会话重新走完整判定）。
+            systemMergedPending = false
         }
         val existing = conversation
         if (existing != null) return existing
@@ -519,14 +637,17 @@ class LiteRtLmEngine(
             tools = emptyList(),
             initialMessages = seedMessages,
         )
+        // legacy 回退原因（try 体内赋值、体外的诊断发布读取 —— Kotlin 的 try 是表达式
+        // 但 try 内局部量 catch 看不见，故声明提到 try 外）。
+        var legacyFallbackReason: String? = null
         val created = try {
             val conv = currentEngine.createConversation(roleConfig)
             roleChannelActive = true
+            var thirdState = false
             // preface 渲染诊断（Wave 28，@OptIn ExperimentalApi）：preface = systemInstruction +
             // initialMessages 在 native chat template 下的**实际渲染结果**。若某转换件对
             // system role 渲染不当（createConversation 成功但渲染错位/丢失 —— 「角色通道
-            // 静默忽略」第三态，不抛异常故回退门控抓不住），这里是唯一的代码侧观测点：
-            // 真机日志比对 preface 长度与开头片段即可定位「模型根本没看到系统提示词」类问题。
+            // 静默忽略」第三态，不抛异常故回退门控抓不住），这里是唯一的代码侧观测点。
             // 渲染失败（模型/版本不支持）静默跳过 —— 诊断绝不成为失败面。
             runCatching {
                 val preface = conv.renderPrefaceIntoString()
@@ -534,14 +655,44 @@ class LiteRtLmEngine(
                     "LiteRT-LM preface 渲染诊断：${preface.length} chars，" +
                         "开头「${preface.take(120).replace('\n', ' ')}」"
                 )
+                // 第三态闸门（Wave 33）：渲染成功但系统提示词正文没有出现在渲染结果里
+                // → 模板丢了 system。渲染抛错时不做任何判定（维持 Wave 28 的静默语义）。
+                if (systemText != null && !prefaceContainsSystem(preface, systemText)) {
+                    thirdState = true
+                }
             }
-            conv
+            if (thirdState) {
+                // 中档回退（Wave 33，区别于 legacy）：关掉刚建的会话，以
+                // systemInstruction = null 重建（initialMessages 播种与水印登记照旧），
+                // roleChannelActive **保持 true** —— MODEL 回灌门控必须保留，系统提示词
+                // 改由 buildContents 前置拼进首条未发过的 USER 消息（systemMergedPending）。
+                AgentLogStore.warn(
+                    "角色通道 preface 校验失败（模板渲染疑似丢失系统提示词），" +
+                        "已降级为系统提示词并入首条用户消息"
+                )
+                runCatching { conv.close() }
+                systemMergedPending = true
+                currentEngine.createConversation(
+                    ConversationConfig(
+                        samplerConfig = samplerConfig,
+                        systemInstruction = null,
+                        tools = emptyList(),
+                        initialMessages = seedMessages,
+                    )
+                )
+            } else {
+                conv
+            }
         } catch (t: Throwable) {
             // 真机保命：角色通道播种失败（旧版 litertlm / 模型 chat template 不接受 system
             // 或 initialMessages）时，回退到 **legacy 纯文本配置**，让系统提示词与 MODEL 轮
             // 重新走 buildContents 的文本压平路径。
             // 不置 roleChannelActive=false 会导致两条路都不发（系统提示词 + 历史全丢），
             // 比原 bug 更糟；不回退则直接抛错，整个引擎不可用。
+            // 中档回退的重建若也在此炸出，合并标记必须一起清（legacy 路径 SYSTEM 走
+            // 文本压平，再合并就是双份）。
+            systemMergedPending = false
+            legacyFallbackReason = t.message?.take(160) ?: "未知错误"
             AgentLogStore.warn(
                 "LiteRT-LM 角色通道播种失败（systemInstruction/initialMessages），" +
                     "已回退 legacy 纯文本配置：${t.message?.take(160) ?: "未知错误"}"
@@ -581,6 +732,17 @@ class LiteRtLmEngine(
                 )
             }
         }
+        // 会话诊断快照（Wave 33）：会话建成时整体发布，覆盖正常路径 / 中档回退 /
+        // legacy 回退三种终态 —— 消费方（UI 小字）据此区分「一切正常不渲染」与
+        // 「某类静默降级需要告知」。releaseInternal 复位为 null。
+        _sessionDiagnostics.value = EngineSessionDiagnostics(
+            roleChannelActive = roleChannelActive,
+            legacyFallbackReason = legacyFallbackReason,
+            systemMergedIntoUser = systemMergedPending,
+            requestedBackend = loadedBackend,
+            actualBackend = actualBackend,
+            contextLength = loadedContextLength,
+        )
         return created
     }
 
@@ -734,7 +896,18 @@ class LiteRtLmEngine(
             }
             sentMessageIds.add(message.id)
         }
-        if (fresh.isEmpty()) return listOf(Content.Text(""))
+        if (fresh.isEmpty()) {
+            // 边界（复审 P1-3）：尾部 MODEL 全量播种路径（本次载荷退化为空文本）。
+            // 此时中档回退的合并标记**不消费也不丢**——顺延到下一个载荷含 USER 的轮次。
+            return listOf(Content.Text(""))
+        }
+
+        // 顺延可观测（复审 P1-3）：本轮载荷全为 TOOL / 空时 USER 分支不会执行，
+        // 待合并的系统提示词顺延到下一个 USER 轮 —— pending 不丢，但**本轮**生成的
+        // 上下文暂缺系统提示词，必须留一行日志否则完全不可见。
+        if (systemMergedPending && fresh.none { it.role == Role.USER }) {
+            AgentLogStore.info("系统提示词合并顺延至下一用户消息轮（本轮载荷无 USER）")
+        }
 
         val out = ArrayList<Content>(8)
         for (message in fresh) {
@@ -760,7 +933,25 @@ class LiteRtLmEngine(
                             is Attachment.File -> Unit
                         }
                     }
-                    if (message.text.isNotBlank()) out.add(Content.Text(message.text))
+                    // 中档回退消费点（Wave 33）：载荷中第一条未发过的 USER 消息前置拼入
+                    // 系统提示词正文，拼完复位（只生效一次）。格式 = systemText + 空行 +
+                    // 原文；原文为空（纯附件消息）则只发 systemText。
+                    // ⚠️ 承诺如实化（复审 P1-3）：系统提示词并入的是下一个**载荷含 USER
+                    // 的轮次**的首条 USER；本轮载荷全为 TOOL / 空载荷时顺延（pending 不丢，
+                    // 但该轮上下文暂缺系统提示词，见上方顺延日志）。
+                    // 其余 USER 消息与后续轮次不受影响；SYSTEM 消息仍由角色门控跳过
+                    // （roleChannelActive=true 时已在 filter 处过滤，不会双份）。
+                    // ⚠️ 已知次优（方案裁决接受）：若首条 USER 已被播种进 initialMessages
+                    // （有历史时），合并落到下一轮 USER —— system 位置偏后但必进上下文。
+                    val merged = systemMergedPending && currentSystemText != null
+                    if (merged) {
+                        val prefix = currentSystemText.orEmpty()
+                        val body = message.text
+                        out.add(Content.Text(if (body.isBlank()) prefix else prefix + "\n\n" + body))
+                        systemMergedPending = false
+                    } else if (message.text.isNotBlank()) {
+                        out.add(Content.Text(message.text))
+                    }
                 }
 
                 Role.MODEL -> if (message.text.isNotBlank()) {
@@ -980,6 +1171,11 @@ class LiteRtLmEngine(
         // SYSTEM / MODEL 已在 native 侧而跳过发送，模型直接失去系统提示词与历史。
         currentSystemText = null
         roleChannelActive = false
+        // 中档回退标记与诊断快照随会话一起销毁（Wave 33）：快照归 null = UI 端
+        // 「没有已建会话」，不渲染任何降级提示。
+        systemMergedPending = false
+        actualBackend = null
+        _sessionDiagnostics.value = null
         loaded = false
         // 「复用判据」的记忆必须和 engine 一起清掉：只清 engine 而留着这几个参数，
         // 会让下一次 load() 拿着残留参数误判成「同一个引擎」而跳过重建。

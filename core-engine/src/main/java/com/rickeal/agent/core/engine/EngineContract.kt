@@ -8,6 +8,8 @@ import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ToolSpec
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /** 引擎加载所需的一切。刻意不传 Context —— 只传字符串，便于测试与隔离。 */
 data class EngineLoadConfig(
@@ -69,6 +71,49 @@ data class EngineCapabilities(
 
 class EngineException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
+/**
+ * 引擎会话级诊断快照（Wave 33）。
+ *
+ * 存在理由：用户真机反复出现的「只输出提示词然后胡言乱语」在 Wave 24 修了主根因
+ * （角色通道），但仍存在两类**静默降级**没有用户可见的出口：
+ *  1. 「第三态」—— `createConversation` 成功、但模型 chat template 渲染时丢失/错位
+ *     systemInstruction（Gemma 系模板原生无 system role），此前只有诊断日志没有动作；
+ *  2. GPU 降级实际生效后端无记录 —— 用户以为在跑 GPU，实际在 CPU。
+ *
+ * 快照在**会话建成**与**降级/回退事件**时整体发布（不逐字段更新），`null` = 当前没有
+ * 已建会话（未加载 / 已释放）。字段全部带默认值：数据面只增不改，消费方按需读取。
+ */
+data class EngineSessionDiagnostics(
+    /**
+     * 「角色通道」是否激活（`ConversationConfig.systemInstruction` / `initialMessages`
+     * 播种路径生效中）。false = 已回退 legacy 纯文本压平（此时 [legacyFallbackReason]
+     * 应非空）。
+     */
+    val roleChannelActive: Boolean = false,
+    /** legacy 回退原因（引擎侧异常消息截断）。非 roleChannelActive 时才可能有值。 */
+    val legacyFallbackReason: String? = null,
+    /**
+     * 中档回退生效中（Wave 33）：模板渲染丢失系统提示词（第三态），系统提示词已
+     * 改为并入首条用户消息发送。此时 [roleChannelActive] 保持 true（MODEL 回灌
+     * 门控必须保留，与 legacy 回退的本质区别）。
+     */
+    val systemMergedIntoUser: Boolean = false,
+    /** 用户**请求**的后端（by design 记请求值：降级是运行时事实、不是新配置）。 */
+    val requestedBackend: InferenceBackend? = null,
+    /** **实际生效**的后端（GPU 降级后 = CPU）。与 [requestedBackend] 不等即降级。 */
+    val actualBackend: InferenceBackend? = null,
+    /** 加载时锁定的 KV cache 预算（token 数）。 */
+    val contextLength: Int = 0,
+)
+
+/**
+ * [LlmEngine.sessionDiagnostics] 的**兜底空流单例**（复审 P2-2）：仅供测试 fake /
+ * 未来实现类兜底，生产实现必须覆写为真实状态流。文件级单例避免接口默认 getter
+ * 每次访问都新建 MutableStateFlow 的无谓分配。
+ */
+private val EMPTY_SESSION_DIAGNOSTICS_FLOW: StateFlow<EngineSessionDiagnostics?> =
+    MutableStateFlow(null)
+
 interface LlmEngine {
     val kind: EngineKind
 
@@ -85,6 +130,18 @@ interface LlmEngine {
      */
     val isBusy: Boolean
         get() = false
+
+    /**
+     * 会话级诊断快照（Wave 33）。见 [EngineSessionDiagnostics] 的语义说明。
+     *
+     * 接口默认实现返回恒为 null 的空流（文件级单例 [EMPTY_SESSION_DIAGNOSTICS_FLOW]）
+     * —— 仅供测试 fake / 未来实现类兜底，**生产实现必须覆写**：唯一生产实现
+     * [com.rickeal.agent.core.engine.local.LiteRtLmEngine] 已用真实状态流覆写。
+     * 装饰器（EngineLoadCoordinator 的 LoadObservedEngine）经接口委托自动透传
+     * 真实实现的状态流。
+     */
+    val sessionDiagnostics: StateFlow<EngineSessionDiagnostics?>
+        get() = EMPTY_SESSION_DIAGNOSTICS_FLOW
 
     /** 幂等加载。同 model/endpoint + 同 config 时直接返回。 */
     suspend fun load(config: EngineLoadConfig)
