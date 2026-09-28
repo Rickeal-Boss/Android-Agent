@@ -32,7 +32,8 @@ if [ ! -f "$GUARD" ]; then
 fi
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# 清理失败不影响判定（某些环境里 rm 被包装/受限）：吞掉错误，绝不改退出码。
+trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
 
 PASS=0
 FAIL=0
@@ -156,6 +157,52 @@ XML
 out="$(run_guard "$d")"; rc=$?
 assert_red "case4 Manifest 缺 INTERNET (第 7 条)" "$rc" "$out" \
   "Manifest 有 INTERNET（系统下载链路必需，Wave 12）"
+
+# ---------------------------------------------------------------------------
+# case 5：AgentRequest 含「宿主侧零赋值点」的可空字段 ⇒ 第 13 条（孤儿守卫）报红
+#         其中 ghostGeneric 故意用泛型类型 `Map<String, Int>? = null` ——
+#         旧抽取正则（字符类不含逗号/空格）会**静默漏检**该形态，本 case 正是钉死它。
+# ---------------------------------------------------------------------------
+d="$TMP/case5-orphan"
+scaffold "$d"
+cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+data class AgentRequest(
+    val ghostField: String? = null,
+    val ghostGeneric: Map<String, Int>? = null,
+)
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case5 AgentRequest 孤儿字段 (第 13 条)" "$rc" "$out" \
+  "AgentRequest 可空字段无孤儿（代码完备但未接线）"
+if printf '%s\n' "$out" | grep -qF "AgentRequest.ghostGeneric"; then
+  echo "PASS [case5b] 泛型字段 ghostGeneric 被捕获（sed 抽取不再漏检泛型/函数类型）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case5b] 泛型字段 ghostGeneric 未被捕获（抽取仍漏检泛型类型 ⇒ P2-C1 未修好）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 6：executeBodyUnchecked 是类内**最后一个**方法（无后置方法边界）⇒ 第 12 条
+#         的 e 非空断言应判「守卫面失效」报红（否则 n 变负会静默通过 = 僵尸规则）。
+# ---------------------------------------------------------------------------
+d="$TMP/case6-tail"
+scaffold "$d"
+cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunner.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+class AgentRunner {
+    private suspend fun FlowCollector<AgentEvent>.executeBodyUnchecked(request: AgentRequest) {
+        val x = 1
+    }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case6 方法在类尾 (第 12 条守卫面失效)" "$rc" "$out" \
+  "主循环方法体积未超预算（executeBodyUnchecked ≤ 550 行）"
 
 # ---------------------------------------------------------------------------
 echo "-----------------------------------------"

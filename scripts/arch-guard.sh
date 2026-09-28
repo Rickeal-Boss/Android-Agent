@@ -145,11 +145,18 @@ check "core-agent 不依赖 core-data/core-design（Wave 26）" \
 #     两个 job。源码行数不是字节数，但本仓实测密度约 66 B/行（517 行 ≈ 34.4 KB）⇒
 #     550 行 ≈ 36 KB，约为上限的 56%，留 ~1.8x 安全边际。
 #     这是本项目唯一一个「已经真实导致过 CI 红」的架构约束，故与依赖方向守卫同级。
+#
+#     边界匹配（Wave 31 P2-C2 加固）：只认 `private/internal/suspend fun` 会让
+#     `override fun` / `inline fun` / `tailrec fun` / 无修饰 `fun` 漏过 ⇒ e 跳到更远、
+#     n 虚增**误红**。改为「行首 4 空格 + 非注释（首字符是字母或 @）+ 含 ` fun `」。
+#     另：若 executeBodyUnchecked 是类内**最后一个**方法，e 为空会让 n 变负而静默通过
+#     （僵尸规则）—— 故对 e 也做非空断言（缺失即判守卫面失效）。
 check "主循环方法体积未超预算（executeBodyUnchecked ≤ 550 行）" \
   bash -c 'f=core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunner.kt
            s=$(grep -n "fun FlowCollector<AgentEvent>.executeBodyUnchecked" "$f" | head -1 | cut -d: -f1)
            if [ -z "$s" ]; then echo "AgentRunner.kt 未找到 executeBodyUnchecked（被改名/删除？守卫面已失效）"; exit 0; fi
-           e=$(awk -v s="$s" "NR>s && /^    (private |internal )?(suspend )?fun /{print NR; exit}" "$f")
+           e=$(awk -v s="$s" "NR>s && /^    [a-zA-Z@]/ && /(^|[ ])fun /{print NR; exit}" "$f")
+           if [ -z "$e" ]; then echo "AgentRunner.kt 未找到 executeBodyUnchecked 之后的方法边界（方法被挪到类尾？守卫面已失效）"; exit 0; fi
            n=$((e - s))
            if [ "$n" -gt 550 ]; then echo "executeBodyUnchecked 当前 $n 行，超 550 行预算（JVM 单方法 64KB 上限风险，请外提为 FlowCollector<AgentEvent> 扩展方法）"; fi'
 
@@ -157,10 +164,14 @@ check "主循环方法体积未超预算（executeBodyUnchecked ≤ 550 行）" 
 #     都必须有宿主侧的非默认赋值点，否则就是「代码完备但未接线」的死字段
 #     （history_v2 / SummarizingContextCompressor / ProviderStop / RunTokenLedger 同族）。
 #     ⚠️ 已知局限：grep 是启发式的 —— 同名字段的其它赋值点会造成假阴性（例如 `model = `）。
-#     故本守卫的定位是「防新增孤儿」而非「证明已接线」；其自身有效性由 arch-guard-selftest.sh 背书。
+#     故本守卫的定位是「防新增孤儿」而非「证明已接线」；其自身有效性由 arch-guard-selftest.sh 背书
+#     （case5 钉住触发面）。
+#     字段抽取（Wave 31 P2-C1 加固）：旧写法 `val [A-Za-z]+: [A-Za-z.<>?]+ = null` 的字符类
+#     不含逗号与空格，`Map<String, Int>? = null` 这类泛型 / 函数类型字段会被**静默漏检**。
+#     改为 sed 按「`val <名字>: … = null`」只抽名字，不限制类型字符集。
 check "AgentRequest 可空字段无孤儿（代码完备但未接线）" \
   bash -c 'f=core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt
-           for fld in $(sed -n "/^data class AgentRequest(/,/^)/p" "$f" | grep -oE "val [A-Za-z]+: [A-Za-z.<>?]+ = null" | sed "s/^val //; s/:.*//"); do
+           for fld in $(sed -n "/^data class AgentRequest(/,/^)/p" "$f" | sed -n "s/^ *val \([A-Za-z][A-Za-z0-9]*\): .*= null.*/\1/p"); do
              grep -rn --include="*.kt" "$fld = " . | grep -v "AgentEvents.kt" | grep -q . \
                || echo "AgentRequest.$fld 在宿主侧零传入点（代码完备但未接线）"
            done'
