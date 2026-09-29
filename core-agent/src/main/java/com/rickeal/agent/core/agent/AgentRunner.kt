@@ -19,6 +19,7 @@ import com.rickeal.agent.core.model.TokenUsage
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.model.truncateSafe
 import com.rickeal.agent.core.model.DisclosureTools
 import com.rickeal.agent.core.model.HiddenToolCatalog
 import com.rickeal.agent.core.agent.approval.ToolApprovalCache
@@ -92,6 +93,25 @@ private val TOOL_GUARDRAILS: String = """
 """.trimIndent()
 
 /**
+ * 原生工具通道激活时替换 [TOOL_GUARDRAILS] 的精简护栏（Wave 34 题 A）。
+ *
+ * 两条被**刻意删掉**的句子，理由各自独立：
+ *  - 「只使用上面列出的工具名」：native 模式下提示词里**没有**工具清单（清单由引擎侧
+ *    结构化下发），「上面列出的」失去指代，留着是一句指向不存在的东西的指令 —— 小模型
+ *    遇到无指代指令的典型反应正是复述它。防编造工具名的能力由引擎侧的结构化工具面
+ *    天然提供（编不出清单外的名字），不需要提示词再兜一层。
+ *  - 按需披露的 `DISCLOSURE_GUIDE`（「先检索再转发」）同样删：两个元工具在 native 下也
+ *    走原生通道，其 `ToolSpec.description` 自带「检索 / 转发」语义，再写一遍是重复。
+ *
+ * 保留的两条（调用时不解释 / 想直接回答请明说）与通道无关，属行为矫正，留着。
+ */
+private val TOOL_GUARDRAILS_NATIVE: String = """
+    【工具使用规则】
+    1. 调用工具时不要向用户解释，直接调用。
+    2. 若你本意是直接回答而非调用工具，请明确说明「这是最终答案」，不要输出看起来像工具调用的 JSON。
+""".trimIndent()
+
+/**
  * 记忆维护段（Wave 12 需求：每次运行后自动沉淀记忆）。
  *
  * ⚠️ 关键时序：模型的最终答复就是 run 的最后一轮 —— 答复给出后 run 即结束，
@@ -99,14 +119,25 @@ private val TOOL_GUARDRAILS: String = """
  * 那一轮**之前**先调 memory_write，下一步再答复并停止（与停止条件第 1 条
  * 「标记完成后不得再继续工作」不冲突 —— 写记忆属于收尾动作的一部分）。
  *
- * 只在装配了 memory_write 工具时注入（见 buildSystemInstruction 的门控）：
+ * 只在装配了 memory_write 工具时注入（见 buildSystemSections 的门控）：
  * 没有记忆工具时这段话是无指引的空指令，白占端侧 4B 宝贵的上下文。
  * 措辞刻意收紧：点名「收尾」与「之前」，防止 4B 模型把它理解成「每次工具调用后都写」
  * 而烧掉额外轮次；「不要写流水账/占位记忆」防止为写而写的空记忆膨胀。
+ *
+ * ## 提示词面变化申报（Wave 34 题 B，有意改动，非疏漏）
+ *
+ * 第 1 条末尾追加「写入前可先用 `memory_search` 查是否已有同名/相关条目」—— 记忆 pull 化
+ * 之后系统提示词里**只剩标题索引**，模型不再能靠扫一眼提示词判断「这条我记过没有」，
+ * 必须在写之前显式查一次，否则同名条目会被反复以不同标题写入（记忆膨胀 + 检索稀释）。
+ *
+ * 对 `echoCorpus`（回显指纹语料）的影响是**纯增量**：本段在指纹集内，判定按 `\n` 切句
+ * 建句子级指纹（并对归一化字符流建窗口哈希集），改的是第 1 条这一句 —— 新句入库、
+ * 旧句已不在提示词里（模型不可回显，旧指纹消失无副作用），第 2 条与其余 section 的
+ * 指纹逐字节不变。只增强不削弱，与 `FileReadTool` 申报分页描述改动是同一类先例。
  */
 private val MEMORY_MAINTENANCE: String = """
     【记忆维护】
-    1. 每次任务收尾时，先自查本次对话是否产生了值得长期保留的信息：用户的偏好与纠正、项目事实、重要决定。若有，在给出最终答复**之前**先用 memory_write 沉淀（按标题 upsert，同名覆盖即更新）；没有就跳过，不要写流水账或占位记忆。
+    1. 每次任务收尾时，先自查本次对话是否产生了值得长期保留的信息：用户的偏好与纠正、项目事实、重要决定。若有，在给出最终答复**之前**先用 memory_write 沉淀（按标题 upsert，同名覆盖即更新）；写入前可先用 memory_search 查是否已有同名/相关条目，避免重复记忆；没有就跳过，不要写流水账或占位记忆。
     2. 新信息与既有记忆冲突时，以最新为准，用同名 memory_write 覆盖；写错的记忆用 memory_delete 删除。
 """.trimIndent()
 
@@ -185,6 +216,64 @@ private const val WALL_CLOCK_SOFT_MILLIS = 180_000L
 private const val WALL_CLOCK_HARD_MILLIS = 300_000L
 
 /**
+ * 墙钟 evidence 的「时长」措辞（用户可见：诊断卡逐条渲染 [BreakerLedger] 的 evidence），
+ * 子 run 与父 run **刻意用两个口径**（Wave 35 B2）。
+ *
+ * ## 为什么子 run 不能沿用「已运行 N 秒」
+ *
+ * Wave 31 6d 把墙钟判据从「本 run 已运行多久」换成「距**继承来的绝对硬截止**还剩多少」
+ * —— 子 run 起步时父 run 可能已经烧掉 4 分 58 秒，于是 child 自己才跑 2 秒就撞上硬截止。
+ * 判据换了，evidence 却**逐字保留了 run 相对口径**（当时注释写「用户可见，逐字不动」），
+ * 产出的是「已运行 2 秒，达到 300 秒硬预算」—— 诊断卡是给用户看的**事实陈述**，
+ * 这句话的两个数字自相矛盾（2 秒怎么会达到 300 秒？）。用户据此只能得出
+ * 「断路器乱熔断」的结论，真正的成因（预算是被父 run 烧掉的）反而被藏起来了。
+ *
+ * 故子 run（[inherited] = true）改用**双数字口径**：`run 总运行 N 秒（本子 run M 秒）`。
+ * N 由继承的绝对墙反推（= 硬预算 − 剩余），与判据**同源**，因此
+ * 「总运行 300 秒 ⇒ 达到 300 秒硬预算」自洽；M 保留子 run 自己的表，让用户看得出
+ * 「这 300 秒是被上层烧掉的，不是这一小段」。父 run / 独立 run 文案**逐字不变**。
+ *
+ * @param inherited 本 run 的硬截止是否继承自父 run（即本 run 是子 run）。
+ * @param ownElapsedMillis 本 run 自己的墙钟（RunState.elapsedMillis）。
+ * @param totalElapsedMillis 自**父 run 锚点**起的总墙钟（继承场景 = 硬预算 − 剩余；
+ *   非继承场景与 [ownElapsedMillis] 同值，取哪个都一样）。
+ */
+private fun wallClockElapsedPhrase(
+    inherited: Boolean,
+    ownElapsedMillis: Long,
+    totalElapsedMillis: Long,
+): String = if (inherited) {
+    "run 总运行 ${totalElapsedMillis / 1000} 秒（本子 run ${ownElapsedMillis / 1000} 秒）"
+} else {
+    "已运行 ${ownElapsedMillis / 1000} 秒"
+}
+
+/**
+ * 墙钟 **SOFT** 预算 evidence（[wallClockElapsedPhrase] 的调用点之一）。
+ *
+ * `internal`（而非 `private`）只为一个目的：让 JVM 单测能钉住文案口径
+ * （见 WallClockEvidenceTest）—— 它是纯函数、零依赖，本就该可测。**不是对外 API**。
+ */
+internal fun wallClockSoftEvidence(
+    inheritedDeadline: Boolean,
+    ownElapsedMillis: Long,
+    totalElapsedMillis: Long,
+): String = wallClockElapsedPhrase(inheritedDeadline, ownElapsedMillis, totalElapsedMillis) +
+    "，超过 ${WALL_CLOCK_SOFT_MILLIS / 1000} 秒软预算（继续，等待收敛）"
+
+/**
+ * 墙钟 **HARD** 预算 evidence（[wallClockElapsedPhrase] 的调用点之一）。
+ *
+ * `internal` 同理只为可测（见 WallClockEvidenceTest），**不是对外 API**。
+ */
+internal fun wallClockHardEvidence(
+    inheritedDeadline: Boolean,
+    ownElapsedMillis: Long,
+    totalElapsedMillis: Long,
+): String = wallClockElapsedPhrase(inheritedDeadline, ownElapsedMillis, totalElapsedMillis) +
+    "，达到 ${WALL_CLOCK_HARD_MILLIS / 1000} 秒硬预算"
+
+/**
  * 同工具+同参调用守卫阈值（ZCode model-anomaly 形态移植，Wave 19 P0）：连续
  * REPEAT_TOOL_CALL_THRESHOLD 次签名完全相同的调用 → 注入一次提醒。签名经
  * canonical JSON 归一（见 toolCallSignature），key 顺序不同的等价参数同签名。
@@ -258,8 +347,16 @@ private class StreamLoopException(
 /**
  * Agent 主循环（架构文档 §4.1 / §4.6）。
  *
- * 工具通道策略：引擎声明支持 `EngineCapabilities.nativeToolChannel` 时走原生 tool
+ * 工具通道策略：引擎声明支持 `EngineCapabilities.nativeToolChannel` **且**用户在设置里
+ * 开了「原生工具通道」（`InferenceConfig.nativeToolChannel`，默认 false）时走原生 tool
  * 通道，否则走文本协议。两者结果统一成 [ToolCall]，后续流程完全一致。
+ *
+ * ⚠️ **红线：原生通道不引入第二条执行路径。** 通道差异只改变两件事——① 工具清单怎么
+ * 给模型看（结构化 `tools` 参数 vs. 提示词里的文本清单）；② 调用怎么被拿到（引擎结构化
+ * 回吐 vs. `TextToolProtocol` 解析文本）。**调用怎么被执行对两者是同一条管线**：审批
+ * （fail-closed）、沙箱、同参守卫、失败连击熔断、披露转发、结果截断与回灌全部复用，
+ * 没有任何一处为 native 复制过。第二套执行路径会让「危险工具必过审批」这类不变量
+ * 出现两个漂移源 —— 本仓历史上出过事故的模式，不为通道差异破例。
  *
  * 停止策略：让模型**自己会停**（系统提示词里的停止条件 + 重复检测提醒），
  * maxRounds 只作为异常兜底，不再是常态退出路径。
@@ -429,7 +526,25 @@ class AgentRunner(
                 if (t is CancellationException) throw t
                 null
             }
-            val useNativeTools = (capabilities?.nativeToolChannel == true) && config.enableTools
+            // ── 工具通道三重门（Wave 34 题 A）──────────────────────────────────
+            // ① 引擎真的有原生通道（capabilities）；② 用户开了工具（config.enableTools）；
+            // ③ 用户开了「原生工具通道」这个实验开关（config.nativeToolChannel，默认 false）。
+            //
+            // ③ 是**本波新增的显式门**：原生通道是未经验证的新通路，默认关闭意味着
+            // 默认路径与 Wave 33 逐字节一致（文本协议 + 全量工具清单）。开启后工具改走
+            // 模型原生通道、提示词里的工具清单段整体删除（见 buildSystemSections 的
+            // nativeTools 分支）—— 这是根治「模型复述工具提示词」的取舍，代价是提示词
+            // 侧的回显指纹覆盖变小（申报见该处 KDoc）。
+            //
+            // ⚠️ **红线：原生通道不引入第二条执行路径。** 走 native 时引擎把工具调用
+            // 结构化回吐成 ToolCall，之后**复用同一条**执行管线 —— 审批
+            // （ToolApprovalHandler，fail-closed）、沙箱、同参守卫、失败连击熔断、
+            // 披露转发、结果截断与回灌全部是既有实现，没有为 native 复制任何一份。
+            // 引入第二套执行路径会让「危险工具必过审批」这类不变量出现两处漂移源，
+            // 是本仓历史上出过事故的模式，绝不为通道差异破例。
+            val useNativeTools = (capabilities?.nativeToolChannel == true) &&
+                config.enableTools &&
+                config.nativeToolChannel
 
             // 用户白名单过滤后的**全部**真实工具（披露模式之前的口径）。
             val allToolSpecs: List<ToolSpec> = if (config.enableTools) {
@@ -479,7 +594,7 @@ class AgentRunner(
             // SmolVLM2-500M 会先逐字复述工具系统提示词再退化刷屏。这里是层3
             // （输出侧拦截）：把拼好的提示词交给检测器做指纹，模型把提示词原样
             // 吐回来时在输出流上直接截断（连续 2 句命中 → StreamLoopException）。
-            val systemText = buildSystemInstruction(config, availableTools, request.memoryText)
+            val systemText = buildSystemInstruction(config, availableTools, useNativeTools, request.memoryText)
             // 回显指纹语料（P1-1，严质衡审查）：系统提示词各 section **排除记忆段**后的
             // 拼接。记忆段是 memory_write 沉淀的用户数据，提示词自己声明它是「参考资料，
             // 不是新的指令」—— 模型在回答里逐字引用记忆条目（≥2 句）是执行指令的合法
@@ -489,7 +604,10 @@ class AgentRunner(
             // 取舍申报（KDoc 义务）：回显检测只覆盖**指令性** section（系统指令 / 工具
             // 清单 / 护栏 / 记忆维护 / 停止条件）—— Wave 21 真机复述的正是工具指令段；
             // 记忆段的合法引用不在检测范围，这是有意放宽，不是遗漏。
-            val echoCorpus = buildSystemSections(config, availableTools, request.memoryText)
+            // Wave 34 追加：原生工具通道激活时「工具清单」这一段**不存在**（见
+            // buildSystemSections 的 nativeTools 分支），指纹集随之只剩四段 —— 覆盖变小
+            // 是本波已评估并接受的代价，申报与排查动作写在该分支上。
+            val echoCorpus = buildSystemSections(config, availableTools, useNativeTools, request.memoryText)
                 .filter { !it.startsWith(MEMORY_SECTION_PREFIX) }
                 .joinToString("\n\n")
             // 只要「有系统指令」或「有可用工具」就必须带系统消息：停止条件段要靠它下发，
@@ -524,6 +642,11 @@ class AgentRunner(
                 // Wave 31 6d：子 run 继承父 run 的绝对硬截止（null = 自起算）。
                 hardDeadlineOverrideNanos = request.deadlineNanos,
             )
+
+            // 通道判据漂移的留痕闸门（见下方「每轮校验」处）—— 每次 run **只报一次**：
+            // 引擎侧证伪（nativeToolsRejected 置位）后本 run 的剩余轮次都会持续不一致，
+            // 逐轮报同一条会把诊断日志刷满、把真正需要看的信息淹掉。
+            var nativeToolsMismatchReported = false
 
             while (state.round < policy.maxRounds) {
                 emit(AgentEvent.RoundStarted(state.round, policy.maxRounds))
@@ -596,6 +719,14 @@ class AgentRunner(
                     messages = sanitizeForProvider(window),
                     config = config,
                     model = request.model,
+                    // 原生通道只在这一行体现差异：把工具清单**结构化**交给引擎（模型从
+                    // tools 参数读到工具名与参数形状，提示词里不再有那一段）。
+                    // ⚠️ 红线**原生通道不引入第二条执行路径**：清单怎么给模型与调用怎么
+                    // 被**执行**是两件事 —— 引擎回吐的 nativeCalls 与文本协议解析出的
+                    // calls 在下面汇成同一个 `calls`，之后走同一条执行管线（审批 fail-closed /
+                    // 沙箱 / 同参守卫 / 失败连击熔断 / 披露转发 / 结果截断回灌）。
+                    // 为 native 复制一份执行路径 = 让「危险工具必过审批」这类不变量出现
+                    // 两处漂移源，绝不为通道差异破例。
                     tools = if (useNativeTools) availableTools else emptyList(),
                     conversationId = request.conversationId,
                     contextVersion = state.contextVersion,
@@ -628,6 +759,19 @@ class AgentRunner(
                 val accumulator = generation.accumulator
                 val intraStreamLoop = generation.intraStreamLoop
 
+                // ── 原生工具通道判据的**每轮校验**（Wave 34 复审 P0-2）──────────────
+                // 只落一条 warn（判据与「为什么不做同 run 内恢复」见 [nativeToolsDrifted]
+                // 与 [buildSystemSections] 的排查指引，不在此处重复）。
+                if (!nativeToolsMismatchReported && nativeToolsDrifted(engine, useNativeTools)) {
+                    nativeToolsMismatchReported = true
+                    AgentLogStore.warn(
+                        "原生工具通道判据不一致：本 run useNativeTools=$useNativeTools" +
+                            "（提示词工具面据此装配），引擎会话诊断 " +
+                            "nativeToolChannel=${engine.sessionDiagnostics.value?.nativeToolChannel}" +
+                            " ⇒ 本 run 剩余轮次处于工具面空窗，下一个 run 由 capabilities() 重新判定后自愈"
+                    )
+                }
+
                 // 终态失败会由 runGenerationRound 返回 null；其余产物才走到这里。
                 // 新实例的 Conversation 是空的：本轮请求已全量重放（水印为空，buildContents
                 // 全发），而本轮记账在此之前已按增量口径执行 —— bump 版本让下一轮记账
@@ -651,6 +795,11 @@ class AgentRunner(
                 request.tokenLedger?.onEngineUsage(accumulator.usage)
                 state.lastModelText = accumulator.text
 
+                // 原生通道（引擎结构化回吐）与文本协议（从文本里解析）在这里**合流**：
+                // 两者产出同一种 ToolCall，后续执行管线完全共用 —— 审批、沙箱、同参守卫、
+                // 失败连击熔断、披露转发、结果截断与回灌一处都没有为 native 另写。
+                // 这是 Wave 34 的硬约束：通道差异只影响「怎么给模型看工具」与「怎么拿到
+                // 调用」，不得影响「怎么执行调用」。
                 val nativeCalls = accumulator.toolCalls()
                 val protocol: ProtocolResult = if (nativeCalls.isEmpty() && policy.enableTextProtocol) {
                     TextToolProtocol.parse(accumulator.text, registeredToolNames)
@@ -789,6 +938,38 @@ class AgentRunner(
     /** 轮头预算闸的控制流映射（Wave 31）：Terminal = 已熔断终态，调用方必须 return。 */
     private enum class RoundHeadStep { Proceed, Terminal }
 
+    // evidence 文案口径见文件级下方 [wallClockSoftEvidence] / [wallClockHardEvidence]
+    // （外提到顶层纯函数，只为让 JVM 单测钉住文案，见 WallClockEvidenceTest）。
+
+    /**
+     * 原生工具通道的判据是否已与本 run 的装配**漂移**（Wave 34 复审 P0-2）。
+     *
+     * ## 要消灭的是「静默空窗」
+     *
+     * `capabilities()` 是 **run 级**缓存（run 开头取一次，`useNativeTools` 由它定下，
+     * 之后整个 run 不再重新判定）。而引擎侧是在**会话建成时**才真正知道通道成不成 ——
+     * 探针失败 / legacy 会话 / 建会话失败任一发生即证伪（引擎侧 `nativeToolsRejected`
+     * 置位）。于是本 run 的剩余轮次落进一个**静默空窗**：提示词里按 native 装配、
+     * 已经没有工具清单，引擎侧也没有工具，两边都没有，而全程**零报错零提示**。
+     * 用户看到的是「模型后半程像忘了工具」，下一个 run 由 capabilities() 重判才自愈。
+     *
+     * ## 只留痕，**不做**同 run 内恢复
+     *
+     * 本函数只回答「漂移了吗」，调用方据此落一条 warn —— 这属于「消灭静默」。
+     * 「同一 run 内退回文本协议」是另一件事：那要把 capabilities 的取值下沉到每一轮，
+     * 并让提示词的工具面随轮切换，而**提示词面变化会连带触发引擎会话重建**
+     * （`systemText` 是会话重建判据，4B 端侧重建是秒级 re-prefill）。代价与风险远超
+     * 本波机械保守范围，故**并列挂账**，不在此处偷跑。
+     *
+     * @return 引擎会话诊断**已产出**且其 `nativeToolChannel` 与 [useNativeTools] 不一致时 true。
+     *   诊断尚未产出（首轮建会话之前，`sessionDiagnostics.value == null`）一律 false ——
+     *   那时引擎侧还没给过结论，报漂移纯属噪音。
+     */
+    private fun nativeToolsDrifted(engine: LlmEngine, useNativeTools: Boolean): Boolean {
+        val diag = engine.sessionDiagnostics.value ?: return false
+        return diag.nativeToolChannel != useNativeTools
+    }
+
     /** 轮头预算闸（Wave 31 自 executeBodyUnchecked 外提）：墙钟 SOFT 留痕 → HARD 熔断 → 热闸决策。
      *  返回 [RoundHeadStep.Terminal] 表示已 emitBreakerFailed 并落 journal，调用方必须直接 `return`。 */
     private suspend fun FlowCollector<AgentEvent>.gateRoundHead(
@@ -812,8 +993,18 @@ class AgentRunner(
         // 用剩余量表达是为了让子 run 继承父 run 的 **绝对**硬截止后同一判据直接生效
         // （不再各起算一份预算，修上界放大）。
         val remaining = (state.hardDeadlineNanos - System.nanoTime()) / 1_000_000L
-        // evidence 文案沿用「run 相对时长」口径（用户可见，逐字不动）。
         val wallClockElapsed = state.elapsedMillis()
+        // 子 run（硬截止继承自父 run）：evidence 改报「自父 run 锚点起的总运行」——
+        // 由继承来的绝对墙反推（硬预算 − 剩余），与判据同源，故「总运行 300 秒 ⇒
+        // 达到 300 秒硬预算」自洽。判据侧的口径切换理由见 [wallClockElapsedPhrase]，
+        // 此处只负责算出那个数。非继承场景两者同值，取哪个都一样。
+        val totalElapsed = if (state.inheritedDeadline) {
+            WALL_CLOCK_HARD_MILLIS - remaining
+        } else {
+            wallClockElapsed
+        }
+        // 用户可见文案的口径由上面两个函数固定（「逐字不动」的对象是**父 run 那一档**，
+        // 用户可见的证据是**事实陈述**，子 run 档报 run 相对时长会自相矛盾 —— Wave 35 B2）。
         if (state.breaker.trips.none { it.kind == BreakerKind.WallClockBudget } &&
             remaining <= WALL_CLOCK_HARD_MILLIS - WALL_CLOCK_SOFT_MILLIS
         ) {
@@ -823,11 +1014,10 @@ class AgentRunner(
                 BreakerKind.WallClockBudget,
                 state.round,
                 atElapsedMillis = wallClockElapsed,
-                evidence = "已运行 ${wallClockElapsed / 1000} 秒，" +
-                    "超过 ${WALL_CLOCK_SOFT_MILLIS / 1000} 秒软预算（继续，等待收敛）",
+                evidence = wallClockSoftEvidence(state.inheritedDeadline, wallClockElapsed, totalElapsed),
             )
             AgentLogStore.warn(
-                "墙钟软预算：run 已运行 ${wallClockElapsed / 1000}s" +
+                "墙钟软预算：${wallClockElapsedPhrase(state.inheritedDeadline, wallClockElapsed, totalElapsed)}" +
                     "（HARD 上限 ${WALL_CLOCK_HARD_MILLIS / 1000}s）"
             )
         }
@@ -836,10 +1026,11 @@ class AgentRunner(
                 BreakerKind.WallClockBudget,
                 state.round,
                 atElapsedMillis = wallClockElapsed,
-                evidence = "已运行 ${wallClockElapsed / 1000} 秒，" +
-                    "达到 ${WALL_CLOCK_HARD_MILLIS / 1000} 秒硬预算",
+                evidence = wallClockHardEvidence(state.inheritedDeadline, wallClockElapsed, totalElapsed),
             )
-            AgentLogStore.error("墙钟硬预算：run 已运行 ${wallClockElapsed / 1000}s，熔断收尾")
+            AgentLogStore.error(
+                "墙钟硬预算：${wallClockElapsedPhrase(state.inheritedDeadline, wallClockElapsed, totalElapsed)}，熔断收尾"
+            )
             emitBreakerFailed(state, journal, registeredToolNames)
             return RoundHeadStep.Terminal
         }
@@ -1032,6 +1223,13 @@ class AgentRunner(
         /** 硬截止绝对时刻：外部显式传入则采用，否则自起算 WALL_CLOCK_HARD_MILLIS。 */
         val hardDeadlineNanos: Long = hardDeadlineOverrideNanos
             ?: (startedElapsedNanos + WALL_CLOCK_HARD_MILLIS * 1_000_000L)
+
+        /**
+         * 硬截止是否**继承**自父 run（即本 run 是子 run，父 run 与本 run 共用同一堵墙）。
+         * 只影响 evidence 的**文案口径**，不参与任何判据（判据一律走 [hardDeadlineNanos]）。
+         * 口径差异的理由见 [wallClockElapsedPhrase]。
+         */
+        val inheritedDeadline: Boolean = hardDeadlineOverrideNanos != null
 
         /** run 相对时长（毫秒）。墙钟预算检查与诊断卡耗时共用这一个换算口径。 */
         fun elapsedMillis(): Long = elapsedMillisSince(startedElapsedNanos)
@@ -1583,7 +1781,8 @@ class AgentRunner(
         // 不会留下「有 call 无 result」的悬空状态。
         if (!result.ok && state.breaker.failureStreak(call.name) >= TOOL_FAILURE_STREAK_LIMIT) {
             val evidence = "工具 ${call.name} 连续 ${state.breaker.failureStreak(call.name)} 次执行失败" +
-                "（含换参），最近错误：${result.errorMessage.orEmpty().take(80)}"
+                // 同 D1：evidence 进诊断卡（用户可见），截断必须代理对安全。
+                "（含换参），最近错误：${result.errorMessage.orEmpty().truncateSafe(80)}"
             state.breaker.trip(
                 BreakerKind.ToolFailureStreak,
                 state.round,
@@ -2081,7 +2280,9 @@ class AgentRunner(
                 //     模型永远收到「工具结果缺失」而不是真实结果，原生工具协议也会失配。
                 // 失败路径本来就填了 callId，成功路径漏了 —— 这种不对称正是 bug 温床。
                 callId = raw.callId.ifBlank { call.id },
-                output = if (truncated) output.take(policy.maxToolOutputChars) + "\n…(已截断)" else output,
+                // 代理对安全截断（Wave 35 D1）：裸 take 会停在半个代理对上，尾部 emoji
+                // 变成 U+FFFD 乱码 —— 这是全仓最高频的用户可见截断路径（每轮几乎都有）。
+                output = if (truncated) output.truncateSafe(policy.maxToolOutputChars) + "\n…(已截断)" else output,
                 elapsedMillis = System.currentTimeMillis() - started,
                 truncated = truncated,
             )
@@ -2120,28 +2321,54 @@ class AgentRunner(
      * prompt_echo 误截。发送路径（[buildSystemInstruction]）对返回值 joinToString
      * 的结果与旧实现逐字节一致（记忆段前缀抽为 [MEMORY_SECTION_PREFIX] 共用常量，
      * 字符串本体未动 —— 改这段字符串必须同步评估两侧，见其 KDoc）。
+     *
+     * @param nativeTools 本 run 是否走**模型原生工具通道**（`useNativeTools`）。为真时工具
+     *   段换成精简变体：[TOOL_GUARDRAILS_NATIVE] 替换 [TOOL_GUARDRAILS]，且**不产出**
+     *   「```json 格式说明 + 可用工具清单」整段（清单由引擎侧结构化下发）。该分支是
+     *   Wave 34 题 A 根治「模型复述工具提示词」的主体改动，申报见下方工具段注释。
      */
     private fun buildSystemSections(
         config: InferenceConfig,
         tools: List<ToolSpec>,
+        nativeTools: Boolean,
         memoryText: String? = null,
     ): List<String> {
         val sections = ArrayList<String>(4)
         if (config.systemInstruction.isNotBlank()) sections.add(config.systemInstruction)
         if (tools.isNotEmpty()) {
-            // 按需披露模式（Wave 27）：清单里出现元工具就说明模型看到的是收窄后的
-            // 工具面，必须先给「先检索、再转发」的协议说明 —— 否则小模型会直接猜
-            // 真实工具名，协议层会拒（未注册名降级为最终答案），白白浪费轮次。
-            if (tools.any { it.name == DisclosureTools.SEARCH_TOOL_NAME }) {
-                sections.add(DisclosureTools.DISCLOSURE_GUIDE)
+            if (nativeTools) {
+                // ── 原生通道（Wave 34 题 A）：工具清单段整体消失 ──────────────
+                // 工具清单与 JSON 调用格式由引擎以结构化 tools 参数下发，模型不需要
+                // （也不该）在自然语言里读到它们 —— 那段文字正是真机「只输出提示词及
+                // 工具调用语言然后胡言乱语」的回显面主体。根治解是**让那段文字不存在**，
+                // 而不是在它后面加更多「不要复述」的指令（层1 约束已被 Wave 21 真机证伪）。
+                //
+                // ⚠️ **提示词面变化申报**（有意取舍，非疏漏）：`echoCorpus`（回显指纹语料）
+                // 因此**失去对工具段的覆盖** —— 指纹集只剩 系统指令 / 护栏 / 记忆维护 /
+                // 停止条件 四段，工具清单句与 DISCLOSURE_GUIDE 的指纹全部消失。
+                // 这是本波的**代价**，已评估后接受：① 被删的那段文字本身已不在提示词里，
+                // 模型无从回显，旧指纹消失无副作用（与 Wave 31 的 file_read 描述改动同类，
+                // 方向是纯减量）；② 真正的风险是**native 未真正生效而提示词已精简**
+                // （例如引擎侧静默 fallback 到文本协议）—— 那样模型既拿不到清单、
+                // 检测器也失去了对工具段的覆盖。
+                // ⇒ 真机若仍出现回显，第一条排查动作是 grep「原生工具通道」日志确认
+                // 本 run 到底走了哪条通路，然后再决定要不要把清单段加回来。
+                sections.add(TOOL_GUARDRAILS_NATIVE)
+            } else {
+                // 按需披露模式（Wave 27）：清单里出现元工具就说明模型看到的是收窄后的
+                // 工具面，必须先给「先检索、再转发」的协议说明 —— 否则小模型会直接猜
+                // 真实工具名，协议层会拒（未注册名降级为最终答案），白白浪费轮次。
+                if (tools.any { it.name == DisclosureTools.SEARCH_TOOL_NAME }) {
+                    sections.add(DisclosureTools.DISCLOSURE_GUIDE)
+                }
+                sections.add(
+                    "你可以使用以下工具。当需要调用工具时，请只输出一个 ```json 代码块，格式为：" +
+                        "[{\"tool\": \"工具名\", \"arguments\": {\"参数名\": 值}}]，不要输出其它文字。\n可用工具：\n" +
+                        tools.joinToString("\n") { it.toPromptLine() }
+                )
+                // 护栏紧跟在工具清单之后：反工具名幻觉 + 「想直接回答」的显式收尾声明。
+                sections.add(TOOL_GUARDRAILS)
             }
-            sections.add(
-                "你可以使用以下工具。当需要调用工具时，请只输出一个 ```json 代码块，格式为：" +
-                    "[{\"tool\": \"工具名\", \"arguments\": {\"参数名\": 值}}]，不要输出其它文字。\n可用工具：\n" +
-                    tools.joinToString("\n") { it.toPromptLine() }
-            )
-            // 护栏紧跟在工具清单之后：反工具名幻觉 + 「想直接回答」的显式收尾声明。
-            sections.add(TOOL_GUARDRAILS)
         }
         // 长期记忆（harness-memory 移植）：跨会话沉淀的用户偏好/项目事实。
         // 放在停止条件之前 —— 停止条件要保持在系统提示词的尾部以获得最高权重。
@@ -2167,8 +2394,9 @@ class AgentRunner(
     private fun buildSystemInstruction(
         config: InferenceConfig,
         tools: List<ToolSpec>,
+        nativeTools: Boolean,
         memoryText: String? = null,
-    ): String = buildSystemSections(config, tools, memoryText).joinToString("\n\n")
+    ): String = buildSystemSections(config, tools, nativeTools, memoryText).joinToString("\n\n")
 
     /**
      * 按需披露模式下 `search_tools` 的执行体（Wave 27）：本地检索隐藏工具目录。
