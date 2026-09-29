@@ -62,6 +62,43 @@ class FileReadPagerTest {
     }
 
     @Test
+    fun `限量截断的代理对防护在 keep 奇偶两种落点下都成立（收口复审 P1-1 回归锚）`() {
+        // 单靠 readHead 一条测试护不住这道防线：readHead 的 keep 由「限量 − 标记长度 − 1」
+        // 唯一确定，语料奇偶一旦碰巧对上就是假绿灯（收口复审实测：keep=3966 恰为偶数）。
+        // 这里用 readRange 扫多组 limit，让截断落点在高位/低位代理两种奇偶上都真实触发，
+        // 并同时验证「续读 offset 不跳字」——回退 1 个 code unit 时 shownEnd 必须同步收缩。
+        val emoji = "\uD83D\uDE00"
+        val file = tempFile(emoji.repeat(6000))
+        try {
+            var hitOdd = false
+            var hitEven = false
+            for (limit in 100 until 140) {
+                val out = FileReadPager.readRange(file, 0, limit)
+                assertTrue(!out.contains('\uFFFD'), "limit=$limit 产出替换字符：$out")
+                assertTrue(out.length <= limit, "limit=$limit 总长失控：${out.length}")
+                val content = out.substringBeforeLast('\n')
+                if (content.isNotEmpty()) {
+                    val tail = content.last()
+                    val lone = tail.isHighSurrogate() ||
+                        (tail.isLowSurrogate() && (content.length < 2 || !content[content.length - 2].isHighSurrogate()))
+                    assertTrue(!lone, "limit=$limit 尾部留下孤立代理：${content.takeLast(8)}")
+                    // 奇偶覆盖度：keep 的奇偶由 limit 与标记长度共同决定，逐组记录。
+                    if ((limit % 2) == 0) hitEven = true else hitOdd = true
+                    // 续读指引不跳字：marker 里的 offset 应落在代理对边界上。
+                    val offsetMatch = Regex("offset=(\\d+)").find(out)
+                    if (offsetMatch != null) {
+                        val next = offsetMatch.groupValues[1].toInt()
+                        assertEquals(0, next % 2, "limit=$limit 续读 offset=$next 落在代理对中间")
+                    }
+                }
+            }
+            assertTrue(hitEven && hitOdd, "奇偶覆盖不足：even=$hitEven odd=$hitOdd")
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
     fun `默认路径超限时保留旧截断标记文案且不超限量`() {
         val limit = FileReadPager.READ_LIMIT_CHARS
         val file = tempFile("a".repeat(limit + 10))

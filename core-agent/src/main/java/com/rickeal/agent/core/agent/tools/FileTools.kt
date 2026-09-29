@@ -224,8 +224,14 @@ internal object FileReadPager {
             // 这个判断是错的 —— 本函数的输出是 `file_read` 的**正文**，会原样回灌给模型
             // 并在工具卡里上屏展示，尾部一个 U+FFFD 就是用户可见的乱码，不是「纯修饰」。
             // 改用全仓统一口径 [truncateSafe]（尾部落在半个代理对上时回退一格）。
+            // ⚠️ 不能调 truncateSafe(keep)：`String(head, 0, keep)` 的长度恒等于 keep，
+            // 而truncateSafe 对 length<=max 是零分配短路 —— 等于什么都没做（收口复审 P1-1）。
+            // 这里必须手工做「尾部落在高位代理上时回退一格」，同时保持「总长恒 ≤ 限量」
+            // 的精确不变量：回退掉的 1 个 code unit 由 marker 预算里那个 -1 吸收。
             val keep = (limit - marker.length - 1).coerceAtLeast(0)
-            String(head, 0, keep).truncateSafe(keep) + "\n" + marker
+            val raw = String(head, 0, keep)
+            val safe = if (raw.lastOrNull()?.isHighSurrogate() == true) raw.dropLast(1) else raw
+            safe + "\n" + marker
         }
     }
 
@@ -304,8 +310,14 @@ internal object FileReadPager {
             truncated -> if (keep > 0) minOf(filled, keep) else filled
             else -> filled
         }
-        val shownEnd = startPos + contentLen
-        val content = String(buffer, 0, contentLen)
+        // 代理对安全（与 readHead 同口径）：截断落点可能切开 UTF-16 代理对，尾部孤立代理
+        // 会变成 U+FFFD 乱码（本输出上屏 + 回灌模型）。回退 1 个 code unit 时 shownEnd
+        // 必须同步收缩 —— marker 里的续读 offset 以 shownEnd 为准，否则下一段起点跳字。
+        val adjustedLen = if (truncated && contentLen > 0 &&
+            Character.isHighSurrogate(buffer[contentLen - 1])
+        ) contentLen - 1 else contentLen
+        val shownEnd = startPos + adjustedLen
+        val content = String(buffer, 0, adjustedLen)
         val marker = when {
             beyondEnd -> "…（文件共 $startPos 字符，offset=$offset 已超出文件长度）"
             truncated -> {
