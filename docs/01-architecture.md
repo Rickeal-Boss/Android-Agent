@@ -4,6 +4,18 @@
 > 基线：`docs/00-recon-brief.md`（主理人祁研深侦察简报）。**本文件不推翻简报的任何硬约束。**
 > 阅读对象：dev-A（基础设施 / 核心逻辑）、dev-B（设计系统 / UI / feature）。两人按 §9 文件清单零冲突并行。
 
+> ## ⚠️ 过期声明（2026-09-29 补，读本文**之前**必看）
+>
+> 本文写于 2026-09-18（Wave 1 前），此后仓库已推进 30+ 波次、本文件已 5,000+ 行无人通读。
+> **以下章节已知与当前代码不符，以代码为准**：
+> - 远程引擎（OpenAI 兼容 / `EngineKind.REMOTE` / Endpoint 相关的一切）：**已整体删除**（Wave 于 2026-09-23），现只有端侧 `LOCAL` 单值。
+> - litertlm **0.11.0** 相关描述（4 处）：实际依赖已升到 **0.17.1**，API 面差异见 `docs/handoff-*` 与 `core-engine/.../local/LiteRtLmEngine.kt` 的 KDoc。
+> - 「systemInstruction 传空最保险」：已被 Wave 24 角色通道（+ Wave 33 preface 第三态闸门）**推翻**，现行口径见 `LiteRtLmEngine.ensureConversation`。
+> - 工具通道：本文只写了文本协议；Wave 34 起另有**原生工具通道**（`automaticToolCalling=false` + `OpenApiTool`），见 `NativeToolBridge.kt`。
+> - `history_v2` / `SummarizingContextCompressor`：前者 Wave 30 判死、后者 Wave 35 判死删除，**不再有效**。
+>
+> 更可靠的现状来源是：**`docs/handoff-*.md`（按时间倒序）+ 源码 KDoc**。本文仍可用于理解**设计意图与历史决策理由**——那部分没有过期。
+
 ## 0. 本文档的使用方式与三条铁律
 
 ### 0.1 三条铁律（违反即 CI 红）
@@ -2308,36 +2320,9 @@ class WindowContextCompressor(
     }
 }
 
-/**
- * 摘要版：先滑窗，若仍超预算，把「被丢弃的中间段」交给 summarizer 压缩成一条 SYSTEM 消息。
- * summarizer 由上层注入（通常就是引擎本身跑一次"请总结以下对话"）。
- * 这是一个**可实现**的朴素方案，不追求最优。
- */
-class SummarizingContextCompressor(
-    private val window: ContextCompressor = WindowContextCompressor(),
-    private val summarizer: suspend (String) -> String?,
-) : ContextCompressor {
-
-    override suspend fun compress(messages: List<ChatMessage>, budgetTokens: Int): List<ChatMessage> {
-        val windowed = window.compress(messages, budgetTokens)
-        if (TokenEstimator.estimate(windowed) <= budgetTokens) return windowed
-        val keptIds = windowed.map { it.id }.toSet()
-        val dropped = messages.filter { it.id !in keptIds }
-        if (dropped.isEmpty()) return windowed
-        val digest = dropped.joinToString("\n") { "${it.role}: ${it.text.take(300)}" }
-        val summary = try {
-            summarizer(digest)
-        } catch (t: Throwable) {
-            null
-        }
-        if (summary.isNullOrBlank()) return windowed
-        val summaryMessage = ChatMessage(
-            role = Role.SYSTEM,
-            text = "以下是较早对话的摘要，请参考：\n$summary",
-        )
-        return listOf(summaryMessage) + windowed
-    }
-}
+// SummarizingContextCompressor（摘要版）—— **Wave 35 判死删除**（全仓零引用、从未实例化）。
+// 摘要检查点不再需要：history_v2 已判死，压缩一律走上面的 WindowContextCompressor 滑窗；
+// 摘要需要额外一次推理（端侧 4B 上秒级），换不来等价收益。见 §0 的「不再有效」清单。
 ```
 
 ### 4.6 `AgentRunner.kt`（完整循环）
@@ -3052,7 +3037,7 @@ fun ToolRegistry.installBuiltInTools(context: ToolContext) {
 2. **远程引擎**：隐藏 backend/visionBackend/audioBackend 三个控件；`topK` 滑块置灰。
 3. **模型不支持思考**：`ModelCapabilities.thinking == false` 且 `ThinkingMode.AUTO` → 不下发 `enable_thinking`，UI 的思考开关显示"该模型不支持"。
 4. **模型不支持视觉**：`image == false` → 不传 `visionBackend`（传了会初始化失败），图片附件按钮隐藏。
-5. **上下文超长**：`TokenEstimator.estimate > contextLength * 0.75` → 触发 `WindowContextCompressor`；若仍超，尝试 `SummarizingContextCompressor`（需要一次额外推理，用户可在设置里关掉）。
+5. **上下文超长**：`TokenEstimator.estimate > contextLength * 0.75` → 触发 `WindowContextCompressor`；仍超则压缩器**无损放弃、原样发送**（摘要版 `SummarizingContextCompressor` 已于 Wave 35 判死删除，见 §0）。
 6. **引擎初始化失败（GPU 不支持）**：捕获 `EngineException`，UI 提示"GPU 初始化失败，是否切换到 CPU？"，并把 `backend` 自动改成 CPU 重试一次（**只重试一次**，避免死循环）。
 
 ### 5.3 能力探测流程
