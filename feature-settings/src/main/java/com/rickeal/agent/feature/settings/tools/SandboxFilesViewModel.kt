@@ -12,6 +12,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -63,8 +64,21 @@ data class SandboxFilePreview(
 /** 沙箱文件子页的 UI 状态。 */
 @Immutable
 data class SandboxFilesUiState(
-    /** 根层条目（已按最后修改时间降序排好，直接渲染）。 */
+    /**
+     * 根层条目（已按最后修改时间降序排好，直接渲染）。
+     *
+     * ⚠️ 这是**被展示上限截断过**的列表，计数口径必须用 [totalEntries] —— 直接用
+     * `entries.size` 会在超限时显示「共 200 项」，而工具页入口卡（同源 Scanner）
+     * 显示「200+ 项」，同一时刻两个数字对不上会被当成 bug（A7）。
+     */
     val entries: List<SandboxFileInfo> = emptyList(),
+    /**
+     * 扫描到的**全部**有效条目数（含因超限未进入 [entries] 的部分）。
+     * 与 [SandboxFileScanner] 的 `totalEntries` 同源，UI 据此显示「N+ 项」。
+     */
+    val totalEntries: Int = 0,
+    /** 是否发生了截断（[totalEntries] 超过扫描上限）。 */
+    val truncated: Boolean = false,
     val loading: Boolean = true,
     /** 非空表示扫描失败（磁盘 IO 异常等），UI 呈现错误态 + 重试。 */
     val error: String? = null,
@@ -87,6 +101,14 @@ class SandboxFilesViewModel(
     private val _uiState = MutableStateFlow(SandboxFilesUiState())
     val uiState: StateFlow<SandboxFilesUiState> = _uiState.asStateFlow()
 
+    /**
+     * 当前预览的读取协程（同时最多一单）。
+     *
+     * 用户在读取期间关掉弹层、或快连点 A→B 时，旧的读盘结果已经**与画面对不上**，
+     * 必须作废（关闭的弹层被重新弹出 / 标题是 B 内容是 A，都是这一处漏管的后果）。
+     */
+    private var previewJob: Job? = null
+
     init {
         refresh()
     }
@@ -101,12 +123,24 @@ class SandboxFilesViewModel(
             result.fold(
                 onSuccess = { scan ->
                     _uiState.update {
-                        it.copy(loading = false, entries = scan.entries, error = null)
+                        it.copy(
+                            loading = false,
+                            entries = scan.entries,
+                            totalEntries = scan.totalEntries,
+                            truncated = scan.truncated,
+                            error = null,
+                        )
                     }
                 },
                 onFailure = { t ->
                     _uiState.update {
-                        it.copy(loading = false, entries = emptyList(), error = t.message ?: "扫描失败")
+                        it.copy(
+                            loading = false,
+                            entries = emptyList(),
+                            totalEntries = 0,
+                            truncated = false,
+                            error = t.message ?: "扫描失败",
+                        )
                     }
                 },
             )
@@ -118,12 +152,17 @@ class SandboxFilesViewModel(
      *
      * 文本白名单内的扩展名才读内容（限 [SANDBOX_PREVIEW_LIMIT_CHARS] 字符，超出截断）；
      * 二进制直接给出「不支持预览」的弹层，只留「打开」出口。读取在 [Dispatchers.IO]。
+     *
+     * 并发：新的一单会先 `Job.cancel()` 掉上一单（见 previewJob），落结果时再经
+     * [commitPreview] 对一次账 —— 取消是「少做无用功」，对账是「保证结果与画面
+     * 一致」，两层都不能省（取消不及时会让旧结果晚到，对账兜住这种晚到）。
      */
     fun onPreview(info: SandboxFileInfo) {
+        previewJob?.cancel()
         _uiState.update {
             it.copy(selectedPreview = SandboxFilePreview(info = info, text = null, truncated = false, loading = true))
         }
-        viewModelScope.launch {
+        previewJob = viewModelScope.launch {
             val outcome = if (!sandboxTextPreviewEligible(info.extension)) {
                 // 二进制：不读盘，弹层直接给「不支持预览」终态。
                 SandboxFilePreview(info = info, text = null, truncated = false, loading = false)
@@ -147,13 +186,36 @@ class SandboxFilesViewModel(
                         )
                 }
             }
-            _uiState.update { it.copy(selectedPreview = outcome) }
+            _uiState.update { it.commitPreview(outcome) }
         }
     }
 
     fun onDismissPreview() {
+        // 读盘协程也要一起取消：否则它完成后虽被 [commitPreview] 挡住不弹窗，
+        // 却仍会白跑一次 IO（大文件预览的读盘不是零成本）。
+        previewJob?.cancel()
+        previewJob = null
         _uiState.update { it.copy(selectedPreview = null) }
     }
+}
+
+/**
+ * 把一次预览读取的结果落进状态；**对不上账就丢弃**。
+ *
+ * 对账判据 = 状态里正在预览的条目仍是 [SandboxFilePreview.info] 那一个。挡掉两类
+ * 竞态（两层防护里负责「结果与画面一致」的那一层，另一层是 ViewModel 的 [Job.cancel]）：
+ *  - 读取期间用户点了关闭 → 状态里已无预览，旧结果不能把弹层**重新弹出**；
+ *  - 快连点 A→B，A 更慢完成 → 状态里已是 B，A 的结果不能把「标题 B、内容 A」
+ *    这种错配写进画面。
+ *
+ * `internal`：纯函数（data class copy + 等值判定），改可见性只为让 JVM 单测能
+ * 直接钉住这两条语义（本模块测试源集无 coroutines-test，VM 的协程时序无法在
+ * JVM 上驱动，判定逻辑必须能脱离协程直测）。
+ */
+internal fun SandboxFilesUiState.commitPreview(outcome: SandboxFilePreview): SandboxFilesUiState {
+    val current = selectedPreview ?: return this
+    if (current.info != outcome.info) return this
+    return copy(selectedPreview = outcome)
 }
 
 /**
@@ -206,6 +268,18 @@ internal fun formatSandboxBytes(bytes: Long): String = when {
     bytes >= 1024L -> "%.1f KB".format(Locale.US, bytes / 1024.0)
     else -> "$bytes B"
 }
+
+/**
+ * 条目数的展示文案：截断过就带 `+`（「N+ 项」）。
+ *
+ * 工具页入口卡与沙箱文件子页**共用这一个实现**（A7）—— 两处的数字来自同一个
+ * [SandboxFileScanner]，若各写一遍 `if (truncated)` 迟早会漂移成「一个 200+
+ * 项、一个 200 项」的口径打架。
+ *
+ * `internal`：纯函数，改可见性只为 JVM 单测能钉住两档形态。
+ */
+internal fun sandboxEntryCountText(totalEntries: Int, truncated: Boolean): String =
+    if (truncated) "$totalEntries+ 项" else "$totalEntries 项"
 
 /** 绝对时间兜底档的格式（人类可读、排序友好的形态）。 */
 private const val SANDBOX_TIME_PATTERN = "yyyy-MM-dd HH:mm"

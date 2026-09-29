@@ -8,7 +8,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.data.SandboxFileScanner
-import com.rickeal.agent.core.data.SandboxScanResult
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolParamType
@@ -69,6 +68,13 @@ data class ToolsUiState(
     val sandboxTotalBytes: Long = 0L,
     /** 沙箱条目数是否超过展示上限（true 时 UI 显示「N+ 项」）。 */
     val sandboxTruncated: Boolean = false,
+    /**
+     * 非空表示沙箱扫描失败（磁盘 IO 异常等），入口卡呈现错误态 + 重试。
+     *
+     * 不能让失败退化成「0 项」—— 那和「沙箱是空的」在画面上完全一样，用户会
+     * 误以为 agent 的产出被清空了（子页有完整错误态，入口卡不能比它更弱）。
+     */
+    val sandboxError: String? = null,
 )
 
 class ToolsViewModel(
@@ -193,20 +199,33 @@ class ToolsViewModel(
     /**
      * 重新扫描沙箱工作区，刷新入口卡的摘要。
      *
-     * `init` 触发一次 + 子页返回时可手动触发（agent 可能在子页期间又写了文件）。
+     * `init` 触发一次 + **工具页每次进入组合时**再触发（agent 可能在沙箱子页期间
+     * 又写了文件；接线见 `ToolsScreen` 里那个 `LaunchedEffect(Unit)`）。
      * 扫描是磁盘 IO，必须切 [Dispatchers.IO]；摘要标量就地取自扫描结果，
      * 与沙箱文件子页共用 [SandboxFileScanner] 这一份实现。
+     *
+     * 失败**不静默**：入口卡转错误态 + 重试（与子页一致），并落一条 WARN ——
+     * 退化为「0 项」会让人误以为沙箱被清空了。
      */
     fun refreshSandbox() {
         viewModelScope.launch {
-            _uiState.update { it.copy(sandboxLoading = true) }
-            val result = withContext(Dispatchers.IO) {
+            _uiState.update { it.copy(sandboxLoading = true, sandboxError = null) }
+            val outcome = withContext(Dispatchers.IO) {
                 runCatching { SandboxFileScanner.scan(container.sandboxDir) }
-                    .getOrDefault(SANDBOX_SCAN_EMPTY)
+            }
+            val result = outcome.getOrNull()
+            if (result == null) {
+                val reason = outcome.exceptionOrNull()?.message ?: "扫描失败"
+                AgentLogStore.warn("沙箱扫描失败：$reason")
+                _uiState.update {
+                    it.copy(sandboxLoading = false, sandboxError = reason)
+                }
+                return@launch
             }
             _uiState.update {
                 it.copy(
                     sandboxLoading = false,
+                    sandboxError = null,
                     sandboxEntryCount = result.totalEntries,
                     sandboxTotalBytes = result.entries.sumOf { entry -> entry.sizeBytes },
                     sandboxTruncated = result.truncated,
@@ -215,13 +234,6 @@ class ToolsViewModel(
         }
     }
 }
-
-/** 扫描失败时的兜底空结果（让入口卡退化为「0 项」而不是把异常抛进 UI）。 */
-private val SANDBOX_SCAN_EMPTY = SandboxScanResult(
-    entries = emptyList(),
-    totalEntries = 0,
-    truncated = false,
-)
 
 /**
  * 依据当前筛选态重算派生列表（[ToolsUiState.visibleTools] / [ToolsUiState.categories]）。

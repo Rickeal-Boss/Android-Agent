@@ -44,7 +44,14 @@ data class ToolTraceGroup(
 /** 连续完结轨迹折叠成组的阈值。 */
 private const val MIN_GROUP_SIZE = 3
 
-/** 折叠组头行的中文动词映射（工具名 → 过程动词；未命中回退原工具名）。 */
+/**
+ * 折叠组头行的中文动词映射（工具名 → 过程动词；未命中回退原工具名）。
+ *
+ * 记忆三件套（Wave 34 题 B 引入 `memory_search`）与既有「翻记忆」对齐成
+ * 「动词 + 记忆」的四字形态：`memory_read` 沿用既有的口语「翻记忆」（改它会让已落库
+ * 会话里的折叠组标题文案变化，属无收益改动），新增的写/删/检索按同一骨架补齐，
+ * 避免新工具在 UI 上回退成裸 `memory_search` 英文标识。
+ */
 private fun toolVerb(name: String): String = when (name) {
     "file_read" -> "读取文件"
     "file_write" -> "写入文件"
@@ -53,6 +60,9 @@ private fun toolVerb(name: String): String = when (name) {
     "datetime" -> "查询时间"
     "clipboard" -> "剪贴板"
     "memory_read" -> "翻记忆"
+    "memory_write" -> "写入记忆"
+    "memory_search" -> "检索记忆"
+    "memory_delete" -> "删除记忆"
     "ask_actor" -> "询问子代理"
     else -> name
 }

@@ -572,7 +572,13 @@ class ChatViewModel(
         )
     }
 
-    /** 打开会话后扫描 journal：有「没跑完就被进程死亡打断」的 run 就出恢复卡。 */
+    /**
+     * 打开会话后扫描 journal：有「没跑完就被进程死亡打断」的 run 就出恢复卡。
+     *
+     * 这里的 `runCatching` **不需要**挡 `CancellationException`：`findUnsettled` 不是
+     * suspend，取消只可能来自外层 `withContext(Dispatchers.IO)` 的调度边界，而那个
+     * 异常抛在 `runCatching` **之外**、会正常向上传播（逐处判断，不机械加判据）。
+     */
     private suspend fun maybeOfferRecovery(cid: String) {
         val dir = File(container.journalRoot, cid)
         val unsettled = withContext(Dispatchers.IO) {
@@ -589,6 +595,10 @@ class ChatViewModel(
      * findUnsettled 只返回最近的一个，其余未完成 run 会永远滞留 —— 每次进会话都
      * 再弹一张恢复卡，用户处置完最新的又来一张。归档（改名）而非删除：过程记录
      * 可能还有排查价值；已 settled 的正常 run 与空文件不动。
+     *
+     * 三条内层 `runCatching` 都只包**非 suspend** 的盘操作（listFiles / readLines /
+     * renameTo），不可能抛 `CancellationException`；本函数是 suspend，取消由调用方
+     * [dismissRecovery] 统一透传。
      */
     private suspend fun archiveOtherUnsettled(runDir: File, keepRunId: String) = withContext(Dispatchers.IO) {
         runCatching {
@@ -614,6 +624,10 @@ class ChatViewModel(
      * 「被新 run 顶替」是 Wave3 补的口子：恢复卡挂着时用户直接发了新消息 = 用行动
      * 表示「不恢复」，卡必须归档 —— 不然它留在状态里，下次进会话又弹出来，而且
      * 那份 journal 的 user_input 已经过时（上下文会拼出新 run 之前的状态）。
+     *
+     * [archiveOtherUnsettled] 是 suspend，所以外层 `runCatching` 会连
+     * `CancellationException` 一起吞掉 —— 这里显式透传，保持与 onSend / onRetry
+     * 同一约定（取消不是错误，但取消必须**被看见**）。
      */
     private fun dismissRecovery(offer: RecoveryOffer, cid: String) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -621,9 +635,25 @@ class ChatViewModel(
                 val dir = File(container.journalRoot, cid)
                 AgentRunJournal.open(dir, offer.runId).markDismissed()
                 archiveOtherUnsettled(dir, offer.runId)
+            }.onFailure { throwable ->
+                if (throwable is CancellationException) throw throwable
             }
         }
     }
+
+    /**
+     * 长期记忆**标题索引**文本（Wave 34 pull 化后的提示词注入形态）。
+     *
+     * 读失败按「无记忆」处理 —— 绝不因为记忆读不出来就挡住发送。但**取消必须透传**：
+     * `renderIndex()` 是 suspend，`runCatching` 会连 `CancellationException` 一起吞掉，
+     * 吞掉之后本 run 会继续组装请求并真的跑起来 —— 用户点了「停止」却仍在生成，
+     * 语义错（不崩，但状态机已经不对了）。
+     */
+    private suspend fun renderMemoryIndex(): String? = runCatching {
+        container.agentMemory.renderIndex()
+    }
+        .onFailure { throwable -> if (throwable is CancellationException) throw throwable }
+        .getOrNull()
 
     /**
      * 热闸（Wave 30 §2.1）：SEVERE 及以上拒新 run。只挡 ChatViewModel 主入口
@@ -767,7 +797,11 @@ class ChatViewModel(
                     },
                 ),
                 journal = journal,
-                memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
+                // 长期记忆**标题索引**（Wave 34 pull 化）：正文不再进提示词 —— 记忆正文
+                // 随 memory_write 变化会让 systemText 变化，而 systemText 是引擎的会话重建
+                // 判据（每 run 一次全量 re-prefill，4B 秒级）。正文改由模型按需用
+                // memory_search 检索、memory_read 看全文。读失败按无记忆处理，绝不挡发送。
+                memoryText = renderMemoryIndex(),
                 planStore = container.agentPlanStore,
                 approvalHandler = approvalHandler,
                 approvalCache = container.toolApprovalCache,
@@ -946,8 +980,11 @@ class ChatViewModel(
                     },
                 ),
                 journal = journal,
-                // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送
-                memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
+                // 长期记忆**标题索引**（Wave 34 pull 化，替代此前的全量正文注入）：
+                // 正文随 memory_write 变化会让 systemText 变化，而 systemText 是引擎的会话
+                // 重建判据（每 run 一次全量 re-prefill，4B 秒级）。正文改由模型按需用
+                // memory_search 检索、memory_read 看全文。读失败按无记忆处理，绝不挡发送。
+                memoryText = renderMemoryIndex(),
                 planStore = container.agentPlanStore,
                 approvalHandler = approvalHandler,
                 approvalCache = container.toolApprovalCache,
@@ -1073,8 +1110,11 @@ class ChatViewModel(
                     },
                 ),
                 journal = journal,
-                // 长期记忆片段（harness-memory 移植）：读失败按无记忆处理，绝不挡发送
-                memoryText = runCatching { container.agentMemory.renderForPrompt() }.getOrNull(),
+                // 长期记忆**标题索引**（Wave 34 pull 化，替代此前的全量正文注入）：
+                // 正文随 memory_write 变化会让 systemText 变化，而 systemText 是引擎的会话
+                // 重建判据（每 run 一次全量 re-prefill，4B 秒级）。正文改由模型按需用
+                // memory_search 检索、memory_read 看全文。读失败按无记忆处理，绝不挡发送。
+                memoryText = renderMemoryIndex(),
                 planStore = container.agentPlanStore,
                 approvalHandler = approvalHandler,
                 approvalCache = container.toolApprovalCache,

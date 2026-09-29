@@ -544,11 +544,15 @@ fun ChatScreen(
             }
 
             // ── 引擎会话诊断小字（Wave 33：sessionDiagnostics 接 UI）────────
-            // 极轻量：仅对三类「引擎已自动降级但用户不可见」的状态渲染一行小字
-            // （legacy 回退 / 系统提示词并入用户消息 / GPU 降级 CPU）；诊断正常
-            // （角色通道 active 且后端一致）不渲染任何东西 —— 正常路径零 UI 变化。
+            // 极轻量：仅对四类「引擎已自动降级但用户不可见」的状态渲染一行小字
+            // （legacy 回退 / 系统提示词并入用户消息 / 原生工具通道未生效 / GPU 降级 CPU）；
+            // 诊断正常（角色通道 active、原生通道与开关一致、后端一致）不渲染任何东西
+            // —— 正常路径零 UI 变化。
             // 与终止原因小字同款样式（labelSmall + onGlassSubtle），复用 Wave 31 先例形态。
-            val diagnosticsHint = sessionDiagnosticsHintOf(state.sessionDiagnostics)
+            val diagnosticsHint = sessionDiagnosticsHintOf(
+                state.sessionDiagnostics,
+                state.config.nativeToolChannel,
+            )
             if (diagnosticsHint != null) {
                 Text(
                     text = diagnosticsHint,
@@ -638,16 +642,28 @@ private fun terminationHintOf(reason: TerminationReason?): String? = when (reaso
 /**
  * 引擎会话诊断 → 一行小字（Wave 33）。
  *
- * 只对三类**静默降级**渲染（引擎已自动处理、但用户此前完全不可见）：
+ * 只对四类**静默降级**渲染（引擎已自动处理、但用户此前完全不可见）：
  *  1. legacy 回退（角色通道未激活）：「引擎已回退纯文本模式（<原因截断 80 字>）」；
  *  2. 中档回退（系统提示词并入用户消息，Gemma 系模板兼容模式）；
- *  3. 后端降级：「请求 GPU 已降级 CPU 运行」。
+ *  3. **原生工具通道未生效**（Wave 34 复审 P1-4）：「原生工具通道未生效，已退回文本协议」；
+ *  4. 后端降级：「请求 GPU 已降级 CPU 运行」。
  *
  * 其余情况（诊断 null / 角色通道 active 且后端一致）返回 null = **不渲染任何东西**，
- * 正常路径零 UI 变化。优先级：legacy > 中档 > 后端降级（降级链上越靠前的信息
- * 越本质 —— legacy 回退时后端信息照常可用，不必同屏两条）。
+ * 正常路径零 UI 变化。优先级：legacy > 中档 > 原生工具通道 > 后端降级（降级链上越靠前
+ * 的信息越本质 —— legacy 回退时后端信息照常可用，不必同屏两条）。
+ *
+ * @param nativeToolChannelEnabled 用户在设置里是否**开了**「原生工具通道」开关
+ *   （`InferenceConfig.nativeToolChannel`）。第 3 类**必须带这个判据**：诊断字段
+ *   `nativeToolChannel=false` 同时覆盖「用户没开 / 探针没过 / 模型没能力」三种情形，
+ *   而开关默认是关的 —— 不带判据就恒显示一行，等于把「正常路径零 UI 变化」这条既有
+ *   承诺破坏掉，每次对话都多一行小字。带上它之后，这行只在**用户主动开了开关却没生效**
+ *   时出现 —— 那正是设置页文案向用户承诺的那一句「会在对话页显示一行说明」，
+ *   ⚠️ 改本函数或改设置页文案都必须同步另一侧，否则文案变成假承诺（P1-4 的成因）。
  */
-private fun sessionDiagnosticsHintOf(diagnostics: EngineSessionDiagnostics?): String? {
+private fun sessionDiagnosticsHintOf(
+    diagnostics: EngineSessionDiagnostics?,
+    nativeToolChannelEnabled: Boolean,
+): String? {
     if (diagnostics == null) return null
     if (!diagnostics.roleChannelActive) {
         val reason = diagnostics.legacyFallbackReason
@@ -659,6 +675,11 @@ private fun sessionDiagnosticsHintOf(diagnostics: EngineSessionDiagnostics?): St
     }
     if (diagnostics.systemMergedIntoUser) {
         return "系统提示词已并入用户消息（模型模板兼容模式）"
+    }
+    // 开关开了但会话没真注册工具 ⇒ 本 run 的工具面已退回文本协议（AgentRunner 侧
+    // 会同步落一条含「原生工具通道」关键字的 warn，二者分工：这里给结论、那里留证据）。
+    if (nativeToolChannelEnabled && !diagnostics.nativeToolChannel) {
+        return "原生工具通道未生效，已退回文本协议"
     }
     val requested = diagnostics.requestedBackend
     val actual = diagnostics.actualBackend

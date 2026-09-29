@@ -660,6 +660,54 @@ fun SettingsScreen(
                 }
             }
 
+            // 原生工具通道（Wave 34 题 A）。与上面「工具清单」卡相邻但分开：那张卡管
+            // **提示词里写多少**，这张管**工具信息走哪条通道发给模型**。
+            //
+            // 「默认关闭」必须在文案里说死：这是未经验证的新通路，开启后提示词里的
+            // 工具清单段会整体消失（回显面的根治尝试），若引擎侧静默退回文本协议，
+            // 模型就既拿不到清单、又少了回显检测覆盖 —— 那正是本波的已知代价，
+            // 不能让用户在不知情的情况下长期开着。
+            //
+            // ⚠️ **文案与实现是一对契约，改一边必须改另一边**（复审 P1-4）：下面两处
+            // 副文案里「对话页会显示一行说明」的实现在 `ChatScreen.sessionDiagnosticsHintOf`
+            // 的第 3 分支（判据 = 本开关开启 ∧ 会话诊断 nativeToolChannel=false）。
+            // 若哪天改了那边的判据或删掉那一行，本卡的这句承诺就成了假承诺 ——
+            // 用户勾了开关却永远等不到那行说明。两侧都留了指向对方的注释。
+            GlassCard(
+                modifier = Modifier.staggeredPageItem(itemIndex = 6),
+                contentPadding = PaddingValues(14.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "原生工具通道",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onGlass,
+                        )
+                        Text(
+                            text = if (state.config.nativeToolChannel) {
+                                "已开启：工具改由模型原生通道下发，提示词不再包含工具清单。" +
+                                    "用于验证「只输出提示词及工具调用语言」的回显是否根治；" +
+                                    "若当前模型不支持，会自动退回文本协议并在对话页显示一行说明"
+                            } else {
+                                "默认关闭：工具清单与调用格式写在提示词里（文本协议）。" +
+                                    "开启后提示词不再含工具清单，用于验证回显是否根治；" +
+                                    "若当前模型不支持，会自动退回文本协议并在对话页显示一行说明"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onGlassSubtle,
+                        )
+                    }
+                    GlassSwitch(
+                        checked = state.config.nativeToolChannel,
+                        onCheckedChange = { viewModel.onNativeToolChannelChange(it) },
+                    )
+                }
+            }
+
             val notice = state.error ?: state.message
             if (notice != null) {
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {

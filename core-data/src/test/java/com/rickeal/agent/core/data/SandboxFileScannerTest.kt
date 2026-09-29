@@ -89,6 +89,30 @@ class SandboxFileScannerTest {
     }
 
     @Test
+    fun `名字里含 tmp_ 但不是原子写临时文件的合法名必须保留`() {
+        // 判据必须是「.tmp_ + 全数字」的**后缀形态**而不是子串匹配：子串匹配会把
+        // 下面这些用户 / agent 起的合法名静默藏掉（文件凭空消失且无日志，D2）。
+        assertTrue(SandboxFileScanner.isAtomicWriteTemp("report.md.tmp_123456789"))
+        assertTrue(SandboxFileScanner.isAtomicWriteTemp("a.tmp_0"))
+        assertFalse(SandboxFileScanner.isAtomicWriteTemp("report.tmp_backup.txt"))
+        assertFalse(SandboxFileScanner.isAtomicWriteTemp("tmp_notes.md"))
+        assertFalse(SandboxFileScanner.isAtomicWriteTemp("notes.tmp_")) // 空时间戳不是临时名
+        assertFalse(SandboxFileScanner.isAtomicWriteTemp("notes.tmp_v2"))
+
+        val root = newTempDir("tmp_legal")
+        File(root, "report.tmp_backup.txt").writeText("legal")
+        File(root, "x.tmp_123456").writeText("temp")
+        File(root, "keep.md").writeText("keep")
+
+        val result = SandboxFileScanner.scan(root)
+        assertEquals(
+            setOf("report.tmp_backup.txt", "keep.md"),
+            result.entries.map { it.name }.toSet(),
+        )
+        assertEquals(2, result.totalEntries)
+    }
+
+    @Test
     fun `超限时截断且 totalEntries 含全部条目`() {
         val root = newTempDir("limit")
         repeat(5) { index -> File(root, "f$index.txt").writeText("x") }

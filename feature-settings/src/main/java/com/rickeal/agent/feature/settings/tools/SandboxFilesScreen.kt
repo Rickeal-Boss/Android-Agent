@@ -57,7 +57,7 @@ import java.io.File
  *
  * 能力边界（刻意收窄，职责不混）：
  *  - 只读浏览 + 应用内文本预览（限长截断）+ 经 [FileProvider] 跳转系统「打开」；
- *  - 目录不下钻（首版仅根层）、不提供删除 / 重命名 —— 清理走存储页「沙箱工作区」分桶。
+ *  - 目录不下钻（首版仅根层，点了给一句 Toast 说明而不是"没反应"）、不提供删除 / 重命名 —— 清理走存储页「沙箱工作区」分桶。
  *
  * 「打开」的 Intent 在本层组装（需要 Context 与 FileProvider），VM 只产
  * [SandboxFileInfo]；MIME 决策逻辑抽在 [resolveMimeType] 纯函数里可单测。
@@ -78,7 +78,14 @@ fun SandboxFilesScreen(
         topBar = {
             GlassTopBar(
                 title = "沙箱工作区",
-                subtitle = if (state.loading) "读取中…" else "共 ${state.entries.size} 项（根层）",
+                subtitle = if (state.loading) {
+                    "读取中…"
+                } else {
+                    // 计数口径必须用 totalEntries（entries 已被上限截断）：否则超限时
+                    // 这里显示「共 200 项」而工具页入口卡显示「200+ 项」，同一时刻
+                    // 两个数字打架（两处共用 sandboxEntryCountText，文案也同源）。
+                    "共 ${sandboxEntryCountText(state.totalEntries, state.truncated)}（根层）"
+                },
                 modifier = Modifier.statusBarsPadding(),
                 titleAlignment = Alignment.CenterHorizontally,
                 navigationIcon = {
@@ -137,6 +144,12 @@ fun SandboxFilesScreen(
                             info = entry,
                             onPreview = viewModel::onPreview,
                             onOpen = { openSandboxFile(context, sandboxRoot, entry) },
+                            // 目录行渲染得和文件行几乎一样（Folder 图标 +「N 项」），
+                            // 点了却毫无反应会被当成"坏了"。首版不打算做下钻，就把
+                            // 这句说明直接给出来（A8）。
+                            onDirectoryClick = {
+                                Toast.makeText(context, "目录下钻将在后续版本支持", Toast.LENGTH_SHORT).show()
+                            },
                         )
                     }
                 }
@@ -222,13 +235,15 @@ fun SandboxFilesScreen(
  *  - 文本文件：整行点击 → 应用内预览；行尾 chevron。
  *  - 二进制文件：整行点击 → 系统「打开」；行尾 OpenInNew（预览对它无意义，
  *    但「打开」必须可达 —— 只藏在预览弹层里会变成死路）。
- *  - 目录：不可点（首版不下钻），行尾给出直接子项计数。
+ *  - 目录：行尾给出直接子项计数；整行点击 → [onDirectoryClick]（首版不下钻，
+ *    但必须给反馈 —— 静默无反应的行看起来就是坏了）。
  */
 @Composable
 private fun SandboxFileRow(
     info: SandboxFileInfo,
     onPreview: (SandboxFileInfo) -> Unit,
     onOpen: () -> Unit,
+    onDirectoryClick: () -> Unit,
 ) {
     val colors = LocalGlassColors.current
     val eligible = sandboxTextPreviewEligible(info.extension)
@@ -240,7 +255,7 @@ private fun SandboxFileRow(
             "${formatSandboxBytes(info.sizeBytes)} · ${formatSandboxTime(info.lastModifiedMillis)}"
         },
         onClick = when {
-            info.isDirectory -> null
+            info.isDirectory -> onDirectoryClick
             eligible -> { -> onPreview(info) }
             else -> onOpen
         },
@@ -304,22 +319,27 @@ private fun sandboxFileIcon(info: SandboxFileInfo) = when {
  *
  * MIME 查不到时兜底 `application/octet-stream`（见 [resolveMimeType]）——
  * 不带 MIME 的 ACTION_VIEW 在部分 ROM 上会被文件管理器以外的组件拒绝。
- * 启动失败（无任何可处理应用）用 Toast 明示，别让「点了没反应」无迹可寻。
+ *
+ * ⚠️ `getUriForFile` 必须和 `startActivity` 在**同一个** runCatching 里：前者对
+ * 「不在 FileProvider 路径表内」的文件直接抛 `IllegalArgumentException`（沙箱外的
+ * 残留 / 越权路径会走到这里），放到防护外就成了"承诺了不崩、却仍会崩"的不对称
+ * 防护。两者对用户的可见结果一样（打不开），因此共用同一条 Toast。
  */
 private fun openSandboxFile(context: Context, sandboxRoot: File, info: SandboxFileInfo) {
-    val file = File(sandboxRoot, info.relativePath)
-    val uri = FileProvider.getUriForFile(
-        context,
-        "${context.packageName}.fileprovider",
-        file,
-    )
-    val mime = resolveMimeType(info.extension, platformMimeLookup())
-    val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, mime)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    runCatching { context.startActivity(intent) }
-        .onFailure {
-            Toast.makeText(context, "未找到可打开此文件的应用", Toast.LENGTH_SHORT).show()
+    runCatching {
+        val file = File(sandboxRoot, info.relativePath)
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+        val mime = resolveMimeType(info.extension, platformMimeLookup())
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+        context.startActivity(intent)
+    }.onFailure {
+        Toast.makeText(context, "无法打开此文件", Toast.LENGTH_SHORT).show()
+    }
 }

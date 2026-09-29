@@ -1,10 +1,14 @@
 package com.rickeal.agent.core.data.notify
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.rickeal.agent.core.data.perf.PerfSample
+import com.rickeal.agent.core.model.AgentLogStore
 import java.util.Locale
 
 /**
@@ -16,9 +20,13 @@ import java.util.Locale
  *
  * ## 权限与降级
  *
- * 需要 `POST_NOTIFICATIONS`（API 33+ 运行时权限）。用户拒绝时的策略是**静默降级**：
+ * 需要 `POST_NOTIFICATIONS`（API 33+ 运行时权限）。用户拒绝时的策略是**功能降级**：
  * `enabled` 不持久化、App 内开关回弹，功能本身（端侧推理）完全不受影响 ——
  * 通知只是观测窗口，不是能力。 Manifest 的注释里也写了同一条承诺。
+ *
+ * 「降级」不等于**静默**：没权限 / 通知被关时 [AndroidGenerationNotifier] 会落一条
+ * WARN（每次进程一次，不刷屏），否则用户在设置里开了开关却永远等不到通知，
+ * 诊断页也查不到原因 —— 那正是「功能静默失效」的形态。
  */
 interface GenerationNotifier {
     /**
@@ -66,17 +74,31 @@ class AndroidGenerationNotifier(
     @Volatile
     override var enabled: Boolean = false
 
+    /** 无权限的 WARN 是否已经落过（onTick 每秒一次，逐次落会把诊断页刷满）。 */
+    @Volatile
+    private var permissionWarned: Boolean = false
+
     override fun onTick(tps: Float, ttftMillis: Long) {
         if (!enabled) return
         val now = SystemClock.elapsedRealtime()
         if (now - lastEmitAt < THROTTLE_MS) return
         lastEmitAt = now
 
-        // 权限被用户在系统设置里撤销时 areNotificationsEnabled() 会变 false，
-        // 此时 notify() 在 API 33+ 会抛 SecurityException —— 通知是观测窗口不是能力，
-        // 宁可静默放弃也绝不把推理打崩（fail-open 给推理、fail-closed 给通知）。
+        // 「能发通知」要同时满足两条，缺一条就放弃本次并**留痕**：
+        //  ① API 33+ 的运行时权限 POST_NOTIFICATIONS 已授予（用户在系统设置里撤销后
+        //     notify() 会抛 SecurityException，而 runCatching 会把异常吞成「静默不弹」）；
+        //  ② 通知没被用户在渠道 / 应用级关掉（areNotificationsEnabled()）。
+        // 通知是观测窗口不是能力 —— 宁可放弃也绝不把推理打崩
+        // （fail-open 给推理、fail-closed 给通知），但放弃必须可见。
+        if (!hasPostNotificationsPermission()) {
+            warnNoNotificationOnce("缺少 POST_NOTIFICATIONS 权限")
+            return
+        }
         val manager = NotificationManagerCompat.from(context)
-        if (!manager.areNotificationsEnabled()) return
+        if (!manager.areNotificationsEnabled()) {
+            warnNoNotificationOnce("通知已被系统 / 渠道关闭")
+            return
+        }
 
         // 文案主体 = 既有形态（逐字节不变）；有性能样本时追加观测后缀（Wave 30）。
         // 文案变更属有意交付（方案 §2.2），commit message 已申报。
@@ -99,8 +121,11 @@ class AndroidGenerationNotifier(
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .build()
         runCatching { manager.notify(NOTIFICATION_ID, notification) }
-            .onFailure {
-                // 通知失败不落 ERROR 级（会刷屏），这是可预期的运行环境问题（权限/渠道被关）。
+            .onFailure { throwable ->
+                // 走到这里通常是权限被撤销 / 渠道被删（SecurityException）。通知失败不落
+                // ERROR 级（会刷屏），但也不能完全无声 —— 用户开了开关却看不到通知时，
+                // 诊断页这一行是唯一的解释。
+                warnNoNotificationOnce("notify 失败：${throwable::class.java.simpleName}")
             }
     }
 
@@ -110,7 +135,37 @@ class AndroidGenerationNotifier(
         lastEmitAt = 0L
     }
 
+    /**
+     * API 33+ 的 `POST_NOTIFICATIONS` 是否已授予。
+     *
+     * 32 及以下该权限是安装时授予的（无运行时权限），一律视为已授予。
+     */
+    private fun hasPostNotificationsPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return ContextCompat.checkSelfPermission(
+            context,
+            PERMISSION_POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /** 同一个进程内只落一次「通知发不出去」的 WARN（onTick 是每秒一次的节流流）。 */
+    private fun warnNoNotificationOnce(reason: String) {
+        if (permissionWarned) return
+        permissionWarned = true
+        AgentLogStore.warn("生成速度通知已跳过（$reason）：端侧推理不受影响")
+    }
+
     companion object {
+        /**
+         * `POST_NOTIFICATIONS` 的权限名（API 33 新增）。
+         *
+         * 刻意写成字符串字面量而不是 `Manifest.permission.POST_NOTIFICATIONS`：
+         * 后者是 API 33 才有的常量，本模块 minSdk 31，lint 会把这类「新增于高
+         * API 的编译期常量」判为 InlinedApi（Warning 级），而本仓 lint 已开
+         * warningsAsErrors —— 字符串形态语义完全相同且零 API 级别代价。
+         */
+        private const val PERMISSION_POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS"
+
         /** 渠道 id：与 LiquidAgentApplication.onCreate 里创建的渠道一致，改名 = 老用户丢设置。 */
         const val CHANNEL_ID = "generation_speed"
 

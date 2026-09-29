@@ -29,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -60,6 +61,21 @@ fun ToolsScreen(
     val state by viewModel.uiState.collectAsState()
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
+
+    // 回到本页时重扫沙箱摘要（A6）：agent 可能刚在沙箱子页期间写了新文件，而入口卡
+    // 的摘要只在 ViewModel init 时算过一次 —— KDoc 承诺的「返回时可手动触发」此前
+    // 没有接线，这里补上。
+    //
+    // ⚠️ 为什么是 `LaunchedEffect(Unit)` 而不是更"完备"的生命周期写法（取舍已裁决）：
+    //  - 不用 `LifecycleResumeEffect`：它带 `@ExperimentalLifecycleComposeApi`，需要
+    //    `@OptIn`，本仓无本地 JDK、CI 是唯一验证通道 —— 不敢赌 opt-in 是否多余。
+    //  - 不用 `DisposableEffect` + `LifecycleEventObserver`（ON_RESUME）：语义上它更
+    //    稳（不依赖「返回时是否重建组合」），但 `LocalLifecycleOwner` 属全仓首次引入
+    //    的 import，一处解析不到就是整轮 CI 红 —— 按「宁可朴素不要冒险写法」的硬
+    //    约束，选零新增 import 的写法。
+    //  本仓宿主是 NavHost，返回上一目的地会重新进入组合，`LaunchedEffect(Unit)` 的
+    //  语义在此成立；若将来出现「宿主保留组合不重建」的场景，再升级为 ON_RESUME 写法。
+    LaunchedEffect(Unit) { viewModel.refreshSandbox() }
 
     GlassScaffold(
         modifier = modifier,
@@ -108,11 +124,15 @@ fun ToolsScreen(
             // 一份实现；「根层」字样必须保留 —— 它与存储页的递归统计口径不同。
             GlassSettingRow(
                 title = "沙箱工作区",
-                subtitle = if (state.sandboxLoading) {
-                    "统计中…"
-                } else {
-                    val count = if (state.sandboxTruncated) "${state.sandboxEntryCount}+ 项" else "${state.sandboxEntryCount} 项"
-                    "$count（根层） · ${formatSandboxBytes(state.sandboxTotalBytes)}"
+                subtitle = when {
+                    state.sandboxLoading -> "统计中…"
+                    // 扫描失败必须说得清「是扫不了」而不是「0 项」—— 后者会被读成
+                    // 「沙箱被清空了」（与子页的错误态同口径）。
+                    state.sandboxError != null -> "读取失败（根层）"
+                    else -> {
+                        val count = sandboxEntryCountText(state.sandboxEntryCount, state.sandboxTruncated)
+                        "$count（根层） · ${formatSandboxBytes(state.sandboxTotalBytes)}"
+                    }
                 },
                 onClick = onOpenSandboxFiles,
                 trailing = {
@@ -124,6 +144,15 @@ fun ToolsScreen(
                     )
                 },
             )
+            // 扫描失败给重试：入口卡不能比子页弱（子页有完整错误态 + 重试），
+            // 否则「扫不了」在入口这一层永远无法自愈。
+            if (state.sandboxError != null) {
+                GlassButton(
+                    text = "重试扫描",
+                    onClick = viewModel::refreshSandbox,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                )
+            }
 
             if (state.tools.isEmpty()) {
                 GlassEmptyState(

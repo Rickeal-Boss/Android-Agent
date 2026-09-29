@@ -104,6 +104,23 @@ class SettingsViewModel(
     }
 
     /**
+     * 原生工具通道开关（Wave 34 题 A）。
+     *
+     * 与 [onDisclosureModeChange] 的分工不同：它写的是 `InferenceConfig.nativeToolChannel`，
+     * 走 [onConfigChange] 的既有落盘路径（配置是 DataStore 里的一份 JSON，新增字段带
+     * 默认值，旧数据 decode 时自动补齐）。之所以单独开一个方法而不是让 UI 直接拼
+     * `config.copy(...)`：开关语义要能在一处被 grep 到，且副文案的「默认关闭」说明
+     * 需要与写入点相邻，避免日后有人把它默认值翻成 true 而忘了同步文案。
+     *
+     * ⚠️ 这只是**开关**：引擎是否真的支持原生通道由 `EngineCapabilities.nativeToolChannel`
+     * 与 `config.enableTools` 共同决定，三者全真才生效（见 AgentRunner 的三重门）。
+     * 不支持的模型会自动退回文本协议，对话页的那行说明由引擎侧诊断字段驱动，不在这里。
+     */
+    fun onNativeToolChannelChange(enabled: Boolean) {
+        onConfigChange { it.copy(nativeToolChannel = enabled) }
+    }
+
+    /**
      * 「生成速度通知」开关落盘。
      *
      * ⚠️ **只在拿到通知权限后调用**（UI 侧先请求权限）：用户拒绝时调用方必须**不落盘**，

@@ -57,8 +57,9 @@ data class SandboxScanResult(
  *  - **仅根层**，不递归（首版无下钻；递归扫会撞上 journal 大目录级的时间预算问题）；
  *  - 隐藏文件（`.` 开头）排除 —— 与常见文件管理器口径一致；
  *  - **原子写临时文件排除**：FileWriteTool 落盘用的是「原名 + `.tmp_` + 纳秒」
- *    的临时名、写完 rename 成正式名，因此名字里含 `.tmp_` 的条目是崩溃残留的
- *    半成品，不该出现在用户眼前（也不该被「打开」动作暴露出去）；
+ *    的临时名、写完 rename 成正式名，因此**形态符合该命名规则**的条目是崩溃残留的
+ *    半成品，不该出现在用户眼前（也不该被「打开」动作暴露出去）。判据是**后缀形态**
+ *    而不是子串匹配 —— 子串匹配会把 `report.tmp_backup.txt` 这类合法名静默藏掉；
  *  - 最后修改时间降序，同毫秒按名字典序兜底（保证测试与展示的确定性）。
  */
 object SandboxFileScanner {
@@ -86,7 +87,7 @@ object SandboxFileScanner {
         val all = children
             .filter { entry ->
                 val name = entry.name
-                !name.startsWith(".") && !name.contains(".tmp_")
+                !name.startsWith(".") && !isAtomicWriteTemp(name)
             }
             .sortedWith(
                 compareByDescending<File> { it.lastModified() }
@@ -109,5 +110,29 @@ object SandboxFileScanner {
             totalEntries = all.size,
             truncated = all.size > shown.size,
         )
+    }
+
+    /**
+     * 该名字是否为 `FileWriteTool`（core-agent 的写文件工具）原子写留下的
+     * **半成品临时文件**（原名 + `.tmp_` + 纳秒时间戳）。
+     *
+     * 判据是**后缀形态**而非子串匹配：子串 `contains(".tmp_")` 会把
+     * `report.tmp_backup.txt` 这类用户/agent 起的合法名一起静默藏掉 —— 那是
+     * 「误伤条件可穷举」的确定性缺陷，文件凭空消失且无任何日志。这里改为
+     * 「取最后一个 `.tmp_`、其后必须全是数字」，既排掉真临时文件，又放行合法名。
+     *
+     * `nanoTime()` 的原点未定义（理论上可为负），故允许一个前导负号。
+     *
+     * `internal`：纯函数（`String` 判定，不触 Android），改可见性只为让 JVM 单测
+     * 直接钉住「`report.tmp_backup.txt` 保留 / `x.tmp_<数字>` 排除」这两条边界。
+     */
+    internal fun isAtomicWriteTemp(name: String): Boolean {
+        val marker = ".tmp_"
+        val markerIndex = name.lastIndexOf(marker)
+        if (markerIndex < 0) return false
+        val stamp = name.substring(markerIndex + marker.length)
+        if (stamp.isEmpty()) return false
+        val digits = if (stamp.first() == '-') stamp.substring(1) else stamp
+        return digits.isNotEmpty() && digits.all { it in '0'..'9' }
     }
 }
