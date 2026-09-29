@@ -902,8 +902,9 @@ class LiteRtLmEngine(
                 roleChannelActive = false
                 // 走到 legacy 就不可能再注册工具 ⇒ 证伪本通道（理由见下方 ConversationConfig
                 // 里的注释：不证伪 = 上层继续删提示词工具段、引擎却不注册工具 = 工具能力静默
-                // 归零且零报错）。
-                if (nativeTools.isNotEmpty()) {
+                // 归零且零报错）。带 `!nativeToolsRejected` 是为了避免重复告警：若上面那条
+                // 「不带工具重试」路径已经证伪过，这里就是同一次事故的第二次落点。
+                if (nativeTools.isNotEmpty() && !nativeToolsRejected) {
                     nativeToolsRejected = true
                     AgentLogStore.warn(
                         "原生工具通道：本引擎已回退 legacy 且不注册工具，已证伪本通道" +
@@ -1435,8 +1436,11 @@ class LiteRtLmEngine(
      * 合并相邻的同角色 USER native 消息（Contents 拼接）。
      *
      * 只处理 USER：MODEL 相邻在部分模板下同样非法，但应用侧 MODEL 轮之间恒有
-     * TOOL/USER 隔开（AgentRunner 循环不变量），无需处理；TOOL 不映射为 native
-     * tool（文本协议），天然在 USER 合并范围内。
+     * TOOL/USER 隔开（AgentRunner 循环不变量），无需处理。
+     *
+     * ⚠️ TOOL 的形态随通道切换（Wave 34 题 A）：文本协议下映射成 `Message.user`，因此会
+     * 参与这里的相邻合并；**原生工具通道下**是 `Message.tool`（要跟 MODEL 轮播种的
+     * tool_calls 配对），不参与合并 —— 两者都不破坏「不出现连续同角色」的目标。
      */
     private fun mergeAdjacentNativeUsers(messages: List<Message>): List<Message> {
         if (messages.size < 2) return messages
