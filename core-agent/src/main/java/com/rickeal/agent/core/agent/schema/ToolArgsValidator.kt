@@ -3,6 +3,7 @@ package com.rickeal.agent.core.agent.schema
 import com.rickeal.agent.core.model.AgentJson
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.model.truncateSafe
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -71,7 +72,8 @@ object ToolArgsValidator {
                     ArgsViolation(
                         param = "",
                         expected = "一个 JSON 对象",
-                        got = "无法解析的 JSON（${t.message?.take(120) ?: t.javaClass.simpleName}）",
+                        // 代理对安全截断（Wave 35 D1）：本串回灌给模型，半个代理对是乱码。
+                        got = "无法解析的 JSON（${t.message?.truncateSafe(120) ?: t.javaClass.simpleName}）",
                     )
                 )
             }

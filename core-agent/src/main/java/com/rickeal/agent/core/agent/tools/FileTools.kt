@@ -8,6 +8,7 @@ import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolParamType
 import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
+import com.rickeal.agent.core.model.truncateSafe
 import java.io.File
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -218,9 +219,13 @@ internal object FileReadPager {
             val marker = "…（文件共$scale 字符，仅载入前 $limit 字符，其余未读）"
             // 标记预算：内容只保留「限量 − 标记长度 − 1（拼接换行）」，保证总长恒 ≤ 限量 ——
             // 否则 Runner 会按 maxToolOutputChars 把标记本身砍掉，两层标记语义打架。
-            // （keep 落点可能切开 UTF-16 代理对，尾部个别 emoji 显示为占位乱码，纯修饰性，不处理。）
+            //
+            // Wave 35 D1（原注释自认「keep 落点可能切开 UTF-16 代理对，纯修饰性，不处理」）：
+            // 这个判断是错的 —— 本函数的输出是 `file_read` 的**正文**，会原样回灌给模型
+            // 并在工具卡里上屏展示，尾部一个 U+FFFD 就是用户可见的乱码，不是「纯修饰」。
+            // 改用全仓统一口径 [truncateSafe]（尾部落在半个代理对上时回退一格）。
             val keep = (limit - marker.length - 1).coerceAtLeast(0)
-            String(head, 0, keep) + "\n" + marker
+            String(head, 0, keep).truncateSafe(keep) + "\n" + marker
         }
     }
 

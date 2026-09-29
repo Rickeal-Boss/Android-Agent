@@ -93,39 +93,11 @@ class WindowContextCompressor(
     }
 }
 
-/**
- * 摘要版：先滑窗，若仍超预算，把「被丢弃的中间段」交给 summarizer 压缩成一条 SYSTEM 消息。
- * summarizer 由上层注入（通常就是引擎本身跑一次"请总结以下对话"）。
- * 这是一个**可实现**的朴素方案，不追求最优。
- *
- * 注意：滑窗放弃压缩时（找不到安全切点）本类也只会原样返回，不会为了省 token 破坏工具配对；
- * 工具配对问题的最后一道保险是 [sanitizeForProvider]。
- */
-class SummarizingContextCompressor(
-    private val window: ContextCompressor = WindowContextCompressor(),
-    private val summarizer: suspend (String) -> String?,
-) : ContextCompressor {
-
-    override suspend fun compress(messages: List<ChatMessage>, budgetTokens: Int): List<ChatMessage> {
-        val windowed = window.compress(messages, budgetTokens)
-        if (TokenEstimator.estimate(windowed) <= budgetTokens) return windowed
-        val keptIds = windowed.map { it.id }.toSet()
-        val dropped = messages.filter { it.id !in keptIds }
-        if (dropped.isEmpty()) return windowed
-        val digest = dropped.joinToString("\n") { "${it.role}: ${it.text.take(300)}" }
-        val summary = try {
-            summarizer(digest)
-        } catch (t: Throwable) {
-            null
-        }
-        if (summary.isNullOrBlank()) return windowed
-        val summaryMessage = ChatMessage(
-            role = Role.SYSTEM,
-            text = "以下是较早对话的摘要，请参考：\n$summary",
-        )
-        return listOf(summaryMessage) + windowed
-    }
-}
+// ── SummarizingContextCompressor（摘要版压缩器）已于 Wave 35 判死删除 ────────────
+// 全仓零引用（含测试源集，逐文件核验），从未被实例化。判死理由：压缩走 [WindowContextCompressor]
+// 的滑窗已足够，摘要检查点不再需要（history_v2 已判死 + 摘要需要一次额外推理，端侧 4B 上
+// 这笔开销换不来等价收益）。挂账记录见 docs/handoff-20260928-wave33-...md §7。
+// 恢复路径：git 历史可回溯，无需保留死代码占位。
 
 /**
  * 发送前的最后一道清洗：保证 `assistant.toolCalls` 与 `toolResult` 严格成对。

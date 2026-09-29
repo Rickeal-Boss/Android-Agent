@@ -1,5 +1,7 @@
 package com.rickeal.agent.core.agent.breaker
 
+import com.rickeal.agent.core.model.truncateSafe
+
 /**
  * 诊断卡卡点归因（评审 §3.4 的 Blocker 枚举原样收编）。
  *
@@ -133,8 +135,10 @@ private const val MISSING_MAX_CHARS = 80
  *
  * - 压平：工具报错是自由文本，带 `\n` 时会把「建议：」一行劈成多行，破坏分节格式
  *   （render 的每个字段各自占一行）。
- * - 截断：[String.take] 按 UTF-16 code unit 计数，可能停在半个代理对上；尾部落在
- *   高位代理时回退一格，保证落库 / 渲染的串是合法 UTF-16。
+ * - 截断：统一走 [truncateSafe]（Wave 35 D1 的全仓唯一截断口径）—— [String.take] 按
+ *   UTF-16 code unit 计数，可能停在半个代理对上，尾部落在高位代理时回退一格，保证
+ *   落库 / 渲染的串是合法 UTF-16。此处原本是**全仓唯一**做了该防护的地方，Wave 35
+ *   把它提到 core-model 供另外三处复用（工具输出 / 记忆渲染 / 文件限量读）。
  *
  * 无失败记录时不造带括号的句子 —— {missing} 会被塞进模板的「（最近失败：{missing}）」，
  * 嵌套括号读起来是病句（= D4）。
@@ -145,9 +149,10 @@ private fun summarizeMissing(lastToolError: String?): String {
     val flat = lastToolError
         ?.replace(Regex("\\s+"), " ")
         ?: return "无失败工具记录"
-    if (flat.length <= MISSING_MAX_CHARS) return flat
-    val head = flat.take(MISSING_MAX_CHARS)
-    return if (head.last().isHighSurrogate()) head.dropLast(1) else head
+    // 语义与 Wave 35 之前的本地实现逐字一致（尾部半个代理对回退一格），只是换成
+    // 全仓共用口径 —— 钉住它的单测（BottleneckReportTest「missing 代理对安全截断」）
+    // 不因本次重构而放松。
+    return flat.truncateSafe(MISSING_MAX_CHARS)
 }
 
 /**

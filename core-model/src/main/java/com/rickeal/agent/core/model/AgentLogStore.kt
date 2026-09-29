@@ -195,8 +195,9 @@ object AgentLogStore {
                 else -> "Bearer ***"
             }
         }
+        // 代理对安全截断（Wave 35 D1）：日志会进诊断面板，停在半个代理对上是 U+FFFD 乱码。
         return if (redacted.length > MAX_MESSAGE_CHARS) {
-            redacted.take(MAX_MESSAGE_CHARS) + "…"
+            redacted.truncateSafe(MAX_MESSAGE_CHARS) + "…"
         } else {
             redacted
         }

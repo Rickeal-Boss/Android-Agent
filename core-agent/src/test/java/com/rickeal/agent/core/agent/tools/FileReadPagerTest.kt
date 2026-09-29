@@ -40,6 +40,28 @@ class FileReadPagerTest {
     }
 
     @Test
+    fun `限量截断不切出半个代理对 —— 尾部不留孤立代理（Wave 35 D1）`() {
+        // 原实现注释自认「keep 落点可能切开 UTF-16 代理对，纯修饰性，不处理」——
+        // 这个判断是错的：本输出会原样上屏并在工具卡里展示，尾部一个 U+FFFD 就是
+        // 用户可见的乱码。emoji 全是代理对，落点奇偶两种情形都会被这份语料覆盖。
+        val limit = FileReadPager.READ_LIMIT_CHARS
+        val file = tempFile("\uD83D\uDE00".repeat(limit) + "tail")
+        try {
+            val out = FileReadPager.readHead(file)
+            val content = out.substringBeforeLast('\n')
+            assertTrue(!out.contains('\uFFFD'), "不得产出替换字符：$out")
+            if (content.isNotEmpty()) {
+                val tail = content.last()
+                val lone = tail.isHighSurrogate() ||
+                    (tail.isLowSurrogate() && (content.length < 2 || !content[content.length - 2].isHighSurrogate()))
+                assertTrue(!lone, "内容尾部留下孤立代理：$content")
+            }
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
     fun `默认路径超限时保留旧截断标记文案且不超限量`() {
         val limit = FileReadPager.READ_LIMIT_CHARS
         val file = tempFile("a".repeat(limit + 10))

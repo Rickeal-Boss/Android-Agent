@@ -1,5 +1,7 @@
 package com.rickeal.agent.core.agent.breaker
 
+import com.rickeal.agent.core.model.truncateSafe
+
 /**
  * 工具调用振荡检测器（Wave 30 §2.6，评审 §3.2(c) 判据收编）。
  *
@@ -101,6 +103,7 @@ object ToolOscillationDetector {
     private fun shortSignature(sig: String): String {
         val name = sig.substringBefore(':')
         val args = sig.substringAfter(':', missingDelimiterValue = "")
-        return if (args.isBlank()) name else "$name(${args.take(24)})"
+        // 代理对安全截断（Wave 35 D1）：本摘要进 evidence → 诊断卡（用户可见）。
+        return if (args.isBlank()) name else "$name(${args.truncateSafe(24)})"
     }
 }

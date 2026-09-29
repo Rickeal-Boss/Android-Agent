@@ -32,8 +32,10 @@ fun Conversation.toMeta(): ConversationMeta = ConversationMeta(
     title = title,
     updatedAtMillis = updatedAtMillis,
     messageCount = messages.size,
-    preview = messages.lastOrNull { it.role == Role.MODEL }?.text?.take(80)
-        ?: messages.lastOrNull()?.text?.take(80).orEmpty(),
+    // 代理对安全截断（Wave 35 D1）：preview 直接上屏（会话列表），
+    // 停在半个代理对上就是一个 U+FFFD 方块。
+    preview = messages.lastOrNull { it.role == Role.MODEL }?.text?.truncateSafe(80)
+        ?: messages.lastOrNull()?.text?.truncateSafe(80).orEmpty(),
     modelId = modelId,
     pinned = pinned,
 )
