@@ -937,8 +937,19 @@ class LiteRtLmEngine(
             }
         }
         conversation = created
-        // 新会话 = native 侧没有任何历史，自然也不存在「等待回灌的 tool_call」。
-        awaitingNativeToolResponse = false
+        // ⚠️ 配对闸门**不能**无条件复位（收口复审 P1-2）：这次重建虽然换了 native 会话，
+        // 但 `seedMessages` 里可能播种了一条**带 tool_calls 的 MODEL** —— 那 native 侧的
+        // 状态就是「有一个 tool_call 在等结果」，闸门必须相应保持 true。
+        // 若照旧无条件置 false，重建当轮的尾部 TOOL 结果就会走文本压平分支，最终形态是
+        // `model(tool_calls) → user(文本)` —— 正是 `toNativeMessage()` 注释里判定「多数
+        // chat template 判非法」的半套配对，而它命中的恰好是那条注释想救的
+        // 「长工具会话 + 压缩/重建后全量重放」场景。
+        // 更糟的是这条路径**不会自愈**：失败点在 `sendMessageAsync` 而不是
+        // `createConversation`，`nativeToolsRejected` 不会被置位 ⇒ 每遇一次炸一次，
+        // 不降级也不留修复机会。所以闸门要按**播种历史**（最后一条播种是不是带
+        // tool_calls 的 MODEL）初始化，而不是按「会话是新的」假设重置。
+        awaitingNativeToolResponse = nativeTools.isNotEmpty() &&
+            seed.lastOrNull()?.let { it.role == Role.MODEL && it.toolCalls.isNotEmpty() } == true
         // 记录**实际注册进去**的工具集：legacy 回退（roleChannelActive=false）与「证伪重试」
         // 两条路都没注册工具，此时签名必须记 null —— 否则下一轮会因「签名一致」而不重建，
         // 工具永远注册不上。
