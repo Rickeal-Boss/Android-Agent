@@ -223,7 +223,7 @@ class LiteRtLmEngine(
     @Volatile
     private var nativeToolsRejected: Boolean = false
 
-    /** 已发送消息的 id 水印（见 buildContents 注释）。会话重建时必须清空。 */
+    /** 已发送消息的 id 水印（登记由 [freshMessages] 负责，见其 KDoc）。会话重建时必须清空。 */
     /**
      * 已送入 native Conversation 的消息 id 集合（增量发送水印）。
      *
@@ -278,8 +278,8 @@ class LiteRtLmEngine(
     /**
      * 当前 Conversation 绑定的**系统提示词正文**（role=SYSTEM 消息的 text，null = 无）。
      *
-     * P0-A（2026-09-27）：系统提示词此前被 [buildContents] 压进一条无角色 user 文本发送，
-     * 模型看到的是一段"纯文本"，于是先复述提示词再退化。现改走
+     * P0-A（2026-09-27）：系统提示词此前被压进一条无角色 user 文本发送（当时由
+     * `buildContents` 全权负责），模型看到的是一段"纯文本"，于是先复述提示词再退化。现改走
      * `ConversationConfig.systemInstruction`（native 侧 `Message.system`），本字段用于
      * **重建判据**：提示词变了必须重建会话，否则 native 侧还挂着旧的 system。
      * 与 currentConversationId / currentContextVersion 同生命周期，[releaseInternal] 清零。
@@ -289,16 +289,16 @@ class LiteRtLmEngine(
      * 「角色通道」是否已**成功**启用（ConversationConfig 的 systemInstruction /
      * initialMessages 播种成功）。
      *
-     * 只有它为 true 时，[buildContents] 才可以跳过 SYSTEM / MODEL（这两类已由
-     * systemInstruction 与 initialMessages 承载）。一旦创建失败回退 legacy 配置，本标记
+     * 只有它为 true 时，[freshMessages] 才会跳过 SYSTEM / MODEL（这两类已由
+     * systemInstruction 与 initialMessages 承载），[buildContents] 因此也看不到它们。一旦创建失败回退 legacy 配置，本标记
      * **必须**为 false —— 否则系统提示词与 MODEL 轮会被"两边都不发"，模型直接失去系统
      * 提示词与历史，比原 bug 更糟。
      */
     private var roleChannelActive: Boolean = false
     /**
      * 中档回退挂起标记（Wave 33）：「角色通道第三态」命中后置 true —— 系统提示词
-     * 改由 [buildContents] 前置拼进**第一条未发过的 USER 消息**文本（只生效一次，
-     * 拼完即复位）。roleChannelActive **保持 true**（MODEL 回灌门控必须保留，这是
+     * 改由 [buildContents] 前置拼进**本轮第一条未发过的 USER 消息**（未发过集合由
+     * [freshMessages] 挑出）文本（只生效一次，拼完即复位）。roleChannelActive **保持 true**（MODEL 回灌门控必须保留，这是
      * 与 legacy 回退的本质区别）。复位点：生效后 / [releaseInternal] / 会话重建
      * （cid/version/systemText 变化、conversationDirty、采样参数变化）—— 重建后
      * 第三态判定会重新执行，不能带着旧标记进新会话。
@@ -314,8 +314,10 @@ class LiteRtLmEngine(
      * —— 此时 native 侧根本没有配对的 tool_call，贸然发 `role=tool` 会让多数 chat
      * template 判非法。所以这里是「配对闸门」：没配过对就退回文本压平（即今日行为）。
      *
-     * 生命周期：随会话（重建 / 释放）复位为 false；发出一次工具回灌后也复位
-     * （一轮 tool_call 只配一轮 tool 结果）。
+     * 生命周期（Wave 34 审查 P1-3）：**每轮都必须在两条出口之一复位** —— 真走了工具回灌
+     * 时配完即清；走文本压平分支同样要清（本轮没发 `role=tool`，native 侧就没有在等的
+     * tool_call）。只在其中一条路复位会留下 stale true，授权后面某一轮误发 `role=tool`。
+     * 另外随会话重建 / [releaseInternal] 复位。
      */
     @Volatile
     private var awaitingNativeToolResponse: Boolean = false

@@ -82,6 +82,9 @@ class EngineException(message: String, cause: Throwable? = null) : RuntimeExcept
  *
  * 快照在**会话建成**与**降级/回退事件**时整体发布（不逐字段更新），`null` = 当前没有
  * 已建会话（未加载 / 已释放）。字段全部带默认值：数据面只增不改，消费方按需读取。
+ *
+ * 例外（复审 A3）：[systemMergedIntoUser] 反映**运行态**，会在合并标记被消费时单独
+ * 改回 false —— 否则会话不重建期间该字段会与引擎实际状态永久漂移。
  */
 data class EngineSessionDiagnostics(
     /**
@@ -96,6 +99,10 @@ data class EngineSessionDiagnostics(
      * 中档回退生效中（Wave 33）：模板渲染丢失系统提示词（第三态），系统提示词已
      * 改为并入首条用户消息发送。此时 [roleChannelActive] 保持 true（MODEL 回灌
      * 门控必须保留，与 legacy 回退的本质区别）。
+     *
+     * ⚠️ 本字段是**运行态**、不是会话出生时的快照（复审 A3）：会话建成时置 true，
+     * 待合并标记在引擎侧被真正消费（拼进首条 USER）后**立即**改回 false。消费方
+     * （UI 小字）必须按「当前是否仍处于合并态」读取，不能缓存首次读到的值。
      */
     val systemMergedIntoUser: Boolean = false,
     /** 用户**请求**的后端（by design 记请求值：降级是运行时事实、不是新配置）。 */
@@ -104,6 +111,15 @@ data class EngineSessionDiagnostics(
     val actualBackend: InferenceBackend? = null,
     /** 加载时锁定的 KV cache 预算（token 数）。 */
     val contextLength: Int = 0,
+    /**
+     * 「原生工具通道」是否**实际生效**（Wave 34 题 A，UI 流消费）：true = 工具经引擎
+     * 原生 tool 通道注册与回传（提示词里已不含工具清单段）；false = 走文本协议
+     * （默认，含探针失败 / 用户未开启 / 模型不具备工具能力三种情形）。
+     *
+     * 与 [LlmEngine.capabilities] 报的 `nativeToolChannel` 是同一判据，区别只在于
+     * 这是**会话级**事实（本会话真的注册了工具），而后者是引擎级能力。
+     */
+    val nativeToolChannel: Boolean = false,
 )
 
 /**
