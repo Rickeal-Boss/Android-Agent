@@ -14,6 +14,8 @@ import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.RepetitionPenaltyConfig
 import com.google.ai.edge.litertlm.Role as NativeRole
 import com.google.ai.edge.litertlm.SamplerConfig
+import com.google.ai.edge.litertlm.ToolCall as NativeToolCall
+import com.google.ai.edge.litertlm.ToolProvider
 import com.rickeal.agent.core.engine.EngineCapabilities
 import com.rickeal.agent.core.engine.EngineException
 import com.rickeal.agent.core.engine.EngineLoadConfig
@@ -28,11 +30,13 @@ import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.GenerationChunk
 import com.rickeal.agent.core.model.InferenceBackend
+import com.rickeal.agent.core.model.newId
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.SamplingParams
 import com.rickeal.agent.core.model.ThinkingMode
 import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.TokenUsage
+import com.rickeal.agent.core.model.ToolCallDelta
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -45,6 +49,7 @@ import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -111,6 +116,25 @@ private const val GPU_FAILURE_HINT =
         "请改用 CPU 后端重试或反馈机型信息"
 
 /**
+ * 中档回退（第三态）把系统提示词并进首条 USER 时，提示词块用的**开定界符**（复审 A4）。
+ *
+ * 存在理由：此前合并是 `systemText + 空行 + body` 的纯文本拼接。真机上若仍出现「模型
+ * 复述提示词」，从输出上**无法区分**两种完全不同的成因 —— (a) preface 闸门没兜住的
+ * 新形态，(b) 中档回退已正常生效、但小模型照旧复述。只能回头翻日志反推，而真机日志
+ * 往往拿不到。加成对定界后，两者在输出里一眼可辨（复述内容里带不带这对标记）。
+ *
+ * ⚠️ 已知取舍（申报）：定界符本身会进模型，属于**提示词面变化**；极少数小模型可能把
+ * `[系统设定]` 标记一起复述出来。仍然取它，是因为换来的可观测性更高 —— 这一步的
+ * 归因目前只有「输出」与「日志」两个证据源，缺了定界就只能盲猜。
+ *
+ * ⚠️ 零回归边界：只有第三态命中（中档回退生效）时才走这条拼接，默认路径与 Wave 33
+ * 逐字节一致。
+ */
+private const val SYSTEM_MERGE_OPEN = "[系统设定]"
+/** [SYSTEM_MERGE_OPEN] 的成对闭定界符（存在理由与取舍见其 KDoc）。 */
+private const val SYSTEM_MERGE_CLOSE = "[/系统设定]"
+
+/**
  * LiteRT-LM 本地引擎。
  *
  * 桥接要点（架构文档 §3.4 说明 1~4）：
@@ -133,8 +157,19 @@ private const val GPU_FAILURE_HINT =
  *     ⚠️ 回退：`createConversation` 失败（旧版 litertlm / 模型 chat template 不接受
  *     system 或 initialMessages）时自动回退 **legacy 配置**（三者传空 + roleChannelActive
  *     =false），系统提示词与历史重新走 [buildContents] 的文本压平路径 —— 代价是退回原
- *     bug，但**不会丢上下文**（比"两边都不发"安全）。工具仍走 Agent 层文本协议（tools
- *     恒传空）。
+ *     bug，但**不会丢上下文**（比"两边都不发"安全）。该路径下工具仍走 Agent 层文本协议
+ *     （tools 恒传空）。
+ *
+ *  5. 工具通道（Wave 34 题 A）：`ConversationConfig.tools` 注册工具 → 模型以原生
+ *     tool_calls 回传 → 本引擎翻译成 `GenerationChunk.toolCallDelta` → 工具结果以
+ *     `Message.tool(ToolResponse)` 回灌。启用后系统提示词里不再需要工具清单段（由
+ *     Agent 层删除），「只输出提示词及工具调用语言然后胡言乱语」的回显面消失。
+ *     未启用（三条件缺一，见 [nativeToolChannelActive]）时全程走 Agent 层文本协议，
+ *     与本次改动前**逐字节一致**。
+ *
+ *     ⚠️ 红线：`ConversationConfig.automaticToolCalling` **默认 true**，本文件所有构造点
+ *     都必须显式写 false —— 否则 native 会自行执行工具，绕过 AgentRunner 的审批 / 沙箱 /
+ *     熔断管线（无报错、无日志）。
  */
 class LiteRtLmEngine(
     private val engineDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1),
@@ -156,6 +191,37 @@ class LiteRtLmEngine(
      */
     @Volatile
     private var probedSpeculativeDecoding: Boolean? = null
+
+    /**
+     * 原生工具通道的**真实探测结果**（null = 未探测，true/false = 探测通过/失败）。
+     *
+     * 探测方式（Wave 34 题 A）：注册一个哑工具建一次 Conversation，成功即视为当前模型 /
+     * 转换件接受原生工具注册。为什么必须探针而不是按模型名猜：工具 schema 的解析发生在
+     * `createConversation` **内部**（`ToolManager`），形状不被接受时整段抛错 —— 而这完全
+     * 取决于转换件的 chat template，**无法离线验证**。猜错的代价是会话创建失败（连文本
+     * 协议一起没了），所以探测结果必须真实。
+     *
+     * **按需 + 缓存**：只在「用户开关已打开且上层第一次问能力」时探（见 [probeNativeTools]
+     * 的 KDoc），默认关闭时 load() 不做任何额外动作。结果绑定**这个引擎实例**，随
+     * [releaseInternal] 复位为 null（换模型后重新给一次机会）。
+     *
+     * ⚠️ 时序：探测点在任何生成**之前**（`capabilities()` 返回前）—— 提示词内容由它决定，
+     * 晚于它就纠正不了（Wave 33 的中档回退补不回工具清单段）。
+     */
+    @Volatile
+    private var probedNativeTools: Boolean? = null
+
+    /**
+     * 原生工具通道**已在本引擎实例上被证伪**（注册真实工具导致会话创建失败）。
+     *
+     * 存在理由：探针只能验证「哑工具的形状被接受」，覆盖不到每个真实工具的 schema。真机上
+     * 一旦某个工具被拒，若不证伪，`capabilities()` 会继续报 true —— 上层据此一直把提示词
+     * 里的工具清单段删掉，而引擎又注册不上工具 ⇒ **工具能力永久消失**（进程重启才恢复）。
+     * 置位后 [nativeToolChannelActive] 恒 false，上层下一轮自动把工具清单段写回提示词，
+     * 整体自愈回已验证的文本协议路径。随引擎释放（[releaseInternal]）复位。
+     */
+    @Volatile
+    private var nativeToolsRejected: Boolean = false
 
     /** 已发送消息的 id 水印（见 buildContents 注释）。会话重建时必须清空。 */
     /**
@@ -239,7 +305,39 @@ class LiteRtLmEngine(
      */
     private var systemMergedPending: Boolean = false
 
-    /** 会话诊断快照状态流（Wave 33）：会话建成 / 降级回退事件时整体发布。 */
+    /**
+     * 当前会话里 native **刚刚下发过** tool_calls、正在等工具结果回灌（Wave 34 题 A）。
+     *
+     * 存在理由：工具结果回灌要发 `Message.tool`（native 侧要求 tool 消息带工具名且紧跟
+     * tool_call），而**只有**「上一轮真的是 native 下发的 tool_call」时这个前提才成立。
+     * 反例：通道激活但模型这轮走的是文本协议（Agent 层从正文里解析出的 JSON 工具调用）
+     * —— 此时 native 侧根本没有配对的 tool_call，贸然发 `role=tool` 会让多数 chat
+     * template 判非法。所以这里是「配对闸门」：没配过对就退回文本压平（即今日行为）。
+     *
+     * 生命周期：随会话（重建 / 释放）复位为 false；发出一次工具回灌后也复位
+     * （一轮 tool_call 只配一轮 tool 结果）。
+     */
+    @Volatile
+    private var awaitingNativeToolResponse: Boolean = false
+
+    /**
+     * 当前 Conversation **实际注册**的原生工具集签名（工具名按序拼接，null = 未注册工具）。
+     *
+     * 参与会话重建判据，见 `ensureConversation()` 内的同名局部变量说明：native 侧的工具
+     * 注册是一次性的、没有增量更新入口，工具面变了只能重建会话。
+     */
+    private var registeredToolsSignature: String? = null
+
+    /**
+     * 会话诊断快照状态流（Wave 33）：会话建成 / 降级回退事件时整体发布。
+     *
+     * ⚠️ 字段语义（复审 A3）：快照**默认**是事件驱动的整体发布，但
+     * [EngineSessionDiagnostics.systemMergedIntoUser] 是**运行态**而非出生时快照 ——
+     * 中档回退的待合并标记在 [buildContents] 被真正消费时会**就地**把该字段改回 false
+     * （`MutableStateFlow.update` 线程安全，此处在引擎 IO 线程调用）。不这么做的话，
+     * 只要会话不重建，UI 小字就会一直显示「系统提示词已并入用户消息」，与引擎实际状态
+     * 永久漂移。其余字段仍按「建成/降级事件」整体发布。
+     */
     private val _sessionDiagnostics = MutableStateFlow<EngineSessionDiagnostics?>(null)
     override val sessionDiagnostics: StateFlow<EngineSessionDiagnostics?> =
         _sessionDiagnostics.asStateFlow()
@@ -460,6 +558,9 @@ class LiteRtLmEngine(
                         probedSpeculativeDecoding = runCatching {
                             Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
                         }.getOrNull()
+                        // 原生工具通道探针不在 load() 里跑 —— 见 [probeNativeTools] 的 KDoc：
+                        // 它只在**上层真的开了这个开关、且第一次问能力时**才探一次并缓存，
+                        // 默认关闭时 load() 与 Wave 33 完全一致（零额外 Conversation）。
                         loadedContextLength = config.config.contextLength
                         loadedBackend = config.config.backend
                         // 实际生效后端（Wave 33）：index==0 = 请求值原样生效；
@@ -543,14 +644,44 @@ class LiteRtLmEngine(
         // 取第一条非空 SYSTEM 正文。
         val systemText = request.messages
             .firstOrNull { it.role == Role.SYSTEM }?.text?.takeIf { it.isNotBlank() }
-        // 重建判据（外部审查报告2 §2）：conversationId / contextVersion / systemText 任一变化。
+        // 原生工具通道（Wave 34 题 A）：只有通道激活时才注册工具。文本协议模式恒传空 ——
+        // 工具清单此时由系统提示词承载，注册了却不删提示词段等于双份。
+        // ⚠️ 必须在重建判据**之前**算出来：工具集本身也是判据之一（见下）。
+        val nativeTools: List<ToolProvider> =
+            if (nativeToolChannelActive()) request.tools.toToolProviders() else emptyList()
+        // 已注册工具集的签名（null = 本次不注册任何工具）。工具是在 createConversation 时
+        // 一次性注册进 native 的，**之后没有增量更新入口**（没有 removeTool 之类），所以
+        // 工具面变了必须重建会话，否则模型拿到的仍是旧清单 —— 表现是「刚关掉的工具还在被
+        // 调、刚打开的模型看不见」，且完全无报错。
+        val toolsSignature = if (nativeTools.isEmpty()) {
+            null
+        } else {
+            request.tools.joinToString(",") { it.name }
+        }
+        // 重建判据（外部审查报告2 §2 + Wave 34）：conversationId / contextVersion /
+        // systemText / 工具集变化（[toolsChanged]）任一命中。
         // cid 变化 = 换了会话；contextVersion 变化 = 应用侧上下文发生了引擎无法增量表达的
         // 变化（典型：上下文压缩真的裁掉了历史）；systemText 变化 = 系统提示词改了，而它只在
-        // 建会话时注入一次，不重建就永远不生效。三条路都必须关旧会话、清水印、让上层全量
-        // 重放 messages，否则 KV cache / native system 与应用侧脱节。
+        // 建会话时注入一次，不重建就永远不生效。
+        //
+        // ⚠️ **工具集判据必须带 `&& roleChannelActive` 门控**（审查 P0-1）：legacy 回退会话
+        // 从未注册工具（registeredToolsSignature=null），而下一轮 nativeToolChannelActive()
+        // 可能仍为真 ⇒ toolsSignature("a,b") ≠ null ⇒ 裸判据**每轮命中** ⇒ 每轮一次全量
+        // re-prefill，且下一轮必然再次 legacy 回退 —— 稳态化的性能事故。带上 roleChannelActive
+        // 后（roleChannelActive 是**上一轮会话的实际形态**，legacy 会话为 false）：
+        //   开→关：重建（要摘掉已注册进 native 的工具）✅
+        //   关→开：重建（要补注册）✅
+        //   legacy 下：不再因为工具集重建 ✅
+        //   legacy→通道可建：由 systemText / roleChannelActive 变化驱动，工具形态在建会话
+        //   时按当时的 nativeTools 决定（此时 roleChannelActive=false ⇒ 仍不重建 ℹ️ 见下）
+        // ℹ️ 唯一残留：从 legacy 会话切回可建 sessions 时若仅工具集变化，本判据不触发重建；
+        //    但那要求 model/systemText 全不变而 role 通道又能建了 —— 不存在这条路径
+        //    （roleChannelActive 从 false 翻 true 只可能发生在新建会话成功之后）。
+        val toolsChanged = toolsSignature != registeredToolsSignature && roleChannelActive
         if (request.conversationId != currentConversationId ||
             request.contextVersion != currentContextVersion ||
-            systemText != currentSystemText
+            systemText != currentSystemText ||
+            toolsChanged
         ) {
             // 可观测重建频率（核验建议）：重建 = 一次全量 re-prefill（4B 模型秒级开销），
             // 频率异常升高说明上层压缩/会话切换策略需要关注。
@@ -563,6 +694,15 @@ class LiteRtLmEngine(
                 AgentLogStore.info(
                     "LiteRT-LM 会话重建原因：系统提示词变化（旧 ${currentSystemText?.length ?: 0} 字 " +
                         "→ 新 ${systemText?.length ?: 0} 字）"
+                )
+            }
+            // 同理：工具集变化引发的重建单独留痕（真机上「工具开关不生效」的唯一抓手）。
+            // 判据必须与上面的重建条件**逐字同源**：否则会出现「日志说工具集变化、实际没
+            // 重建」的口径分叉（legacy 会话下 toolsSignature ≠ null 是常态）。
+            if (toolsChanged) {
+                AgentLogStore.info(
+                    "LiteRT-LM 会话重建原因：原生工具集变化（旧 ${registeredToolsSignature ?: "无"} " +
+                        "→ 新 ${toolsSignature ?: "无"}）"
                 )
             }
             runCatching { conversation?.close() }
@@ -629,17 +769,32 @@ class LiteRtLmEngine(
         // 「未发过」再发一遍，native 侧出现重复历史。
         for (message in seed) sentMessageIds.add(message.id)
 
+        if (nativeTools.isNotEmpty()) {
+            // 真机抓手：工具 schema 的形状**无法离线验证**（取决于转换件的 chat template），
+            // 这里把首个工具的完整 JSON 打出来 —— 真机「工具注册失败 / 模型不认工具」时
+            // 是唯一定位点。会话建成时打一次，等价该会话首轮生成前。
+            AgentLogStore.info(
+                "原生工具通道：已注册 ${nativeTools.size} 个工具，首个 schema = " +
+                    request.tools.firstOrNull()?.toOpenApiSchemaJson().orEmpty()
+            )
+        }
+
         val roleConfig = ConversationConfig(
             samplerConfig = samplerConfig,
             // ⚠️ systemInstruction 的类型是 **Contents?**（litertlm 0.17.1 起，旧版是 String?）
             // —— 必须包一层 Contents.of(...)。传裸 String 编译不过。
             systemInstruction = systemText?.let { Contents.of(it) },
-            tools = emptyList(),
+            tools = nativeTools,
             initialMessages = seedMessages,
+            // 红线：automaticToolCalling **默认 true** —— 一旦为 true，native 会自己去调
+            // OpenApiTool.execute() 执行工具，完全绕过 AgentRunner 的审批/沙箱/熔断管线。
+            // 这里必须**显式**写 false（漏写即静默绕过审批，无报错、无日志）。
+            automaticToolCalling = false,
         )
-        // legacy 回退原因（try 体内赋值、体外的诊断发布读取 —— Kotlin 的 try 是表达式
-        // 但 try 内局部量 catch 看不见，故声明提到 try 外）。
+        // legacy 回退原因 / 工具是否被重试路径丢弃（try 体内赋值、体外的诊断发布与签名登记
+        // 读取 —— Kotlin 的 try 是表达式但 try 内局部量 catch 看不见，故声明提到 try 外）。
         var legacyFallbackReason: String? = null
+        var toolsDroppedOnRetry = false
         val created = try {
             val conv = currentEngine.createConversation(roleConfig)
             roleChannelActive = true
@@ -676,40 +831,115 @@ class LiteRtLmEngine(
                     ConversationConfig(
                         samplerConfig = samplerConfig,
                         systemInstruction = null,
-                        tools = emptyList(),
+                        tools = nativeTools,
                         initialMessages = seedMessages,
+                        // 红线：automaticToolCalling 默认 true，必须显式 false（同 roleConfig）。
+                        automaticToolCalling = false,
                     )
                 )
             } else {
                 conv
             }
         } catch (t: Throwable) {
-            // 真机保命：角色通道播种失败（旧版 litertlm / 模型 chat template 不接受 system
-            // 或 initialMessages）时，回退到 **legacy 纯文本配置**，让系统提示词与 MODEL 轮
-            // 重新走 buildContents 的文本压平路径。
-            // 不置 roleChannelActive=false 会导致两条路都不发（系统提示词 + 历史全丢），
-            // 比原 bug 更糟；不回退则直接抛错，整个引擎不可用。
-            // 中档回退的重建若也在此炸出，合并标记必须一起清（legacy 路径 SYSTEM 走
-            // 文本压平，再合并就是双份）。
-            systemMergedPending = false
-            legacyFallbackReason = t.message?.take(160) ?: "未知错误"
-            AgentLogStore.warn(
-                "LiteRT-LM 角色通道播种失败（systemInstruction/initialMessages），" +
-                    "已回退 legacy 纯文本配置：${t.message?.take(160) ?: "未知错误"}"
-            )
-            // 清掉刚登记的播种水印：legacy 路径必须靠 buildContents 把全量历史重新发一遍。
-            sentMessageIds.clear()
-            roleChannelActive = false
-            currentEngine.createConversation(
-                ConversationConfig(
-                    samplerConfig = samplerConfig,
-                    systemInstruction = null,
-                    tools = emptyList(),
-                    initialMessages = emptyList(),
+            val reason = t.message?.take(160) ?: "未知错误"
+            // 原生工具通道的**自愈**（Wave 34 题 A）：会话创建失败的原因可能**就是**注册工具
+            // （schema 形状被这个转换件拒绝 —— 探针只能用哑工具验证形状，无法覆盖每个真实
+            // 工具）。此时先「证伪本通道 + 不带工具重试一次」：
+            //  - 保住 systemInstruction / initialMessages（不退回 legacy 文本压平，那等于
+            //    复活 P0 的「提示词复述」）；
+            //  - 证伪后 `nativeToolChannelActive()` 恒 false → capabilities() 立刻改报 false
+            //    → 上层下一轮把工具清单段重新写回系统提示词，整体自愈回「文本协议 + 全量
+            //    工具清单」这条已验证路径（而不是「工具能力永久消失」）。
+            val retriedWithoutTools: LiteRtConversation? = if (nativeTools.isNotEmpty()) {
+                nativeToolsRejected = true
+                AgentLogStore.warn(
+                    "原生工具通道：注册工具后会话创建失败（$reason），" +
+                        "已证伪本通道并改为不注册工具重试"
                 )
-            )
+                runCatching {
+                    currentEngine.createConversation(
+                        ConversationConfig(
+                            samplerConfig = samplerConfig,
+                            systemInstruction = systemText?.let { Contents.of(it) },
+                            tools = emptyList(),
+                            initialMessages = seedMessages,
+                            // 红线：automaticToolCalling 默认 true，必须显式 false（同 roleConfig）。
+                            automaticToolCalling = false,
+                        )
+                    )
+                }.getOrNull()
+            } else {
+                null
+            }
+            if (retriedWithoutTools != null) {
+                // 重试用的是**带 systemInstruction** 的配置，所以中档回退的「待合并」标记必须
+                // 清掉：若在第三态重建那一步炸出来，该标记已置 true，带着它进新会话会让
+                // 系统提示词双份（一次 systemInstruction、一次并入首条 USER）。
+                systemMergedPending = false
+                // 这次会话**没有**注册工具，签名必须记 null（见下方登记处）。
+                toolsDroppedOnRetry = true
+                // 角色通道保住了：水印（seed 已登记）与 roleChannelActive 与正常路径一致。
+                roleChannelActive = true
+                retriedWithoutTools
+            } else {
+                // 真机保命：角色通道播种失败（旧版 litertlm / 模型 chat template 不接受 system
+                // 或 initialMessages）时，回退到 **legacy 纯文本配置**，让系统提示词与 MODEL 轮
+                // 重新走 buildContents 的文本压平路径。
+                // 不置 roleChannelActive=false 会导致两条路都不发（系统提示词 + 历史全丢），
+                // 比原 bug 更糟；不回退则直接抛错，整个引擎不可用。
+                // 中档回退的重建若也在此炸出，合并标记必须一起清（legacy 路径 SYSTEM 走
+                // 文本压平，再合并就是双份）。
+                systemMergedPending = false
+                legacyFallbackReason = reason
+                AgentLogStore.warn(
+                    "LiteRT-LM 角色通道播种失败（systemInstruction/initialMessages），" +
+                        "已回退 legacy 纯文本配置：$reason"
+                )
+                // 清掉刚登记的播种水印：legacy 路径必须靠 buildContents 把全量历史重新发一遍。
+                sentMessageIds.clear()
+                roleChannelActive = false
+                // 走到 legacy 就不可能再注册工具 ⇒ 证伪本通道（理由见下方 ConversationConfig
+                // 里的注释：不证伪 = 上层继续删提示词工具段、引擎却不注册工具 = 工具能力静默
+                // 归零且零报错）。
+                if (nativeTools.isNotEmpty()) {
+                    nativeToolsRejected = true
+                    AgentLogStore.warn(
+                        "原生工具通道：本引擎已回退 legacy 且不注册工具，已证伪本通道" +
+                            "（下一 run 起工具清单段会写回提示词，走回文本协议）"
+                    )
+                }
+                currentEngine.createConversation(
+                    ConversationConfig(
+                        samplerConfig = samplerConfig,
+                        systemInstruction = null,
+                        // legacy 回退**不注册工具**：这条路的存在前提就是「模型/版本不接受
+                        // 高级会话配置」，工具仍走 Agent 层文本协议（与回退前逐字节一致）。
+                        //
+                        // ⚠️ 既然这条路不注册工具，就必须把通道**证伪**（审查 P0-1）：
+                        // 一旦走到这里而 nativeTools 非空，说明「探针通过」没能覆盖真实的
+                        // roleConfig（探针只验哑工具 + systemInstruction=null +
+                        // initialMessages=空，盖不住 systemInstruction/initialMessages
+                        // 参与后的失败 —— Gemma 系模板无 system role 正是 Wave 24 legacy
+                        // 回退的成因）。不证伪的后果是**工具能力静默归零且无报错**：
+                        // capabilities() 继续报 true ⇒ AgentRunner 在 run 开头已按它把提示词
+                        // 里的工具清单段删掉，而引擎侧根本没注册工具 ⇒ 模型看不见任何工具。
+                        // 置位后 capabilities() 立刻改报 false ⇒ 下一个 run 自动把工具清单段
+                        // 写回提示词，整体自愈回已验证的文本协议路径。
+                        tools = emptyList(),
+                        initialMessages = emptyList(),
+                        // 红线：automaticToolCalling 默认 true，必须显式 false（同 roleConfig）。
+                        automaticToolCalling = false,
+                    )
+                )
+            }
         }
         conversation = created
+        // 新会话 = native 侧没有任何历史，自然也不存在「等待回灌的 tool_call」。
+        awaitingNativeToolResponse = false
+        // 记录**实际注册进去**的工具集：legacy 回退（roleChannelActive=false）与「证伪重试」
+        // 两条路都没注册工具，此时签名必须记 null —— 否则下一轮会因「签名一致」而不重建，
+        // 工具永远注册不上。
+        registeredToolsSignature = if (roleChannelActive && !toolsDroppedOnRetry) toolsSignature else null
         currentConversationId = request.conversationId
         currentContextVersion = request.contextVersion
         currentSystemText = systemText
@@ -733,8 +963,8 @@ class LiteRtLmEngine(
             }
         }
         // 会话诊断快照（Wave 33）：会话建成时整体发布，覆盖正常路径 / 中档回退 /
-        // legacy 回退三种终态 —— 消费方（UI 小字）据此区分「一切正常不渲染」与
-        // 「某类静默降级需要告知」。releaseInternal 复位为 null。
+        // legacy 回退 / 原生通道证伪重试四种终态 —— 消费方（UI 小字）据此区分
+        // 「一切正常不渲染」与「某类静默降级需要告知」。releaseInternal 复位为 null。
         _sessionDiagnostics.value = EngineSessionDiagnostics(
             roleChannelActive = roleChannelActive,
             legacyFallbackReason = legacyFallbackReason,
@@ -742,6 +972,9 @@ class LiteRtLmEngine(
             requestedBackend = loadedBackend,
             actualBackend = actualBackend,
             contextLength = loadedContextLength,
+            // 用**实际登记**的工具集签名判定（legacy 回退与「证伪重试」两条路都没注册工具，
+            // 而 nativeTools 此时仍非空 —— 拿它判断会报出「注册了但没注册」的假事实）。
+            nativeToolChannel = registeredToolsSignature != null,
         )
         return created
     }
@@ -771,9 +1004,37 @@ class LiteRtLmEngine(
         // 通知栏指标虚高（DeepSeek-R1 类推理模型尤甚，思考可能占大半时长）。
         // 口径统一为**用户可见正文**：thinking chunk 不进这两个指标。
         var contentChunkCount = 0
+        // 原生工具通道的**单次闩锁**：native 可能把同一批 tool_calls 分多帧下发，
+        // 重复下发会让上层把一次调用执行两遍（工具是写操作时会真的做两遍）。
+        var toolCallsEmitted = false
         val callback = object : MessageCallback {
             override fun onMessage(message: Message) {
                 if (firstTokenNs == 0L) firstTokenNs = System.nanoTime()
+                // 原生工具通道（Wave 34 题 A）：automaticToolCalling=false 时 native 把
+                // tool_calls 经本回调回传。⚠️ 必须放在下方「空增量即 return」**之前** ——
+                // Message.toString() 只拼 contents、不含 tool_calls，所以 tool_calls 帧的
+                // 正文增量恒为空，会被那道 return 吃掉。
+                if (nativeToolChannelActive() && !toolCallsEmitted && message.toolCalls.isNotEmpty()) {
+                    toolCallsEmitted = true
+                    // 配对闸门置位：下一轮的工具结果才有资格走 Message.tool 回灌。
+                    awaitingNativeToolResponse = true
+                    message.toolCalls.forEachIndexed { index, call ->
+                        channel.trySend(
+                            GenerationChunk(
+                                toolCallDelta = ToolCallDelta(
+                                    index = index,
+                                    id = newId(),
+                                    name = call.name,
+                                    argumentsFragment = argsMapToJson(call.arguments),
+                                )
+                            )
+                        )
+                    }
+                    AgentLogStore.info(
+                        "原生工具通道：模型下发 ${message.toolCalls.size} 个 tool_call（" +
+                            message.toolCalls.joinToString(",") { it.name } + "）"
+                    )
+                }
                 val textDelta = textTracker.next(message.toString())
                 val thoughtDelta = thoughtTracker.next(message.channels[THOUGHT_CHANNEL] ?: "")
                 if (textDelta.isEmpty() && thoughtDelta.isEmpty()) return
@@ -833,7 +1094,48 @@ class LiteRtLmEngine(
             }
         }
 
-        val contents = buildContents(request)
+        // 本轮「未发过」的消息。**必须先于 buildContents 取一次**：水印在这里标记，
+        // 取完之后「未发过」集合即为空，工具结果回灌与文本压平两条路共用同一判据。
+        val fresh = freshMessages(request)
+        // 原生工具通道的**工具结果回灌**（Wave 34 题 A）：native 侧要求 tool 消息带工具名
+        // 且紧跟 tool_call，而文本压平（Message.user + 纯文本）携带不了这两项 —— 长工具
+        // 会话里会让模板判非法。本轮载荷全为 TOOL 结果时改发 Message.tool(ToolResponse)。
+        val toolResponses: List<Content.ToolResponse> = if (
+            nativeToolChannelActive() &&
+            awaitingNativeToolResponse &&
+            fresh.isNotEmpty() &&
+            fresh.all { it.role == Role.TOOL }
+        ) {
+            fresh.flatMap { message ->
+                message.toolResults.map { result ->
+                    Content.ToolResponse(
+                        result.name,
+                        result.output.ifBlank { result.errorMessage ?: "" },
+                    )
+                }
+            }
+        } else {
+            emptyList()
+        }
+        // 短路求值：有工具结果回灌时不走 buildContents（不消费中档回退的待合并标记 ——
+        // 本轮载荷没有 USER，按既有语义它本就该顺延到下一个含 USER 的轮次）。
+        val outbound: Message = if (toolResponses.isNotEmpty()) {
+            // 一轮 tool_call 只配一轮 tool 结果，配完即复位。
+            awaitingNativeToolResponse = false
+            // 与 buildContents 的「顺延可观测」同一口径：走工具回灌时不经过 buildContents，
+            // 待合并的系统提示词同样顺延（pending 不丢），这一点必须可见。
+            if (systemMergedPending) {
+                AgentLogStore.info("系统提示词合并顺延至下一用户消息轮（本轮为原生工具结果回灌）")
+            }
+            Message.tool(Contents.of(toolResponses))
+        } else {
+            // ⚠️ 文本压平分支**也必须复位配对闸门**（审查 P1-3）：本轮没发 `role=tool`，
+            // 就意味着 native 侧此刻没有「等待回灌的 tool_call」。不复位的话闸门会 stale
+            // 为真，授权后面某一轮贸然发 `role=tool`（典型：legacy 会话 + 通道仍激活），
+            // 届时 native 侧无前置 tool_call ⇒ chat template 判非法。
+            awaitingNativeToolResponse = false
+            Message.user(Contents.of(buildContents(fresh)))
+        }
         // 重复惩罚（Wave 20，litertlm 0.17.1 起真实生效）：此前 SamplerConfig 无此参数、
         // SamplingParams.repetitionPenalty 只是「上层模拟或忽略」的死字段，0.17.1 把
         // RepetitionPenaltyConfig 开放为 sendMessage* 的逐消息参数 —— 这里是它在整条
@@ -851,7 +1153,7 @@ class LiteRtLmEngine(
             null
         }
         conv.sendMessageAsync(
-            Contents.of(contents),
+            outbound,
             callback,
             extraContext = extraContext,
             repetitionPenaltyConfig = repetitionPenaltyConfig,
@@ -878,14 +1180,14 @@ class LiteRtLmEngine(
         .cancellable()
 
     /**
-     * 构造本次要发送给 LiteRT-LM 的内容。
+     * 挑出本轮「还没发过」的消息，并**登记进水印**（用 message.id）。
      *
-     * 关键点：**只发「还没发过」的消息**（用 message.id 做水印）。Conversation 内部自带 KV cache 历史，
-     * 若每轮都把全量历史重发，会出现重复；而若只发最后一条用户消息（最初的实现），
-     * 系统提示词与工具执行结果就永远进不了上下文，Agent 循环会退化成「单轮瞎猜」。
+     * 提取成独立方法的理由（Wave 34 题 A）：原生工具通道的工具结果回灌需要先看一眼
+     * 「本轮未发过的消息是不是全为 TOOL」，而水印一旦标记完就再也问不出来 —— 判据必须
+     * 只有一份、且每轮只跑一次，否则两条路（文本压平 / 工具回灌）会各算一套「未发过」。
      */
-    private fun buildContents(request: GenerationRequest): List<Content> {
-        val fresh = request.messages.filter { message ->
+    private fun freshMessages(request: GenerationRequest): List<ChatMessage> =
+        request.messages.filter { message ->
             if (message.id in sentMessageIds) return@filter false
             // P0-A：角色通道生效时，SYSTEM 与 MODEL 已由 ConversationConfig 承载
             // （systemInstruction 与 initialMessages），不能在这里再发一遍 —— 否则 native
@@ -896,6 +1198,22 @@ class LiteRtLmEngine(
             }
             sentMessageIds.add(message.id)
         }
+
+    /**
+     * 构造本次要发送给 LiteRT-LM 的内容（文本压平路径）。
+     *
+     * 关键点：**只发「还没发过」的消息**（用 message.id 做水印，由 [freshMessages] 挑出）。
+     * Conversation 内部自带 KV cache 历史，若每轮都把全量历史重发，会出现重复；而若只发
+     * 最后一条用户消息（最初的实现），系统提示词与工具执行结果就永远进不了上下文，
+     * Agent 循环会退化成「单轮瞎猜」。
+     *
+     * ⚠️ 提示词面变化（复审 A4，申报）：中档回退（角色通道第三态）命中时，并入首条 USER
+     * 的系统提示词是**带成对显式定界**的（`[系统设定] … [/系统设定]`）—— 进模型的内容
+     * 变了，目的是让「闸门没兜住」与「回退生效但模型仍复述」在输出上可区分；已知取舍是
+     * 小模型可能连定界符一起复述。详见 [SYSTEM_MERGE_OPEN] 的 KDoc。
+     * 零回归边界：只有第三态命中才走这条拼接，默认路径与 Wave 33 逐字节一致。
+     */
+    private fun buildContents(fresh: List<ChatMessage>): List<Content> {
         if (fresh.isEmpty()) {
             // 边界（复审 P1-3）：尾部 MODEL 全量播种路径（本次载荷退化为空文本）。
             // 此时中档回退的合并标记**不消费也不丢**——顺延到下一个载荷含 USER 的轮次。
@@ -934,8 +1252,9 @@ class LiteRtLmEngine(
                         }
                     }
                     // 中档回退消费点（Wave 33）：载荷中第一条未发过的 USER 消息前置拼入
-                    // 系统提示词正文，拼完复位（只生效一次）。格式 = systemText + 空行 +
-                    // 原文；原文为空（纯附件消息）则只发 systemText。
+                    // 系统提示词正文，拼完复位（只生效一次）。格式 = 定界块 + 空行 + 原文；
+                    // 原文为空（纯附件消息）则只发定界块。定界块的形态与存在理由见
+                    // [SYSTEM_MERGE_OPEN] 的 KDoc（可观测性，代价是提示词面变化）。
                     // ⚠️ 承诺如实化（复审 P1-3）：系统提示词并入的是下一个**载荷含 USER
                     // 的轮次**的首条 USER；本轮载荷全为 TOOL / 空载荷时顺延（pending 不丢，
                     // 但该轮上下文暂缺系统提示词，见上方顺延日志）。
@@ -945,10 +1264,22 @@ class LiteRtLmEngine(
                     // （有历史时），合并落到下一轮 USER —— system 位置偏后但必进上下文。
                     val merged = systemMergedPending && currentSystemText != null
                     if (merged) {
-                        val prefix = currentSystemText.orEmpty()
+                        val sysText = currentSystemText.orEmpty()
+                        val block = SYSTEM_MERGE_OPEN + "\n" + sysText + "\n" + SYSTEM_MERGE_CLOSE
                         val body = message.text
-                        out.add(Content.Text(if (body.isBlank()) prefix else prefix + "\n\n" + body))
+                        out.add(Content.Text(if (body.isBlank()) block else block + "\n\n" + body))
+                        // 消费即复位（两处，缺一不可）：
+                        //  1. pending 复位 —— 只生效一次；
+                        //  2. 诊断快照同步置 false（复审 A3）—— 快照若只在会话建成时发布，
+                        //     合并消费后 UI 小字会一直显示「系统提示词已并入用户消息」，
+                        //     与引擎实际状态永久漂移（只要会话不重建就再无校正机会）。
                         systemMergedPending = false
+                        _sessionDiagnostics.update { it?.copy(systemMergedIntoUser = false) }
+                        AgentLogStore.info(
+                            "系统提示词合并已生效：首条 USER 前置拼接定界系统设定块" +
+                                "（系统设定 ${sysText.length} 字，" +
+                                "本轮载荷 ${fresh.size} 条 / 已发水印累计 ${sentMessageIds.size} 条）"
+                        )
                     } else if (message.text.isNotBlank()) {
                         out.add(Content.Text(message.text))
                     }
@@ -977,6 +1308,30 @@ class LiteRtLmEngine(
     }
 
     /**
+     * 原生工具通道下的 TOOL 载荷：一条 ChatMessage 的**全部**工具结果转成一个
+     * `Message.tool`（`Content.ToolResponse` 列表）。
+     *
+     * 必须遍历**全部**结果（与 [buildContents] 的 TOOL 分支同一理由）：
+     * `ContextCompressor.sanitizeForProvider()` 会把一批工具结果合成**一条**含 N 个结果的
+     * TOOL 消息，只取第一个的话压缩切掉一半后模型以为其余没执行 → 反复重试。
+     *
+     * 结果内容取 `output`，为空回落 `errorMessage` —— 失败也必须告诉模型「这个工具报错了」，
+     * 静默丢弃会让模型以为工具没被调用而无限重试同一条调用。
+     *
+     * 返回值可能为 null（无任何结果），调用方按需判空。
+     */
+    private fun ChatMessage.toNativeToolMessage(): Message? {
+        val responses = toolResults.map { result ->
+            Content.ToolResponse(
+                result.name,
+                result.output.ifBlank { result.errorMessage ?: "" },
+            )
+        }
+        if (responses.isEmpty()) return null
+        return Message.tool(Contents.of(responses))
+    }
+
+    /**
      * 把应用侧 [ChatMessage] 转成 native [Message]，用于 `ConversationConfig.initialMessages`
      * 的**按 role 播种**（P0-A）。
      *
@@ -986,11 +1341,10 @@ class LiteRtLmEngine(
      * ⚠️ 与 [buildContents] 的口径**刻意保持一致**（同一套附件顺序、同样的空值判断）：
      * 两条路径（角色通道 / legacy 回退）给模型喂的上下文必须等价，否则回退瞬间行为突变。
      *
-     * ⚠️ TOOL 用 `Message.user` 而非 `Message.tool` 的取舍：本项目工具走的是 **Agent 层
-     * 文本协议** —— 工具调用是模型以正文 JSON 形式输出的（Agent 层解析后已从 MODEL 文本里
-     * 剥掉），native 侧**没有**与之配对的 tool_call 记录。在缺少前置 tool_call 的情况下塞
-     * `role=tool` 消息，多数 chat template 会判为非法（tool 消息必须紧跟 tool_call）。工具
-     * 结果本就以 user 文本回传（legacy 路径即如此），故这里保持同一语义。
+     * ⚠️ TOOL 的形态随工具通道切换（Wave 34 题 A）：文本协议下压成 `Message.user` 文本
+     * （工具调用是模型以正文 JSON 输出的、native 侧没有配对的 tool_call，此时塞
+     * `role=tool` 会被多数 chat template 判非法）；**原生工具通道下必须**用 `Message.tool`
+     * 与 MODEL 分支播种的 toolCalls 完成配对（详见该分支注释）。
      */
     private fun ChatMessage.toNativeMessage(): Message? = when (role) {
         // 系统提示词由 ConversationConfig.systemInstruction 承载，不重复播种成一条 message。
@@ -1020,16 +1374,56 @@ class LiteRtLmEngine(
 
         // 只发可见正文，不带 thinking（与 buildContents 的 MODEL 分支同口径）：
         // 工具调用的原始 JSON 由 Agent 层解析，不该污染上下文。
-        Role.MODEL -> text.takeIf { it.isNotBlank() }?.let { Message.model(it) }
+        // ⚠️ 原生工具通道：MODEL 轮**必须连 tool_calls 一起播种**（Wave 34 题 A）。
+        // 会话重建（压缩 / 提示词变化 / dirty）会把整段历史重放进 initialMessages，若这里
+        // 丢掉 toolCalls，native 侧就出现「tool 消息没有前置 tool_call」—— 多数 chat
+        // template 判为非法，表现是长工具会话 + 压缩必炸。
+        Role.MODEL -> {
+            val nativeCalls: List<NativeToolCall> = if (nativeToolChannelActive()) {
+                toolCalls.map { NativeToolCall(it.name, jsonToArgsMap(it.argumentsJson)) }
+            } else {
+                emptyList()
+            }
+            val visibleText = text.takeIf { it.isNotBlank() }
+            when {
+                visibleText != null -> Message.model(
+                    Contents.of(visibleText),
+                    nativeCalls,
+                    emptyMap(),
+                )
+                // 纯工具轮（正文为空）：也要把 tool_calls 播种回去，否则配对断裂。
+                nativeCalls.isNotEmpty() -> Message.model(
+                    Contents.of(emptyList<Content>()),
+                    nativeCalls,
+                    emptyMap(),
+                )
+                else -> null
+            }
+        }
 
         Role.TOOL -> {
-            // 遍历**全部**结果：`ContextCompressor.sanitizeForProvider()` 会把一批工具结果
-            // 合成一条含 N 个结果的 TOOL 消息（与 buildContents 的 TOOL 分支同一理由）。
-            val texts = toolResults.mapNotNull { result ->
-                (result.output.takeIf { it.isNotBlank() } ?: result.errorMessage ?: "")
-                    .takeIf { it.isNotBlank() }
+            // 原生工具通道（Wave 34 题 A，审查 P1-2）：MODEL 分支已把 toolCalls 一起播种，
+            // native 侧**有一条配对的 tool_call**，所以这里必须用 `Message.tool` 完成配对。
+            // 若继续压成 `Message.user` 文本，历史形态就是 `model(tool_calls) → user(文本)`
+            // —— 正是「多数 chat template 判非法」的那一种，恰好命中本分支想救的
+            // 「长工具会话 + 压缩/重建后全量重放」场景。
+            //
+            // 取舍申报（已知风险边界）：若某个转换件不接受 `Message.tool` 形态，
+            // createConversation 会失败 —— 这条错误路径已被覆盖：先证伪本通道并不带工具
+            // 重试，再失败才 legacy 兜底（含失败原因日志）。半套配对是必炸的，而炸了能自愈。
+            if (nativeToolChannelActive()) {
+                toNativeToolMessage()
+            } else {
+                // 文本协议：工具调用是模型以正文 JSON 输出的（Agent 层解析后已从 MODEL 文本
+                // 剥掉），native 侧没有配对的 tool_call ⇒ 只能以 user 文本回灌。
+                // 遍历**全部**结果：`ContextCompressor.sanitizeForProvider()` 会把一批工具
+                // 结果合成一条含 N 个结果的 TOOL 消息（与 buildContents 的 TOOL 分支同理由）。
+                val texts = toolResults.mapNotNull { result ->
+                    (result.output.takeIf { it.isNotBlank() } ?: result.errorMessage ?: "")
+                        .takeIf { it.isNotBlank() }
+                }
+                if (texts.isEmpty()) null else Message.user(Contents.of(texts.map { Content.Text(it) }))
             }
-            if (texts.isEmpty()) null else Message.user(Contents.of(texts.map { Content.Text(it) }))
         }
     }
 
@@ -1056,8 +1450,88 @@ class LiteRtLmEngine(
         return out
     }
 
+    /**
+     * 「原生工具通道」本次是否**实际激活**（引擎侧唯一判据）。
+     *
+     * 四条件：`未被证伪` ∧ `探针通过` ∧ `用户开关打开` ∧ `模型能力位 toolCalling`。
+     *
+     * ⚠️ 与 `capabilities()` 报给上层的 `nativeToolChannel` **必须逐字同源**（所以
+     * capabilities() 直接调本函数）：上层按它决定「要不要把工具传进 GenerationRequest、
+     * 要不要从系统提示词里删掉工具清单段」。两侧判据一旦分叉，就会出现「上层按原生通道
+     * 删了提示词工具段、引擎却按文本协议不注册工具」的空窗 —— 工具能力整体消失且无报错。
+     */
+    private fun nativeToolChannelActive(): Boolean =
+        !nativeToolsRejected &&
+            probedNativeTools == true &&
+            loadConfig?.config?.nativeToolChannel == true &&
+            loadConfig?.model?.capabilities?.toolCalling == true
+
+    /**
+     * 跑一次原生工具通道探针（哑工具 + 一次性会话），结果写进 [probedNativeTools]。
+     *
+     * ## 为什么必须真实探针，不能按模型名猜
+     *
+     * 工具 schema 的解析发生在 `createConversation` **内部**（`ToolManager`），形状不被接受时
+     * 整段抛错，而这完全取决于转换件的 chat template，**无法离线验证**。猜错的代价是会话
+     * 创建失败（连文本协议一起没了），所以结论必须来自一次真跑。
+     *
+     * ## 为什么不放进 load() 无条件跑（审查 P1-1）
+     *
+     * 探针要额外建 + 关一个 native Conversation（一次 KV 分配）。本功能默认关闭，无条件跑
+     * 等于给**默认路径**白加一份开销，违反「默认路径与 Wave 33 逐字节一致」。
+     *
+     * ## 为什么改成「懒探测」而不是「load() 里加开关门控」
+     *
+     * 只在 load() 里看开关是不够的：`sameEngine` 判据不含本开关，用户**中途**打开开关时
+     * load() 直接短路返回（`return@withLock`），探针永远跑不到 ⇒ 开关变成死开关（只能靠
+     * 改上下文长度/后端/模型或重启 App 才生效）。改成在上层第一次问能力时按需探一次并
+     * 缓存后：默认关闭仍然零开销；打开后**下一次问能力即生效**，不需要昂贵引擎重建。
+     *
+     * ## 开关门控的**净效果**（审查 P1-1 的验收口径）
+     *
+     * 唯一调用点在 `capabilities()` 内、且带 `loadConfig?.config?.nativeToolChannel == true`
+     * 门控 ⇒ 开关默认 false 时探针**一次都不跑**：`probedNativeTools` 保持 null，
+     * [nativeToolChannelActive] 恒 false（通道自然不通），load() 与 Wave 33 相比**零成本**
+     * （零额外 Conversation、零额外 KV 分配）。开关打开后最多探一次，结果按引擎实例缓存。
+     *
+     * ## 时序承诺（仍然严格）
+     *
+     * 探针跑在 `capabilities()` 内**返回之前** ⇒ 上层拿到的能力位一定已含真实探针结论，
+     * 由它决定的「提示词里是否保留工具清单段」在任何生成之前就已确定 —— 与「探针必须在
+     * 任何生成之前」的原约束等价。
+     */
+    private fun probeNativeTools(engine: Engine) {
+        probedNativeTools = runCatching {
+            val probeConversation = engine.createConversation(
+                ConversationConfig(
+                    systemInstruction = null,
+                    tools = nativeToolProbeProviders(),
+                    // 红线：automaticToolCalling 默认 true，必须显式 false
+                    // （探针虽不会真调用，但保持与生产构造点同一口径）。
+                    automaticToolCalling = false,
+                )
+            )
+            runCatching { probeConversation.close() }
+            true
+        }.getOrElse { t ->
+            AgentLogStore.warn(
+                "原生工具通道：探针失败，退回文本协议（${t.message?.take(160) ?: "未知错误"}）"
+            )
+            false
+        }
+        if (probedNativeTools == true) {
+            AgentLogStore.info("原生工具通道：探针通过（模型/转换件接受原生工具注册）")
+        }
+    }
+
     override suspend fun capabilities(): EngineCapabilities {
         return withContext(engineDispatcher) {
+            // 开关打开时才探，结果按引擎实例缓存（null = 未探测 ⇒ 再问时重探）。
+            // 语义详见 probeNativeTools 的 KDoc。
+            if (probedNativeTools == null && loadConfig?.config?.nativeToolChannel == true) {
+                val currentEngine = engine
+                if (currentEngine != null) probeNativeTools(currentEngine)
+            }
             val model = loadConfig?.model
             val caps = model?.capabilities
             EngineCapabilities(
@@ -1072,7 +1546,8 @@ class LiteRtLmEngine(
                 // 不再是模型描述符的启发式默认 —— 上层据此对齐压缩预算才有意义。
                 maxContextTokens = loadConfig?.config?.contextLength
                     ?: model?.contextLength ?: 4096,
-                nativeToolChannel = false,
+                // Wave 34 题 A：与 nativeToolChannelActive() 同源（同判据、同三条件）。
+                nativeToolChannel = nativeToolChannelActive(),
                 nativeThinkingChannel = caps?.thinking ?: false,
                 supportsSpeculativeDecoding = probedSpeculativeDecoding
                     ?: caps?.speculativeDecoding
@@ -1185,6 +1660,14 @@ class LiteRtLmEngine(
         loadedSampling = null
         loadedVisionBackend = null
         loadedAudioBackend = null
+        // 原生工具通道探针结果绑定的是**这个引擎实例**（同一个模型文件 + 同一份转换件）。
+        // 引擎没了，结果必须一起作废 —— 否则换模型后仍拿旧探针结论去注册工具，而新模型
+        // 未必接受同一形状。「证伪」同样绑定本引擎实例（换模型后应重新给一次机会）。
+        probedNativeTools = null
+        nativeToolsRejected = false
+        // tool_call ↔ tool 结果的配对状态与已注册工具集都属于会话，随会话一起作废。
+        awaitingNativeToolResponse = false
+        registeredToolsSignature = null
         // 水印代表「已经送进 Conversation 的历史」。引擎重建 = 上下文从零开始，
         // 水印若残留，重建后的第一轮会把整段历史当成「已发送」而不再重发 —— 模型直接失忆。
         sentMessageIds.clear()

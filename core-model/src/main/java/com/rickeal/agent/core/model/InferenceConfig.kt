@@ -17,6 +17,22 @@ data class InferenceConfig(
     val systemInstruction: String = "",
     val maxAgentRounds: Int = 8,
     val enableTools: Boolean = true,
+    /**
+     * 是否启用**模型原生工具通道**（工具经引擎的原生 tool 通道注册与回传，工具清单不再
+     * 写进系统提示词）。与 [enableTools] 是两件事：关掉工具时它无意义。
+     *
+     * **默认 false 是刻意的 fail-safe**：工具 schema 的形状（OpenAI 平铺形能否被某个
+     * 转换件的 chat template 正确解析）**无法离线验证** —— 只能靠引擎侧探针在真机上试。
+     * 误开比不开更糟：schema 解析失败发生在 `createConversation` 内，会把整个会话创建
+     * 打掉（连文本协议一起没了）；保持 false 只是继续走已验证的文本协议，最坏情形是
+     * 「没拿到新收益」。
+     *
+     * 真正生效需要三条件同时成立（引擎侧判据，缺一即退回文本协议）：本开关打开 ∧
+     * 引擎探针通过（模型/转换件接受原生工具注册）∧ 模型能力位 toolCalling 为真。
+     *
+     * 加字段带默认值，旧 JSON 前后兼容（ignoreUnknownKeys + explicitNulls=false）。
+     */
+    val nativeToolChannel: Boolean = false,
     val stream: Boolean = true,
 ) {
     /** 归一化：把所有字段压回合法区间。 */
