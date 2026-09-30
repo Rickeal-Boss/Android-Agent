@@ -102,7 +102,8 @@ fun MemoryScreen(
                 item {
                     GlassButton(
                         text = if (state.sections.isEmpty()) "记下第一条" else "新增记忆",
-                        onClick = { creating = true },
+                        // 打开前清一次内联错误：避免上次写失败的残留串到新对话框。
+                        onClick = { viewModel.dismissEditError(); creating = true },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -132,7 +133,8 @@ fun MemoryScreen(
                 items(state.sections, key = { it.title }) { section ->
                     MemoryCard(
                         section = section,
-                        onEdit = { editing = section },
+                        // 打开前清一次内联错误（从一条直接切到另一条时，onDismiss 不会触发）。
+                        onEdit = { viewModel.dismissEditError(); editing = section },
                         onDelete = { deleting = section },
                     )
                 }
@@ -154,14 +156,20 @@ fun MemoryScreen(
     if (creating || editing != null) {
         MemoryEditDialog(
             initial = editing,
+            errorText = state.editError,
             onDismiss = {
                 creating = false
                 editing = null
+                // 关闭（取消 / 点外部 / 返回）时清掉内联错误，避免残留串到下次打开。
+                viewModel.dismissEditError()
             },
             onConfirm = { title, content ->
-                viewModel.upsert(title, content) {
-                    creating = false
-                    editing = null
+                // 只有成功才关对话框：失败时保留对话框与用户输入，原因由 errorText 内联显示。
+                viewModel.upsert(title, content) { ok ->
+                    if (ok) {
+                        creating = false
+                        editing = null
+                    }
                 }
             },
         )
@@ -250,6 +258,7 @@ private fun MemoryCard(
 @Composable
 private fun MemoryEditDialog(
     initial: MemorySection?,
+    errorText: String?,
     onDismiss: () -> Unit,
     onConfirm: (title: String, content: String) -> Unit,
 ) {
@@ -265,10 +274,9 @@ private fun MemoryEditDialog(
             GlassButton(text = "取消", onClick = dismiss, material = GlassMaterial.THIN)
             // 旧 confirmLabel/onConfirm 的条件签名（valid 才可保存）映射为条件确认按钮。
             if (valid) {
-                GlassButton(text = "保存", onClick = {
-                    onConfirm(title.trim(), content.trim())
-                    dismiss()
-                })
+                // 保存**不再自己 dismiss()**：关不关由父层按 upsert 结果决定 —— 失败时保留
+                // 对话框与用户输入（Wave 36 E5 补：此前无条件 dismiss 导致失败即丢输入）。
+                GlassButton(text = "保存", onClick = { onConfirm(title.trim(), content.trim()) })
             }
         },
     ) {
@@ -285,6 +293,16 @@ private fun MemoryEditDialog(
                 placeholder = "内容（结论本身；细节建议放沙箱文件）",
                 maxLines = 6,
             )
+            if (errorText != null) {
+                // 写失败原因内联显示在对话框内（用户视线所在，不依赖列表底部的 message）。
+                // 用语义错误色 colors.danger（与 GlassSurface 的 errorMessage 同款；本文件
+                // 删除按钮已用 colors.danger，非新颜色 API）。
+                Text(
+                    text = errorText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.danger,
+                )
+            }
             Text(
                 text = "标题相同时覆盖原条目（与 memory_write 工具一致）。",
                 style = MaterialTheme.typography.labelSmall,
