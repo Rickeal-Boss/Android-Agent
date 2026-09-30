@@ -21,7 +21,6 @@ import com.rickeal.agent.core.design.liquid.platform.asAndroidRuntimeShader
  *
  * 端口自 Kyant0 backdrop 库（Apache-2.0）。
  */
-@RequiresApi(Build.VERSION_CODES.S)
 internal fun RenderEffect?.chain(other: RenderEffect): RenderEffect {
     return if (this != null) {
         android.graphics.RenderEffect.createChainEffect(
@@ -36,7 +35,6 @@ internal fun RenderEffect?.chain(other: RenderEffect): RenderEffect {
 /**
  * 在 RenderEffect 上叠一层 ColorFilter（vibrancy / opacity 都走这里）。
  */
-@RequiresApi(Build.VERSION_CODES.S)
 internal fun RenderEffect?.applyColorFilter(colorFilter: ColorFilter): RenderEffect {
     return if (this != null) {
         android.graphics.RenderEffect.createColorFilterEffect(
@@ -72,7 +70,6 @@ internal fun RenderEffect?.applyRuntimeShader(
  * 玻璃会"吸走"背景饱和度看起来发灰，用 ColorMatrix 把饱和度拉回来，
  * 让透过玻璃看到的颜色依然鲜活。这是"廉价磨砂"与"高级液态玻璃"的分水岭。
  */
-@RequiresApi(Build.VERSION_CODES.S)
 internal fun RenderEffect?.vibrancy(saturation: Float = 1.5f, brightness: Float = 0f): RenderEffect {
     val invSat = 1f - saturation
     val r = 0.213f * invSat
@@ -102,7 +99,6 @@ internal fun RenderEffect?.vibrancy(saturation: Float = 1.5f, brightness: Float 
 /**
  * 在 RenderEffect 上叠线性 alpha 透明度。
  */
-@RequiresApi(Build.VERSION_CODES.S)
 internal fun RenderEffect?.opacity(alpha: Float): RenderEffect {
     val colorMatrix = androidx.compose.ui.graphics.ColorMatrix(
         floatArrayOf(
