@@ -956,13 +956,27 @@ class ChatViewModel(
                 runDir = File(container.journalRoot, cid),
                 runId = "run_" + System.currentTimeMillis(),
             )
+            // C3（Wave 40）：会话文件只存 USER + 最终 MODEL 答案（commitAssistant），
+            // TOOL / 中间 toolCall 消息只进 journal。重开会话 / 进程重启后引擎重建，
+            // initialMessages 只播问答对 —— 模型丢失全部工具执行上下文。发送前把
+            // journal 里的过程消息按 run 时间序回灌进 history。本轮任务输入先从
+            // visible 里滤掉、拼在结果末尾：过程消息统一排在可见历史之后（照抄
+            // onRecover 的拼接语义），任务输入必须在其后再交给引擎 —— 否则新问题
+            // 会排在旧工具残骸之前（时序倒挂）。
+            val engineHistory = withContext(Dispatchers.IO) {
+                historyWithProcess(
+                    history.filterNot { it.id == userMessage.id },
+                    container.journalRoot,
+                    cid,
+                ) + userMessage
+            }
             val request = AgentRequest(
                 conversationId = cid,
                 // run 级 token 账本（Wave 31 流2 生产接线）：按会话池化的实例，发送侧
                 // 估算 / 引擎回报由 AgentRunner 单点回写。子 run（AskSubagentTool）不传
                 // （by design：子 run 独立短命，不进父账本）。
                 tokenLedger = container.tokenLedger(cid),
-                history = history,
+                history = engineHistory,
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
@@ -1086,13 +1100,23 @@ class ChatViewModel(
                 runDir = File(container.journalRoot, cid),
                 runId = "run_" + System.currentTimeMillis(),
             )
+            // C3（Wave 40）：同 onSend —— 重跑同样要把 journal 过程消息回灌进引擎
+            // 上下文（重试恰恰是最需要工具残骸的场景：上一轮失败前已执行的工具
+            // 结果全部只在 journal 里）。任务输入先滤后拼，过程消息排在任务输入前。
+            val engineHistory = withContext(Dispatchers.IO) {
+                historyWithProcess(
+                    history.filterNot { it.id == userMessage.id },
+                    container.journalRoot,
+                    cid,
+                ) + userMessage
+            }
             val request = AgentRequest(
                 conversationId = cid,
                 // run 级 token 账本（Wave 31 流2 生产接线）：按会话池化的实例，发送侧
                 // 估算 / 引擎回报由 AgentRunner 单点回写。子 run（AskSubagentTool）不传
                 // （by design：子 run 独立短命，不进父账本）。
                 tokenLedger = container.tokenLedger(cid),
-                history = history,
+                history = engineHistory,
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
@@ -1464,4 +1488,90 @@ internal fun ChatUiState.applyTerminalEvent(event: AgentEvent): ChatUiState = wh
     )
 
     else -> this
+}
+
+/**
+ * 「可见历史 + journal 过程消息」合并的**纯核心**（Wave 40 C3 外提，供 JVM 单测）。
+ *
+ * 去重口径**逐行照抄** [ChatViewModel.onRecover] 的既有判据：
+ * 只剔「role == MODEL 且 `role.name + "|" + text` 已在可见历史」的消息 ——
+ * journal 的最终 MODEL 答案会同时落在会话文件（commitAssistant 落库）与
+ * journal（message 行）里，按 role+text 去重（id 在两侧各自生成、永远对不上）。
+ * 只剔 MODEL：TOOL / 中间 toolCall 消息永远不会出现在会话文件里，不存在误剔；
+ * USER 同理不剔（journal 的 user_input 行本就不进 committedMessagesSync，这里
+ * 的口径是防御性的 —— 万一未来过程消息里出现 USER 行，也不该被可见历史吞掉）。
+ *
+ * 顺序取舍（如实记录）：过程消息**统一排在可见历史之后**，不按轮次插回原位 ——
+ * 第一版照抄 onRecover 的拼接语义；引擎按 role 播种时不要求严格交替
+ * （USER / TOOL 都映射 user，播种时已处理）。调用方负责把本轮任务输入从
+ * visible 里滤掉、拼在返回值末尾，保证「新问题在旧工具残骸之后」。
+ */
+internal fun mergeProcessIntoVisible(
+    visible: List<ChatMessage>,
+    process: List<ChatMessage>,
+): List<ChatMessage> {
+    val visibleKeys = visible.mapTo(HashSet()) { it.role.name + "|" + it.text }
+    val proc = process.filterNot { m ->
+        m.role == Role.MODEL && (m.role.name + "|" + m.text) in visibleKeys
+    }
+    return visible + proc
+}
+
+/**
+ * 组装发送给引擎的完整 history（Wave 40 C3）：可见历史 + 本会话**全部 run** 的
+ * journal 过程消息。
+ *
+ * ## 为什么需要它（上下文丢失根因）
+ *
+ * 会话文件只存 USER + 最终 MODEL 答案（[ChatViewModel.commitAssistant]），TOOL /
+ * 中间 toolCall 消息只进 journal。重开会话 / 进程重启后引擎重建，initialMessages
+ * 只播问答对 —— 模型丢失全部工具执行上下文（当场续聊不丢：引擎不重建；
+ * 重启 / 切会话后丢：重建播种缩水）。修复方向：发送时让引擎拿到完整过程历史。
+ *
+ * ## 为什么结果**不进** uiState.messages
+ *
+ * 过程消息只属于**引擎上下文**，不改变可见历史：UI 不重复渲染过程气泡
+ * （工具轨迹另有 toolTraces 呈现），会话文件也不落第二份（journal 已是权威）。
+ * 所以本函数只服务 AgentRequest.history 的组装，返回值不回写任何 UI 状态。
+ *
+ * ## run 目录结构与排序依据（实证）
+ *
+ * journal 目录 = `<journalRoot>/<conversationId>/`（[AgentRunJournal.open] 的
+ * runDir 约定），每个 run 一个文件，runId = `run_` + `System.currentTimeMillis()`
+ * （ChatViewModel 两处 open 调用点的实参）。排序依据 = **文件名内的时间戳**：
+ * 同为 13 位毫秒前缀，字典序即时间序（同 run 内行序由 seq 保证，跨 run 由
+ * 文件名保证）。
+ *
+ * ## 归档形态（哪些文件读、哪些跳过）
+ *
+ *  - `<runId>.jsonl` —— 活跃 / 已 settled 未归档（**读**）；
+ *  - `<runId>.dismissed.jsonl` —— 用户丢弃 / 未完成归档（markDismissed 与
+ *    archiveOtherUnsettled 的产物，**读** —— 里面的工具执行都是真实发生过的）。
+ *    两者都以 `.jsonl` 结尾，`open(id.removeSuffix(".jsonl"))` 恰好还原文件名
+ *    （dismissed 文件去后缀后 id 带 `.dismissed`，open 拼回去一字不差）；
+ *  - `<runId>.jsonl.archived` —— archiveAsSettled 的产物，但该写入路径在
+ *    Wave 30（history_v2 判死）已摘除调用，且 `.jsonl.archived` 结尾无法经
+ *    open()（恒追加 `.jsonl`）还原文件名 —— **跳过**（存量只可能来自极旧版本）；
+ *  - `<runId>.jsonl.dismissed` —— Wave2 旧命名，同上**跳过**。
+ *
+ * ## 损坏与读失败的纪律
+ *
+ * journal 损坏行由 [AgentRunJournal.committedMessagesSync] 的既有 decode 纪律
+ * （runCatching + mapNotNull）静默跳过；目录不存在 / listFiles 失败按「无过程
+ * 消息」处理，本函数绝不抛异常、绝不挡发送（journal 永远不是失败源）。
+ */
+internal fun historyWithProcess(
+    visible: List<ChatMessage>,
+    journalRoot: File,
+    conversationId: String,
+): List<ChatMessage> {
+    val runDir = File(journalRoot, conversationId)
+    val runIds = runDir.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") }
+        ?.map { it.name.removeSuffix(".jsonl") }
+        ?.sorted()
+        ?: return visible
+    val process = runIds.asSequence()
+        .flatMap { runId -> AgentRunJournal.open(runDir, runId).committedMessagesSync().asSequence() }
+        .toList()
+    return mergeProcessIntoVisible(visible, process)
 }

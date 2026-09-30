@@ -274,6 +274,50 @@ internal fun wallClockHardEvidence(
     "，达到 ${WALL_CLOCK_HARD_MILLIS / 1000} 秒硬预算"
 
 /**
+ * 跨轮重复签名的处置结论（Wave 40 B1）：由签名在两个账本（seen / reminded）里的
+ * 归属推导，**纯函数**、零协程依赖，JVM 直测（见 RepeatSignatureVerdictTest）。
+ */
+internal enum class RepeatSignatureVerdict {
+    /** 首次出现：仅入账（[repeatSignatureVerdict] 已把它写进 seen），放行。 */
+    FirstSight,
+
+    /** 重复出现：入账「已提醒」标记，注入一次提醒后再给模型一轮机会（既有行为）。 */
+    Remind,
+
+    /**
+     * 已提醒过仍再次出现：提醒通道已对该签名失效。若放行进零调用交付分支，
+     * 模型的复读会被当最终答案交给用户（「又重复一遍」）—— B1 收口：不再交付，
+     * 按既有失败收尾语义判 Failed 终止 run。
+     */
+    RemindedRepeat,
+}
+
+/**
+ * 跨轮重复签名判定（Wave 40 B1 自 handlePostStreamSignals 外提，语义逐行等价）：
+ *
+ *  - 第 1 次出现 → [RepeatSignatureVerdict.FirstSight]（seen 入账）；
+ *  - 第 2 次出现 → [RepeatSignatureVerdict.Remind]（reminded 入账 —— 即使后续注入
+ *    失败也不重试，杜绝提醒风暴的「先置位、再排队」纪律原样保留）；
+ *  - 第 3 次及以后 → [RepeatSignatureVerdict.RemindedRepeat]（两个账本均已含该
+ *    签名，集合状态不变，幂等）。
+ *
+ * `internal` 只为 JVM 单测可测（同 [wallClockSoftEvidence] 的口径），**不是对外 API**。
+ */
+internal fun repeatSignatureVerdict(
+    seenSignatures: MutableSet<String>,
+    remindedSignatures: MutableSet<String>,
+    signature: String,
+): RepeatSignatureVerdict {
+    val firstSight = seenSignatures.add(signature)
+    if (firstSight) return RepeatSignatureVerdict.FirstSight
+    return if (remindedSignatures.add(signature)) {
+        RepeatSignatureVerdict.Remind
+    } else {
+        RepeatSignatureVerdict.RemindedRepeat
+    }
+}
+
+/**
  * 同工具+同参调用守卫阈值（ZCode model-anomaly 形态移植，Wave 19 P0）：连续
  * REPEAT_TOOL_CALL_THRESHOLD 次签名完全相同的调用 → 注入一次提醒。签名经
  * canonical JSON 归一（见 toolCallSignature），key 顺序不同的等价参数同签名。
@@ -1956,14 +2000,51 @@ class AgentRunner(
         }
 
         // 无进展检测：拿本轮「可见文本」的归一化签名比对历史。
+        // Wave 40 B1：同一签名已提醒过（remindedSignatures 已含）仍再次出现时，
+        // 不再把它放行进零调用交付分支 —— 旧实现里 pendingReminder == null 会让
+        // handleNoToolCalls 把复读当最终答案交付给用户（「又重复一遍」），改为按
+        // MAX_INTRA_STREAM_LOOP_ROUNDS 超限同款失败收尾判 Failed 终止 run。
+        // ⚠️ 只在 calls.isEmpty() 时收口：复读的同时还在发工具调用 = 工具侧仍在
+        // 实际推进（其循环由同参守卫 / 振荡检测 / 失败连击等工具侧熔断管辖），
+        // 在此误杀会打断合法的「重复状态行 + 持续干活」节奏。
         val signature = StreamRepetitionDetector.normalizedSignature(visibleText)
         if (signature != null) {
-            val firstSight = state.seenSignatures.add(signature)
-            // 纪律：先把「已提醒」标记置位，再排队提醒 —— 即使后续注入失败也不会重试，
-            // 从而杜绝提醒风暴。每个签名至多提醒一次。
-            if (!firstSight && state.remindedSignatures.add(signature)) {
-                AgentLogStore.info("无进展检测：第 ${state.round + 1} 轮命中重复回答（与历史签名相同），注入提醒")
-                state.pendingReminder = REPEAT_REMINDER
+            when (repeatSignatureVerdict(state.seenSignatures, state.remindedSignatures, signature)) {
+                RepeatSignatureVerdict.FirstSight -> Unit
+                RepeatSignatureVerdict.Remind -> {
+                    // 纪律：先把「已提醒」标记置位，再排队提醒 —— 即使后续注入失败
+                    // 也不会重试，从而杜绝提醒风暴。每个签名至多提醒一次。
+                    // （置位在 repeatSignatureVerdict 内已先行完成。）
+                    AgentLogStore.info("无进展检测：第 ${state.round + 1} 轮命中重复回答（与历史签名相同），注入提醒")
+                    state.pendingReminder = REPEAT_REMINDER
+                }
+                RepeatSignatureVerdict.RemindedRepeat -> if (calls.isEmpty()) {
+                    AgentLogStore.error(
+                        "第 ${state.round + 1} 轮重复回答再次出现（已提醒过仍复发），终止 run"
+                    )
+                    // 失败收尾三段式与轮内循环超限路径（MAX_INTRA_STREAM_LOOP_ROUNDS）
+                    // 逐段对齐：breaker trip（幂等：已有 StreamLoop 不再重复登记）→
+                    // journal settled → emit Failed（带诊断卡 + BreakerTripped）。
+                    if (state.breaker.trips.none { it.kind == BreakerKind.StreamLoop }) {
+                        state.breaker.trip(
+                            BreakerKind.StreamLoop,
+                            round = state.round,
+                            evidence = "重复回答在注入提醒后仍再次出现（跨轮签名已提醒仍复发）",
+                        )
+                    }
+                    journal?.append(
+                        AgentRunJournal.KIND_SETTLED,
+                        AgentRunJournal.settledPayload("Failed", state.round),
+                    )
+                    emit(
+                        AgentEvent.Failed(
+                            "模型输出陷入重复循环，已停止本轮任务",
+                            report = buildBottleneckReportFor(state, journal, registeredToolNames),
+                            terminatedBy = TerminationReason.BreakerTripped,
+                        ),
+                    )
+                    return PostStreamStep.Terminal
+                }
             }
         }
         // 连续零工具调用计数。正常情况下这种轮次就是终局（下面会 break），
