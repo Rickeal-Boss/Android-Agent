@@ -6,6 +6,7 @@ import com.rickeal.agent.core.model.Role
 import java.io.File
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
+import kotlin.test.After
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -26,6 +27,25 @@ import kotlin.test.assertTrue
  * 驱动，JVM 纯文件 IO），覆盖的是生产读路径本身而非镜像。
  */
 class HistoryWithProcessTest {
+
+    /**
+     * 本轮跑测试建过的临时根目录（[tempRoot] 建一个登记一个）。
+     *
+     * Wave 40 审查 P2-4：原先 `Files.createTempDirectory` 建完不清理，每次跑测试在
+     * %TEMP% 里留 4 个空壳目录（CI 上是 runner 的临时区，本机就是越攒越多）。统一在
+     * [tearDown] 里递归删除 —— 让用例只留下「跑过」这件事，不留垃圾。
+     */
+    private val tempRoots = mutableListOf<File>()
+
+    /** 建临时根目录并登记（交给 [tearDown] 清理）。 */
+    private fun tempRoot(prefix: String): File =
+        Files.createTempDirectory(prefix).toFile().also { tempRoots.add(it) }
+
+    @After
+    fun tearDown() {
+        tempRoots.forEach { it.deleteRecursively() }
+        tempRoots.clear()
+    }
 
     /** 过程消息 fixture：一条中间 toolCall、一条工具结果、一条最终 MODEL 答案。 */
     private fun processFixture(answer: String): List<ChatMessage> = listOf(
@@ -97,7 +117,7 @@ class HistoryWithProcessTest {
     // ---------------------------------------------------- historyWithProcess
 
     @Test fun `目录不存在或无 run 文件 —— 返回可见历史原样`() {
-        val root = Files.createTempDirectory("c3-empty").toFile()
+        val root = tempRoot("c3-empty")
         val visible = listOf(ChatMessage(id = "u1", role = Role.USER, text = "问题"))
         assertEquals(visible, historyWithProcess(visible, root, "不存在的会话"))
         // 目录存在但没有任何 journal 文件。
@@ -106,7 +126,7 @@ class HistoryWithProcessTest {
     }
 
     @Test fun `跨 run 按文件名时间序合并且 user_input 行不混入`() {
-        val root = Files.createTempDirectory("c3-runs").toFile()
+        val root = tempRoot("c3-runs")
         val cid = "cid-1"
         assertTrue(File(root, cid).mkdirs())
         val runDir = File(root, cid)
@@ -137,7 +157,7 @@ class HistoryWithProcessTest {
     }
 
     @Test fun `用户丢弃的 run 也读 —— dismissed 归档同样回灌过程消息`() {
-        val root = Files.createTempDirectory("c3-dismissed").toFile()
+        val root = tempRoot("c3-dismissed")
         val cid = "cid-2"
         assertTrue(File(root, cid).mkdirs())
         val runDir = File(root, cid)
@@ -155,7 +175,7 @@ class HistoryWithProcessTest {
     }
 
     @Test fun `损坏行按既有 decode 纪律跳过 —— 绝不抛异常挡发送`() {
-        val root = Files.createTempDirectory("c3-corrupt").toFile()
+        val root = tempRoot("c3-corrupt")
         val cid = "cid-3"
         assertTrue(File(root, cid).mkdirs())
         val runDir = File(root, cid)

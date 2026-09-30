@@ -49,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -127,6 +128,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -359,6 +361,18 @@ private fun MainShell() {
     var workspaceRequested by remember { mutableStateOf(false) }
     val workspaceViewModel = remember(workspaceRequested) {
         if (workspaceRequested) SandboxFilesViewModel(container) else null
+    }
+    // 绕过 ViewModelStore 的**补偿清理**：上面是 `new` 出来的 VM（不走 viewModelFactory），
+    // 没有人会在面板离场时替它调 clear() ⇒ viewModelScope 永不 cancel。现状无实害（VM 内
+    // 只有自终止任务：一次扫盘 / 一次预览读盘），但这是全仓唯一绕过 store 的 VM 实例化点
+    // （对比 SettingsRoute.kt:134 走 viewModelFactory 的正规路）—— 将来一旦给它加轮询 /
+    // 常驻监听，旋转就会把「无实害」变成真泄漏。故在此按实例生命周期显式 cancel：
+    // key = VM 实例本身 ⇒ 换实例 / 离场都先 cancel 旧的。
+    // ⚠️ 若日后改为正规 viewModel(factory) 路径（会顺带改变「旋转即关」的取舍），
+    //    本块必须一并删除 —— ViewModelStore 会自己 clear，重复 cancel 属多余。
+    // ⚠️ 若给该 VM 加了 onCleared 清理动作，仅 cancel scope 不够，须一并改正规路径。
+    DisposableEffect(workspaceViewModel) {
+        onDispose { workspaceViewModel?.viewModelScope?.cancel() }
     }
     // 面板的模糊强度**直接由锚点位移换算**（Closed = +宽、Open = 0 ⇒ progress =
     // 1 - offset/宽），拖拽 / 开合动画全程逐帧跟手（抽屉的 drawerBlurProgress 同思路）。

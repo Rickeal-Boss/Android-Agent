@@ -61,6 +61,14 @@ internal enum class WorkspaceOverlayValue { Closed, Open }
  * 24dp 与系统返回手势/抽屉边缘手势的量级同档 —— 太窄滑不到、太宽会吃掉页面
  * 右侧的横向滑动。触发区只响应**横向拖拽**（`anchoredDraggable`），点按会穿透，
  * 不挡底下的内容。
+ *
+ * ⚠️ **已知事项（Wave 40 审查 P2-3，未修）**：开启**手势导航**的机型上，屏幕右缘同时是
+ * 系统返回手势的识别带，本触发区与它同带 —— 内滑可能被系统返回先吃掉（取决于厂商实现与
+ * 系统优先级），表现为「右缘滑不出来」。本仓**未设置 gesture exclusion rect**（Android 10+
+ * 的 `SystemGestureExclusionRects`）。左抽屉（ModalNavigationDrawer 的左缘手势）是同款
+ * 暴露面、非本波回归 ⇒ 一并挂账：真机验收时**两种导航模式（三键 / 手势）各验一次右缘
+ * 拖出**，若手势导航下确实被系统吃掉，再统一为两侧边缘申报 exclusion rect。
+ * 保持手势不可用时仍有顶栏「工作区」入口（可发现性不依赖手势）。
  */
 internal val WORKSPACE_EDGE_ZONE_WIDTH = 24.dp
 
