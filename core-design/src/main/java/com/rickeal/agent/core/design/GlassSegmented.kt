@@ -208,7 +208,7 @@ private fun SegmentedIndicator(
             // 与宿主**恒等** ⇒ y 判恒真、无信息（**不是漏判**，见类 KDoc）。
             // 入参 `pos` 是**宿主局部坐标**；宿主与胶囊同宽、同原点（都是 Start 对齐）。
             canStartDrag = { pos ->
-                val itemWidth = itemWidthState.value
+                val itemWidth = itemWidthState.floatValue
                 if (itemWidth <= 0f) {
                     false
                 } else {
@@ -228,7 +228,7 @@ private fun SegmentedIndicator(
             // 收集器仍会经 currentIndex 回流再发一次 onSelected —— 与既有 clickable
             // 路径完全同一条双发链（幂等），本波不改行为。
             onTap = { pos ->
-                val itemWidth = itemWidthState.value
+                val itemWidth = itemWidthState.floatValue
                 if (itemWidth <= 0f) {
                     return@DampedDragAnimation
                 }
@@ -270,7 +270,7 @@ private fun SegmentedIndicator(
                 // 拖动 = 手势内累积位移 → 绝对映射到"项坐标"（每移动一个 itemWidth 前进
                 // 一项），与异步回显完全解耦。
                 dragAccumPx += dragAmount.x
-                val itemWidth = itemWidthState.value
+                val itemWidth = itemWidthState.floatValue
                 if (itemWidth > 0f) {
                     val raw =
                         dragStartValue + dragAccumPx / itemWidth * (if (isLtr) 1f else -1f)
@@ -323,7 +323,7 @@ private fun SegmentedIndicator(
             .onSizeChanged { size ->
                 // 可见行与回显行都是 fillMaxWidth，Box 宽度 / count = 单项宽。
                 val itemWidth = size.width.toFloat() / itemsCount
-                if (itemWidthState.value != itemWidth) itemWidthState.value = itemWidth
+                if (itemWidthState.floatValue != itemWidth) itemWidthState.floatValue = itemWidth
             },
     ) {
         /* ── 1. 可见行：纯文字 + clickable（无自身玻璃、无手势）──────────── */
@@ -411,9 +411,9 @@ private fun SegmentedIndicator(
                             .coerceIn(0f, (itemsCount - 1).toFloat())
                         translationX =
                             if (isLtr) {
-                                renderValue * itemWidthState.value
+                                renderValue * itemWidthState.floatValue
                             } else {
-                                size.width - (renderValue + 1f) * itemWidthState.value
+                                size.width - (renderValue + 1f) * itemWidthState.floatValue
                             }
                     }
                     .drawBackdrop(

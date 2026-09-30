@@ -242,14 +242,15 @@ class DampedDragAnimation(
     // 刻意不用 `by` 委托：MutableFloatState 的
     // getValue/setValue 是 androidx.compose.runtime 的扩展运算符，必须显式 import 才生效，
     // 漏了 import 会报 "Type 'MutableFloatState' has no method 'getValue(...)'"（CI 实测踩过）。
-    // 此处直接用 `mutableFloatStateOf` 工厂 + 手写 get/set 访问 `.value`（`.value` 是
-    // MutableState<Float> 的成员、非扩展运算符，不触发上述陷阱）：既免了装箱，也不多一个隐式依赖。
+    // 此处直接持有 state 并手写 get/set，且一律走**原语访问器 `.floatValue`**：它是
+    // MutableFloatState 的成员（非扩展、无需 import）；而桥接的 `.value` 会装箱
+    //（lint 报 `AutoboxingStateValueProperty`）。既免了装箱，也不多一个隐式依赖。
     private val targetValueState = mutableFloatStateOf(initialValue)
 
     /** 当前目标值（手指/外部状态想去的地方）。拖拽增量基于它计算，避免累积漂移。 */
     var targetValue: Float
-        get() = targetValueState.value
-        private set(value) { targetValueState.value = value }
+        get() = targetValueState.floatValue
+        private set(value) { targetValueState.floatValue = value }
 
     /** 当前实际值（弹簧跟随 [targetValue]，所以会"慢半拍"——这就是阻尼）。 */
     val value: Float get() = valueAnimatable.value

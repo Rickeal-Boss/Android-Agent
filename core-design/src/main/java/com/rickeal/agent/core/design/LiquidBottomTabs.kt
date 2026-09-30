@@ -319,8 +319,8 @@ fun LiquidBottomTabs(
     // 手势回调里要读的布局量。用 State 承载而不是闭包捕获 val：
     // DampedDragAnimation 被 remember，闭包捕获的是创建那一刻的值；
     // 分屏 / 旋转后窗口宽度变了，旧闭包仍用旧宽度 → 胶囊跟手比例失真。
-    // 刻意用 mutableFloatStateOf + 显式 .value（不用 by 委托），与 DampedDragAnimation
-    // 的同一决定一致 —— 少一层隐式依赖；且 Float 原语 state 免了装箱（Wave 37 清障）。
+    // 刻意用 mutableFloatStateOf + 显式 .floatValue（不用 by 委托），与 DampedDragAnimation
+    // 的同一决定一致 —— 少一层隐式依赖；且走原语访问器 .floatValue 免了装箱（Wave 37 清障）。
     val tabWidthState = remember { mutableFloatStateOf(0f) }
     val containerWidthState = remember { mutableFloatStateOf(0f) }
 
@@ -341,9 +341,9 @@ fun LiquidBottomTabs(
     val panelOffsetPx = remember { mutableFloatStateOf(0f) }
     val panelOffset = remember(density) {
         derivedStateOf {
-            val containerWidth = containerWidthState.value
+            val containerWidth = containerWidthState.floatValue
             val fraction = if (containerWidth > 0f) {
-                (panelOffsetPx.value / containerWidth).coerceIn(-1f, 1f)
+                (panelOffsetPx.floatValue / containerWidth).coerceIn(-1f, 1f)
             } else {
                 0f
             }
@@ -381,9 +381,9 @@ fun LiquidBottomTabs(
             // 合并后"改胶囊高度"会连带改掉"窄容器退化阈值"，且不报错。
             val compactTabs = with(density) { (tabWidth.toDp()) < 56.dp }
             // 带守卫的写入：值没变不触发失效，不会造成"组合期写状态"的重组循环。
-            if (tabWidthState.value != tabWidth) tabWidthState.value = tabWidth
+            if (tabWidthState.floatValue != tabWidth) tabWidthState.floatValue = tabWidth
             val maxWidthPx = constraints.maxWidth.toFloat()
-            if (containerWidthState.value != maxWidthPx) containerWidthState.value = maxWidthPx
+            if (containerWidthState.floatValue != maxWidthPx) containerWidthState.floatValue = maxWidthPx
 
             // 面板拉伸偏移（panelOffsetPx / panelOffset）已上移到 BoxWithConstraints 之外，
             // 平移只在**内层 wrapper** 挂一次 graphicsLayer（见该处注释）。
@@ -463,8 +463,8 @@ fun LiquidBottomTabs(
                     // 入参 `pos` 是**宿主局部坐标**（宿主 = matchParentSize 覆盖整条，与
                     // 内层 wrapper 同原点、同宽度）。
                     canStartDrag = { pos ->
-                        val tabWidth = tabWidthState.value
-                        val width = containerWidthState.value
+                        val tabWidth = tabWidthState.floatValue
+                        val width = containerWidthState.floatValue
                         if (tabWidth <= 0f || width <= 0f) {
                             false
                         } else {
@@ -495,8 +495,8 @@ fun LiquidBottomTabs(
                     // tabsContent 的 onClick）。双发由 MainShell 的
                     // `destination != selected` 守卫去重（与 clickable 路径同一条链）。
                     onTap = { pos ->
-                        val tabWidth = tabWidthState.value
-                        val width = containerWidthState.value
+                        val tabWidth = tabWidthState.floatValue
+                        val width = containerWidthState.floatValue
                         if (tabWidth <= 0f || width <= 0f) {
                             return@DampedDragAnimation
                         }
@@ -554,7 +554,7 @@ fun LiquidBottomTabs(
                         // GlassSegmented 的门禁口径差异就来自这个开关。）
                         if (finishedNormally) currentHaptics.tick()
                         // 面板拉伸弹回：从当前累加值出发做一次弹簧（**单个**协程，非每帧）。
-                        val start = panelOffsetPx.value
+                        val start = panelOffsetPx.floatValue
                         if (start != 0f) {
                             panelReboundJob.value?.cancel()
                             panelReboundJob.value = animationScope.launch {
@@ -566,7 +566,7 @@ fun LiquidBottomTabs(
                                         stiffness = 300f,
                                         visibilityThreshold = 0.5f,
                                     ),
-                                ) { value, _ -> panelOffsetPx.value = value }
+                                ) { value, _ -> panelOffsetPx.floatValue = value }
                             }
                         }
                         // 按压高光归位：onDragStopped 在手势循环的 finally 里执行，协程取消
@@ -576,11 +576,11 @@ fun LiquidBottomTabs(
                     },
                     onDrag = { _, dragAmount ->
                         // 面板拉伸：**同步累加**（当帧完成），不再每帧 launch。
-                        panelOffsetPx.value += dragAmount.x
+                        panelOffsetPx.floatValue += dragAmount.x
                         // 胶囊位置：手势内累积 → 绝对映射（每移动一个 tabWidth 前进一页），
                         // 与异步回显完全解耦。
                         dragAccumPx += dragAmount.x
-                        val tabWidth = tabWidthState.value
+                        val tabWidth = tabWidthState.floatValue
                         if (tabWidth > 0f) {
                             val raw = dragStartValue + dragAccumPx / tabWidth * if (isLtr) 1f else -1f
                             val coerced = raw.coerceIn(0f, (tabsCount - 1).toFloat())
@@ -632,9 +632,9 @@ fun LiquidBottomTabs(
                         val v = dampedDragAnimation.value.coerceIn(0f, (tabsCount - 1).toFloat())
                         Offset(
                             if (isLtr) {
-                                (v + 0.5f) * tabWidthState.value
+                                (v + 0.5f) * tabWidthState.floatValue
                             } else {
-                                size.width - (v + 0.5f) * tabWidthState.value
+                                size.width - (v + 0.5f) * tabWidthState.floatValue
                             },
                             size.height / 2f,
                         )
@@ -887,9 +887,9 @@ fun LiquidBottomTabs(
                                 .coerceIn(0f, (tabsCount - 1).toFloat())
                             translationX =
                                 if (isLtr) {
-                                    renderValue * tabWidthState.value
+                                    renderValue * tabWidthState.floatValue
                                 } else {
-                                    size.width - (renderValue + 1f) * tabWidthState.value
+                                    size.width - (renderValue + 1f) * tabWidthState.floatValue
                                 }
                         }
                         // ⚠️ Wave 10 Phase 2d：这里**只保留** interactiveHighlight.gestureModifier
