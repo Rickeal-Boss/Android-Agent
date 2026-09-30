@@ -113,6 +113,7 @@ fun GemmaTermsScreen(
  * 两个条款步骤共用的版式：标题 → 说明 → 可滚动的正文 → 外链 → 按钮。
  * 正文区域限高并独立滚动，条款再长也不会把按钮挤出屏幕。
  */
+@Suppress("ConfigurationScreenWidthHeight")
 @Composable
 private fun LegalStepLayout(
     title: String,
@@ -130,6 +131,12 @@ private fun LegalStepLayout(
     val uriHandler = LocalUriHandler.current
     // 正文限高随窗口高度走：横屏可用高度约 280dp，写死 300.dp 会把
     // 「同意并继续 / 不同意并退出」顶出屏幕 —— 用户既进不去也退不出，只能杀进程。
+    // Wave 38：此处 screenHeightDp 是**正确口径**，故对 lint ConfigurationScreenWidthHeight
+    // 就地抑制（函数级 @Suppress）：它是「窗口可用高度」的 dp 表示，与本仓
+    // LocalConfiguration 由 Activity 重建驱动的既有约定一致。刻意**不**改用
+    // LocalWindowInfo.containerSize —— 后者是 px 且语义为 ComposeView 容器尺寸，
+    // 需经 LocalDensity 换算才成 dp，会让横屏 280dp 的硬闸门在边界翻档（属需真机验证的
+    // 行为变更，不在本波范围）。
     val bodyMaxHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.4f)
         .coerceAtLeast(120.dp)
 

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Wave 38：allowBackup 自 Android 12 起被 dataExtractionRules 取代（lint DataExtractionRules）。
+     本应用「端侧优先 + 隐私优先」：会话全文（conversations/*.json）与 GB 级模型文件（models/）
+     均不得离开设备，故云备份与设备间直传一律全量排除 —— 与 AndroidManifest 的
+     android:allowBackup="false" 同口径，只是补齐 Android 12+ 的新机制。 -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

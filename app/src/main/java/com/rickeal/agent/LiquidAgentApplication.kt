@@ -4,7 +4,6 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.ComponentCallbacks2
-import android.os.Build
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.model.AgentLogStore
@@ -36,18 +35,18 @@ class LiquidAgentApplication : Application() {
         // IMPORTANCE_LOW = 无声、无横幅、只出现在通知栏与收起抽屉里：
         // 这是观测窗口不是提醒，每秒刷一次速度如果还要响就是骚扰。
         // 渠道重要性创建后只能降不能升，所以宁可先给低。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                AndroidGenerationNotifier.CHANNEL_ID,
-                "端侧生成速度",
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply {
-                description = "端侧推理运行时的实时生成速度（token/s）与首字延迟"
-                setShowBadge(false)
-            }
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
+        // Wave 38：原先外面包着 `if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)`，
+        // 但 minSdk 31 ⇒ 该判断恒真（lint ObsoleteSdkInt），故去掉判断、块体无条件执行。
+        val channel = NotificationChannel(
+            AndroidGenerationNotifier.CHANNEL_ID,
+            "端侧生成速度",
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = "端侧推理运行时的实时生成速度（token/s）与首字延迟"
+            setShowBadge(false)
         }
+        getSystemService(NotificationManager::class.java)
+            .createNotificationChannel(channel)
         // 进程死亡兜底（审查 P2-1）：冷启动时界面上不可能有合法的「生成中」，
         // 任何残留通知都是脏数据 —— 且 ongoing 通知在 Android 13 及以下用户划不掉，
         // 不能指望用户手动清理。stop() 幂等，无残留时 no-op。

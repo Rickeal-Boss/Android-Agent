@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- = -->
     <!-- 权限                                                              -->
@@ -45,21 +44,24 @@
            1. 用户会话全文（conversations/*.json，隐私）；
            2. GB 级模型文件（models/，远超 25MB 备份上限，会导致备份失败并浪费用户云端配额）。
          端侧优先 + 隐私优先，这里整体关闭；将来若需要换机迁移，应提供显式的导出/导入，
-         而不是依赖系统静默备份。 -->
+         而不是依赖系统静默备份。
+         ⚠️ 注意：allowBackup 自 Android 12（API 31）起被 dataExtractionRules 取代 ——
+         只写 allowBackup 已不足以表达「不许出设备」，故下方 application 补挂
+         dataExtractionRules（见 res/xml/data_extraction_rules.xml），两者同口径、缺一不可。 -->
     <!-- supportsRtl 已移除（Wave 32，诚实性修正）：res/values/strings.xml 只有 1 条串
          （app_name），Composable 里 ~145 处中文硬编码，RTL 布局从未被验证、也无从验证 ——
          在完整 i18n 完成前不声明 RTL。挂账见 README「挂账台账」节。 -->
     <application
         android:name=".LiquidAgentApplication"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:appCategory="productivity"
         android:hardwareAccelerated="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:largeHeap="true"
         android:roundIcon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.LiquidAgent"
-        tools:targetApi="31">
+        android:theme="@style/Theme.LiquidAgent">
 
         <!-- LiteRT-LM GPU 后端的原生库声明（2026-09-26，真机实锤的引擎加载失败根修）：
              GPU 委托（libLiteRtClGlAccelerator.so，随 litertlm-android AAR 打包）需要
@@ -79,11 +81,14 @@
             android:name="libOpenCL-pixel.so"
             android:required="false" />
 
+        <!-- Wave 38：原 `screenOrientation="user"` 被 lint 判为 DiscouragedApi；
+             `user` 与默认 `unspecified` 在手机上对「跟随用户旋转锁」的行为等价
+             （两者都尊重系统自动旋转与用户锁定），而 Android 16 起大屏本就忽略固定方向，
+             故移除显式声明、交由系统默认。真机需复验旋转与旋转锁表现。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:screenOrientation="user"
             android:theme="@style/Theme.LiquidAgent"
             android:windowSoftInputMode="adjustResize">
 
