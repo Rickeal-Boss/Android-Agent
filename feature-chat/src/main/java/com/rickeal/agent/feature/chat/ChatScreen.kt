@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
@@ -72,6 +73,9 @@ fun ChatScreen(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenDrawer: (() -> Unit)? = null,
+    // 「工作区」覆盖层入口（Wave 40 G1）：null = 不渲染入口（宽屏 useTwoPane 下
+    // 本就不该有右滑面板，见 LiquidAgentApp 的 chatGraph 调用点）。
+    onOpenWorkspace: (() -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     val colors = LocalGlassColors.current
@@ -184,6 +188,18 @@ fun ChatScreen(
                 actions = {
                     if (state.isGenerating) {
                         GlassThinkingIndicator(label = "${state.agentRound}/${state.agentMaxRounds} 轮")
+                    }
+                    if (onOpenWorkspace != null) {
+                        // 「工作区」入口（Wave 40 G1）：滑出对话页右侧的沙箱文件浏览面板。
+                        // 与汉堡同款判据形态（null = 宽屏隐藏，宽屏的沙箱入口仍是
+                        // Rail / 抽屉之外的既有路径），COMPACT 才有右滑面板可开。
+                        GlassIconButton(
+                            icon = Icons.Filled.Folder,
+                            contentDescription = "工作区",
+                            onClick = onOpenWorkspace,
+                            contentColor = colors.onGlassMuted,
+                            pressOnly = true,
+                        )
                     }
                     if (!windowSize.useThreePane) {
                         GlassIconButton(

@@ -11,6 +11,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.AnchoredDraggableState
+import androidx.compose.foundation.gestures.DraggableAnchors
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -61,6 +63,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -117,9 +120,11 @@ import com.rickeal.agent.feature.settings.SettingsRoute
 import com.rickeal.agent.feature.settings.StorageRoute
 import com.rickeal.agent.feature.settings.memory.MemoryRoute
 import com.rickeal.agent.feature.settings.settingsGraph
+import com.rickeal.agent.feature.settings.tools.SandboxFilesViewModel
 import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.onboarding.FirstRunGate
 import kotlin.math.max
+import kotlin.math.min
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.filter
@@ -326,6 +331,44 @@ private fun MainShell() {
     // 用途：抽屉点选**当前正在看**的会话时只关抽屉、不重建 VM（P2-1）。
     val currentConversationId = backStackEntry?.arguments?.getString(ChatRoute.ARG_CONVERSATION_ID)
 
+    // ── 对话页右侧「工作区」覆盖层（Wave 40 G1）──────────────────────────────
+    // 仅 COMPACT 且停在「对话」页使用（入口与手势判据同左抽屉，见 gesturesEnabled
+    // 与下方 chatGraph 的 onOpenWorkspace）。锚点状态与 VM 都在 MainShell 持有：
+    // 打开回调（chatGraph）、页签切换关闭、统一返回键、body 模糊进度都要读写它们。
+    val workspaceScope = rememberCoroutineScope()
+    // 面板宽 min(360dp, 82%)：上限制与会话抽屉（M3 ModalDrawerSheet 360dp）同量级，
+    // 比例兜住最窄档（≈320dp 宽的设备上 82% ≈ 262dp，不至占满整屏）。
+    val workspaceWidth = min(360.dp, LocalConfiguration.current.screenWidthDp.dp * 0.82f)
+    val workspaceWidthPx = with(LocalDensity.current) { workspaceWidth.toPx() }
+    // Closed 锚 = +面板宽度（屏外右侧）、Open 锚 = 0（贴右缘）：手指左滑减小 offset =
+    // 开、右滑 = 关。宽度（进而 px）变化（旋转）时整体重建、回落 Closed —— 与抽屉
+    // 的旋转语义一致（M3 DrawerState 同样是 remember 不跨配置保存）。
+    // ⚠️ 构造即带 anchors ⇒ offset 自创建起就不是 NaN（仍按 :364 的既有纪律在模糊进度处兜 0）。
+    val workspaceState = remember(workspaceWidthPx) {
+        AnchoredDraggableState(
+            initialValue = WorkspaceOverlayValue.Closed,
+            anchors = DraggableAnchors {
+                WorkspaceOverlayValue.Closed at workspaceWidthPx
+                WorkspaceOverlayValue.Open at 0f
+            },
+        )
+    }
+    // VM **首次打开才创建**（init 会扫盘）：workspaceRequested 只在打开回调里置真
+    // （事件处理器，非组合期），remember(key) 随之重建出 VM —— app 启动零扫盘开销。
+    // 不经 viewModelStore：面板生命周期跟着 MainShell 组合走（旋转即关，同抽屉）。
+    var workspaceRequested by remember { mutableStateOf(false) }
+    val workspaceViewModel = remember(workspaceRequested) {
+        if (workspaceRequested) SandboxFilesViewModel(container) else null
+    }
+    // 面板的模糊强度**直接由锚点位移换算**（Closed = +宽、Open = 0 ⇒ progress =
+    // 1 - offset/宽），拖拽 / 开合动画全程逐帧跟手（抽屉的 drawerBlurProgress 同思路）。
+    // ⚠️ offset 理论上不会是 NaN（构造即带 anchors），仍按 drawerBlurProgress 的
+    //    既有纪律显式兜 0：兜 NaN 会污染 max()。
+    val workspaceBlurProgress: () -> Float = {
+        val offset = workspaceState.offset
+        if (offset.isNaN()) 0f else (1f - offset / workspaceWidthPx).coerceIn(0f, 1f)
+    }
+
     // ── 壳层圆形揭示（2026-09-24 Wave 6）：首启闸门放行后，整个主界面从中心 ──
     // 圆形展开（700ms FastOutSlowIn），这是"液态壳体成型"的签名瞬间。
     // 进程级一次性（shellRevealPlayed）：旋转 / 主题内重组一律走 progress=1 的
@@ -438,195 +481,245 @@ private fun MainShell() {
             )
         },
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .onSizeChanged { shellSize = it }
-                .circularReveal(
-                    progress = { revealState.progress.value },
-                    origin = { revealState.origin },
-                )
-                // 覆盖层背景深度模糊（2026-09-27）：抽屉跟手、对话框走弹簧，两者取 max。
-                // 进度只在 drawWithContent 的 draw 阶段读 ⇒ 逐帧变化只失效绘制，
-                // **不会重组 MainShell**（连带 NavHost 与整屏都不会跟着重组）。
-                .overlayBackdropBlur(
-                    progress = { max(drawerBlurProgress(), shellBlurProgress()) },
-                    radius = overlayBlurRadius,
-                    enabled = overlayBlurEnabled,
-                ),
-        ) {
-            if (windowSize.useTwoPane) {
-                GlassNavRail(
-                    selected = selected,
-                    onSelect = { destination ->
-                        if (destination != selected) navController.navigateTop(destination.route)
-                    },
-                    windowSize = windowSize,
-                    // 边缘避让（2026-09-27 用户需求）：横屏时状态栏 / 导航栏 inset 落在
-                    // **侧边**，原先的 statusBarsPadding + navigationBarsPadding 在横屏下
-                    // top/bottom ≈ 0，等于不避让 —— 左边缘的摄像头挖孔会直接压住 Rail。
-                    // 改用 safeDrawing（状态栏 ∪ 导航栏 ∪ 挖孔 ∪ IME 的并集）一次性算准，
-                    // 不分屏幕方向都正确。排除 ime：Rail 是常驻导航，键盘弹出时不能被
-                    // IME inset 顶起（对话输入时 Rail 要纹丝不动）。
-                    // 竖屏不受损：safeDrawing 的 top ≈ 状态栏、bottom ≈ 导航栏，
-                    // 与原先两个 padding 语义等价（Wave4 审查 B-P1-1 的导航栏避让保留）。
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime)),
-                )
-            }
-            // ── Tab 悬浮叠层（2026-09-26 用户需求）────────────────────────────────
-            // 旧结构 Column{ NavHost(weight 1f); GlassNavBar } 把底栏放在**独立布局槽**，
-            // 页面内容与页签被硬性隔开（用户对照 RVE 系统监控截图："Tab 框应该叠加在
-            // UI 页面上"）。改为 Box 覆盖：NavHost 铺满全屏，页签悬浮在底部，
-            // 内容与壁纸从玻璃页签底下穿过（refraction 实时跟随）。
-            //
-            // ⚠️ 页面末尾条目的可达性由 [LocalBottomBarOverlay]（84dp = TabBarHeight 64
-            // + GlassNavBar 上下 padding 10×2 —— 与 GlassNavBar 的实际组成**强同步**，
-            // 改任一侧必须同步另一侧）下发给各屏的滚动内边距；宽屏走 GlassNavRail
-            // 无底栏，provide 0dp。
-            CompositionLocalProvider(
-                LocalBottomBarOverlay provides if (windowSize.useTwoPane) 0.dp else 84.dp,
+        Box(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onSizeChanged { shellSize = it }
+                    .circularReveal(
+                        progress = { revealState.progress.value },
+                        origin = { revealState.origin },
+                    )
+                    // 覆盖层背景深度模糊（2026-09-27）：抽屉跟手、对话框走弹簧，
+                    // 工作区面板（Wave 40 G1）跟手 —— 三者取 max。
+                    // 进度只在 drawWithContent 的 draw 阶段读 ⇒ 逐帧变化只失效绘制，
+                    // **不会重组 MainShell**（连带 NavHost 与整屏都不会跟着重组）。
+                    .overlayBackdropBlur(
+                        progress = {
+                            max(drawerBlurProgress(), max(shellBlurProgress(), workspaceBlurProgress()))
+                        },
+                        radius = overlayBlurRadius,
+                        enabled = overlayBlurEnabled,
+                    ),
             ) {
-                // ── Tab 长条的「动态模糊」内容源（2026-09-26，根因修复）───────────────
-                // 真因比「壁纸是纯色」更底层：壁纸由**每个 feature 屏自己的 GlassScaffold**
-                // 绘制并各发一份 LocalBackdrop（都在 NavHost 内部），而 GlassNavBar 是
-                // NavHost 的**兄弟悬浮层** —— 它子树里的 `LocalBackdrop.current` 一直是
-                // 默认 `EmptyBackdrop`，页签玻璃的 vibrancy/blur/lens 全部采样「空」，
-                // 所以长条上什么都看不出来（GlassSegmented 的 8 个调用点在屏幕内部，
-                // 采样的是各自屏的壁纸层，不受影响）。
-                //
-                // 修复：把 NavHost 整体录进一张 LayerBackdrop（各屏的壁纸 + 页面内容
-                // 都在其中），页签玻璃的背景源换成它 —— 滚动内容从页签底下穿过时磨砂
-                // 与折射实时跟随（iOS 工具栏同款行为）。**不需要**恢复任何彩色光斑，
-                // 用户「默认纯色壁纸」的裁定不受影响。
-                //
-                // 性能：整页内容录进 GraphicsLayer 属逐帧录制（滚动/转场时重录），与
-                // 屏内录壁纸同机制。挂在 enableBackdropBlur（UI-07 性能开关）与
-                // 非宽屏两个条件下 —— 关掉背景模糊时连录制一起停（玻璃本来就退化为
-                // 底色 + 高光），宽屏没有底部页签，录了也没人消费。
-                val recordContent = glassCfg.enableBackdropBlur && !windowSize.useTwoPane
-                val contentBackdrop = rememberLayerBackdrop()
-                val navBarBackdrop = if (recordContent) contentBackdrop else LocalBackdrop.current
-                Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    NavHost(
-                        navController = navController,
-                        // 必须与 composable 注册的 route 同源（ChatRoute.PATTERN）。
-                        // 写 ROUTE("chat") 能启动（NavGraphNavigator 是拿 route 字符串去
-                        // findNode 匹配的），但 destination id 由 createRoute(route).hashCode()
-                        // 决定，"chat" 与 "chat?conversationId={conversationId}" 算出来是**两个 id**。
-                        // 于是 navigateTop 的 popUpTo(graph.startDestinationId) 永远匹配不到 ——
-                        // popBackStackInternal 对「栈里没有这个 id」是打一行日志然后 return false，
-                        // 一条都不 pop，回退栈就这么随切页签无限涨起来的（UI-01 的根因）。
-                        startDestination = ChatRoute.PATTERN,
+                if (windowSize.useTwoPane) {
+                    GlassNavRail(
+                        selected = selected,
+                        onSelect = { destination ->
+                            if (destination != selected) {
+                                // 切页签先收工作区面板（Wave 40 G1）：面板语义上属于对话页，
+                                // 离开对话页必须关掉（读真源 currentValue，事件处理器内合法）。
+                                if (workspaceState.currentValue != WorkspaceOverlayValue.Closed) {
+                                    workspaceScope.launch { workspaceState.animateTo(WorkspaceOverlayValue.Closed) }
+                                }
+                                navController.navigateTop(destination.route)
+                            }
+                        },
+                        windowSize = windowSize,
+                        // 边缘避让（2026-09-27 用户需求）：横屏时状态栏 / 导航栏 inset 落在
+                        // **侧边**，原先的 statusBarsPadding + navigationBarsPadding 在横屏下
+                        // top/bottom ≈ 0，等于不避让 —— 左边缘的摄像头挖孔会直接压住 Rail。
+                        // 改用 safeDrawing（状态栏 ∪ 导航栏 ∪ 挖孔 ∪ IME 的并集）一次性算准，
+                        // 不分屏幕方向都正确。排除 ime：Rail 是常驻导航，键盘弹出时不能被
+                        // IME inset 顶起（对话输入时 Rail 要纹丝不动）。
+                        // 竖屏不受损：safeDrawing 的 top ≈ 状态栏、bottom ≈ 导航栏，
+                        // 与原先两个 padding 语义等价（Wave4 审查 B-P1-1 的导航栏避让保留）。
                         modifier = Modifier
-                            .fillMaxSize()
-                            .then(
-                                if (recordContent) {
-                                    Modifier.layerBackdrop(contentBackdrop)
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                        // 页签切换 = iOS push/pop **视差**：新页大幅入场（32%），旧页小幅让位（14%）。
-                        // 旧实现两侧都满屏平移（±100%）+ 双 fade + tween(300)，观感是"整块屏幕
-                        // 被拖走"，而不是"推入一层新页"—— 深度感全靠模糊硬撑。
-                        // spec 依据（写死前逐条对过）：
-                        //  - 0.32 / 0.14 视差比：新页大幅入场、旧页小幅让位（iOS push 的经典比例），
-                        //    旧页只挪 14% 就能透出"下面还有一层"的暗示；
-                        //  - 260ms **大于**底部指示胶囊的 ~120ms（Wave 6b 定下的次序：胶囊先到位、
-                        //    内容随后到 —— 若内容比胶囊快，就会看到内容先飞进来胶囊再追）；
-                        //  - fade 内外**错开**（入 180 / 出 200）：若入出同长同相，切页瞬间两页都
-                        //    半透明叠在一起，看起来是"糊"而不是"换"。
-                        // 方向仍由新旧 destination 的页签索引差决定（索引增大 → 新页从右入、旧页向左出；
-                        // 反向则相反），pop 方向取反。四个方向都显式给值，避免依赖 NavHost 各版本默认值。
-                        // reduceMotion：四个 transition 全部 tween(0) —— 近瞬时切页，保留层级变化、去掉位移。
-                        enterTransition = {
-                            val dir = slideDirection(initialState.destination.route, targetState.destination.route)
-                            slideInHorizontally(
-                                initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
-                                animationSpec = tween(
-                                    if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                                    easing = FastOutSlowInEasing,
-                                ),
-                            ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
-                        },
-                        exitTransition = {
-                            val dir = slideDirection(initialState.destination.route, targetState.destination.route)
-                            slideOutHorizontally(
-                                targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
-                                animationSpec = tween(
-                                    if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                                    easing = FastOutSlowInEasing,
-                                ),
-                            ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
-                        },
-                        popEnterTransition = {
-                            val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
-                            slideInHorizontally(
-                                initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
-                                animationSpec = tween(
-                                    if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                                    easing = FastOutSlowInEasing,
-                                ),
-                            ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
-                        },
-                        popExitTransition = {
-                            val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
-                            slideOutHorizontally(
-                                targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
-                                animationSpec = tween(
-                                    if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
-                                    easing = FastOutSlowInEasing,
-                                ),
-                            ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
-                        },
-                    ) {
-                        chatGraph(
-                            navController = navController,
-                            onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
-                            onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
-                            // 汉堡只在 COMPACT 出现：宽屏没有抽屉（Rail 就是入口），
-                            // 传 null ⇒ ChatScreen 顶栏不渲染该图标。
-                            onOpenDrawer = if (windowSize.useTwoPane) {
-                                null
-                            } else {
-                                { drawerScope.launch { drawerState.open() } }
-                            },
-                        )
-                        modelsGraph(navController = navController)
-                        settingsGraph(
-                            navController = navController,
-                            onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
-                        )
-                    }
-                if (!windowSize.useTwoPane) {
-                    // 页签玻璃的背景源 = NavHost 录制层（各屏壁纸 + 页面内容，见上方
-                    // recordContent 注释）。只包住导航栏子树，不影响屏幕内部的玻璃采样。
-                    CompositionLocalProvider(LocalBackdrop provides navBarBackdrop) {
-                        GlassNavBar(
-                            selected = selected,
-                            onSelect = { destination ->
-                                if (destination != selected) navController.navigateTop(destination.route)
-                            },
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .fillMaxWidth()
-                                .navigationBarsPadding()
-                                // 仅参数面板场景生效（见上方 navBarBlurProgress 的说明）：
-                                // 面板在 NavHost 内部，外壳 body 级模糊罩不到它、也不能罩
-                                // （会连面板一起糊），页签这条得单独补。
-                                .overlayBackdropBlur(
-                                    progress = navBarBlurProgress,
-                                    radius = overlayBlurRadius,
-                                    enabled = overlayBlurEnabled,
-                                ),
-                        )
-                    }
+                            .fillMaxHeight()
+                            .windowInsetsPadding(WindowInsets.safeDrawing.exclude(WindowInsets.ime)),
+                    )
                 }
+                // ── Tab 悬浮叠层（2026-09-26 用户需求）────────────────────────────────
+                // 旧结构 Column{ NavHost(weight 1f); GlassNavBar } 把底栏放在**独立布局槽**，
+                // 页面内容与页签被硬性隔开（用户对照 RVE 系统监控截图："Tab 框应该叠加在
+                // UI 页面上"）。改为 Box 覆盖：NavHost 铺满全屏，页签悬浮在底部，
+                // 内容与壁纸从玻璃页签底下穿过（refraction 实时跟随）。
+                //
+                // ⚠️ 页面末尾条目的可达性由 [LocalBottomBarOverlay]（84dp = TabBarHeight 64
+                // + GlassNavBar 上下 padding 10×2 —— 与 GlassNavBar 的实际组成**强同步**，
+                // 改任一侧必须同步另一侧）下发给各屏的滚动内边距；宽屏走 GlassNavRail
+                // 无底栏，provide 0dp。
+                CompositionLocalProvider(
+                    LocalBottomBarOverlay provides if (windowSize.useTwoPane) 0.dp else 84.dp,
+                ) {
+                    // ── Tab 长条的「动态模糊」内容源（2026-09-26，根因修复）───────────────
+                    // 真因比「壁纸是纯色」更底层：壁纸由**每个 feature 屏自己的 GlassScaffold**
+                    // 绘制并各发一份 LocalBackdrop（都在 NavHost 内部），而 GlassNavBar 是
+                    // NavHost 的**兄弟悬浮层** —— 它子树里的 `LocalBackdrop.current` 一直是
+                    // 默认 `EmptyBackdrop`，页签玻璃的 vibrancy/blur/lens 全部采样「空」，
+                    // 所以长条上什么都看不出来（GlassSegmented 的 8 个调用点在屏幕内部，
+                    // 采样的是各自屏的壁纸层，不受影响）。
+                    //
+                    // 修复：把 NavHost 整体录进一张 LayerBackdrop（各屏的壁纸 + 页面内容
+                    // 都在其中），页签玻璃的背景源换成它 —— 滚动内容从页签底下穿过时磨砂
+                    // 与折射实时跟随（iOS 工具栏同款行为）。**不需要**恢复任何彩色光斑，
+                    // 用户「默认纯色壁纸」的裁定不受影响。
+                    //
+                    // 性能：整页内容录进 GraphicsLayer 属逐帧录制（滚动/转场时重录），与
+                    // 屏内录壁纸同机制。挂在 enableBackdropBlur（UI-07 性能开关）与
+                    // 非宽屏两个条件下 —— 关掉背景模糊时连录制一起停（玻璃本来就退化为
+                    // 底色 + 高光），宽屏没有底部页签，录了也没人消费。
+                    val recordContent = glassCfg.enableBackdropBlur && !windowSize.useTwoPane
+                    val contentBackdrop = rememberLayerBackdrop()
+                    val navBarBackdrop = if (recordContent) contentBackdrop else LocalBackdrop.current
+                    Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                        NavHost(
+                            navController = navController,
+                            // 必须与 composable 注册的 route 同源（ChatRoute.PATTERN）。
+                            // 写 ROUTE("chat") 能启动（NavGraphNavigator 是拿 route 字符串去
+                            // findNode 匹配的），但 destination id 由 createRoute(route).hashCode()
+                            // 决定，"chat" 与 "chat?conversationId={conversationId}" 算出来是**两个 id**。
+                            // 于是 navigateTop 的 popUpTo(graph.startDestinationId) 永远匹配不到 ——
+                            // popBackStackInternal 对「栈里没有这个 id」是打一行日志然后 return false，
+                            // 一条都不 pop，回退栈就这么随切页签无限涨起来的（UI-01 的根因）。
+                            startDestination = ChatRoute.PATTERN,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .then(
+                                    if (recordContent) {
+                                        Modifier.layerBackdrop(contentBackdrop)
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
+                            // 页签切换 = iOS push/pop **视差**：新页大幅入场（32%），旧页小幅让位（14%）。
+                            // 旧实现两侧都满屏平移（±100%）+ 双 fade + tween(300)，观感是"整块屏幕
+                            // 被拖走"，而不是"推入一层新页"—— 深度感全靠模糊硬撑。
+                            // spec 依据（写死前逐条对过）：
+                            //  - 0.32 / 0.14 视差比：新页大幅入场、旧页小幅让位（iOS push 的经典比例），
+                            //    旧页只挪 14% 就能透出"下面还有一层"的暗示；
+                            //  - 260ms **大于**底部指示胶囊的 ~120ms（Wave 6b 定下的次序：胶囊先到位、
+                            //    内容随后到 —— 若内容比胶囊快，就会看到内容先飞进来胶囊再追）；
+                            //  - fade 内外**错开**（入 180 / 出 200）：若入出同长同相，切页瞬间两页都
+                            //    半透明叠在一起，看起来是"糊"而不是"换"。
+                            // 方向仍由新旧 destination 的页签索引差决定（索引增大 → 新页从右入、旧页向左出；
+                            // 反向则相反），pop 方向取反。四个方向都显式给值，避免依赖 NavHost 各版本默认值。
+                            // reduceMotion：四个 transition 全部 tween(0) —— 近瞬时切页，保留层级变化、去掉位移。
+                            enterTransition = {
+                                val dir = slideDirection(initialState.destination.route, targetState.destination.route)
+                                slideInHorizontally(
+                                    initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
+                                    animationSpec = tween(
+                                        if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                        easing = FastOutSlowInEasing,
+                                    ),
+                                ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
+                            },
+                            exitTransition = {
+                                val dir = slideDirection(initialState.destination.route, targetState.destination.route)
+                                slideOutHorizontally(
+                                    targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
+                                    animationSpec = tween(
+                                        if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                        easing = FastOutSlowInEasing,
+                                    ),
+                                ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
+                            },
+                            popEnterTransition = {
+                                val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
+                                slideInHorizontally(
+                                    initialOffsetX = { fullWidth -> (fullWidth * PUSH_ENTER_PARALLAX).toInt() * dir },
+                                    animationSpec = tween(
+                                        if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                        easing = FastOutSlowInEasing,
+                                    ),
+                                ) + fadeIn(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_IN_MS))
+                            },
+                            popExitTransition = {
+                                val dir = -slideDirection(initialState.destination.route, targetState.destination.route)
+                                slideOutHorizontally(
+                                    targetOffsetX = { fullWidth -> (-fullWidth * PUSH_EXIT_PARALLAX).toInt() * dir },
+                                    animationSpec = tween(
+                                        if (glassCfg.reduceMotion) 0 else PUSH_SLIDE_MS,
+                                        easing = FastOutSlowInEasing,
+                                    ),
+                                ) + fadeOut(tween(if (glassCfg.reduceMotion) 0 else PUSH_FADE_OUT_MS))
+                            },
+                        ) {
+                            chatGraph(
+                                navController = navController,
+                                onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
+                                onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
+                                // 汉堡只在 COMPACT 出现：宽屏没有抽屉（Rail 就是入口），
+                                // 传 null ⇒ ChatScreen 顶栏不渲染该图标。
+                                onOpenDrawer = if (windowSize.useTwoPane) {
+                                    null
+                                } else {
+                                    { drawerScope.launch { drawerState.open() } }
+                                },
+                                // 「工作区」入口（Wave 40 G1）：同汉堡的判据形态 —— 宽屏
+                                // 传 null（不渲染入口、不做右滑面板），COMPACT 打开右侧覆盖层。
+                                // 首次打开才置真 workspaceRequested ⇒ VM（init 扫盘）此刻才创建。
+                                onOpenWorkspace = if (windowSize.useTwoPane) {
+                                    null
+                                } else {
+                                    {
+                                        workspaceRequested = true
+                                        workspaceScope.launch { workspaceState.animateTo(WorkspaceOverlayValue.Open) }
+                                    }
+                                },
+                            )
+                            modelsGraph(navController = navController)
+                            settingsGraph(
+                                navController = navController,
+                                onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
+                            )
+                        }
+                    if (!windowSize.useTwoPane) {
+                        // 页签玻璃的背景源 = NavHost 录制层（各屏壁纸 + 页面内容，见上方
+                        // recordContent 注释）。只包住导航栏子树，不影响屏幕内部的玻璃采样。
+                        CompositionLocalProvider(LocalBackdrop provides navBarBackdrop) {
+                            GlassNavBar(
+                                selected = selected,
+                                onSelect = { destination ->
+                                    if (destination != selected) {
+                                        // 切页签先收工作区面板（Wave 40 G1，判据同上方 Rail）。
+                                        if (workspaceState.currentValue != WorkspaceOverlayValue.Closed) {
+                                            workspaceScope.launch {
+                                                workspaceState.animateTo(WorkspaceOverlayValue.Closed)
+                                            }
+                                        }
+                                        navController.navigateTop(destination.route)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .navigationBarsPadding()
+                                    // 仅参数面板场景生效（见上方 navBarBlurProgress 的说明）：
+                                    // 面板在 NavHost 内部，外壳 body 级模糊罩不到它、也不能罩
+                                    // （会连面板一起糊），页签这条得单独补。
+                                    .overlayBackdropBlur(
+                                        progress = navBarBlurProgress,
+                                        radius = overlayBlurRadius,
+                                        enabled = overlayBlurEnabled,
+                                    ),
+                            )
+                        }
+                    }
+                    }
                 }
             }
-        }
+            // ── 工作区覆盖层（Wave 40 G1）：body Row 的**兄弟**节点 ──────────────────
+            // ⚠️ 绝不能挪成 Row 的子节点：body 级背景模糊（挂在 Row 上的
+            // overlayBackdropBlur）会把 Row 的子树一起糊掉（Compose 没有「反模糊」），
+            // 面板会被自己触发的模糊糊掉。层级推导见 OverlayBackdropBlur.kt 的类 KDoc。
+            // 宽屏不组合：useTwoPane 下没有右滑面板（入口传 null、手势判据也排除）。
+            if (!windowSize.useTwoPane) {
+                WorkspaceOverlay(
+                    state = workspaceState,
+                    viewModel = workspaceViewModel,
+                    sandboxRoot = container.sandboxDir,
+                    width = workspaceWidth,
+                    // 与左抽屉 gesturesEnabled 同判据（这里已保证 !useTwoPane）。
+                    edgeTriggerEnabled = selected == TopDestination.CHAT,
+                    blurProgress = workspaceBlurProgress,
+                    close = {
+                        workspaceScope.launch { workspaceState.animateTo(WorkspaceOverlayValue.Closed) }
+                    },
+                )
+            }
+            }
     }
 
     // ── 系统返回键：两段式（先回对话页，再一次退出应用）─────────────────────────
@@ -688,6 +781,21 @@ private fun MainShell() {
                     )
                 }
             }
+        },
+    )
+
+    // 注册位置刻意紧跟 `DrawerBackHandler`（的调用）**之后**（后注册先派发 LIFO）：
+    // 工作区面板开着时，返回键先「面板内子目录 → 上溯一层，否则关面板」，
+    // 都不接管时才轮到抽屉关闭 / 两段式。与抽屉两个回调的 enabled 不互补 ⇒
+    // 优先级完全由 LIFO 决定（原因见 DrawerBackHandler KDoc 的边界说明）。
+    // 状态读取被隔离在 WorkspaceOverlayBackHandler 内（锚点离散值 + 回调期读真源），
+    // 不牵连 MainShell 重组。
+    WorkspaceOverlayBackHandler(
+        state = workspaceState,
+        canNavigateUp = { workspaceViewModel?.uiState?.value?.currentDirPath?.isNotEmpty() == true },
+        onNavigateUp = { workspaceViewModel?.navigateUp() },
+        close = {
+            workspaceScope.launch { workspaceState.animateTo(WorkspaceOverlayValue.Closed) }
         },
     )
 
@@ -763,6 +871,7 @@ private fun DrawerBackHandler(
     }
     BackHandler(enabled = !drawerState.isOpen, onBack = onTwoStageBack)
 }
+
 
 /**
  * 当前 route 是否指向对话页。

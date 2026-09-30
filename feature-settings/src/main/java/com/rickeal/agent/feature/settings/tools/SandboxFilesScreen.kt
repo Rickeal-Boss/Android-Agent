@@ -73,7 +73,6 @@ fun SandboxFilesScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val colors = LocalGlassColors.current
-    val context = LocalContext.current
 
     // 系统返回键与顶栏返回钮**同语义**（Wave 38 挂账 P2-6）：子目录里按系统返回键应先上溯
     // 一层，而不是被 app 级两段式直接接管、跳出整个子页（此前两者行为不一致）。
@@ -134,136 +133,196 @@ fun SandboxFilesScreen(
             )
         },
     ) { _ ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .navigationBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 12.dp)
-                // 悬浮页签占位（同 StorageScreen）：加在滚动内容之内，末尾条目能滚出页签区。
-                .padding(bottom = LocalBottomBarOverlay.current),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            // 面包屑（朴素版）：一行文本显示当前 root-relative 路径；根层不渲染。
-            // 刻意不做可点分段（第一版避免引入新的可点组件 / 布局 API）—— 上溯走顶栏返回钮。
-            if (state.currentDirPath.isNotEmpty()) {
-                Text(
-                    text = state.currentDirPath,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.onGlassSubtle,
-                )
-            }
-            when {
-                state.error != null -> {
-                    GlassEmptyState(
-                        title = "读取失败",
-                        subtitle = state.error,
-                    )
-                    GlassButton(
-                        text = "重试",
-                        onClick = viewModel::refresh,
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                    )
-                }
-                state.loading && state.entries.isEmpty() -> {
-                    GlassEmptyState(title = "读取中…", subtitle = "正在读取沙箱目录")
-                }
-                state.entries.isEmpty() -> {
-                    // 空目录复用同一空态组件：文案按「根层 / 子目录」区分 —— 在空子目录里
-                    // 显示「沙箱暂无文件」会被读成「沙箱被清空了」。
-                    GlassEmptyState(
-                        title = if (state.currentDirPath.isEmpty()) "沙箱暂无文件" else "此目录为空",
-                        subtitle = if (state.currentDirPath.isEmpty()) {
-                            "Agent 写入的文件会出现在这里"
-                        } else {
-                            "点左上角返回上一层"
-                        },
-                    )
-                }
-                else -> {
-                    for (entry in state.entries) {
-                        SandboxFileRow(
-                            info = entry,
-                            onPreview = viewModel::onPreview,
-                            onOpen = { openSandboxFile(context, sandboxRoot, entry) },
-                            // 目录行点击 = 逐层下钻（Wave 36）：换当前目录再扫一层。
-                            onDirectoryClick = { viewModel.navigateInto(entry) },
-                        )
-                    }
-                }
-            }
-
-            Box(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "清理沙箱请到「设置 → 存储空间」的沙箱工作区分桶",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.onGlassSubtle,
-                    modifier = Modifier.align(Alignment.Center),
-                )
-            }
-        }
+        SandboxFilesContent(
+            state = state,
+            sandboxRoot = sandboxRoot,
+            viewModel = viewModel,
+        )
     }
 
-    // 应用内预览弹层：文本读前 N 字符（N 与 AgentPolicy().maxToolOutputChars 同源，
-    // 见 SANDBOX_PREVIEW_LIMIT_CHARS）；二进制只给「打开」出口。
+    // 应用内预览弹层（抽取复用，见 [SandboxFilesPreviewDialog] 的 KDoc）。
     val preview = state.selectedPreview
     if (preview != null) {
-        LiquidDialog(
-            onDismissRequest = viewModel::onDismissPreview,
-            title = preview.info.name,
-            subtitle = "${formatSandboxBytes(preview.info.sizeBytes)} · " +
-                formatSandboxTime(preview.info.lastModifiedMillis),
-            actions = { dismiss ->
-                GlassButton(
-                    text = "打开",
-                    onClick = {
-                        openSandboxFile(context, sandboxRoot, preview.info)
-                        dismiss()
-                    },
-                )
-                GlassButton(text = "关闭", onClick = dismiss, material = GlassMaterial.THIN)
-            },
-            content = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    when {
-                        preview.loading -> {
+        SandboxFilesPreviewDialog(
+            preview = preview,
+            sandboxRoot = sandboxRoot,
+            onDismiss = viewModel::onDismissPreview,
+        )
+    }
+}
+
+/**
+ * 沙箱文件的**应用内预览弹层**（Wave 40 G1 从 [SandboxFilesScreen] 原位抽取）：
+ * 文本读前 N 字符（N 与 AgentPolicy().maxToolOutputChars 同源，见
+ * [SANDBOX_PREVIEW_LIMIT_CHARS]）；二进制只给「打开」出口。
+ *
+ * **public 而非 internal**：对话页右侧「工作区」覆盖层（app 模块 WorkspaceOverlay）
+ * 复用同一枚弹层 —— 预览的读取与状态在 [SandboxFilesViewModel] 里，弹层的组装需要
+ * Context 与 FileProvider（[openSandboxFile]）与 internal 格式化函数，跨不过模块
+ * 边界，必须留在本模块并公开。
+ *
+ * 可见性与关闭完全由调用方持有（[preview] 非空才组合、[onDismiss] 归还状态），
+ * 本组件不认识 ViewModel。
+ */
+@Composable
+fun SandboxFilesPreviewDialog(
+    preview: SandboxFilePreview,
+    sandboxRoot: File,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalGlassColors.current
+    val context = LocalContext.current
+    LiquidDialog(
+        onDismissRequest = onDismiss,
+        modifier = modifier,
+        title = preview.info.name,
+        subtitle = "${formatSandboxBytes(preview.info.sizeBytes)} · " +
+            formatSandboxTime(preview.info.lastModifiedMillis),
+        actions = { dismiss ->
+            GlassButton(
+                text = "打开",
+                onClick = {
+                    openSandboxFile(context, sandboxRoot, preview.info)
+                    dismiss()
+                },
+            )
+            GlassButton(text = "关闭", onClick = dismiss, material = GlassMaterial.THIN)
+        },
+        content = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                when {
+                    preview.loading -> {
+                        Text(
+                            text = "读取中…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onGlassSubtle,
+                        )
+                    }
+                    preview.text == null -> {
+                        Text(
+                            text = "二进制文件，不支持预览",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onGlassSubtle,
+                        )
+                    }
+                    else -> {
+                        Text(
+                            text = preview.text.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onGlass,
+                            // 长文本限高滚动：弹窗不是阅读器，限量字符撑破屏幕
+                            // 会把动作区顶出视野。
+                            modifier = Modifier
+                                .heightIn(max = 360.dp)
+                                .verticalScroll(rememberScrollState()),
+                        )
+                        if (preview.truncated) {
                             Text(
-                                text = "读取中…",
-                                style = MaterialTheme.typography.bodyMedium,
+                                text = "仅预览前 $SANDBOX_PREVIEW_LIMIT_CHARS 字符",
+                                style = MaterialTheme.typography.labelSmall,
                                 color = colors.onGlassSubtle,
+                                modifier = Modifier.padding(top = 6.dp),
                             )
-                        }
-                        preview.text == null -> {
-                            Text(
-                                text = "二进制文件，不支持预览",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = colors.onGlassSubtle,
-                            )
-                        }
-                        else -> {
-                            Text(
-                                text = preview.text.orEmpty(),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.onGlass,
-                                // 长文本限高滚动：弹窗不是阅读器，限量字符撑破屏幕
-                                // 会把动作区顶出视野。
-                                modifier = Modifier
-                                    .heightIn(max = 360.dp)
-                                    .verticalScroll(rememberScrollState()),
-                            )
-                            if (preview.truncated) {
-                                Text(
-                                    text = "仅预览前 $SANDBOX_PREVIEW_LIMIT_CHARS 字符",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = colors.onGlassSubtle,
-                                    modifier = Modifier.padding(top = 6.dp),
-                                )
-                            }
                         }
                     }
                 }
-            },
-        )
+            }
+        },
+    )
+}
+
+/**
+ * 沙箱文件列表的**内容块**（面包屑 + 条目列表 / 空态 / 错误态 + 底部清理提示），
+ * 从 [SandboxFilesScreen] 原位抽取（Wave 40 G1）：全屏子页与对话页右侧
+ * 「工作区」覆盖层（app 模块 WorkspaceOverlay）共用同一渲染面，行为零变化。
+ *
+ * **public 而非 internal**：覆盖层在 app 模块，Kotlin 可见性按模块隔离，
+ * internal 符号跨不过去（app 已依赖 feature-settings，public 即可达）。
+ *
+ * 刻意**不含**两样东西 —— 它们的生命周期归属调用方：
+ *  - BackHandler：子页与覆盖层的返回语义不同（覆盖层是「先上溯、再关面板」的
+ *    统一回调，见 WorkspaceOverlay），不能绑死在内容块里；
+ *  - 顶栏 / 预览弹层：子页走 [GlassScaffold] + [LiquidDialog]，覆盖层走自己的
+ *    玻璃面板 + 同一枚 [LiquidDialog]（预览由 VM 的 `selectedPreview` 驱动，
+ *    调用方各自消费）。
+ */
+@Composable
+fun SandboxFilesContent(
+    state: SandboxFilesUiState,
+    sandboxRoot: File,
+    viewModel: SandboxFilesViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalGlassColors.current
+    val context = LocalContext.current
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+            // 悬浮页签占位（同 StorageScreen）：加在滚动内容之内，末尾条目能滚出页签区。
+            .padding(bottom = LocalBottomBarOverlay.current),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        // 面包屑（朴素版）：一行文本显示当前 root-relative 路径；根层不渲染。
+        // 刻意不做可点分段（第一版避免引入新的可点组件 / 布局 API）—— 上溯走顶栏返回钮。
+        if (state.currentDirPath.isNotEmpty()) {
+            Text(
+                text = state.currentDirPath,
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onGlassSubtle,
+            )
+        }
+        when {
+            state.error != null -> {
+                GlassEmptyState(
+                    title = "读取失败",
+                    subtitle = state.error,
+                )
+                GlassButton(
+                    text = "重试",
+                    onClick = viewModel::refresh,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                )
+            }
+            state.loading && state.entries.isEmpty() -> {
+                GlassEmptyState(title = "读取中…", subtitle = "正在读取沙箱目录")
+            }
+            state.entries.isEmpty() -> {
+                // 空目录复用同一空态组件：文案按「根层 / 子目录」区分 —— 在空子目录里
+                // 显示「沙箱暂无文件」会被读成「沙箱被清空了」。
+                GlassEmptyState(
+                    title = if (state.currentDirPath.isEmpty()) "沙箱暂无文件" else "此目录为空",
+                    subtitle = if (state.currentDirPath.isEmpty()) {
+                        "Agent 写入的文件会出现在这里"
+                    } else {
+                        "点左上角返回上一层"
+                    },
+                )
+            }
+            else -> {
+                for (entry in state.entries) {
+                    SandboxFileRow(
+                        info = entry,
+                        onPreview = viewModel::onPreview,
+                        onOpen = { openSandboxFile(context, sandboxRoot, entry) },
+                        // 目录行点击 = 逐层下钻（Wave 36）：换当前目录再扫一层。
+                        onDirectoryClick = { viewModel.navigateInto(entry) },
+                    )
+                }
+            }
+        }
+
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "清理沙箱请到「设置 → 存储空间」的沙箱工作区分桶",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onGlassSubtle,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
     }
 }
 
