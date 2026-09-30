@@ -256,7 +256,7 @@ UI 只做**渲染 + 触发**，**最终状态以 Host 复检为准**，页面不
 
 ## 6. 环境与工具沉淀
 
-- `_ci-tools/gitclone.sh`（新增）：外部仓库浅克隆助手，PAT 单一来源取自 `ghapi.sh`，
+- `_ci-tools/gitclone.sh`（新增）：外部仓库浅克隆助手，凭据单一来源取自同目录工具脚本，
   自动禁用会静默挂起的 GCM credential helper。
 - 已知坑：`--filter=blob:none --sparse` 克隆后，按需 fetch blob 会走 schannel 吊销检查
   （`CRYPT_E_NO_REVOCATION_CHECK`）→ 需在仓库内 `git config http.sslVerify false`；

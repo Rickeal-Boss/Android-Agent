@@ -71,7 +71,7 @@
 - **已知的既有误伤面**（本波未改，阈值是真机调优结果）：连续 ≥6 行裸 `---\n` 会触发判定④ `short_sig_run`。
 - **原生工具通道（根治回显的终解）**：`Capabilities.supportsFunctionCalling()` 现成，但 `LiteRtLmEngine.kt` 硬编码 `nativeToolChannel = false`。启用后工具描述不必进系统提示词。需评估 `ToolSpec→ToolProvider` 映射 + 真机未验证风险 ⇒ 独立波次、按模型能力位门控。
 - **`build.yml` 无 paths 过滤**（每次 push 都跑完整 Build）；`release.yml:38-39` 重复写了两次 `harness-improve`（GitHub 去重，无害）。
-- 环境：`_ci-tools/ghapi.sh` 本轮修复（相对路径自动补 `https://api.github.com/`，此前必挂）+ PAT 换新；`_ci-tools/gitfetch.sh` 新建（fetch/push/lsremote）。
+- 环境：`_ci-tools/ghapi.sh` 本轮修复（相对路径自动补 `https://api.github.com/`，此前必挂）+ 凭据换新；`_ci-tools/gitfetch.sh` 新建（fetch/push/lsremote）。
 
 ## 7. 相关文件
 

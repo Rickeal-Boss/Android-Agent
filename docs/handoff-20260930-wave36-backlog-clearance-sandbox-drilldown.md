@@ -102,7 +102,7 @@
 
 - 提交区间：`7c2ff84..7d35200`（7 commits）
 - 反查素材：`_research/models/_l171/cls`（litertlm 0.17.1 classes）、`_research/models/litertlm171_*.kt`（源码快照）
-- 工具：`_ci-tools/{ghapi,gitfetch}.sh`（GitHub API + 推送，**PAT 唯一落盘处 = `ghapi.sh`**）、`_ci-tools/wait_w36.py`（CI 轮询模板）
+- 工具：`_ci-tools/{ghapi,gitfetch}.sh`（GitHub API + 推送；**凭据只落在仓库外的该工具目录，不入库**）、`_ci-tools/wait_w36.py`（CI 轮询模板）
 - 上一波：`docs/handoff-20260930-002142-wave35-closing.md`
 - 本地静态闸门：`bash scripts/arch-guard.sh`（14 项）、`bash scripts/arch-guard-selftest.sh`（PASS=17）、`python balance_check.py`
   ⚠️ **本机 Git Bash 下 arch-guard 约 1.5–2 分钟、selftest 约 3–4 分钟**（第 13 条逐行 spawn 子进程），**默认 120s 超时会 SIGTERM 掉它们**；selftest 还会在输出完整 `PASS=17 FAIL=0` 后卡在 EXIT trap（本沙箱 `rm` 包装产物）。**本地请给 ≥300s / ≥600s 或后台跑**；CI（Ubuntu）不受影响。
