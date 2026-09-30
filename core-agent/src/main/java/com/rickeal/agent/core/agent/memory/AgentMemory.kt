@@ -2,7 +2,6 @@ package com.rickeal.agent.core.agent.memory
 
 import com.rickeal.agent.core.model.AgentJson
 import com.rickeal.agent.core.model.AgentLogStore
-import com.rickeal.agent.core.model.truncateSafe
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -49,27 +48,22 @@ class AgentMemory(
         readSync()
     }
 
-    /**
-     * 渲染成注入 system prompt 的文本；空记忆返回 null（不注入，省 token）。
-     * 刻意用紧凑格式：端侧 4B 的系统提示词每一个 token 都在挤占工作记忆。
-     * title 也必须单行化（不只是 content）：title 是唯一键，模型可以往里写换行，
-     * 换行会把注入段切成多条伪 section 头，伪造「系统提示词结构」—— 注入面收紧。
-     */
-    suspend fun renderForPrompt(maxChars: Int = PROMPT_MAX_CHARS): String? {
-        val list = sections()
-        if (list.isEmpty()) return null
-        val text = list.joinToString("\n") { section ->
-            "- [${section.title.replace("\n", " ")}] ${section.content.replace("\n", " ")}"
-        }
-        // 代理对安全截断（Wave 35 D1）：注入 system prompt 的文本若停在半个代理对上，
-        // 会在落库 / 回灌 / 上屏三处变成 U+FFFD 乱码。
-        return if (text.length <= maxChars) text else text.truncateSafe(maxChars) + "…(已截断)"
-    }
+    // ── renderForPrompt（全量注入版）已于 Wave 36 E3 判死删除 ────────────────────
+    // 删了什么：`suspend fun renderForPrompt(maxChars: Int = PROMPT_MAX_CHARS): String?`
+    //   （连同其上方 KDoc）—— 把**全部**条目正文（截断 1200 字符）渲染进 system prompt。
+    // 为什么可删：全仓零引用（含测试源集逐文件核验），从未被真实调用，仅存 KDoc 互引。
+    //   它已被 [renderIndex] 取代 —— Wave 34 题 B 把记忆从「全量注入」改成「标题索引注入
+    //   + 按需检索」，实际注入走 feature-chat 的 ChatViewModel.renderMemoryIndex()。
+    //   留着一个「正文进 systemText」的渲染面，只会让这条**已被否决**的路径（正文变化会
+    //   改变 systemText ⇒ 引擎会话重建判据每轮命中 ⇒ 4B 秒级 re-prefill）看起来仍可用。
+    // 恢复路径：git 历史可回溯，不留死代码占位。
+    // 注意：本函数曾唯一引用常量 [PROMPT_MAX_CHARS]，该常量因是 [MAX_CONTENT_CHARS] 的
+    //   推导参照而保留（见其 KDoc），非死代码。
 
     /**
      * 渲染成注入 system prompt 的**标题索引**（Wave 34 题 B：记忆 pull 化）。
      *
-     * 与 [renderForPrompt] 的形态差异是刻意的：这里**只输出标题**，正文不再进提示词 ——
+     * 与**全量注入**形态的差异是刻意的：这里**只输出标题**，正文不再进提示词 ——
      * 正文由模型按需用 `memory_search` 检索（再由 `memory_read` 看全文）。两个收益：
      *  ① 端侧 4B 的工作记忆不再被与当前任务无关的正文挤占；
      *  ② 更硬的一条 —— 正文随 `memory_write` 变化会让 `systemText` 变化，而 `systemText`
@@ -81,8 +75,9 @@ class AgentMemory(
      * **入口声明**：模型在提示词里看到索引被截断时，才知道有检索这条路可走。
      * 无论预算多小都至少渲染一条（索引全空会让模型以为自己没有记忆）。
      *
-     * 文件格式零改动：`memory.json` 仍是 [MemorySection] 列表，`renderForPrompt` 也保留
-     * （`memory_read` 走的是 [sections] 直读，不经过这里；该渲染面留作兜底与人工核对）。
+     * 文件格式零改动：`memory.json` 仍是 [MemorySection] 列表（`memory_read` 走的是
+     * [sections] 直读，不经过任何渲染面）。原「全量注入版」`renderForPrompt` 已判死删除
+     * （见上方留痕），注入面只剩本方法这一条路径。
      */
     suspend fun renderIndex(maxChars: Int = INDEX_MAX_CHARS): String? {
         val list = sections()
@@ -91,7 +86,7 @@ class AgentMemory(
         var used = 0
         var omitted = 0
         for (section in list) {
-            // title 必须单行化（同 renderForPrompt）：title 是唯一键，模型可以往里写换行，
+            // title 必须单行化：title 是唯一键，模型可以往里写换行，
             // 换行会把注入段切成多条伪 section 头，伪造「系统提示词结构」。
             val line = "- [${section.title.replace("\n", " ")}]"
             val cost = if (lines.isEmpty()) line.length else line.length + 1
@@ -122,11 +117,14 @@ class AgentMemory(
      *  ① `memory.json` 解析失败（[ReadState.Corrupted]）—— 拒写是为了保护原文件；
      *  ② content 超过 [MAX_CONTENT_CHARS] —— 存储面无界防护（见该常量 KDoc）。
      *
-     * ⚠️ **已知消费端缺口（Wave 35 挂账，不在本波改）**：`feature-settings` 的
-     * `MemoryViewModel.upsert` 把 `false` 一律解释成「文件损坏」（`corrupted = true`），
-     * 故人在设置页粘贴超长正文时会看到「文件已损坏」的误报。修它要动 UI 文案，
-     * 与 core 侧的本次改动解耦，单独挂账。模型侧不受影响：`MemoryWriteTool` 在
-     * 调用本方法之前就用自己的前置校验拦下超限并回精确文案。
+     * 消费端缺口（Wave 35 挂账 → **Wave 36 E5 已修**）：`feature-settings` 的
+     * `MemoryViewModel.upsert` 曾把 `false` 一律解释成失败并**静默吞掉** —— 人在设置页
+     * 粘贴超长正文时，对话框直接关闭、**无任何提示**。（Wave 35 挂账原文写的是「会看到
+     * 『文件已损坏』的误报」，那是错的：设置页从无该文案，实况是静默失效。）
+     * 现由 [upsertFailureReason] 把上面两条互斥穷尽的 false 出口按正文长度无歧义还原成
+     * 面向人的原因，经 `MemoryUiState.editError` 在**编辑对话框内联**上屏（失败时不关对话框、
+     * 保留用户输入，只有成功才关）。模型侧不受影响：`MemoryWriteTool` 在调用本方法之前就用自己的
+     * 前置校验拦下超限并回精确文案。
      */
     suspend fun upsert(title: String, content: String): Boolean = withContext(ioDispatcher) {
         mutex.withLock {
@@ -260,7 +258,32 @@ class AgentMemory(
          */
         const val MAX_CONTENT_CHARS = 2000
 
-        /** 注入 prompt 的默认预算（字符）。 */
+        /**
+         * 把 [upsert] 的 `false` 翻译成面向人的原因（Wave 36 E5）。
+         *
+         * [upsert] 的 false 出口只有两条且互斥穷尽：正文超 [MAX_CONTENT_CHARS]、文件解析失败。
+         * 因此按「去空白后的正文长度」即可无歧义还原原因 —— 不需要改 [upsert] 的返回类型
+         * （那会波及 `MemoryTools` 与既有 5 处 Boolean 断言）。纯函数，无 Android 依赖，可 JVM 测。
+         *
+         * 放在 [MAX_CONTENT_CHARS] 同处，保证「上限值」与「判据」永不漂移。
+         *
+         * @param trimmedContentLength **去空白后**的长度（必须与 [upsert] 内的判据同口径：
+         *   那里先 `content.trim()` 再比 `> MAX_CONTENT_CHARS`）。
+         */
+        fun upsertFailureReason(trimmedContentLength: Int): String =
+            if (trimmedContentLength > MAX_CONTENT_CHARS) {
+                "内容过长（$trimmedContentLength 字符，上限 $MAX_CONTENT_CHARS）：请拆成多条或压缩成结论"
+            } else {
+                "记忆文件解析失败，已拒绝写入以保护原文件；请人工修复或删除 agent_memory/memory.json"
+            }
+
+        /**
+         * 历史设计基准（[MAX_CONTENT_CHARS] 的推导参照），**当前无代码引用**。
+         *
+         * 它曾是「全量注入版」`renderForPrompt` 的默认预算；该函数已于 Wave 36 E3 判死删除
+         * （见类内留痕）。保留本常量是因为 [MAX_CONTENT_CHARS] 的取值（2000 = 本值的一倍余量）
+         * 以它为参照推导 —— 删掉会让那段理由失去可引用的锚。**不要因为「无引用」而删除它。**
+         */
         const val PROMPT_MAX_CHARS = 1200
 
         /**
