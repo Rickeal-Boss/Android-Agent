@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""守卫：测试源集里 @Test 方法必须返回 void（末语句不得是返回值型断言）。
+"""守卫：测试源集里 @Test 方法必须返回 void，且反引号名不得含 JVM 非法字符。
+
+## 检查一：@Test 方法必须返回 void
 
 为什么需要这条守卫（Wave 37 实案）：
   JUnit 4 要求测试方法返回 `void`。Kotlin 的表达式体 `fun x() = ...` 返回类型由
@@ -16,6 +18,18 @@
   （`assertEquals` / `assertTrue` / `assertFalse` / `assertNull` / `assertSame` /
    `assertContains` 都返回 Unit，可以收尾。）
 
+## 检查二：反引号方法名不得含 JVM 非法字符 `.` `;` `[` `/`（Wave 38 实案）
+
+Kotlin 允许 `fun `任意中文与符号`()`，但 **JVM 规范禁止方法名含 `. ; [ /`**
+（§4.2.2；`<` `>` 同样不可）。一旦写进去，Kotlin 编译器直接报
+  `e: ... Name contains illegal characters: /`
+⇒ 该模块的 `compileDebugUnitTestKotlin` 失败 ⇒ **整个 Build job 红**。
+
+本仓实案：Wave 38 的 `MemoryWriteResultTest` 用了
+`fun `文件存在但读不了 —— upsert / remove 均回 Unreadable`()`，那个 `/` 让
+`unit-tests` job 直接红 —— 而本机无 JDK **完全查不出**（CI 是唯一通道）。
+⇒ 中文名里想写「A / B」一律改成「A 与 B」「A、B」。
+
 契约（与 scripts/arch-guard.sh 的 check() 一致）：
   - **stdout 非空 = 违规**；干净时**必须零输出**。
   - 永远 exit 0（脚本自身异常时把 traceback 打到 stdout，从而被判红而不是静默通过）。
@@ -29,7 +43,11 @@ import traceback
 VALUE_RETURNING = ("assertNotNull", "assertIs", "assertFailsWith", "assertFails")
 BAD_LAST = re.compile(r"^\s*(" + "|".join(VALUE_RETURNING) + r")\b")
 BAD_INLINE = re.compile(r"^\s*fun\b.*\)\s*=\s*(" + "|".join(VALUE_RETURNING) + r")\b")
+# 反引号方法名里的 JVM 非法字符（JVM 规范 §4.2.2：方法名不得含 . ; [ / 与 < >）
+ILLEGAL_JVM_CHARS = set(".;[/<>")
+BACKTICK_FUN = re.compile(r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:private\s+|internal\s+|public\s+)?fun\s+`([^`]*)`")
 PRUNE = {".git", "build", ".gradle", ".kotlin", ".idea"}
+
 
 
 def strip_code(line: str) -> str:
@@ -112,9 +130,24 @@ def scan_file(path: str):
                 body = []
 
 
+def scan_illegal_names(path: str):
+    """扫反引号方法名里的 JVM 非法字符。返回 (行号, 方法名) 列表。"""
+    out = []
+    for idx, raw in enumerate(open(path, encoding="utf-8", errors="replace").read().splitlines(), 1):
+        m = BACKTICK_FUN.match(strip_code(raw))
+        if not m:
+            continue
+        name = m.group(1)
+        bad = sorted({c for c in name if c in ILLEGAL_JVM_CHARS})
+        if bad:
+            out.append((idx, name, "".join(bad)))
+    return out
+
+
 def main() -> int:
     verbose = "-v" in sys.argv
     findings = []
+    illegal = []
     scanned = 0
     for dirpath, dirnames, filenames in os.walk("."):
         dirnames[:] = [d for d in dirnames if d not in PRUNE]
@@ -126,8 +159,11 @@ def main() -> int:
                 continue
             scanned += 1
             full = os.path.join(dirpath, fn)
+            rel = full.replace("\\", "/")
             for fn_line, ln, txt in scan_file(full):
-                findings.append((full.replace("\\", "/"), fn_line, ln, txt))
+                findings.append((rel, fn_line, ln, txt))
+            for ln, name, bad in scan_illegal_names(full):
+                illegal.append((rel, ln, name, bad))
 
     if verbose:
         sys.stderr.write("（扫描测试源文件 %d 个）\n" % scanned)
@@ -140,6 +176,15 @@ def main() -> int:
         print("修法：把该断言绑到 val 再补一句 Unit 型断言，例如")
         print("      val m = assertNotNull(x.userMessage, \"...\")")
         print("      assertTrue(m.contains(\"...\"), \"...\")")
+    if illegal:
+        print("测试源集里有反引号方法名含 **JVM 非法字符**（`.` `;` `[` `/` `<` `>` 之一）——")
+        print("JVM 规范 §4.2.2 禁止方法名含这些字符，Kotlin 会报")
+        print("  `e: ... Name contains illegal characters: X`")
+        print("⇒ 该模块 compileDebugUnitTestKotlin 失败 ⇒ **整个 Build job 红**。")
+        print("⇒ 中文名里想写「A / B」请改成「A 与 B」或「A、B」。")
+        for f, ln, name, bad in illegal:
+            print("  %s:%d  非法字符 %r" % (f, ln, bad))
+            print("      fun `%s`" % name)
     return 0
 
 

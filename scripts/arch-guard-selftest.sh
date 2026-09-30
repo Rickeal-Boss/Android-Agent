@@ -81,7 +81,7 @@ data class AgentRequest(
     val userInput: ChatMessage,
 )
 KT
-  # 第 14 条（Wave 32 起）要求 app/lint-baseline.xml 存在且条目数 <= 冻结值 3
+  # 第 14 条（Wave 32 起）要求 app/lint-baseline.xml 存在且条目数 <= 冻结值 4
   # （沿革 83 → Wave 37 后 35 → Wave 38 清障后 3）：骨架给 2 条 dummy 条目，
   # 2 <= 3 仍低于冻结值，干净树保持绿 —— 故 scaffold() 无需随冻结值下调而改动。
   mkdir -p "$root/app"
@@ -366,9 +366,9 @@ fi
 # case 11：baseline 条目数超冻结值 ⇒ 第 14 条必须报红（防 baseline 变成
 #          「顺手把新问题 regen 进去」的僵尸豁免入口 —— 那会让整条 lint 门禁失效）。
 #          fixture 用 84 条 issue：验证计数只数 <issue 元素、不计根元素 <issues
-#          （若把 <issues 也算进去，85 > 3 恒红会让本 case 的判据失真）。
-#          ⚠️ 84 是相对冻结值 3 取的「明显超出」样本（Wave 38 冻结值 35 → 3 后，
-#          84 > 3 仍成立，故样本无需改）。若冻结值涨到 84 以上，必须同步调大本样本。
+#          （若把 <issues 也算进去，85 > 4 恒红会让本 case 的判据失真）。
+#          ⚠️ 84 是相对冻结值 4 取的「明显超出」样本（Wave 38 冻结值 35 → 4 后，
+#          84 > 4 仍成立，故样本无需改）。若冻结值涨到 84 以上，必须同步调大本样本。
 # case11b：条目数低于冻结值（清了存量）⇒ 必须不红（「只许缩不许涨」的另一面）。
 # ---------------------------------------------------------------------------
 d="$TMP/case11-baseline-overage"
@@ -395,7 +395,7 @@ open(p, 'w', encoding='utf-8').write(
 PYGEN
 out="$(run_guard "$d")"; rc=$?
 assert_red "case11 baseline 超冻结值 (第 14 条)" "$rc" "$out" \
-  "lint baseline 条目数未超冻结值（3，只许清障不许新增豁免）"
+  "lint baseline 条目数未超冻结值（4，只许清障不许新增豁免）"
 if printf '%s\n' "$out" | grep -qF "现有 84 条"; then
   echo "PASS [case11b] 报出「现有 84 条」（计数恰为 84 个 issue 元素，根元素 <issues 未被计入）"
   PASS=$((PASS + 1))
@@ -449,7 +449,7 @@ class NonVoidTest {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case12 @Test 方法非 void (第 15 条)" "$rc" "$out" \
-  "测试源集 @Test 方法必须返回 void（末语句不得是返回值型断言）"
+  "测试源集 @Test 方法必须返回 void 且反引号名不含 JVM 非法字符（. ; [ / < >）"
 # case12b：红必须来自**真命中**，而不是「守卫命令自身执行失败」——
 #          后者那行也含守卫名，会让 assert_red 假绿（本 case 首版就踩过：扫描器用
 #          相对 cwd 路径，在脚手架树里找不到文件 ⇒ exit 2 ⇒ 假绿）。
@@ -462,6 +462,46 @@ elif printf '%s\n' "$out" | grep -qF "assertNotNull"; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case12b] 输出里看不到违规行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 12c：反引号方法名含 JVM 非法字符 ⇒ 第 15 条必须报红。
+#          Wave 38 实案：JVM 规范 §4.2.2 禁止方法名含 `. ; [ /`（`<` `>` 亦不可）。
+#          反引号里写「A / B」这类中文名 ⇒ Kotlin 报
+#          `e: ... Name contains illegal characters: /` ⇒ compileDebugUnitTestKotlin 失败
+#          ⇒ **整个 Build job 红**。本机无 JDK 完全查不出（CI 是唯一通道），故必须静态拦。
+# ---------------------------------------------------------------------------
+d="$TMP/case12c-illegal-name"
+scaffold "$d"
+mkdir -p "$d/core-agent/src/test/java/com/x"
+cat > "$d/core-agent/src/test/java/com/x/IllegalNameTest.kt" <<'KT'
+package com.x
+
+import kotlin.test.Test
+import kotlin.test.assertTrue
+
+class IllegalNameTest {
+    @Test
+    fun `读不了 upsert / remove 均回 Unreadable`() {
+        assertTrue(true)
+    }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case12c 反引号名含 JVM 非法字符 (第 15 条)" "$rc" "$out" \
+  "测试源集 @Test 方法必须返回 void 且反引号名不含 JVM 非法字符（. ; [ / < >）"
+# case12d：红必须来自**真命中**（输出里能看到非法字符判定行），而不是守卫自身故障。
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case12d] 第 15 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "非法字符"; then
+  echo "PASS [case12d] 红来自真命中（输出含「非法字符」判定行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case12d] 输出里看不到非法字符判定行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

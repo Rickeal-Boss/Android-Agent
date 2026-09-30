@@ -238,43 +238,57 @@ check "AgentRequest 可空字段无孤儿（代码完备但未接线）" \
 #       lint 自己在报告里以 LintBaselineFixed 建议删除），另 16 条 AutoboxingStateCreation
 #       + 4 条 RenderEffect 的冗余 @RequiresApi(S)（minSdk 31 = S ⇒ 恒真）已在同波修掉。
 #       ⚠️ 教训：清障前**必须先读 lint artifact** —— 否则无从知道 baseline 是否已失配。
-#       → **Wave 38 清障后 3 条**：D1~D4 四路把 35 条里 **32 条**的**底层代码问题真修掉**
+#       → **Wave 38 清障后 4 条**：D1~D4 四路把 35 条里 **31 条**的**底层代码问题真修掉**
 #       （UseKtx 换 `toUri`/`scale`、ObsoleteSdkInt 删恒真版本判断与 `-v26` 冗余目录、
 #       AnnotateVersionCheck 补 `@ChecksSdkIntAtLeast`、NewApi 改 `removeAt(0)`/显式抑制、
 #       ConfigurationScreenWidthHeight 与 ModifierParameter 就地 `@Suppress`/重排、
-#       Manifest 的 DiscouragedApi/DataExtractionRules、`isShrinkResources`、monochrome 图标、
-#       MissingPermission 补 `@SuppressLint`）。这 32 条随后会变成 lint 的 `LintBaselineFixed`
+#       Manifest 的 DiscouragedApi/DataExtractionRules、monochrome 图标、
+#       MissingPermission 补 `@SuppressLint`）。这 31 条随后会变成 lint 的 `LintBaselineFixed`
 #       （lint 主动建议删除）—— 留着会让「被重新引入的问题」静默命中旧条目而**永不报出**，
 #       故必须随之删除。清障依据 = 上一轮 CI 的 `lint-reports-<sha>` artifact（见上，纪律不变）。
-#       保留的 3 条均为「需真机/行为变更才能修」的诚实豁免：
+#       ⚠️ **本波实案：`NotShrinkingResources` 试删失败，已回滚并留在豁免里** —— 教训是
+#       **只读 lint 的 id 会误判**：该检查在「显式 `isShrinkResources = false`」与「缺省但
+#       开了 `isMinifyEnabled`」**两种情形都会报**（消息分别是 "Avoid setting
+#       isShrinkResources = false" 与 "If enabling minification, also set isShrinkResources
+#       = true"）。删掉显式 false **并不会消掉 issue**，只会换一条消息；而翻 true 属 release
+#       行为变更（R8 资源收缩会删掉「只被动态引用」的资源），必须真机验证后才可动。
+#       ⇒ **凡清障前必须读 artifact 里的完整 message，不能只看 id。**
+#       保留的 4 条均为「需真机/行为变更才能修」的诚实豁免：
 #         · 2 条 `OldTargetApi`（build.gradle.kts / libs.versions.toml 的 `targetSdk = 36`）——
 #           升 targetSdk 是**行为变更**，必须真机验证后才动；
 #         · 1 条 `AutoboxingStateCreation`（OnboardingScreen.kt）——`rememberSaveable` 与
-#           `mutableIntStateOf` 的 saver 语义**不可离线验证**，盲改有状态恢复回归风险。
-#     语义：条目数 > 3 即红（新增了豁免）；< 3 合法（清了存量，请顺手把这里的
-#     3 改成新值）；文件缺失即红（门禁面失效）。
-check "lint baseline 条目数未超冻结值（3，只许清障不许新增豁免）" \
+#           `mutableIntStateOf` 的 saver 语义**不可离线验证**，盲改有状态恢复回归风险；
+#         · 1 条 `NotShrinkingResources`（build.gradle.kts）—— 见上，翻 true 是 release 行为变更。
+#     语义：条目数 > 4 即红（新增了豁免）；< 4 合法（清了存量，请顺手把这里的
+#     4 改成新值）；文件缺失即红（门禁面失效）。
+check "lint baseline 条目数未超冻结值（4，只许清障不许新增豁免）" \
   bash -c 'f=app/lint-baseline.xml
            if [ ! -f "$f" ]; then echo "app/lint-baseline.xml 不存在（lint 门禁面失效：abortOnError=true 会拦掉全部存量）"; exit 0; fi
            n=$(grep -cE "^[[:space:]]*<issue[[:space:]]*$" "$f")
-           if [ "$n" -gt 3 ]; then echo "lint baseline 现有 $n 条，超冻结值 3（⛔ 基线只许缩不许涨 —— 新问题应该修掉，而不是 regen 进豁免清单；确属应豁免的存量需主理人改本守卫的冻结值并写明理由）"; fi'
+           if [ "$n" -gt 4 ]; then echo "lint baseline 现有 $n 条，超冻结值 4（⛔ 基线只许缩不许涨 —— 新问题应该修掉，而不是 regen 进豁免清单；确属应豁免的存量需主理人改本守卫的冻结值并写明理由）"; fi'
 
-# 15) 测试源集的 @Test 方法必须返回 void（Wave 37 实案）：JUnit 4 要求测试方法 void，
-#     而 Kotlin 表达式体 `fun x() = ...` 的返回类型由**末表达式**决定 —— `kotlin.test`
-#     里 assertNotNull / assertIs / assertFailsWith / assertFails 会**返回值**，放在末语句
-#     会让方法非 void ⇒ **整个测试类 initializationError** ⇒ 该类**所有用例一个都不跑**，
-#     而 Gradle 只报「N tests completed, 1 failed」（「只挂 1 个」是假象）。Wave 37 因此
-#     白烧一轮 CI。断言「必须不存在」的守卫天然合规：命中即输出，干净时零输出。
+# 15) 测试源集：@Test 方法必须返回 void，且反引号名不得含 JVM 非法字符。
+#     ① void（Wave 37 实案）：JUnit 4 要求测试方法 void，而 Kotlin 表达式体
+#        `fun x() = ...` 的返回类型由**末表达式**决定 —— `kotlin.test` 里
+#        assertNotNull / assertIs / assertFailsWith / assertFails 会**返回值**，放在末语句
+#        会让方法非 void ⇒ **整个测试类 initializationError** ⇒ 该类**所有用例一个都不跑**，
+#        而 Gradle 只报「N tests completed, 1 failed」（「只挂 1 个」是假象）。白烧一轮 CI。
+#     ② JVM 非法字符（Wave 38 实案）：JVM 规范 §4.2.2 禁止方法名含 `. ; [ /`（`<` `>` 亦不可）。
+#        反引号里写「A / B」这类中文名会让 Kotlin 直接报
+#        `e: ... Name contains illegal characters: /` ⇒ compileDebugUnitTestKotlin 失败
+#        ⇒ **整个 Build job 红**。本机无 JDK **完全查不出**（CI 是唯一通道）。
+#        修法：中文名里的「A / B」改成「A 与 B」「A、B」。
+#     断言「必须不存在」的守卫天然合规：命中即输出，干净时零输出。
 #     扫描器按**本脚本所在目录**定位（不能用相对 cwd 的路径：自测网会在脚手架树里
 #     以 cwd=脚手架 运行本守卫，相对路径会找不到脚本 ⇒ 守卫命令自身 exit 2 假红）。
 #     扫描器自身异常也会打到 stdout，按「stdout 非空 = 违规」的契约判红，绝不静默通过。
 GUARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 扫描器缺失 = 守卫面失效 —— 必须判红，绝不能静默通过（僵尸规则的典型形态）
 if [ ! -f "$GUARD_DIR/check-test-void.py" ]; then
-  echo "::error::[测试源集 @Test 方法必须返回 void（末语句不得是返回值型断言）] 扫描器缺失：$GUARD_DIR/check-test-void.py（守卫面已失效）"
+  echo "::error::[测试源集 @Test 方法必须返回 void 且反引号名不含 JVM 非法字符（. ; [ / < >）] 扫描器缺失：$GUARD_DIR/check-test-void.py（守卫面已失效）"
   fail=1
 fi
-check "测试源集 @Test 方法必须返回 void（末语句不得是返回值型断言）" \
+check "测试源集 @Test 方法必须返回 void 且反引号名不含 JVM 非法字符（. ; [ / < >）" \
   bash -c "python \"$GUARD_DIR/check-test-void.py\" || python3 \"$GUARD_DIR/check-test-void.py\""
 
 echo "-----------------------------------------"
