@@ -555,6 +555,46 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# case 14：全仓出现第 2 处 .setSink 调用 ⇒ 第 16 条（AgentLogStore.setSink 调用点数）
+#          必须报红。setSink 是单槽覆盖式 API：第二个 sink 会静默顶掉第一个，
+#          而唯一的 sink 挂着 ERROR 落盘（AgentLogFileStore.install KDoc 自认回退级
+#          事故）。骨架默认 .setSink 调用数为 0（≤1 绿），本 case 注入 2 处调用 ⇒ n=2 红。
+#          fixture 用**尾随 lambda** 形态 `AgentLogStore.setSink { … }` —— 这正是裁决稿
+#          判据 `.setSink(`（带括号）在本仓 0 命中的原因（唯一真调用点
+#          AgentLogFileStore.kt:88 就是这个形态），钉住修正后的判据
+#          `\.setSink[[:space:]]*[( {]` 对尾随 lambda 的覆盖。
+# case14b：红必须来自**真命中**（输出含「处 .setSink(」计数行），而不是「守卫命令
+#          自身执行失败」—— 后者那行也含守卫名，会让 assert_red 假绿（与
+#          case12b / case12d / case13b 同一范式）。
+# ---------------------------------------------------------------------------
+d="$TMP/case14-second-sink"
+scaffold "$d"
+mkdir -p "$d/core-data/src/main/java/com/rickeal/agent/core/data"
+cat > "$d/core-data/src/main/java/com/rickeal/agent/core/data/SinkThief.kt" <<'KT'
+package com.rickeal.agent.core.data
+
+fun stealSink() {
+    AgentLogStore.setSink { _, _, _ -> }
+    AgentLogStore.setSink { _, _, _ -> }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case14 第二个 setSink 调用 (第 16 条)" "$rc" "$out" \
+  "AgentLogStore.setSink( 全仓只允许 1 处调用点（AgentLogFileStore.install，单槽覆盖式 API）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case14b] 第 16 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "处 .setSink("; then
+  echo "PASS [case14b] 红来自真命中（输出含「处 .setSink(」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case14b] 输出里看不到「处 .setSink(」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
 echo "-----------------------------------------"
 echo "自测结果：PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -ne 0 ]; then

@@ -35,6 +35,13 @@ fail=0
 # ⚠️ 上述「rc>=2 = 守卫自身故障」对**带管道的守卫命令失效**：管道会把 grep 的 rc=2
 #    洗成 rc=1（输出空 ⇒ 判 OK），多路径时甚至洗成 rc=0。实测数据与完整分析见下方
 #    「模块存在性」前置断言处的注释块 —— 那里也说明了为什么目录存在性必须显式兜。
+# ⚠️ 管道守卫 rc 洗白矩阵（速查；完整实测数据与分析见下方「模块存在性」前置断言处的注释块）：
+#   ① `grep -rn X a/ b/ c/ | grep -vE '...'` —— 多路径其一缺失 ⇒ rc=2（即使有命中，stdout 仍带命中行）；
+#   ② `pipefail` 两层都救不了：本脚本顶部的 `set -uo pipefail` 不继承进 `bash -c` 子壳，且
+#      pipefail 取「最右的那个非零退出码」而非最大值 —— ① 的 rc=2 会被右侧的 rc=1 盖成 1；
+#   ③ `| grep -vE` 右侧有命中时可把 rc 洗成 0 —— 完全静默 ⇒ 新守卫一律用单根 `.` 扫描 +
+#      被扫描的模块目录由「模块存在性」显式前置断言兜底（清单见下方 `for d in …` 循环，
+#      必须与 settings.gradle.kts 的 include 保持同步）。
 check() {
   local name="$1"
   shift
@@ -336,6 +343,23 @@ if [ ! -f "$GUARD_DIR/check-test-void.py" ]; then
 fi
 check "测试源集 @Test 方法必须返回 void 且反引号名不含 JVM 非法字符（. ; [ / < >）" \
   bash -c "python \"$GUARD_DIR/check-test-void.py\" || python3 \"$GUARD_DIR/check-test-void.py\""
+
+# 16) AgentLogStore.setSink 调用点数守卫（Wave 40 / 外部复评报告 v10 I4）：setSink 是
+#     **单槽覆盖式** API（core-model/AgentLogStore.kt）—— 它内部只持有一个 sink 引用，
+#     第二次 setSink 会**静默顶掉**第一个，而唯一的 sink 挂着 ERROR 落盘
+#     （core-data/AgentLogFileStore.kt 的 KDoc 自认这是回退级事故）。全仓唯一合法
+#     调用点 = AgentLogFileStore.install() 内那 1 处。
+#     ⚠️ 实测勘误（裁决稿判据 `.setSink(` 在本仓 0 命中）：唯一真调用点用的是
+#     Kotlin 尾随 lambda 语法 `AgentLogStore.setSink { … }`，带括号形态一个都匹配
+#     不到 ⇒ 判据改为 `\.setSink[[:space:]]*[( {]`，同时覆盖 `setSink(` 与 `setSink {`
+#     两种调用形态。定义处 `fun setSink(` 无点前缀不命中；KDoc 提及（`AgentLogStore.setSink`
+#     后跟反引号 / `]`）也不命中，实测恰命中 1 处真调用。注释行仍走 EXCLUDE_COMMENT
+#     统一过滤（防将来有人在注释里贴调用示例造成假红）。
+#     扫描面是单根 `.`（见顶部「管道守卫 rc 洗白矩阵」③：避开多路径 rc 洗白）；
+#     n≤1 合法（0 = 尚未接线也放行），n≥2 即红。
+check "AgentLogStore.setSink( 全仓只允许 1 处调用点（AgentLogFileStore.install，单槽覆盖式 API）" \
+  bash -c 'n=$(grep -rnE "\.setSink[[:space:]]*[( {]" --include="*.kt" '"${EXCL[*]}"' . | grep -vE "'"$EXCLUDE_COMMENT"'" | wc -l)
+           [ "$n" -le 1 ] || echo "发现 $n 处 .setSink( 调用：第二个 sink 会静默顶掉第一个（ERROR 落盘丢失），见 AgentLogFileStore.install KDoc"'
 
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then

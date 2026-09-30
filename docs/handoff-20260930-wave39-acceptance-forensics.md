@@ -216,5 +216,5 @@ artifact: lint-reports-89b61db1d76c0203f659d530a9f82781033d7d88 (id=11100176315)
 ## Suggested skills
 
 无必须项。接手时沿用「主理人侦察（含证伪挂账失实）→ 沈思远窄而深审计 + 文件面切分 → 柯码成 ×N 文件面互斥并行 → 崔续程 CI 通道核验 → 主理人集成 → **本地三闸门** → push → CI 双绿 → **下载 lint-reports artifact 验证真实 issue 集**」SOP。
-⚠️ **本波三条新铁律**：① `git ls-remote` 会假绿，push 通道真判据是 `git push --dry-run`；② `Release` 没有 `paths-ignore`（docs 提交 Build 0 run 但 Release 照跑）；③ 任何 lint 判读工具的输出**必须带完整 `message`**。
+⚠️ **本波三条新铁律**：① `git ls-remote` 会假绿，push 通道真判据是 `git push --dry-run`；② `Release` 没有 `paths-ignore`，但有 paths 正向白名单（app/**、core-*/**、feature-*/**、gradle/**、gradle.properties、gradlew、settings.gradle.kts、build.gradle.kts、.github/workflows/**、scripts/**，不含 docs/ 与 *.md）⇒ 纯 docs 提交 Build（paths-ignore）与 Release（paths 白名单）双 0 run；⚠️ paths 对 tag 推送不生效（tag 无 changed files），tag 总会跑；③ 任何 lint 判读工具的输出**必须带完整 `message`**。
 ⚠️ **子 Agent 配额**：本波 4 路并行后频繁撞 429（重置 2026-10-01 01:01）⇒ 面 C 与多轮对话中断，**主理人接手补完**。下波建议：**关键面由主理人亲自兜底**，或把并行度降到 2–3。

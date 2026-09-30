@@ -524,6 +524,7 @@ Wave 33 起累计的验收项**从未被回收过**（≈32 条，零记录）�
 - **新增 logcat 出口**：TAG = **`LiquidAgentDiag`**，**全级别**（INFO/WARN/ERROR）转发，行格式 `[LEVEL] message`（`message` 已过脱敏 + 400 字符截断）。
   - **抓取命令**：`adb logcat -s LiquidAgentDiag:V`（或 `adb logcat -s LiquidAgentDiag:V > d.log` 落文件）
   - release 包**没有**这条输出（`Log.d` 由 R8 按 `proguard-rules.pro` 剥离）⇒ **取证必须用 debug 包**，或用带 logcat 的 Release 复现构建。
+  - ⚠️ **分叉判据**：debug 复现 → 正常取证；debug 不复现而 release 复现 ⇒ 判定为 **R8 相关新问题**（`Log.d` 被剥离只是表象，混淆/内联/资源收缩都可能改变行为）——logcat 通道失效，需**专门取证设计**（release 构建临时加 `-keep` 落点复现、或对照 `mapping.txt` 反混淆崩溃栈），**不得**用 debug 包的日志反推 release 行为。
 - **诊断页新增「复制全部」按钮**（设置 → 诊断）：把「上次崩溃前的记录（磁盘）」+「本次运行（内存）」两区**当前可见**内容拼成纯文本进剪贴板，并有 Toast 反馈（含条数）。
 - **落盘文件**（`last_errors.log`）**只收 ERROR**，用途是崩溃幸存 —— 不要指望在里面找到 INFO/WARN 关键字。
 - ⚠️ **6 组关键字里有 4 组是 WARN 级**，抓取时**不要只过滤 INFO**（下表已逐条标注级别）。
