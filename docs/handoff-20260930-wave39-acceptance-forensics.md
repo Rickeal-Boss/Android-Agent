@@ -134,8 +134,13 @@ artifact: lint-reports-89b61db1d76c0203f659d530a9f82781033d7d88 (id=11100176315)
 ### 🔴 4.2 凭据可能**同时存在两枚**，换 PAT 必须全部脚本一起换
 本波发现 `_ci-tools/ghapi.sh` 与 `_ci-tools/err.sh` + `size-audit/{audit,dl,dl2}.sh` 内嵌的是**两枚不同**的 PAT，且**同时失效**。⇒ 只换一处必漏。换完要用「提取 token 算 md5 / 比长度 / 比尾 4 位」自查一遍。
 
-### 🔴 4.3 `Release` workflow **没有** `paths-ignore`（只 `Build` 有）
-`grep -c "paths-ignore" release.yml` = **0**。⇒ 纯 md/docs 的 push 是「**Build 0 run、Release 照样跑**」。此前一直误以为 docs commit 是 0 run —— 盯 run 时**两个都要看**，只看 Build 会误判「CI 没跑」。
+### 🔴 4.3 两条 workflow **都有**路径过滤，但形态不同 —— 「Release 照样跑」是错的（本波主理人被带偏的一次）
+- `Build`（build.yml）用 **`paths-ignore` 黑名单**（`docs/**`、`**/*.md`、`.github/ISSUE_TEMPLATE/**` 等）。
+- `Release`（release.yml:39-51）用 **`paths` 正向白名单**：`app/**`、`core-*/**`、`feature-*/**`、`gradle/**`、`gradle.properties`、`gradlew`、`settings.gradle.kts`、`build.gradle.kts`、`.github/workflows/**`、`scripts/**`。**没有 `docs/**` 与 `README.md`**。
+- ⇒ **纯 docs/README 提交：Build 与 Release 都是 0 run**（本波 `837e4f7` 实测 `total: 0`，与本波此前 `436e6f0` 的行为一致）。
+- ⚠️ **事故经过（值得记住）**：CI 专家 grep `paths-ignore` 计数为 0 ⇒ 得出「Release 无路径过滤 ⇒ docs 提交 Release 照样跑」，**只查了关键字、没看 `on:` 段全文**；方案分析师原判断「面 C 文档改动 0 run」**本来是对的**却被驳回；主理人采信了这条「修正」并写进交接文档与记忆 —— **直到本波 docs 提交实测 `total: 0` 才翻案**。
+- ⇒ **可复用判据**：判断「某提交会不会触发某 workflow」，必须读 `on:` 段**全文**（`paths` 与 `paths-ignore` 是两个方向），**grep 单个关键字 ≠ 理解触发条件**；最终裁决永远是「推一个实测」。
+- 附带收益：**docs-only 提交零 CI 成本** ⇒ 交接文档可以放心在 CI 绿之后单独补推（本波就是这么做的：`89b61db` 代码双绿 → `837e4f7` 交接文档 0 run）。
 
 ### 🔴 4.4 `verify_lint.py` 判红时**只给 id、不给 message** —— 与 W38 铁律直接冲突
 原实现用正则只抽 `id` + `severity`，判红时**不输出 `message`**。而 W38 最贵教训正是「只读 id 会误判」（`NotShrinkingResources` 同一 id 两种形态两种 message）。⇒ 已补 `message` / `errorLine1` / `file` 输出（`_ci-tools/verify_lint.py`，仓库外）。
