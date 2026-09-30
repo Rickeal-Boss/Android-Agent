@@ -7,7 +7,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -96,8 +96,8 @@ fun GlassSwitch(
     // 真机没有绝对静止的点击，手指抖 1px 也会产生 dragAmount；旧代码只要横向分量
     // 非零就置"已拖动" → fraction 只漂移一点点 → 松手吸附回**原状态**
     // → 点了开关不切换，只抖一下弹回去。这就是本条要修的 bug。
-    var draggedX by remember { mutableStateOf(0f) }
-    var fraction by remember { mutableStateOf(if (checked) 1f else 0f) }
+    var draggedX by remember { mutableFloatStateOf(0f) }
+    var fraction by remember { mutableFloatStateOf(if (checked) 1f else 0f) }
     // 回调里要读最新值，不能闭包住第一次组合时的旧引用。
     val currentChecked by rememberUpdatedState(checked)
     val currentOnCheckedChange by rememberUpdatedState(onCheckedChange)

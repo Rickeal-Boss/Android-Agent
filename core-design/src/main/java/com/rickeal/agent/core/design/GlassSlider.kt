@@ -17,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -223,8 +224,8 @@ private fun LiquidSliderTrack(
         // 量化回原值 → 状态不变无回显 → targetValue 永不前进 → **卡死**；
         // 快甩才跨过半档跳一格 → **"抽动"**。Kyant0 原版 onDrag 里没有 snap，
         // snapToStep 是移植时加进去的 —— 增量基准必须换成手势内累积才能共存。
-        var dragAccumPx by remember { mutableStateOf(0f) }
-        var dragStartValue by remember { mutableStateOf(0f) }
+        var dragAccumPx by remember { mutableFloatStateOf(0f) }
+        var dragStartValue by remember { mutableFloatStateOf(0f) }
         var sliderDragging by remember { mutableStateOf(false) }
         // 这些值在 remember 出来的回调里被读取，必须用 rememberUpdatedState 拿最新值，
         // 否则回调会闭包住第一次组合时的旧引用（滑块在列表里复用时尤其明显）。

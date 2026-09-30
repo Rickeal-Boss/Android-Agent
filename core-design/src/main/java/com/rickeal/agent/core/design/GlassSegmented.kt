@@ -14,7 +14,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -155,10 +156,10 @@ private fun SegmentedIndicator(
 
     // 布局量用 State 承载而不是闭包捕获：分屏/旋转后宽度变化，旧闭包会失真
     //（与 LiquidBottomTabs 的 tabWidthState 同一决定）。
-    val itemWidthState = remember { mutableStateOf(0f) }
+    val itemWidthState = remember { mutableFloatStateOf(0f) }
 
     // 内部选中态：单击项与拖动胶囊都只改它，由它统一驱动动画与回调。
-    var currentIndex by remember { mutableStateOf(selectedIndex) }
+    var currentIndex by remember { mutableIntStateOf(selectedIndex) }
 
     // onSelected 的最新引用：onDragStopped / 项 onClick 两个**用户动作位点**
     // 直接回调（与 LiquidBottomTabs 同款——绝不能挂回 snapshotFlow 收集器，
@@ -184,8 +185,8 @@ private fun SegmentedIndicator(
     // ⚠️ 锚点用 **receiver 的实时 value**（胶囊此刻的真实位置，2026-09-24 Wave 6b
     // 与 LiquidBottomTabs 同批修正）——不能用 currentIndex：点击动画进行中按住
     // 胶囊时两者可能差出数项，旧锚点的第一帧 snapValue 会把胶囊瞬移。
-    var dragAccumPx by remember { mutableStateOf(0f) }
-    var dragStartValue by remember { mutableStateOf(0f) }
+    var dragAccumPx by remember { mutableFloatStateOf(0f) }
+    var dragStartValue by remember { mutableFloatStateOf(0f) }
 
     val dampedDragAnimation = remember(animationScope) {
         DampedDragAnimation(

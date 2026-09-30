@@ -25,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -98,7 +99,7 @@ fun DiagnosticsScreen(
         onDispose { onPerfObservation(false) }
     }
 
-    var filterIndex by remember { mutableStateOf(0) }
+    var filterIndex by remember { mutableIntStateOf(0) }
     var snapshot by remember { mutableStateOf(AgentLogStore.recent(MAX_SHOWN)) }
     var persisted by remember { mutableStateOf(emptyList<AgentLog>()) }
 

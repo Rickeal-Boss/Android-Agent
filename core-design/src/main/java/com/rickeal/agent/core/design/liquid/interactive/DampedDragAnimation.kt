@@ -8,6 +8,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -238,11 +239,12 @@ class DampedDragAnimation(
         spring(dampingRatio = 0.5f, stiffness = 300f, visibilityThreshold = 0.01f)
     private val velocityTracker = VelocityTracker()
 
-    // 刻意不用 `by mutableFloatStateOf(...)` 委托：MutableFloatState 的
+    // 刻意不用 `by` 委托：MutableFloatState 的
     // getValue/setValue 是 androidx.compose.runtime 的扩展运算符，必须显式 import 才生效，
     // 漏了 import 会报 "Type 'MutableFloatState' has no method 'getValue(...)'"（CI 实测踩过）。
-    // 直接持有 state 并手写 get/set，少一个隐式依赖。
-    private val targetValueState = mutableStateOf(initialValue)
+    // 此处直接用 `mutableFloatStateOf` 工厂 + 手写 get/set 访问 `.value`（`.value` 是
+    // MutableState<Float> 的成员、非扩展运算符，不触发上述陷阱）：既免了装箱，也不多一个隐式依赖。
+    private val targetValueState = mutableFloatStateOf(initialValue)
 
     /** 当前目标值（手指/外部状态想去的地方）。拖拽增量基于它计算，避免累积漂移。 */
     var targetValue: Float

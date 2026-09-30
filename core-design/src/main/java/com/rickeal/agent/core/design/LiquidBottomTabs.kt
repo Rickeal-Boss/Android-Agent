@@ -25,6 +25,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -317,10 +319,10 @@ fun LiquidBottomTabs(
     // 手势回调里要读的布局量。用 State 承载而不是闭包捕获 val：
     // DampedDragAnimation 被 remember，闭包捕获的是创建那一刻的值；
     // 分屏 / 旋转后窗口宽度变了，旧闭包仍用旧宽度 → 胶囊跟手比例失真。
-    // 刻意用 mutableStateOf + 显式 .value（不用 by 委托），与 DampedDragAnimation
-    // 的同一决定一致 —— 少一层隐式依赖。
-    val tabWidthState = remember { mutableStateOf(0f) }
-    val containerWidthState = remember { mutableStateOf(0f) }
+    // 刻意用 mutableFloatStateOf + 显式 .value（不用 by 委托），与 DampedDragAnimation
+    // 的同一决定一致 —— 少一层隐式依赖；且 Float 原语 state 免了装箱（Wave 37 清障）。
+    val tabWidthState = remember { mutableFloatStateOf(0f) }
+    val containerWidthState = remember { mutableFloatStateOf(0f) }
 
     // 面板拉伸偏移（px）：拖动时整条玻璃朝拖动方向最长拉 4dp，松手弹簧归零。
     //
@@ -336,7 +338,7 @@ fun LiquidBottomTabs(
     // 语义完全一致，但每帧只有 1 个 layer 失效（原先是 3 个）。
     // ⚠️ Phase 2d：平移**不再**挂在 BoxWithConstraints 上 —— 必须留在内层 wrapper，
     // 这样静态手势宿主（BoxWithConstraints 的另一个子节点）才不被平移（见类 KDoc「坐标反馈」）。
-    val panelOffsetPx = remember { mutableStateOf(0f) }
+    val panelOffsetPx = remember { mutableFloatStateOf(0f) }
     val panelOffset = remember(density) {
         derivedStateOf {
             val containerWidth = containerWidthState.value
@@ -390,7 +392,7 @@ fun LiquidBottomTabs(
             val panelReboundJob = remember { mutableStateOf<Job?>(null) }
 
             // 内部选中态：单击页签与拖动胶囊都只改它，由它统一驱动动画与回调。
-            var currentIndex by remember { mutableStateOf(safeSelectedIndex) }
+            var currentIndex by remember { mutableIntStateOf(safeSelectedIndex) }
 
             // ⚠️ consumeSlopPx 必须 8dp（见类 KDoc）——"点击选中页签没反应"的保险丝。
             val consumeSlopPx = with(density) { 8.dp.toPx() }
@@ -408,8 +410,8 @@ fun LiquidBottomTabs(
             // DampedDragAnimation）——不能用 currentIndex：点击动画进行中按住胶囊时
             // 两者可能差出数个页签，旧锚点的第一帧 snapValue 会把胶囊瞬移到 currentIndex
             //（真机录屏"首尾乱飘"的来源之一）。
-            var dragAccumPx by remember { mutableStateOf(0f) }
-            var dragStartValue by remember { mutableStateOf(0f) }
+            var dragAccumPx by remember { mutableFloatStateOf(0f) }
+            var dragStartValue by remember { mutableFloatStateOf(0f) }
 
             // onSelected 的最新引用：onDragStopped / 页签 onClick 两个**用户动作位点**
             // 直接回调（见各处注释——绝不能挂回 snapshotFlow 收集器）。必须声明在
