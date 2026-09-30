@@ -487,14 +487,24 @@ jobs:
   #        是对已 disable 检查的失效条目 ⇒ 删 28 条 + 修 16 处 AutoboxingStateCreation
   #        + 删 4 处 RenderEffect 冗余 @RequiresApi(S)（minSdk 31 = S ⇒ 恒真），
   #        baseline 83 → 35；arch-guard 第 14 项冻结值同步降到 35。
+  #      第四轮（Wave 37 收口）：lint 产物验证发现 F3 只做了一半 —— 换成
+  #        mutableFloatStateOf 后**读写 `.value` 仍装箱**，lint 报 26 条
+  #        AutoboxingStateValueProperty（Error，未被 baseline 吸收；因该 step 带
+  #        continue-on-error，job 仍显示绿）⇒ 27 处改走原语访问器 `.floatValue`。
+  #        再验产物：真实新问题 = 0、baseline 精确吸收 34 errors + 1 hint
+  #        ⇒ 摘除 continue-on-error，lint 转为硬门禁。
   #   4. 重新生成基线：删掉 app/lint-baseline.xml 再跑一次本 job。
   #      ⛔ 不要手工从 lint-results XML 合成 baseline —— 报告里的 file 属性
   #      是 CI 绝对路径（/home/runner/work/...），与 baseline 的形态不一定
   #      一致，猜错就是门禁失效。让 lint 自己写。
   #
-  # ⚠️ 观察期兜底：第二轮翻转后 "Run Android Lint" 步骤带 continue-on-error，
-  #    若基线没匹配上存量会红 step 不红 job —— 确认一轮干净后应摘掉，
-  #    让 lint 门禁恢复全量阻断力。
+  # ✅ 观察期已结束（Wave 37 第四轮摘除）："Run Android Lint" 步骤的
+  #    continue-on-error 已删除，lint 门禁为**硬门禁**（新增问题直接红 job）。
+  #    摘除依据 = lint-reports artifact 显示真实新问题 0 + lint job 日志
+  #    「Lint found no new issues ... BUILD SUCCESSFUL」。
+  #    🔴 遗留教训：「CI 双绿」**不等于**「lint 通过」—— 观察期里 lint 实际失败
+  #    也只红 step 不红 job，**必须读 `lint-reports-<sha>` artifact 才知道真相**
+  #    （Wave 37 实测：一轮「双绿」的背后是 26 条未被 baseline 吸收的新错误）。
   #
   # 工具链与 Build / unit-tests job 完全同源（JDK 21 temurin / Gradle 9.7.1
   # via setup-gradle / 同一份 ci-gradle.properties），三个 job 的 Gradle
@@ -583,19 +593,21 @@ jobs:
           fi
           gradle --version
 
-      # 观察期（第二轮）：continue-on-error 让「基线没匹配上」暴露成红 step
-      # 而不打红 CI；确认一轮干净后删除本行，恢复全量阻断。
+      # 门禁全量生效（Wave 37 第四轮：观察期已摘除）：本 step **不再**带
+      # continue-on-error —— lint 一旦发现**新增**问题即红 step、红 job。
+      # 摘除依据是**硬证据**（不是推测）：上一轮 CI 的 lint-reports-<sha> artifact
+      # 里真实新问题 = 0（仅剩一条 LintBaseline Hint），且 lint job 日志为
+      # 「Lint found no new issues (and 34 errors and 1 hint filtered by baseline)」
+      # + 「BUILD SUCCESSFUL」⇒ 门禁真的会过，而非靠 continue-on-error 兜住。
       - name: Run Android Lint (baseline gate)
-        continue-on-error: true
         # 【只用 setup-gradle 安装的 gradle，与其他 job 同款】不调 ./gradlew。
         # :app:lintDebug + checkDependencies=true：单次调用覆盖 :app 及其全部
         # library 依赖的源码（AGP 会自动先编译依赖模块的 class 供 lint 分析）。
-        # lint 门禁已翻转：app/build.gradle.kts lint{} 现为 abortOnError=true +
+        # lint 门禁：app/build.gradle.kts lint{} 为 abortOnError=true +
         # warningsAsErrors=true；存量由 app/lint-baseline.xml 冻结（35 条，
         # scripts/arch-guard.sh 第 14 项「只许缩不许涨」守着）吸收，新增问题阻断。
-        # ⚠️ 本 step 仍带 continue-on-error: true（观察期未摘）。摘除前提：先读
-        # lint-reports-<sha> artifact 确认真实 issue 集，并核对 baseline 是否因代码
-        # 移动（file/line 漂移）而失配 —— 干净后再摘掉，恢复全量阻断。
+        # 维护纪律：baseline 只许**缩**（修掉存量 ⇒ 删对应条目 + 同步降守卫冻结值），
+        # 绝不许**涨**（把新问题 regen 进 baseline = 僵尸豁免，守卫会直接红）。
         # 不加 --continue：单任务调用没有「继续跑其余任务」的语义。
         run: |
           gradle \
@@ -607,8 +619,10 @@ jobs:
       - name: Regenerate lint baseline if missing
         # 兜底：某些 AGP/lint 版本只在 "UpdateBaselineTask" 里写 baseline，
         # 普通 :app:lintDebug 不落盘。这里只在确实没生成时才补跑一次。
-        # continue-on-error: true + `|| true` 双重兜底 —— 任务名不存在也绝不
-        # 打断本 job（本 job 的结论语义在 Wave 32 第二轮之前必须是「不影响」）。
+        # ⚠️ 本步是**诊断性兜底**，不是门禁 —— 门禁由上方 Run Android Lint 承担
+        # （已无 continue-on-error）。故此处保留 continue-on-error + `|| true`：
+        # 只在 baseline 缺失（异常态）时才真正执行，任务名不存在也不打断 job，
+        # 以免「修不了基线」这一件事把整条流水线的信号淹没。
         id: regen
         if: always()
         continue-on-error: true
@@ -681,7 +695,7 @@ jobs:
             xml="app/build/reports/lint-results-debug.xml"
             if [ -f "$xml" ]; then
               count="$(sed -n 's/.*issues[^>]*count="\([0-9]*\)".*/\1/p' "$xml" | head -n 1)"
-              echo "Issues found: **${count:-0}** — lint 门禁已翻转（abortOnError=true + warningsAsErrors=true，存量由 baseline 冻结 35 条吸收）；本 step 仍带 continue-on-error（观察期），完整报告见 artifact \`lint-reports-\`。"
+              echo "Issues found: **${count:-0}** — lint 门禁为**硬门禁**（abortOnError=true + warningsAsErrors=true，存量由 baseline 冻结 35 条吸收，观察期已于 Wave 37 摘除）；完整报告见 artifact \`lint-reports-\`。"
               echo "（存量已由 baseline 吸收，此处为**新增**问题数，理想为 0）"
             else
               echo "未找到 lint XML 报告 —— 检查上方 Run Android Lint 日志。"
@@ -691,12 +705,12 @@ jobs:
               echo "Baseline：**已生成** → \`${{ steps.baseline.outputs.path }}\`，"
               echo "已作为 artifact \`lint-baseline-\` 上传（保留 30 天）。"
               echo ""
-              echo "> 门禁已翻转（abortOnError=true + warningsAsErrors=true），本 step 仍带"
-              echo "> continue-on-error 观察期。摘除前提：读 \`lint-reports-\` artifact 确认真实"
-              echo "> issue 集、核对 baseline 是否因代码移动而失配，干净后再摘掉。"
+              echo "> 门禁为**硬门禁**（abortOnError=true + warningsAsErrors=true），观察期已于 Wave 37 摘除。"
+              echo "> 🔴 排障必读：判定 lint 是否真的通过，**必须看 \`lint-reports-\` artifact**（真实 issue 集），"
+              echo "> 不能只看 job 颜色 —— 观察期里 lint 实际失败也只会红 step 不红 job。"
               echo "> 完整 XML 见上方 \`Locate lint baseline\` 步骤的日志折叠块（前 25 行）。"
             else
               echo ""
-              echo "Baseline：**未生成** ❌ —— abortOnError=true 下存量 issue 会全量阻断（本 step 由 continue-on-error 兜住），先看 Annotations 面板并重建 baseline。"
+              echo "Baseline：**未生成** ❌ —— abortOnError=true 下存量 issue 会全量阻断，先看 Annotations 面板并重建 baseline（本步的兜底再生见上方 Regenerate 步骤）。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
