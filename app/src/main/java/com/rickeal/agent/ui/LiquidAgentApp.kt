@@ -735,6 +735,12 @@ private fun MainShell() {
  * `ModalNavigationDrawer` **不会**处理返回键 —— 只把两段式那个改成
  * `enabled = !isOpen` 会让抽屉打开时的返回键落空（正是 C-3 要修的 bug）。
  *
+ * ⚠️ 本结论**仅限本函数内的两个回调**（二者 enabled 互补，故与顺序无关）。
+ *    跨屏新增的 BackHandler 不受此保护 —— 它们与「关抽屉」回调的 enabled 不互补，
+ *    优先级由 OnBackPressedDispatcher 的 **LIFO**（后注册先派发）决定。
+ *    例：`SandboxFilesScreen` 的返回键回调注册在本函数之后（导航进子页时才组合），
+ *    故在子目录里它会先于本函数的「关抽屉 / 两段式」执行（Wave 38 新增）。
+ *
  * 注册顺序仍须在 `NavHost` **之后**（LIFO，见 docs/09-back-navigation.md §6）——
  * 所以本函数必须在 `MainShell` 里 `ModalNavigationDrawer` 之后调用。
  *

@@ -3,6 +3,7 @@ package com.rickeal.agent.feature.settings.tools
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -73,6 +74,20 @@ fun SandboxFilesScreen(
     val state by viewModel.uiState.collectAsState()
     val colors = LocalGlassColors.current
     val context = LocalContext.current
+
+    // 系统返回键与顶栏返回钮**同语义**（Wave 38 挂账 P2-6）：子目录里按系统返回键应先上溯
+    // 一层，而不是被 app 级两段式直接接管、跳出整个子页（此前两者行为不一致）。
+    // 「能否上溯」的判据与顶栏钮同源 —— 读真源 state.currentDirPath（collectAsState 快照）：
+    // 非空（已下钻）才由本层接管上溯；根层时 enabled = false，返回键回落 app 级两段式
+    // （先回对话页、再退出）—— 这正是我们要的。本回调在导航进本页时注册，晚于 MainShell
+    // 首帧组合注册的 DrawerBackHandler，故 LIFO 下优先于它（返回键按后注册的先执行）。
+    // ⚠️ 前提：本页的抽屉边缘手势为 false（LiquidAgentApp 里 gesturesEnabled 只对 CHAT 页
+    // 为 true）且顶栏无汉堡入口 ⇒ 抽屉不可能在本页开着，故本回调与「关抽屉」回调不存在
+    // 优先级冲突。若将来给本页加抽屉入口，必须把 enabled 收紧为
+    // `state.currentDirPath.isNotEmpty() && !drawerState.isOpen`。
+    BackHandler(enabled = state.currentDirPath.isNotEmpty()) {
+        viewModel.navigateUp()
+    }
 
     GlassScaffold(
         modifier = modifier,
