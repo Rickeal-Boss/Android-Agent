@@ -23,10 +23,10 @@ data class MemorySection(
 /**
  * 一次记忆写入的结果（Wave 37）。
  *
- * 为什么不是 Boolean：写入有**四种**互不隶属的结局 —— 成功 / 正文超限 / 文件损坏拒写 /
- * **落盘失败**。Boolean 只能表达「成功 / 非成功」，而 `writeSync` 曾把落盘异常吞进日志后
- * 让 `upsert` 回 `true` ⇒ 磁盘满时用户与模型都以为记住了，实际一个字节都没落盘（静默成功）。
- * 把结局做成类型，调用方就无法「顺手」把它当成成功。
+ * 为什么不是 Boolean：写入有**五种**互不隶属的结局 —— 成功 / 正文超限 / 文件损坏拒写 /
+ * **落盘失败** / **读不了既有文件**。Boolean 只能表达「成功 / 非成功」，而 `writeSync` 曾把
+ * 落盘异常吞进日志后让 `upsert` 回 `true` ⇒ 磁盘满时用户与模型都以为记住了，实际一个字节都
+ * 没落盘（静默成功）。把结局做成类型，调用方就无法「顺手」把它当成成功。
  */
 sealed interface MemoryWriteResult {
     /** 面向人的失败原因；成功时为 null。 */
@@ -53,6 +53,19 @@ sealed interface MemoryWriteResult {
         override val userMessage: String
             get() = "记忆写入磁盘失败（$cause）：本次未保存，请检查存储空间后重试"
     }
+
+    /**
+     * 记忆文件**读不了**（权限 / IO）：为避免覆盖不可读的既有内容，本次未写入。
+     *
+     * 与 [WriteFailed] 的区别：那条是「读到了、写不进去」，本条是「连读都读不了」。
+     * Wave 38 新增 —— 此前 `readState()` 把「读不了」与「解析失败」同归 Corrupted，
+     * 于是权限问题也被报成「文件解析失败，请修复或删除」，而「删除」对权限问题是有害建议
+     * （会诱导用户删掉一个内容完好的文件）。
+     */
+    data class Unreadable(val cause: String) : MemoryWriteResult {
+        override val userMessage: String
+            get() = "无法读取记忆文件（$cause）：为避免覆盖既有内容，本次未写入。请检查存储权限后重试。"
+    }
 }
 
 /** 一次记忆删除的结果（Wave 37，与 [MemoryWriteResult] 同款动机）。 */
@@ -76,6 +89,17 @@ sealed interface MemoryRemoveResult {
     data class WriteFailed(val cause: String) : MemoryRemoveResult {
         override val userMessage: String
             get() = "记忆删除未能落盘（$cause）：本次未保存，请检查存储空间后重试"
+    }
+
+    /**
+     * 记忆文件**读不了**（权限 / IO）：本次未删除。
+     *
+     * 与 [Corrupted] 的区别同 [MemoryWriteResult.Unreadable]：Corrupted 是「能读、但解析失败」，
+     * 处置是「修复或删除文件」；本条是「连读都读不了」，该处置有害。Wave 38 新增。
+     */
+    data class Unreadable(val cause: String) : MemoryRemoveResult {
+        override val userMessage: String
+            get() = "无法读取记忆文件（$cause）：本次未删除。请检查存储权限后重试。"
     }
 }
 
@@ -170,13 +194,14 @@ class AgentMemory(
     // ------------------------------------------------------------------
 
     /**
-     * 写入 / 更新一条记忆（按标题 upsert），返回 [MemoryWriteResult] —— 四种结局：
+     * 写入 / 更新一条记忆（按标题 upsert），返回 [MemoryWriteResult] —— 五种结局：
      *  - [MemoryWriteResult.Ok]：已落盘；
      *  - [MemoryWriteResult.TooLong]：正文超 [MAX_CONTENT_CHARS]（存储面无界防护，见该常量 KDoc）；
      *  - [MemoryWriteResult.Corrupted]：`memory.json` 解析失败（[ReadState.Corrupted]）—— 拒写以保护原文件；
+     *  - [MemoryWriteResult.Unreadable]：`memory.json` **读不了**（[ReadState.Unreadable]，权限 / IO）—— 拒写以免覆盖不可读内容。Wave 38 新增；
      *  - [MemoryWriteResult.WriteFailed]：**落盘失败**（磁盘满 / 权限 / IO）。Wave 37 新增。
      *
-     * 为什么不是 Boolean（Wave 37）：Boolean 只能表达「成功 / 非成功」，无法区分上面四条互不隶属
+     * 为什么不是 Boolean（Wave 37）：Boolean 只能表达「成功 / 非成功」，无法区分上面五条互不隶属
      * 的出口；更糟的是 `writeSync` 曾把落盘异常吞进日志后让本方法回 `true` ⇒ 磁盘满时用户与模型
      * 都以为记住了，实际一个字节都没落盘（静默成功）。把结局做成类型后，调用方无法把它当成成功。
      *
@@ -201,7 +226,7 @@ class AgentMemory(
                 )
                 return@withContext MemoryWriteResult.TooLong(trimmedContent.length)
             }
-            // Wave4 审查（E-P0-2）：三态判别 —— 文件存在但解析失败时**拒写**。
+            // Wave4 审查（E-P0-2）：读态判别 —— 文件存在但解析失败时**拒写**。
             // 此前 readSync 把「损坏」坍缩成「空列表」，upsert 会把整份记忆文件覆写成
             // 只含刚写入的一条：用户手工编辑 memory.json 打错一个逗号，多年沉淀的
             // 偏好与项目事实在下一次 memory_write 时全部蒸发，且无备份不可恢复。
@@ -213,6 +238,14 @@ class AgentMemory(
                         "记忆文件解析失败（${file.name}），已拒绝写入以保护原文件；请人工修复或删除该文件"
                     )
                     return@withContext MemoryWriteResult.Corrupted
+                }
+                is ReadState.Unreadable -> {
+                    // Wave 38：与 Corrupted 分开报 —— 读不了（权限 / IO）时若复用 Corrupted 的
+                    // 「请删除文件」文案，会诱导用户删掉一个内容完好的文件（读不了 ≠ 坏了）。
+                    AgentLogStore.error(
+                        "记忆文件读不了（${file.name}，${state.cause}），已拒绝写入以避免覆盖既有内容；请检查存储权限"
+                    )
+                    return@withContext MemoryWriteResult.Unreadable(state.cause)
                 }
                 ReadState.Absent -> mutableListOf()
             }
@@ -245,6 +278,12 @@ class AgentMemory(
                     AgentLogStore.error("记忆文件解析失败（${file.name}），已拒绝删除写入")
                     return@withContext MemoryRemoveResult.Corrupted
                 }
+                is ReadState.Unreadable -> {
+                    // Wave 38：读不了（权限 / IO）如实回 Unreadable —— 不复用 Corrupted 的
+                    // 「请删除文件」建议（对权限问题有害），也不谎报成 NotFound。
+                    AgentLogStore.error("记忆文件读不了（${file.name}，${state.cause}），已拒绝删除；请检查存储权限")
+                    return@withContext MemoryRemoveResult.Unreadable(state.cause)
+                }
                 ReadState.Absent -> return@withContext MemoryRemoveResult.NotFound
             }
             val removed = current.removeAll { it.title == title.trim() }
@@ -260,23 +299,46 @@ class AgentMemory(
 
     // ------------------------------------------------------------------
 
-    /** 读三态：文件不存在 / 正常 / 损坏。「损坏」绝不能坍缩成「空」，否则写路径会覆写掉原文件。 */
+    /**
+     * 读四态：文件不存在 / 正常 / **能读但解析失败** / **读不了**（权限 / IO）。
+     *
+     * 「损坏」与「读不了」都绝不能坍缩成「空」，否则写路径会覆写掉原文件；而两者之间也不能
+     * 再坍缩成一个 —— 处置建议相反：解析失败可「修复或删除文件」，读不了则该建议有害
+     * （Wave 38 修的读态坍缩）。
+     */
     private sealed interface ReadState {
         data object Absent : ReadState
         data class Ok(val sections: List<MemorySection>) : ReadState
         data object Corrupted : ReadState
+
+        /**
+         * 文件存在但**读不了**（权限 / IO）。与 [Corrupted]（能读但解析失败）语义不同：
+         * [Corrupted] 的处置建议是「修复或删除文件」，而 IO 问题下该建议有害（可能诱导用户删掉好文件）。
+         */
+        data class Unreadable(val cause: String) : ReadState
     }
 
     private fun readState(): ReadState {
         if (!file.exists()) return ReadState.Absent
+        // 读与解析**分开捕获**：`readText()` 抛（权限 / IO）与 decode 抛（JSON 非法）是两类
+        // 互不隶属的结局，此前 `runCatching{ 读+解析 }` 把两者同归 Corrupted ⇒ 权限问题被报成
+        // 「解析失败，请修复或删除文件」（Wave 38）。两条既有行为一字不变：不存在 / 空白仍回 Absent。
+        val raw = runCatching { file.readText() }
+            .getOrElse { return ReadState.Unreadable(it.javaClass.simpleName) }
+        if (raw.isBlank()) return ReadState.Absent
         return runCatching {
-            val raw = file.readText()
-            if (raw.isBlank()) return ReadState.Absent
             ReadState.Ok(AgentJson.Default.decodeFromString(ListSerializer(MemorySection.serializer()), raw))
         }.getOrElse { ReadState.Corrupted }
     }
 
-    /** 兼容旧读法：不区分损坏与为空（仅用于只读渲染路径，写路径必须走 [readState]）。 */
+    /**
+     * 兼容旧读法：不区分损坏与为空（仅用于只读渲染路径，写路径必须走 [readState]）。
+     *
+     * Wave 38：新增的 [ReadState.Unreadable]（权限 / IO 读不了）在此坍缩成空列表 —— 于是
+     * 「记忆页空白 / 提示词索引为空」在权限问题下无解释。此处**刻意不落日志**：本方法在渲染
+     * 路径上可能被高频调用，而 AgentMemory 内没有「只报一次」的一次性闩，逐次 warn 会刷屏；
+     * 宁可静默并在此注明 —— 写路径的 upsert / remove 对同一状态各落一条 error，可观测性不丢。
+     */
     private fun readSync(): List<MemorySection> =
         (readState() as? ReadState.Ok)?.sections ?: emptyList()
 

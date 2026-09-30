@@ -50,7 +50,7 @@ class MemoryViewModel(private val container: AppContainer) : ViewModel() {
     fun refresh() {
         viewModelScope.launch {
             _uiState.update { it.copy(loading = true) }
-            // sections() 失败（文件损坏）时返回空 —— 与 AgentMemory 的写侧三态判别
+            // sections() 失败（文件损坏）时返回空 —— 与 AgentMemory 的写侧四态判别
             // 无法区分「真空」与「损坏」，所以用一次试探写外的手段：直接读文件不存在
             // 的损坏信号。简化：AgentMemory.sections 永不抛；损坏判定靠写侧回执。
             // 这里 loading 结束后若为空且文件存在，让用户按「刷新」重试即可，不额外
@@ -61,7 +61,7 @@ class MemoryViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     /**
-     * 新增或更新（按标题幂等）。返回是否成功（正文超限 / 文件损坏 / **落盘失败**时 core 回非 Ok）。
+     * 新增或更新（按标题幂等）。返回是否成功（正文超限 / 文件损坏 / 读不了 / **落盘失败**时 core 回非 Ok）。
      *
      * 失败时把原因写入 [MemoryUiState.editError] —— 由编辑对话框**内联展示且不关对话框**，
      * 用户输入得以保留；成功时写 [MemoryUiState.message] 并清 [MemoryUiState.editError]。
@@ -93,12 +93,13 @@ class MemoryViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch {
             val result = runCatching { container.agentMemory.remove(title) }
                 .getOrElse { MemoryRemoveResult.WriteFailed(it.javaClass.simpleName) }
-            // 按结果类型分文案：Removed / NotFound 中性回执；Corrupted / WriteFailed 用
+            // 按结果类型分文案：Removed / NotFound 中性回执；Corrupted / Unreadable / WriteFailed 用
             // core 给的面向人的原因（此前 false 一律回「未找到」，把损坏谎报成不存在）。
             val message = when (result) {
                 MemoryRemoveResult.Removed -> "已删除：$title"
                 MemoryRemoveResult.NotFound -> "未找到：$title"
-                MemoryRemoveResult.Corrupted, is MemoryRemoveResult.WriteFailed ->
+                MemoryRemoveResult.Corrupted, is MemoryRemoveResult.WriteFailed,
+                is MemoryRemoveResult.Unreadable ->
                     result.userMessage ?: "记忆删除失败"
             }
             _uiState.update { it.copy(message = message) }

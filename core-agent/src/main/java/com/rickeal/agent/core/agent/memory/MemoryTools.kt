@@ -63,7 +63,7 @@ class MemoryWriteTool(private val memory: AgentMemory) : Tool {
         }
         // Wave4 审查（E-P0-2）：记忆文件损坏时 upsert 会拒写 —— 必须把失败透传给模型，
         // 否则模型以为已记住，实际什么都没发生（静默失败比写入失败更糟）。
-        // Wave 37：upsert 返回结果类型，非 Ok 的任一结局（超限 / 损坏 / **落盘失败**）都带
+        // Wave 37：upsert 返回结果类型，非 Ok 的任一结局（超限 / 损坏 / 读不了 / **落盘失败**）都带
         // 面向人的原因（`userMessage`）—— 直接透传，不再一律谎报「文件已损坏」。
         val result = memory.upsert(title, content)
         if (result !is MemoryWriteResult.Ok) {
@@ -197,13 +197,14 @@ class MemoryDeleteTool(private val memory: AgentMemory) : Tool {
         if (title.isEmpty()) return ToolResult(name = spec.name, ok = false, errorMessage = "缺少 title 参数")
         // Wave 37 行为修复：此前 `remove` 回 false 时工具一律回「不存在标题为…」——
         // 但 false 里还含「文件损坏」这条互不隶属的结局，等于把「损坏」谎报成「不存在」。
-        // 现按 [MemoryRemoveResult] 四分支全列：损坏 / 落盘失败如实回 ok = false + 原因。
+        // 现按 [MemoryRemoveResult] 五分支全列：损坏 / **读不了**（Wave 38）/ 落盘失败如实回 ok = false + 原因。
         return when (val result = memory.remove(title)) {
             MemoryRemoveResult.Removed ->
                 ToolResult(name = spec.name, ok = true, output = "已删除：[$title]")
             MemoryRemoveResult.NotFound ->
                 ToolResult(name = spec.name, ok = true, output = "不存在标题为「$title」的记忆")
-            MemoryRemoveResult.Corrupted, is MemoryRemoveResult.WriteFailed ->
+            MemoryRemoveResult.Corrupted, is MemoryRemoveResult.WriteFailed,
+            is MemoryRemoveResult.Unreadable ->
                 ToolResult(name = spec.name, ok = false, errorMessage = result.userMessage ?: "记忆删除失败")
         }
     }

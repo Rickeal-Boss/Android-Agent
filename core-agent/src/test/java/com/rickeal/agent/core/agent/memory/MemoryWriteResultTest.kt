@@ -22,8 +22,10 @@ import kotlinx.coroutines.runBlocking
  *  ④ 非法 JSON → [MemoryWriteResult.Corrupted]，且**原文件一字不动**；
  *  ⑤ **落盘失败** → [MemoryWriteResult.WriteFailed]（父路径是普通文件：`mkdirs()` 失败 +
  *     tmp 写入抛异常）；
- *  ⑥ `remove` 三态：文件 / 条目不存在 → [MemoryRemoveResult.NotFound]；损坏 → Corrupted；
- *     写失败 → WriteFailed。
+ *  ⑥ `remove` 五个变体：文件 / 条目不存在 → [MemoryRemoveResult.NotFound]；损坏 → Corrupted；
+ *     读不了 → Unreadable；写失败 → WriteFailed；
+ *  ⑦ **读不了**（权限 / IO）→ [MemoryWriteResult.Unreadable] / [MemoryRemoveResult.Unreadable]
+ *     （Wave 38 新增：与「能读但解析失败」的 Corrupted 是两条独立结局，处置建议相反）。
  *
  * 全程纯 JVM：只碰 `java.io.File` + `core-model` 的 JSON（无 Android 类）。
  *
@@ -68,7 +70,7 @@ class MemoryWriteResultTest {
         assertTrue(result is MemoryWriteResult.TooLong, "超限必须回 TooLong：$result")
         assertEquals(AgentMemory.MAX_CONTENT_CHARS + 1, (result as MemoryWriteResult.TooLong).length)
         // ⚠️ 末语句必须返回 Unit：assertNotNull 会返回其 actual（非 Unit），单独收尾会让本方法
-        // 推断成返回 String ⇒ JUnit 4 校验失败 ⇒ 整类 initializationError、本文件 9 个用例全不跑。
+        // 推断成返回 String ⇒ JUnit 4 校验失败 ⇒ 整类 initializationError、本文件 10 个用例全不跑。
         val message = assertNotNull(result.userMessage, "TooLong 必须带面向人的原因")
         assertTrue(message.contains(AgentMemory.MAX_CONTENT_CHARS.toString()), "原因文案应含上限数值（防常量漂移）：$message")
     }
@@ -95,6 +97,30 @@ class MemoryWriteResultTest {
         val message = assertNotNull(result.userMessage, "WriteFailed 必须带面向人的原因")
         assertTrue(message.contains("磁盘"), "原因文案应说明是落盘失败：$message")
     }
+
+    @Test
+    fun `文件存在但读不了 —— upsert / remove 均回 Unreadable 而非 Corrupted`() =
+        withTempDir("cam-p-mwr-unreadable") { dir ->
+            // 构造「读不了」：文件存在且是合法 JSON，但去掉读权限 ⇒ `readText` 抛 ⇒ 必须回
+            // Unreadable。Wave 38 之前这会与「解析失败」同归 Corrupted，把权限问题报成
+            // 「文件损坏，请修复或删除」—— 而那个文件其实内容完好（读不了 ≠ 坏了）。
+            val file = File(dir, "memory.json")
+            file.writeText("""[{"title":"t","content":"c"}]""")
+            file.setReadable(false, false)
+            try {
+                // 能力探测（同 WriteFailed 用例惯例）：若以 root 运行 / 文件系统忽略权限位，
+                // 置不可读后仍读得到 ⇒ 前提不成立，**跳过断言而非误红**。
+                val stillReadable = runCatching { file.readText(); true }.getOrDefault(false)
+                if (stillReadable) return@withTempDir
+                val memory = AgentMemory(file)
+                val write = runBlocking { memory.upsert("新", "x") }
+                assertTrue(write is MemoryWriteResult.Unreadable, "读不了必须回 Unreadable：$write")
+                val remove = runBlocking { memory.remove("t") }
+                assertTrue(remove is MemoryRemoveResult.Unreadable, "读不了必须回 Unreadable：$remove")
+            } finally {
+                file.setReadable(true, false)
+            }
+        }
 
     @Test
     fun `remove 文件不存在 —— NotFound`() = withTempDir("cam-p-mwr-rm-absent") { dir ->
