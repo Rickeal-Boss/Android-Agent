@@ -116,8 +116,40 @@ data class EngineSessionDiagnostics(
      * 原生 tool 通道注册与回传（提示词里已不含工具清单段）；false = 走文本协议
      * （默认，含探针失败 / 用户未开启 / 模型不具备工具能力三种情形）。
      *
-     * 与 [LlmEngine.capabilities] 报的 `nativeToolChannel` 是同一判据，区别只在于
-     * 这是**会话级**事实（本会话真的注册了工具），而后者是引擎级能力。
+     * ⚠️ 与 [LlmEngine.capabilities] 报的**同名** `nativeToolChannel` **不是同一个表达式**，
+     * 只是名字相同、层级不同 —— 且在已知路径下会分叉（Wave 36 E2 如实化，勿再按「同一判据」理解）：
+     *  - 本字段是**会话级**事实，赋值表达式为
+     *    `nativeToolChannel = registeredToolsSignature != null`
+     *    （`LiteRtLmEngine.ensureConversation` 的会话建成收尾处；Wave 36 时位于
+     *    `LiteRtLmEngine.kt:998`）—— 判据是「**本会话真的把工具签名注册进了 native**」。
+     *  - `capabilities()` 的同名字段是**引擎级**能力，赋值表达式为
+     *    `nativeToolChannel = nativeToolChannelActive()`
+     *    （Wave 36 时位于 `LiteRtLmEngine.kt:1574`），判据是四条件合取
+     *    `!nativeToolsRejected && probedNativeTools == true &&
+     *    loadConfig?.config?.nativeToolChannel == true &&
+     *    loadConfig?.model?.capabilities?.toolCalling == true`
+     *    （判据函数在 `LiteRtLmEngine.kt:1487-1491`）。
+     *
+     * **分叉场景**（Wave 36 复审 P2-1 修正）：先排除一个易被误认的候选 ——
+     * 「注册工具后会话创建失败 → 不带工具重试」**不构成**分叉：该路径在 `nativeTools.isNotEmpty()`
+     * 时会显式置 `nativeToolsRejected = true`（`LiteRtLmEngine.kt:862-863`），而
+     * `nativeToolChannelActive()` 的首个合取项正是 `!nativeToolsRejected`
+     * （`LiteRtLmEngine.kt:1487-1491`）⇒ 引擎级随之报 `false`，与本字段一致。legacy 回退路径同理
+     * （`LiteRtLmEngine.kt:914-915` 的置位同样带 `nativeTools.isNotEmpty()` 前置）—— 只要本会话
+     * 真的注册过工具，任何失败都会证伪通道，两侧一起翻 `false`。
+     *
+     * **唯一真实的分叉**发生在：`nativeToolChannelActive() == true`（探针通过 ∧ 用户开关开 ∧
+     * 模型能力位 ok ∧ 未被证伪）**但本轮 `request.tools` 为空**（上层未启用任何工具）。此时 E4 的
+     * 合取使 `nativeToolsActive == false` ⇒ 本会话不注册任何工具 ⇒ 会话级
+     * `registeredToolsSignature == null` ⇒ 本字段 `false`；而两处置 `nativeToolsRejected = true`
+     * 都以 `nativeTools.isNotEmpty()` 为前置，空工具集下**永不置位** ⇒ 引擎级四条件仍全真 ⇒
+     * 引擎级报 `true`。这条分叉**与 `createConversation` 是否成功无关**：无论会话正常建成、走中档
+     * 「系统提示词并入首条 USER」重建、还是失败回退 legacy，会话级都因「没注册工具」而为 `false`，
+     * 引擎级都为 `true`。
+     *
+     * 结论（不变）：两者**不是同一个表达式**，消费方**不得**假设恒等 —— 本字段描述「**这一条
+     * 会话**的实际形态」，引擎级描述「**这台引擎**当前是否具备原生通道能力」。要判断「本会话到底
+     * 走哪条通道」，只能读本字段。
      */
     val nativeToolChannel: Boolean = false,
 )
