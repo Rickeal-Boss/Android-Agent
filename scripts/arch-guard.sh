@@ -243,6 +243,24 @@ check "lint baseline 条目数未超冻结值（35，只许清障不许新增豁
            n=$(grep -cE "^[[:space:]]*<issue[[:space:]]*$" "$f")
            if [ "$n" -gt 35 ]; then echo "lint baseline 现有 $n 条，超冻结值 35（⛔ 基线只许缩不许涨 —— 新问题应该修掉，而不是 regen 进豁免清单；确属应豁免的存量需主理人改本守卫的冻结值并写明理由）"; fi'
 
+# 15) 测试源集的 @Test 方法必须返回 void（Wave 37 实案）：JUnit 4 要求测试方法 void，
+#     而 Kotlin 表达式体 `fun x() = ...` 的返回类型由**末表达式**决定 —— `kotlin.test`
+#     里 assertNotNull / assertIs / assertFailsWith / assertFails 会**返回值**，放在末语句
+#     会让方法非 void ⇒ **整个测试类 initializationError** ⇒ 该类**所有用例一个都不跑**，
+#     而 Gradle 只报「N tests completed, 1 failed」（「只挂 1 个」是假象）。Wave 37 因此
+#     白烧一轮 CI。断言「必须不存在」的守卫天然合规：命中即输出，干净时零输出。
+#     扫描器按**本脚本所在目录**定位（不能用相对 cwd 的路径：自测网会在脚手架树里
+#     以 cwd=脚手架 运行本守卫，相对路径会找不到脚本 ⇒ 守卫命令自身 exit 2 假红）。
+#     扫描器自身异常也会打到 stdout，按「stdout 非空 = 违规」的契约判红，绝不静默通过。
+GUARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 扫描器缺失 = 守卫面失效 —— 必须判红，绝不能静默通过（僵尸规则的典型形态）
+if [ ! -f "$GUARD_DIR/check-test-void.py" ]; then
+  echo "::error::[测试源集 @Test 方法必须返回 void（末语句不得是返回值型断言）] 扫描器缺失：$GUARD_DIR/check-test-void.py（守卫面已失效）"
+  fail=1
+fi
+check "测试源集 @Test 方法必须返回 void（末语句不得是返回值型断言）" \
+  bash -c "python \"$GUARD_DIR/check-test-void.py\" || python3 \"$GUARD_DIR/check-test-void.py\""
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

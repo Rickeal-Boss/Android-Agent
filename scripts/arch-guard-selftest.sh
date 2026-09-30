@@ -424,6 +424,48 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# case 12：测试源集里 @Test 方法以「返回值型断言」收尾 ⇒ 第 15 条必须报红。
+#          Wave 37 实案：JUnit 4 要求测试方法返回 void，而 Kotlin 表达式体的返回类型
+#          由末表达式决定；assertNotNull/assertIs/assertFailsWith/assertFails 会返回值
+#          ⇒ 方法非 void ⇒ 整个测试类 initializationError（该类所有用例静默不跑，
+#          Gradle 只报「N tests completed, 1 failed」，极具误导性）。
+# ---------------------------------------------------------------------------
+d="$TMP/case12-test-nonvoid"
+scaffold "$d"
+mkdir -p "$d/core-agent/src/test/java/com/x"
+cat > "$d/core-agent/src/test/java/com/x/NonVoidTest.kt" <<'KT'
+package com.x
+
+import kotlin.test.Test
+import kotlin.test.assertNotNull
+
+class NonVoidTest {
+    @Test
+    fun `末语句返回值型断言`() = helper {
+        assertNotNull(value, "m")
+    }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case12 @Test 方法非 void (第 15 条)" "$rc" "$out" \
+  "测试源集 @Test 方法必须返回 void（末语句不得是返回值型断言）"
+# case12b：红必须来自**真命中**，而不是「守卫命令自身执行失败」——
+#          后者那行也含守卫名，会让 assert_red 假绿（本 case 首版就踩过：扫描器用
+#          相对 cwd 路径，在脚手架树里找不到文件 ⇒ exit 2 ⇒ 假绿）。
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case12b] 第 15 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "assertNotNull"; then
+  echo "PASS [case12b] 红来自真命中（输出含违规行 assertNotNull）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case12b] 输出里看不到违规行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
 echo "-----------------------------------------"
 echo "自测结果：PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -ne 0 ]; then
