@@ -2,8 +2,9 @@ package com.rickeal.agent.feature.settings.memory
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.rickeal.agent.core.agent.memory.AgentMemory
+import com.rickeal.agent.core.agent.memory.MemoryRemoveResult
 import com.rickeal.agent.core.agent.memory.MemorySection
+import com.rickeal.agent.core.agent.memory.MemoryWriteResult
 import com.rickeal.agent.core.data.AppContainer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,7 +27,7 @@ data class MemoryUiState(
     val loading: Boolean = true,
     /** 轻量操作回执（「已记住」「已删除」「未找到」），复用各页的 notice 行为。 */
     val message: String? = null,
-    /** 编辑对话框内的写失败原因（`AgentMemory.upsertFailureReason` 的产物）；成功 / 取消时清空。 */
+    /** 编辑对话框内的写失败原因（`MemoryWriteResult.userMessage` 的产物）；成功 / 取消时清空。 */
     val editError: String? = null,
 )
 
@@ -60,7 +61,7 @@ class MemoryViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     /**
-     * 新增或更新（按标题幂等）。返回是否成功（正文超限或文件损坏时 core 拒写 → false）。
+     * 新增或更新（按标题幂等）。返回是否成功（正文超限 / 文件损坏 / **落盘失败**时 core 回非 Ok）。
      *
      * 失败时把原因写入 [MemoryUiState.editError] —— 由编辑对话框**内联展示且不关对话框**，
      * 用户输入得以保留；成功时写 [MemoryUiState.message] 并清 [MemoryUiState.editError]。
@@ -68,27 +69,39 @@ class MemoryViewModel(private val container: AppContainer) : ViewModel() {
      */
     fun upsert(title: String, content: String, onDone: (Boolean) -> Unit) {
         viewModelScope.launch {
-            val ok = runCatching { container.agentMemory.upsert(title, content) }.getOrDefault(false)
-            if (ok) {
+            // core 侧 upsert 返回结果类型；若它自身抛异常（不该发生），兜底成 WriteFailed，
+            // 绝不把「抛异常」当成成功。
+            val result = runCatching { container.agentMemory.upsert(title, content) }
+                .getOrElse { MemoryWriteResult.WriteFailed(it.javaClass.simpleName) }
+            if (result is MemoryWriteResult.Ok) {
                 _uiState.update { it.copy(message = "已记住：$title", editError = null) }
                 refresh()
+                onDone(true)
             } else {
                 // 失败必须可见、且不能吞掉输入：原因回给编辑对话框内联显示（父层据此不关对话框），
                 // 列表底部的 message 置空以免两处重复提示。
+                // userMessage 是接口成员，跨模块访问无需 smart cast。
                 _uiState.update {
-                    it.copy(editError = AgentMemory.upsertFailureReason(content.trim().length), message = null)
+                    it.copy(editError = result.userMessage ?: "记忆写入失败", message = null)
                 }
+                onDone(false)
             }
-            onDone(ok)
         }
     }
 
     fun remove(title: String) {
         viewModelScope.launch {
-            val removed = runCatching { container.agentMemory.remove(title) }.getOrDefault(false)
-            // remove 回 false 的语义是「条目 / 文件不存在」或「文件损坏」，**不是损坏专属**，
-            // 故只给中性回执，不置任何损坏标志（旧写法是自反 no-op：两个分支同值）。
-            _uiState.update { it.copy(message = if (removed) "已删除：$title" else "未找到：$title") }
+            val result = runCatching { container.agentMemory.remove(title) }
+                .getOrElse { MemoryRemoveResult.WriteFailed(it.javaClass.simpleName) }
+            // 按结果类型分文案：Removed / NotFound 中性回执；Corrupted / WriteFailed 用
+            // core 给的面向人的原因（此前 false 一律回「未找到」，把损坏谎报成不存在）。
+            val message = when (result) {
+                MemoryRemoveResult.Removed -> "已删除：$title"
+                MemoryRemoveResult.NotFound -> "未找到：$title"
+                MemoryRemoveResult.Corrupted, is MemoryRemoveResult.WriteFailed ->
+                    result.userMessage ?: "记忆删除失败"
+            }
+            _uiState.update { it.copy(message = message) }
             refresh()
         }
     }

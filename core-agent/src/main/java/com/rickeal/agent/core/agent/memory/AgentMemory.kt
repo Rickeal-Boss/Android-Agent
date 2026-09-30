@@ -21,6 +21,65 @@ data class MemorySection(
 )
 
 /**
+ * 一次记忆写入的结果（Wave 37）。
+ *
+ * 为什么不是 Boolean：写入有**四种**互不隶属的结局 —— 成功 / 正文超限 / 文件损坏拒写 /
+ * **落盘失败**。Boolean 只能表达「成功 / 非成功」，而 `writeSync` 曾把落盘异常吞进日志后
+ * 让 `upsert` 回 `true` ⇒ 磁盘满时用户与模型都以为记住了，实际一个字节都没落盘（静默成功）。
+ * 把结局做成类型，调用方就无法「顺手」把它当成成功。
+ */
+sealed interface MemoryWriteResult {
+    /** 面向人的失败原因；成功时为 null。 */
+    val userMessage: String?
+
+    data object Ok : MemoryWriteResult {
+        override val userMessage: String? = null
+    }
+
+    /** 正文超 [AgentMemory.MAX_CONTENT_CHARS]。 */
+    data class TooLong(val length: Int) : MemoryWriteResult {
+        override val userMessage: String
+            get() = "内容过长（$length 字符，上限 ${AgentMemory.MAX_CONTENT_CHARS}）：请拆成多条或压缩成结论"
+    }
+
+    /** `memory.json` 解析失败，拒写以保护原文件。 */
+    data object Corrupted : MemoryWriteResult {
+        override val userMessage: String
+            get() = "记忆文件解析失败，已拒绝写入以保护原文件；请人工修复或删除 agent_memory/memory.json"
+    }
+
+    /** **落盘失败**（磁盘满 / 权限 / IO）。此前被 `writeSync` 吞掉且 `upsert` 仍回 true。 */
+    data class WriteFailed(val cause: String) : MemoryWriteResult {
+        override val userMessage: String
+            get() = "记忆写入磁盘失败（$cause）：本次未保存，请检查存储空间后重试"
+    }
+}
+
+/** 一次记忆删除的结果（Wave 37，与 [MemoryWriteResult] 同款动机）。 */
+sealed interface MemoryRemoveResult {
+    val userMessage: String?
+
+    data object Removed : MemoryRemoveResult {
+        override val userMessage: String? = null
+    }
+
+    /** 条目不存在，或记忆文件不存在。 */
+    data object NotFound : MemoryRemoveResult {
+        override val userMessage: String get() = "未找到该记忆条目"
+    }
+
+    data object Corrupted : MemoryRemoveResult {
+        override val userMessage: String
+            get() = "记忆文件解析失败，已拒绝删除写入；请人工修复或删除 agent_memory/memory.json"
+    }
+
+    data class WriteFailed(val cause: String) : MemoryRemoveResult {
+        override val userMessage: String
+            get() = "记忆删除未能落盘（$cause）：本次未保存，请检查存储空间后重试"
+    }
+}
+
+/**
  * Agent 长期记忆 —— 移植自 Octop harness-memory（「记忆随工作区迁移」）与
  * ZCode 的 project memory：一个按标题组织的持久化要点集。
  *
@@ -111,36 +170,36 @@ class AgentMemory(
     // ------------------------------------------------------------------
 
     /**
-     * 写入 / 更新一条记忆（按标题 upsert）。返回是否**写入成功**。
+     * 写入 / 更新一条记忆（按标题 upsert），返回 [MemoryWriteResult] —— 四种结局：
+     *  - [MemoryWriteResult.Ok]：已落盘；
+     *  - [MemoryWriteResult.TooLong]：正文超 [MAX_CONTENT_CHARS]（存储面无界防护，见该常量 KDoc）；
+     *  - [MemoryWriteResult.Corrupted]：`memory.json` 解析失败（[ReadState.Corrupted]）—— 拒写以保护原文件；
+     *  - [MemoryWriteResult.WriteFailed]：**落盘失败**（磁盘满 / 权限 / IO）。Wave 37 新增。
      *
-     * 返回 false 的两种原因**互不隶属**，调用方不得把后者当前者处理：
-     *  ① `memory.json` 解析失败（[ReadState.Corrupted]）—— 拒写是为了保护原文件；
-     *  ② content 超过 [MAX_CONTENT_CHARS] —— 存储面无界防护（见该常量 KDoc）。
+     * 为什么不是 Boolean（Wave 37）：Boolean 只能表达「成功 / 非成功」，无法区分上面四条互不隶属
+     * 的出口；更糟的是 `writeSync` 曾把落盘异常吞进日志后让本方法回 `true` ⇒ 磁盘满时用户与模型
+     * 都以为记住了，实际一个字节都没落盘（静默成功）。把结局做成类型后，调用方无法把它当成成功。
      *
-     * 消费端缺口（Wave 35 挂账 → **Wave 36 E5 已修**）：`feature-settings` 的
-     * `MemoryViewModel.upsert` 曾把 `false` 一律解释成失败并**静默吞掉** —— 人在设置页
-     * 粘贴超长正文时，对话框直接关闭、**无任何提示**。（Wave 35 挂账原文写的是「会看到
-     * 『文件已损坏』的误报」，那是错的：设置页从无该文案，实况是静默失效。）
-     * 现由 [upsertFailureReason] 把上面两条互斥穷尽的 false 出口按正文长度无歧义还原成
-     * 面向人的原因，经 `MemoryUiState.editError` 在**编辑对话框内联**上屏（失败时不关对话框、
-     * 保留用户输入，只有成功才关）。模型侧不受影响：`MemoryWriteTool` 在调用本方法之前就用自己的
-     * 前置校验拦下超限并回精确文案。
+     * Wave 36 的「按正文长度反推原因」启发式（旧 `upsertFailureReason`）**已被结果类型取代** ——
+     * 那是更强的做法：不再靠「长度 / 解析失败」二选一的推断还原原因，而是由本方法直接把结局
+     * 交给调用方。UI 侧消费通道是 `MemoryUiState.editError`（编辑对话框内联、失败不关以保留输入），
+     * 模型侧是 `MemoryWriteTool`（把 [MemoryWriteResult.userMessage] 作为工具失败回执透传）。
      */
-    suspend fun upsert(title: String, content: String): Boolean = withContext(ioDispatcher) {
+    suspend fun upsert(title: String, content: String): MemoryWriteResult = withContext(ioDispatcher) {
         mutex.withLock {
             val trimmedTitle = title.trim()
             val trimmedContent = content.trim()
             // Wave 35 D6：单条正文上限 —— 超限**拒绝**而非静默截断。
             // 判据见 [MAX_CONTENT_CHARS]；此处是存储层的兜底（防的是「换条路写进来」），
             // 模型路径的精确报错由 MemoryWriteTool 的前置校验给出（它在调本方法之前就拦下），
-            // 故这里只落一条面向人的日志 + 回 false。绝不能静默截断：模型会以为 100KB
+            // 故这里只落一条面向人的日志 + 回 TooLong。绝不能静默截断：模型会以为 100KB
             // 全记住了，而注入面只读前 1200 字符，剩下的既存了又用不上还看不见。
             if (trimmedContent.length > MAX_CONTENT_CHARS) {
                 AgentLogStore.error(
                     "记忆正文过长（${trimmedContent.length} 字符，上限 $MAX_CONTENT_CHARS），" +
                         "已拒绝写入「$trimmedTitle」：请拆成多条或压缩成结论"
                 )
-                return@withContext false
+                return@withContext MemoryWriteResult.TooLong(trimmedContent.length)
             }
             // Wave4 审查（E-P0-2）：三态判别 —— 文件存在但解析失败时**拒写**。
             // 此前 readSync 把「损坏」坍缩成「空列表」，upsert 会把整份记忆文件覆写成
@@ -153,7 +212,7 @@ class AgentMemory(
                     AgentLogStore.error(
                         "记忆文件解析失败（${file.name}），已拒绝写入以保护原文件；请人工修复或删除该文件"
                     )
-                    return@withContext false
+                    return@withContext MemoryWriteResult.Corrupted
                 }
                 ReadState.Absent -> mutableListOf()
             }
@@ -167,24 +226,35 @@ class AgentMemory(
             // 只保留**最新**的 MAX_SECTIONS 条（takeLast）：超限淘汰方向曾写反成
             // take(...) —— 保留最旧、丢掉刚写入的新记忆，模型写的第 65 条永远
             // 不生效且无任何提示。
-            writeSync(current.takeLast(MAX_SECTIONS))
-            true
+            // Wave 37：writeSync 不再吞异常 —— 落盘失败时把原因映射成 WriteFailed 交给调用方，
+            // 而不是无条件回 Ok（那正是「磁盘满却被告知已记住」的静默成功根因）。
+            val failure = writeSync(current.takeLast(MAX_SECTIONS))
+            if (failure == null) {
+                MemoryWriteResult.Ok
+            } else {
+                MemoryWriteResult.WriteFailed(failure.javaClass.simpleName)
+            }
         }
     }
 
-    suspend fun remove(title: String): Boolean = withContext(ioDispatcher) {
+    suspend fun remove(title: String): MemoryRemoveResult = withContext(ioDispatcher) {
         mutex.withLock {
             val current = when (val state = readState()) {
                 is ReadState.Ok -> state.sections.toMutableList()
                 is ReadState.Corrupted -> {
                     AgentLogStore.error("记忆文件解析失败（${file.name}），已拒绝删除写入")
-                    return@withContext false
+                    return@withContext MemoryRemoveResult.Corrupted
                 }
-                ReadState.Absent -> return@withContext false
+                ReadState.Absent -> return@withContext MemoryRemoveResult.NotFound
             }
             val removed = current.removeAll { it.title == title.trim() }
-            if (removed) writeSync(current)
-            removed
+            if (!removed) return@withContext MemoryRemoveResult.NotFound
+            val failure = writeSync(current)
+            if (failure == null) {
+                MemoryRemoveResult.Removed
+            } else {
+                MemoryRemoveResult.WriteFailed(failure.javaClass.simpleName)
+            }
         }
     }
 
@@ -210,30 +280,42 @@ class AgentMemory(
     private fun readSync(): List<MemorySection> =
         (readState() as? ReadState.Ok)?.sections ?: emptyList()
 
-    private fun writeSync(sections: List<MemorySection>) {
-        runCatching {
+    /**
+     * 原子写整份记忆文件；**成功返回 null，失败返回那个异常**。
+     *
+     * Wave 37：此前吞掉异常并让调用方回成功（`runCatching{...}.onFailure{ warn }` 后
+     * `upsert` 无条件 `return true`）；现把原因交给调用方映射成 [MemoryWriteResult.WriteFailed]，
+     * 磁盘满 / 权限 / IO 失败不再是不可观测的静默成功。
+     */
+    private fun writeSync(sections: List<MemorySection>): Throwable? {
+        // tmp 提到 try 之外：失败时要能引用到它，尽力回收残留的 .tmp（见下 onFailure）。
+        var tmp: File? = null
+        return runCatching {
             file.parentFile?.mkdirs()
             // 原子写（tmp + ATOMIC_MOVE）：直接 writeText 覆写时进程死在半路会留下
             // 半截 JSON，下次读解析失败 → 静默清零（readSync 的 getOrDefault）——
             // 用户全部长期记忆凭空蒸发。Wave2 遗留缺陷。
-            val tmp = File(file.parentFile, file.name + "." + System.nanoTime() + ".tmp")
-            tmp.writeText(AgentJson.Default.encodeToString(ListSerializer(MemorySection.serializer()), sections))
+            val tmpFile = File(file.parentFile, file.name + "." + System.nanoTime() + ".tmp")
+            tmp = tmpFile
+            tmpFile.writeText(AgentJson.Default.encodeToString(ListSerializer(MemorySection.serializer()), sections))
             try {
                 Files.move(
-                    tmp.toPath(),
+                    tmpFile.toPath(),
                     file.toPath(),
                     StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING,
                 )
             } catch (t: Throwable) {
                 // 个别文件系统不支持 ATOMIC_MOVE，退化普通 rename（仍是元数据操作）
-                Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                Files.move(tmpFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
         }.onFailure {
+            // Wave 37：失败会静默留下永不回收的 .tmp —— 尽力删掉（尽力而为，删除失败不掩盖原异常）。
+            runCatching { tmp?.takeIf { it.exists() }?.delete() }
             AgentLogStore.warn(
                 "记忆写入失败：${it.javaClass.simpleName}"
             )
-        }
+        }.exceptionOrNull()
     }
 
     companion object {
@@ -257,25 +339,6 @@ class AgentMemory(
          * 因为错误不可观测。拒绝并把上限写进报错文案，模型才知道该拆分或压缩。
          */
         const val MAX_CONTENT_CHARS = 2000
-
-        /**
-         * 把 [upsert] 的 `false` 翻译成面向人的原因（Wave 36 E5）。
-         *
-         * [upsert] 的 false 出口只有两条且互斥穷尽：正文超 [MAX_CONTENT_CHARS]、文件解析失败。
-         * 因此按「去空白后的正文长度」即可无歧义还原原因 —— 不需要改 [upsert] 的返回类型
-         * （那会波及 `MemoryTools` 与既有 5 处 Boolean 断言）。纯函数，无 Android 依赖，可 JVM 测。
-         *
-         * 放在 [MAX_CONTENT_CHARS] 同处，保证「上限值」与「判据」永不漂移。
-         *
-         * @param trimmedContentLength **去空白后**的长度（必须与 [upsert] 内的判据同口径：
-         *   那里先 `content.trim()` 再比 `> MAX_CONTENT_CHARS`）。
-         */
-        fun upsertFailureReason(trimmedContentLength: Int): String =
-            if (trimmedContentLength > MAX_CONTENT_CHARS) {
-                "内容过长（$trimmedContentLength 字符，上限 $MAX_CONTENT_CHARS）：请拆成多条或压缩成结论"
-            } else {
-                "记忆文件解析失败，已拒绝写入以保护原文件；请人工修复或删除 agent_memory/memory.json"
-            }
 
         /**
          * 历史设计基准（[MAX_CONTENT_CHARS] 的推导参照），**当前无代码引用**。
