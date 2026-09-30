@@ -649,17 +649,17 @@ class LiteRtLmEngine(
         // 原生工具通道（Wave 34 题 A）：只有通道激活时才注册工具。文本协议模式恒传空 ——
         // 工具清单此时由系统提示词承载，注册了却不删提示词段等于双份。
         // ⚠️ 必须在重建判据**之前**算出来：工具集本身也是判据之一（见下）。
-        val nativeTools: List<ToolProvider> =
-            if (nativeToolChannelActive()) request.tools.toToolProviders() else emptyList()
+        // 原生工具通道是否本次生效（Wave 36 E4：把 provider 构造下沉到真正建会话的分支）。
+        // ⚠️ 必须带 `&& request.tools.isNotEmpty()` 合取：开关开但上层未启用任何工具时
+        // request.tools 为空，此时签名必须是 null 而不是空串 ""（否则 toolsChanged 每轮误判）。
+        val nativeToolsActive = nativeToolChannelActive() && request.tools.isNotEmpty()
         // 已注册工具集的签名（null = 本次不注册任何工具）。工具是在 createConversation 时
         // 一次性注册进 native 的，**之后没有增量更新入口**（没有 removeTool 之类），所以
         // 工具面变了必须重建会话，否则模型拿到的仍是旧清单 —— 表现是「刚关掉的工具还在被
         // 调、刚打开的模型看不见」，且完全无报错。
-        val toolsSignature = if (nativeTools.isEmpty()) {
-            null
-        } else {
-            request.tools.joinToString(",") { it.name }
-        }
+        // Wave 36 E4：判据从 `nativeTools.isEmpty()` 换成 `!nativeToolsActive`（等价 —— 见
+        // nativeToolsActive 处的注释；且不再需要在这里构造 provider）。
+        val toolsSignature = if (!nativeToolsActive) null else request.tools.joinToString(",") { it.name }
         // 重建判据（外部审查报告2 §2 + Wave 34）：conversationId / contextVersion /
         // systemText / 工具集变化（[toolsChanged]）任一命中。
         // cid 变化 = 换了会话；contextVersion 变化 = 应用侧上下文发生了引擎无法增量表达的
@@ -729,6 +729,13 @@ class LiteRtLmEngine(
         }
         val existing = conversation
         if (existing != null) return existing
+
+        // Wave 36 E4：provider 构造**下沉到这里** —— 上面 `existing != null` 的早退路径
+        // 每轮都会走到（AgentRunner 主循环每轮 generateStream → ensureConversation），
+        // 而会话早已建好时原来仍会白造一整批 ToolProvider 再丢弃。`toToolProviders()` 是纯
+        // map（空入空出、无副作用），下沉后对下方所有消费点语义等价。
+        val nativeTools: List<ToolProvider> =
+            if (nativeToolsActive) request.tools.toToolProviders() else emptyList()
 
         val cfg = request.config
         val isNpu = cfg.backend == InferenceBackend.NPU
