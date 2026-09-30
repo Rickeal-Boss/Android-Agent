@@ -6,7 +6,7 @@ import com.rickeal.agent.core.model.Role
 import java.io.File
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
-import kotlin.test.After
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -41,7 +41,10 @@ class HistoryWithProcessTest {
     private fun tempRoot(prefix: String): File =
         Files.createTempDirectory(prefix).toFile().also { tempRoots.add(it) }
 
-    @After
+    // ⚠️ 注解名是 kotlin.test.**AfterTest**（typealias 到 org.junit.After），
+    //    不是 kotlin.test.After —— 后者不存在（kotlin-test 只有 BeforeTest/AfterTest/
+    //    BeforeClass/AfterClass，没有裸 Before/After）。JUnit 4 要求该方法 public 且返回 void。
+    @AfterTest
     fun tearDown() {
         tempRoots.forEach { it.deleteRecursively() }
         tempRoots.clear()

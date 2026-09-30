@@ -13,6 +13,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.AnchoredDraggableState
 import androidx.compose.foundation.gestures.DraggableAnchors
+import androidx.compose.foundation.gestures.animateTo
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -74,6 +75,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -125,7 +127,6 @@ import com.rickeal.agent.feature.settings.tools.SandboxFilesViewModel
 import com.rickeal.agent.feature.settings.tools.ToolsRoute
 import com.rickeal.agent.onboarding.FirstRunGate
 import kotlin.math.max
-import kotlin.math.min
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -340,7 +341,11 @@ private fun MainShell() {
     val workspaceScope = rememberCoroutineScope()
     // 面板宽 min(360dp, 82%)：上限制与会话抽屉（M3 ModalDrawerSheet 360dp）同量级，
     // 比例兜住最窄档（≈320dp 宽的设备上 82% ≈ 262dp，不至占满整屏）。
-    val workspaceWidth = min(360.dp, LocalConfiguration.current.screenWidthDp.dp * 0.82f)
+    // ⚠️ 用 `coerceAtMost`（Comparable 版）而不是 `kotlin.math.min` —— 后者只接数值
+    //    重载（Int/Long/Float…），传 Dp 会「None of the following candidates is
+    //    applicable」（Wave 40 CI 实测），并连带让下一行 `with(LocalDensity)` 的
+    //    类型参数 R 推导不出来。Dp 是 Comparable<Dp>，coerceAtMost 才是它的取小。
+    val workspaceWidth = 360.dp.coerceAtMost(LocalConfiguration.current.screenWidthDp.dp * 0.82f)
     val workspaceWidthPx = with(LocalDensity.current) { workspaceWidth.toPx() }
     // Closed 锚 = +面板宽度（屏外右侧）、Open 锚 = 0（贴右缘）：手指左滑减小 offset =
     // 开、右滑 = 关。宽度（进而 px）变化（旋转）时整体重建、回落 Closed —— 与抽屉
