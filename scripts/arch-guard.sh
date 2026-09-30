@@ -140,6 +140,9 @@ check "全仓禁动态代码加载（DexClassLoader/loadLibrary）" \
 check "core-agent 不依赖 core-data/core-design（Wave 26）" \
   bash -c 'grep -rn "com\.rickeal\.agent\.core\.data\|com\.rickeal\.agent\.core\.design" --include="*.kt" core-agent/ | grep -vE "'"$EXCLUDE_COMMENT"'"'
 
+# 注：编号 11 空缺（历史原因，勿重排 —— 编号仅存在于注释，selftest 按守卫名匹配、
+#     历史 handoff 与知识库按号引用，重排会造成大面积文档失配）。
+
 # 12) 主循环方法体积守卫（Wave 31）：JVM 单方法 64KB bytecode 是硬上限，
 #     Wave 27 曾因 `e: Method too large: AgentRunner.executeBodyUnchecked` 真实炸过
 #     两个 job。源码行数不是字节数，但本仓实测密度约 66 B/行（517 行 ≈ 34.4 KB）⇒
@@ -235,13 +238,26 @@ check "AgentRequest 可空字段无孤儿（代码完备但未接线）" \
 #       lint 自己在报告里以 LintBaselineFixed 建议删除），另 16 条 AutoboxingStateCreation
 #       + 4 条 RenderEffect 的冗余 @RequiresApi(S)（minSdk 31 = S ⇒ 恒真）已在同波修掉。
 #       ⚠️ 教训：清障前**必须先读 lint artifact** —— 否则无从知道 baseline 是否已失配。
-#     语义：条目数 > 35 即红（新增了豁免）；< 35 合法（清了存量，请顺手把这里的
-#     35 改成新值）；文件缺失即红（门禁面失效）。
-check "lint baseline 条目数未超冻结值（35，只许清障不许新增豁免）" \
+#       → **Wave 38 清障后 3 条**：D1~D4 四路把 35 条里 **32 条**的**底层代码问题真修掉**
+#       （UseKtx 换 `toUri`/`scale`、ObsoleteSdkInt 删恒真版本判断与 `-v26` 冗余目录、
+#       AnnotateVersionCheck 补 `@ChecksSdkIntAtLeast`、NewApi 改 `removeAt(0)`/显式抑制、
+#       ConfigurationScreenWidthHeight 与 ModifierParameter 就地 `@Suppress`/重排、
+#       Manifest 的 DiscouragedApi/DataExtractionRules、`isShrinkResources`、monochrome 图标、
+#       MissingPermission 补 `@SuppressLint`）。这 32 条随后会变成 lint 的 `LintBaselineFixed`
+#       （lint 主动建议删除）—— 留着会让「被重新引入的问题」静默命中旧条目而**永不报出**，
+#       故必须随之删除。清障依据 = 上一轮 CI 的 `lint-reports-<sha>` artifact（见上，纪律不变）。
+#       保留的 3 条均为「需真机/行为变更才能修」的诚实豁免：
+#         · 2 条 `OldTargetApi`（build.gradle.kts / libs.versions.toml 的 `targetSdk = 36`）——
+#           升 targetSdk 是**行为变更**，必须真机验证后才动；
+#         · 1 条 `AutoboxingStateCreation`（OnboardingScreen.kt）——`rememberSaveable` 与
+#           `mutableIntStateOf` 的 saver 语义**不可离线验证**，盲改有状态恢复回归风险。
+#     语义：条目数 > 3 即红（新增了豁免）；< 3 合法（清了存量，请顺手把这里的
+#     3 改成新值）；文件缺失即红（门禁面失效）。
+check "lint baseline 条目数未超冻结值（3，只许清障不许新增豁免）" \
   bash -c 'f=app/lint-baseline.xml
            if [ ! -f "$f" ]; then echo "app/lint-baseline.xml 不存在（lint 门禁面失效：abortOnError=true 会拦掉全部存量）"; exit 0; fi
            n=$(grep -cE "^[[:space:]]*<issue[[:space:]]*$" "$f")
-           if [ "$n" -gt 35 ]; then echo "lint baseline 现有 $n 条，超冻结值 35（⛔ 基线只许缩不许涨 —— 新问题应该修掉，而不是 regen 进豁免清单；确属应豁免的存量需主理人改本守卫的冻结值并写明理由）"; fi'
+           if [ "$n" -gt 3 ]; then echo "lint baseline 现有 $n 条，超冻结值 3（⛔ 基线只许缩不许涨 —— 新问题应该修掉，而不是 regen 进豁免清单；确属应豁免的存量需主理人改本守卫的冻结值并写明理由）"; fi'
 
 # 15) 测试源集的 @Test 方法必须返回 void（Wave 37 实案）：JUnit 4 要求测试方法 void，
 #     而 Kotlin 表达式体 `fun x() = ...` 的返回类型由**末表达式**决定 —— `kotlin.test`

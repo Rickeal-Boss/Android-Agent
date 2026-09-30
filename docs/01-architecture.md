@@ -4897,7 +4897,7 @@ dependencies {
 | A10 | `app/src/main/res/values/themes.xml` | `Theme.LiquidAgent`（parent `android:Theme.Material.Light.NoActionBar`） |
 | A11 | `app/src/main/res/values/ic_launcher_background.xml` | 自适应图标底色 |
 | A12 | `app/src/main/res/drawable/ic_launcher_foreground.xml` | 自适应图标矢量前景 |
-| A13 | `app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml` | 自适应图标装配 |
+| A13 | `app/src/main/res/mipmap-anydpi/ic_launcher.xml` | 自适应图标装配（Wave 38：目录由 `mipmap-anydpi-v26` 改名 —— minSdk 31 ⇒ `-v26` 限定符冗余，并补 `<monochrome>` 供 Android 13+ 主题化图标） |
 | A14 | `app/src/main/java/com/rickeal/agent/LiquidAgentApplication.kt` | 建 `AppContainer` 并 `bootstrap()` |
 | A15 | `app/src/main/java/com/rickeal/agent/MainActivity.kt` | `setContent { AppRoot() }` |
 | A16 | `app/src/main/java/com/rickeal/agent/ui/AppRoot.kt` | `LiquidAgentTheme` + `CompositionLocalProvider(LocalAppContainer)` |

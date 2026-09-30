@@ -19,8 +19,8 @@ name: Build
 #      独立并行 = 不挤占构建关键路径（正面回应旧注释「不跑 lint，避免无关
 #      任务拖垮构建」——拖垮的前提是 lint 串进 assemble 链，这里没有）；
 #      lint 由独立 job 并行跑（同款工具链，不挤占构建关键路径）；Wave 32 起
-#      用 baseline 门禁：35 条存量被 app/lint-baseline.xml 冻结（Wave 32 首轮 83 条
-#      → Wave 37 清障后 35 条），**新增**的
+#      用 baseline 门禁：3 条存量被 app/lint-baseline.xml 冻结（Wave 32 首轮 83 条
+#      → Wave 37 清障后 35 条 → Wave 38 清障后 3 条），**新增**的
 #      lint 问题（含 Warning 级）会阻断 CI —— 版本通告类（GradleDependency /
 #      NewerVersionAvailable / AndroidGradlePluginVersion）被显式 disable，
 #      避免「上游发版就没改代码也红」的坏门禁。
@@ -487,6 +487,17 @@ jobs:
   #        是对已 disable 检查的失效条目 ⇒ 删 28 条 + 修 16 处 AutoboxingStateCreation
   #        + 删 4 处 RenderEffect 冗余 @RequiresApi(S)（minSdk 31 = S ⇒ 恒真），
   #        baseline 83 → 35；arch-guard 第 14 项冻结值同步降到 35。
+  #      第五轮（Wave 38 清障）：D1~D4 四路把 35 条里 32 条的**底层代码问题真修掉**
+  #        （UseKtx 换 toUri/scale、ObsoleteSdkInt 删恒真版本判断与 -v26 冗余目录、
+  #        AnnotateVersionCheck 补 @ChecksSdkIntAtLeast、NewApi 改 removeAt(0)/显式抑制、
+  #        ConfigurationScreenWidthHeight 与 ModifierParameter 就地 @Suppress/重排、
+  #        Manifest 的 DiscouragedApi/DataExtractionRules、isShrinkResources、
+  #        monochrome 图标、MissingPermission 补 @SuppressLint），这 32 条随之成为
+  #        lint 的 LintBaselineFixed（lint 主动建议删除；留着会让重新引入的问题静默
+  #        命中旧条目而永不报出），故删除 ⇒ baseline 35 → 3；arch-guard 第 14 项
+  #        冻结值同步降到 3。保留的 3 条均为「需真机/行为变更才能修」的诚实豁免
+  #        （2 条 OldTargetApi = 升 targetSdk 属行为变更；1 条 AutoboxingStateCreation =
+  #        rememberSaveable 与 mutableIntStateOf 的 saver 语义不可离线验证）。
   #      第四轮（Wave 37 收口）：lint 产物验证发现 F3 只做了一半 —— 换成
   #        mutableFloatStateOf 后**读写 `.value` 仍装箱**，lint 报 26 条
   #        AutoboxingStateValueProperty（Error，未被 baseline 吸收；因该 step 带
@@ -604,7 +615,7 @@ jobs:
         # :app:lintDebug + checkDependencies=true：单次调用覆盖 :app 及其全部
         # library 依赖的源码（AGP 会自动先编译依赖模块的 class 供 lint 分析）。
         # lint 门禁：app/build.gradle.kts lint{} 为 abortOnError=true +
-        # warningsAsErrors=true；存量由 app/lint-baseline.xml 冻结（35 条，
+        # warningsAsErrors=true；存量由 app/lint-baseline.xml 冻结（Wave 38 清障后 3 条，
         # scripts/arch-guard.sh 第 14 项「只许缩不许涨」守着）吸收，新增问题阻断。
         # 维护纪律：baseline 只许**缩**（修掉存量 ⇒ 删对应条目 + 同步降守卫冻结值），
         # 绝不许**涨**（把新问题 regen 进 baseline = 僵尸豁免，守卫会直接红）。
@@ -695,7 +706,7 @@ jobs:
             xml="app/build/reports/lint-results-debug.xml"
             if [ -f "$xml" ]; then
               count="$(sed -n 's/.*issues[^>]*count="\([0-9]*\)".*/\1/p' "$xml" | head -n 1)"
-              echo "Issues found: **${count:-0}** — lint 门禁为**硬门禁**（abortOnError=true + warningsAsErrors=true，存量由 baseline 冻结 35 条吸收，观察期已于 Wave 37 摘除）；完整报告见 artifact \`lint-reports-\`。"
+              echo "Issues found: **${count:-0}** — lint 门禁为**硬门禁**（abortOnError=true + warningsAsErrors=true，存量由 baseline 冻结 3 条吸收，观察期已于 Wave 37 摘除）；完整报告见 artifact \`lint-reports-\`。"
               echo "（存量已由 baseline 吸收，此处为**新增**问题数，理想为 0）"
             else
               echo "未找到 lint XML 报告 —— 检查上方 Run Android Lint 日志。"
