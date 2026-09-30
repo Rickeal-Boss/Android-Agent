@@ -67,6 +67,31 @@ class SettingsRepository(private val context: Context) {
         // 三项刻意**分开**存：应用服务条款与 Gemma 授权条款的法律主体不同
         // （前者是我们自己，后者是 Google），必须能独立表达「接受其一、未接受其二」。
         val HAS_SEEN_ONBOARDING = booleanPreferencesKey("has_seen_onboarding")
+
+        // ⚠️ 时序风险（Wave 39 补记，**只记录不修**）：这是一个**无版本 boolean**。
+        // 它只能表达「同意过 / 没同意过」，表达不了「同意的是**哪一版**条款」。
+        // ⇒ 一旦将来替换法务文本（换文案、换条款、换发布主体），**当天所有老用户**
+        // 都会命中 `IS_TOS_ACCEPTED == true` 而被视为「已同意新条款」，首启门禁
+        // （Wave 39 时位于 `app/src/main/java/com/rickeal/agent/onboarding/FirstRunGate.kt`
+        // 的 `tosAccepted == true -> FirstRunStep.GEMMA`）与法律页开关都会被直接跳过 ——
+        // 即「**未同意新条款却被视为已同意**」，属合规事故，且事后无法从本字段反推
+        // 用户当年同意的是哪一版。
+        //
+        // ✅ 落地顺序是**硬约束**：`termsVersion`（或任何等价的版本化方案 ——
+        // 存「已同意的版本号」，版本不匹配即重新征求同意）**必须先于任何法务文本替换
+        // 落地**，不能反序。反序则老用户的同意状态不可区分、不可补征。
+        //
+        // ⛔ 为什么本波只加注释不改行为：实现涉及一个产品/法务决策 —— 老用户的
+        // `boolean = true` 到底算「已同意第 1 版」（据此仅对第 2 版重新征求）还是算
+        // 「未同意任何版本」（据此全量重新征求）。这不是工程侧能自行裁定的。
+        // 且**法务文本替换尚未发生**，时序风险**未到期**，现在改行为属于给一个还不存在
+        // 的场景做产品决策。故本波只把这笔债务固化成可见注释；等真的要换法务文本时，
+        // 先做 `termsVersion`，再换文本。
+        //
+        // 消费点（改本字段或新增版本字段时必须同步）：
+        //  - `app/.../onboarding/FirstRunGate.kt`（首启门禁，`tosAccepted`）
+        //  - `feature-settings/.../LegalScreen.kt`（法律页开关，`settings.isTosAccepted`）
+        //  - 本文件 `isTosAccepted` / `setTosAccepted`（读写两侧都要带上版本号口径）
         val IS_TOS_ACCEPTED = booleanPreferencesKey("is_tos_accepted")
         val IS_GEMMA_TERMS_ACCEPTED = booleanPreferencesKey("is_gemma_terms_accepted")
 

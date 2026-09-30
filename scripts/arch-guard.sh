@@ -31,6 +31,10 @@ fail=0
 #   结论：**断言「必须存在」的守卫，必须自己 echo 一行**，例如
 #      `bash -c 'grep -q "X" f || echo "f 缺少 X"'`
 #   而断言「必须不存在」的守卫沿用 `grep -rn`（命中即输出），天然合规。
+#
+# ⚠️ 上述「rc>=2 = 守卫自身故障」对**带管道的守卫命令失效**：管道会把 grep 的 rc=2
+#    洗成 rc=1（输出空 ⇒ 判 OK），多路径时甚至洗成 rc=0。实测数据与完整分析见下方
+#    「模块存在性」前置断言处的注释块 —— 那里也说明了为什么目录存在性必须显式兜。
 check() {
   local name="$1"
   shift
@@ -50,7 +54,49 @@ check() {
 
 # 前置断言：被守卫依赖的模块目录必须存在。目录被改名/删除会让对应守卫变成
 # 「永远通过的空守卫」—— 那比没有守卫更糟（给人已被保护的错觉）。
-for d in core-model core-design core-engine core-agent core-data app; do
+#
+# ⚠️ 本清单**必须与 settings.gradle.kts 的 include 保持一致**（9 个，顺序也对齐）：
+#    增 / 删 / 改名模块时**两处必须同步** —— 只改一处就会留下「守卫以为自己在守、
+#    其实扫的是空气」的静默缺口。
+#    Wave 39 前这里只列了 6 个（缺 feature-chat / feature-models / feature-settings），
+#    而这 3 个恰好是第 13 条宿主源集的实际扫描面 ⇒ 它们被改名时本断言一声不吭，
+#    守卫面**悄悄缩小**（不是判绿 —— 是缩面，比判绿更难被发现）。
+#
+# ---------- 为什么目录存在性必须靠本断言兜，而不能指望 grep 的退出码 ----------
+# 本机实测退出码（Git Bash + GNU grep 3.0 / bash 5.3 实测；CI 的 Ubuntu 同为 GNU grep，
+# 退出码语义一致，但**本波未在 CI 上单独复测** —— 若将来 CI 换了 busybox grep，
+# 需重测 ②/④ 两条再信本节结论）：
+#   ① grep -rn X nodir/                                  ⇒ rc=2
+#   ② grep -rn X nodir/ | grep -vE '...'                 ⇒ rc=1   ← 关键
+#   ③ grep -rn X nodir/ exist.txt（另一路径有命中）        ⇒ rc=2，且 stdout 仍有命中行
+#   ④ ③ 再接 | grep -vE '...'（右侧有命中）               ⇒ rc=0   ← 完全静默
+#   ⑤ 目录存在但为空：grep -rn X empty/                   ⇒ rc=1
+#   含 `| grep -vE` 的守卫落在 ② / ④ 两种形态：② 输出空 ⇒ check() 判「无命中 = OK」；
+#   ④ 连输出都有 ⇒ 看起来像正常在扫。两种都不触发 check() 的「rc>=2 = 守卫自身故障」。
+#
+#   `set -o pipefail` 也救不了，而且是**两层**都救不了（均实测）：
+#     · 本脚本顶部的 `set -uo pipefail` **不继承进 `bash -c` 子壳** —— 守卫命令都是
+#       `bash -c '...'` 起的，子壳里管道仍按「取最右退出码」求值（实测 rc 仍为 1）。
+#     · pipefail 取的是「**最右的那个非零退出码**」而不是最大值 —— 形态 ② 里右侧的
+#       `grep -vE` 自己也是 1 ⇒ 管道 rc 依旧是 1。只有当右侧**有命中 rc=0** 时
+#       （形态 ④）pipefail 才会把 rc 拉回 2 —— 而 ④ 恰恰是输出非空、最像正常的那一种。
+#   ⇒ 结论：**目录存在性只能靠本断言显式兜**。（可选加固：把守卫命令改成
+#     `bash -c 'set -o pipefail; ...'`，能把 ④ 从「静默 rc=0」救回 rc=2；本波未做 ——
+#     它会一次性改变现有 5 条带管道守卫的判据，需单独评估假红风险。）
+#
+# ---------- 当前暴露面盘点（Wave 39）----------
+# 带 `| grep -vE` 的守卫共 5 条，扫描目标分别是：
+#   第 3 条 → core-model/（在本断言清单内）
+#   第 5 条 → .（仓库根，不会被改名）
+#   第 6 条 → .（同上）
+#   第 9 条 → .（同上）
+#   第 10 条 → core-agent/（在本断言清单内）
+# ⇒ **静态暴露面 ≈ 0**（两条指向模块目录的，都在本断言的覆盖内）。
+# 真正的缺口在第 13 条宿主源集里的 3 个 feature-*：它们被改名时 app/ 与 core-data/
+# 仍在 ⇒ 赋值点照样能被 grep 到 ⇒ 守卫是**缩面**而不是判绿（见上文 Wave 39 那条）。
+# 故本波把清单补到 9 个即已堵住这条缺口。第 14 条的 lint baseline 冻结值本波不动。
+for d in core-model core-engine core-agent core-data core-design \
+         feature-chat feature-models feature-settings app; do
   if [ ! -d "$d" ]; then
     echo "::error::[模块存在性] 守卫目标目录不存在：$d（被改名或删除？守卫面已失效）"
     fail=1

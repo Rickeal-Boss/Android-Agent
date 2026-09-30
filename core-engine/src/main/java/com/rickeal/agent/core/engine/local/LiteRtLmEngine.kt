@@ -810,8 +810,13 @@ class LiteRtLmEngine(
             var thirdState = false
             // preface 渲染诊断（Wave 28，@OptIn ExperimentalApi）：preface = systemInstruction +
             // initialMessages 在 native chat template 下的**实际渲染结果**。若某转换件对
-            // system role 渲染不当（createConversation 成功但渲染错位/丢失 —— 「角色通道
+            // system role 渲染不当（createConversation 成功但渲染**丢失** —— 「角色通道
             // 静默忽略」第三态，不抛异常故回退门控抓不住），这里是唯一的代码侧观测点。
+            // ⚠️ 口径收窄（Wave 39，与 EngineContract.EngineSessionDiagnostics 的 KDoc
+            // 同读）：这里只证「**丢失**」，**证不了「错位」** —— 判据是归一化**子串**
+            // 匹配（`normalizeForPrefaceCheck(preface).contains(window)`），它只对
+            // 「窗口串有没有出现」敏感，对「出现在哪个位置 / 哪个 role 段」不敏感：
+            // 系统提示词被渲染到用户消息之后、或被塞进别的 role 里，contains 依然 true。
             // 渲染失败（模型/版本不支持）静默跳过 —— 诊断绝不成为失败面。
             runCatching {
                 val preface = conv.renderPrefaceIntoString()

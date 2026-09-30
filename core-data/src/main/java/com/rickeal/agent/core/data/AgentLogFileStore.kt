@@ -1,5 +1,6 @@
 package com.rickeal.agent.core.data
 
+import android.util.Log
 import com.rickeal.agent.core.model.AgentLog
 import com.rickeal.agent.core.model.AgentLogLevel
 import com.rickeal.agent.core.model.AgentLogStore
@@ -27,16 +28,65 @@ import java.nio.file.StandardCopyOption
  * 崩溃可能就发生在写日志的下一行代码。异步/缓冲写会把「崩溃前最后一条」一起丢掉，
  * 那恰恰是本类唯一要保住的东西。ERROR 是低频事件，一次几毫秒的追加换「崩溃有迹可循」是划算的。
  * 同理，[append] 全程 try/catch：它跑在「已经出错的路径」上，再抛异常只会把原始错误顶掉。
+ *
+ * ## 本类同时是 `AgentLogStore` 的**唯一** sink 装配点
+ * 除落盘外，[install] 里还并入了 logcat 取证出口（全级别）。两者都必须在**同一个**
+ * sink lambda 里完成，原因见 [install] 的 KDoc（`AgentLogStore.setSink` 是单槽覆盖式 API）。
  */
 class AgentLogFileStore(private val file: File) {
 
     /**
      * 把本存储装成 [AgentLogStore] 的出口。由 AppContainer 在启动时调用一次。
      *
+     * ## ⚠️ 单槽语义：本方法是 [AgentLogStore] 的**唯一** sink 装配点
+     * [AgentLogStore.setSink] 是**单槽覆盖式** API —— 它内部只有一个
+     * `@Volatile private var sink: AgentLogSink?`，后一次调用会**整个顶掉**前一次。
+     * 因此：**将来任何新出口都必须并入下面这个 lambda，绝不允许在别处再调一次
+     * `setSink`**。那会把 ERROR 落盘静默顶掉 —— 回退级事故：崩溃前最后一条 ERROR
+     * 从此不再落盘，而这正是本类存在的唯一理由。
+     *
+     * ## 出口一：logcat（**全级别**）—— 真机验收的取证通道
+     * 内存环形缓冲只在进程内：诊断页看得见，但 adb 抓不到。真机验收需要「跑完了」的
+     * 客观判据，判据必须能被 `adb logcat` 拿到，否则验收只能靠人眼盯屏幕。故
+     * INFO / WARN / ERROR **一律**转发（6 组验收关键字里有 4 组是 `AgentLogLevel.WARN`，
+     * 只转 INFO 会漏掉大半判据）。
+     *
+     * 级别刻意用 `Log.d` 而不是 w/e：这只是取证通道，不该抬高日志级别去污染系统日志。
+     * **release 零开销**的依据（不靠 `BuildConfig.DEBUG`，本仓不生成 BuildConfig）：
+     * `app/proguard-rules.pro`（Wave 39 时位于 `:124-129`）有
+     *
+     * ```proguard
+     * -assumenosideeffects class android.util.Log {
+     *     public static boolean isLoggable(java.lang.String, int);
+     *     public static int v(...);
+     *     public static int d(...);
+     *     public static int i(...);
+     * }
+     * ```
+     *
+     * 且 `app/build.gradle.kts`（Wave 39 时位于 `:95-98`）的 release 走
+     * `proguard-android-optimize.txt`（开优化）⇒ `Log.d` 连同 tag 与消息的字符串拼接
+     * 会在 release 包里被 R8 **整条删掉**。与既有先例
+     * `core-design/src/main/java/com/rickeal/agent/core/design/liquid/effects/Lens.kt`
+     * （Wave 39 时位于 `:38` 与 `:141`，`android.util.Log.d(TAG, "lens 跳过折射：…")`）
+     * 完全同款。⇒ 因此**不要**为了「release 也能抓」改成 `Log.w`：那会实打实留在发布包里。
+     *
+     * 单条上限 400 字符（在 [AgentLogStore.record] 里截断）远低于 logcat 单条上限，
+     * 故不需要分段。
+     *
+     * ## 出口二：磁盘（**仅 ERROR**）—— 崩溃幸存
      * 只转发 ERROR：warn / info 的「有异常但我兜住了」不值得我们付出磁盘 IO。
+     *
+     * 两个出口的分工是刻意的、不可互相替代：落盘怕撑大、只收低频的 ERROR；
+     * logcat 是为了 adb 抓得到、所以全级别都要。
+     *
+     * 另：`message` 在进入本 lambda 前已由 [AgentLogStore.record] 里的 `sanitize()`
+     * 脱敏（`Bearer …` / `sk-…` / `?key=…` 三类）+ 400 字符截断。出口侧因此**不再拼装
+     * 任何原始未脱敏内容**，直接用参数里的 `message` —— 拼原文等于绕开脱敏。
      */
     fun install() {
         AgentLogStore.setSink { level, message, atMillis ->
+            Log.d(TAG, "[${level.name}] $message")
             if (level == AgentLogLevel.ERROR) append(atMillis, level, message)
         }
     }
@@ -163,6 +213,13 @@ class AgentLogFileStore(private val file: File) {
     }
 
     private companion object {
+        /**
+         * logcat 取证出口的 tag（见 [install]）。真机验收抓取：`adb logcat -s LiquidAgentDiag:V`。
+         *
+         * 15 字符，稳在 logcat（与 lint `LongLogTag`）23 字符的 tag 上限之内。
+         */
+        const val TAG = "LiquidAgentDiag"
+
         /** 磁盘上最多保留多少条 ERROR。崩溃现场通常只看最后几条，50 条足够且体积可控。 */
         const val MAX_ENTRIES = 50
 

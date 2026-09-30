@@ -361,6 +361,41 @@ private fun sandboxFileIcon(info: SandboxFileInfo) = when {
  * 「不在 FileProvider 路径表内」的文件直接抛 `IllegalArgumentException`（沙箱外的
  * 残留 / 越权路径会走到这里），放到防护外就成了"承诺了不崩、却仍会崩"的不对称
  * 防护。两者对用户的可见结果一样（打不开），因此共用同一条 Toast。
+ *
+ * ## 🔒 信任边界（Wave 39 补记）：`File(sandboxRoot, info.relativePath)` 为什么可以不校验
+ *
+ * 本函数**没有**调用 `SandboxFileScanner.resolveWithinSandbox`，这不是漏写 —— 入参
+ * [info] 来自 `SandboxFileScanner.scan` 产出的 listing，路径安全性在上游已经成立：
+ *  - **目录段**：`scan` 入口就用 `resolveWithinSandbox(root, dirPath)` 做过校验，
+ *    不通过直接返回空结果（fail-closed）；
+ *  - **名字段**：`entry.name` 来自 `listFiles()` —— Android/Linux 文件名**不可能含 `/`**，
+ *    且 `.` / `..` 已被「隐藏文件排除」规则挡掉（`name.startsWith(".")`）；
+ *  - **目录条目**额外再过一次 `resolveWithinSandbox`（canonical 前缀比对，挡符号链接
+ *    逃逸）；**非目录（文件）条目不经该检查** —— 这是 `scan` 的有意取舍（文件不是
+ *    下钻向量），不是本处可以依赖的保证；
+ *  - **最后一道兜底**：`FileProvider.getUriForFile` 自身会 canonical 化并对配置的
+ *    root 做前缀比对，越界即抛 `IllegalArgumentException`（被本函数 runCatching 兜住
+ *    → Toast）。即便上游假设全错（例如扫描后被替换成指向沙箱外的符号链接），
+ *    仍然出不去。
+ *
+ * ⇒ **前提**：调用方传入的 [info] 必须是 `scan` 的产出（或等价已过滤来源）。
+ * **将来若新增任何未经 `resolveWithinSandbox` 的入口**（外部 Intent / 深度链接 /
+ * 手拼 relativePath / 工具回传路径），**必须在那一个新入口里补上校验**，不能沿用
+ * 本注解的「实害≈0」结论 —— 那句话只对 listing 来源成立。
+ *
+ * ## ⚠️ 出应用边界申报：`ACTION_VIEW` 会把沙箱文件交给外部 App
+ *
+ * 这里是**全仓唯一的 `ACTION_VIEW` 出口**（Wave 39 全仓检索确认，仅本文件一处）。
+ * 点击「打开」后：文件以 `content://` URI + `FLAG_GRANT_READ_URI_PERMISSION` 交出，
+ * **数据离开本应用边界** —— 接收方 App 可以读取、缓存、转发、上传；本应用**既无法
+ * 追回、也无法审计**，授予的是临时读权限但内容一旦被对方复制就不可逆。
+ * 这是**有意的产品行为**（沙箱文件本来就要给用户看/用），不是漏洞，但边界必须可见。
+ *
+ * **处置方向（三选一，⚠️ 留待用户裁决，Wave 39 本波不实现，只做申报）**：
+ *  1. 设置开关（**默认关**）—— 用户显式开启后才允许出应用；
+ *  2. 首次确认弹层 —— 首次点击「打开」时提示一次「文件将交给外部应用」；
+ *  3. README / 隐私说明里把这条边界**写清**（零代码成本，但用户仍可能不读）。
+ * 未裁决前的现状 = 方向 3 的一部分（仅本注释可见）+ 无任何运行时拦截。
  */
 private fun openSandboxFile(context: Context, sandboxRoot: File, info: SandboxFileInfo) {
     runCatching {

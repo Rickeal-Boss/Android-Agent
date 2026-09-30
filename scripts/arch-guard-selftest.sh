@@ -62,10 +62,18 @@ write_runner() {
 # 铺一棵「干净」的最小骨架：满足 arch-guard 的前置存在性断言与两条「必须存在」
 # 型守卫（Manifest 的 INTERNET、AgentRunner 的方法体积），其余保持为空。
 # 干净树上守卫应退出 0 —— 这是「守卫永远红」的回归防线。
+#
+# ⚠️ 9 个模块目录必须**全部**铺齐（与 settings.gradle.kts 的 include、以及
+#    arch-guard.sh 前置断言的清单三方一致）：漏铺任何一个，positive 与所有「绿面」
+#    case 都会被模块存在性断言误红 —— 这本身就是那条断言在工作的证据。
+#    Wave 39 前这里只铺 6 个（缺 3 个 feature-*），与当时守卫侧的 6 个恰好对齐 ⇒
+#    两边一起漏，谁都发现不了。
 scaffold() {
   local root="$1"
   mkdir -p "$root"/core-model "$root"/core-design "$root"/core-engine \
-           "$root"/core-agent "$root"/core-data "$root"/app/src/main
+           "$root"/core-agent "$root"/core-data \
+           "$root"/feature-chat "$root"/feature-models "$root"/feature-settings \
+           "$root"/app/src/main
   cat > "$root/app/src/main/AndroidManifest.xml" <<'XML'
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
@@ -502,6 +510,46 @@ elif printf '%s\n' "$out" | grep -qF "非法字符"; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case12d] 输出里看不到非法字符判定行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 13：一个模块目录被改名/删除（目录不再存在）⇒ 前置「模块存在性」断言必须报红。
+#          这条断言存在的全部意义，是兜住「带 `| grep -vE` 的守卫在目标目录缺失时
+#          静默判绿」这个僵尸规则风险（退出码实测见 arch-guard.sh 该断言处的注释）。
+#          可它自己此前**一个 selftest case 都没有** ⇒ 它坏了没人知道 —— 这正是
+#          「守卫的守卫」最讽刺的失效形态。
+#          选 feature-settings 下手：它是第 13 条宿主源集的成员（正是 Wave 39 补进
+#          清单的那 3 个之一），而骨架的 AgentRequest 无可空字段 ⇒ 动它只会触发
+#          模块存在性断言，不会牵动第 13 条本身的判定。
+#          「绿面」（9 个目录齐全 ⇒ 不红）由 positive case 兜住 —— scaffold() 已铺齐
+#          全部 9 个模块，少铺一个 positive 立刻红。
+#
+#          动手方式用 **mv 改名**而不是 rm 删除：① 守卫自己的报错文案就是
+#          「（被改名或删除？）」，而真实事故里**改名**远比整目录消失常见 ——
+#          改名正是本波要堵的形态；② 改名后的目录留在树里是惰性的（空目录，
+#          不被任何一条守卫扫到），不污染判定；③ 不依赖 `rm`：受限环境里 rm 可能被
+#          包装成拒绝带盘符路径（本机实测 `rm`/`rmdir` 均被 safe-delete 拦下），
+#          而改名在任何 POSIX 环境都成立 —— 判据不该挂在会被环境拦掉的动作上。
+# ---------------------------------------------------------------------------
+d="$TMP/case13-module-missing"
+scaffold "$d"
+mv "$d/feature-settings" "$d/.feature-settings-renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case13 模块目录缺失 (前置断言·模块存在性)" "$rc" "$out" "模块存在性"
+# case13b：红必须来自**真命中**（输出里能看到违规行本身 —— 且点名是哪一个模块），
+#          而不是「守卫自身执行失败」—— 后者那行同样含守卫名，会让 assert_red 假绿
+#          （与 case12b / case12d 同一范式）。
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case13b] 模块存在性报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "守卫目标目录不存在：feature-settings"; then
+  echo "PASS [case13b] 红来自真命中（输出含违规行「守卫目标目录不存在：feature-settings」）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case13b] 输出里看不到「守卫目标目录不存在：feature-settings」违规行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

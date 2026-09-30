@@ -307,6 +307,14 @@ Android-Agent/
     详见下文「挂账台账」节的「已裁定（不再是挂账）」小节。
   - [ ] Wave 3：历史版本化、定时任务、检索记忆、人格系统、插件化装载
 
+> **Wave 24–39 实况（2026-09-30 同步）**：Wave 3 的大项**尚未开工**，实际推进的是「Harness 加固 + 治理 + 验收」这条线，逐波细节见
+> [`docs/handoff-*.md`](docs/)（最新在前）。当前分支 `harness-improve`，功能 tip `a822407`（CI 双绿）。
+>
+> - **加固**：W24 角色通道根治（回显主根因）→ W26 Operit 侦察（**许可证不兼容 ⇒ 零代码搬运**）→ W27 渐进式披露 → W28 KV 预算 → W29 A1 拆分 → W30 断路器 → W31 接线收口 → W33 preface 第三态闸门 + 沙箱 → W34 原生工具通道 + 记忆 pull 化
+> - **治理**：W32 lint 门禁翻转 → W35 外部报告批处理 → W36/W37/W38 挂账清零 + **lint baseline 83 → 35 → 4** + 记忆存储契约 + 守卫网 15 项 / selftest 21 例
+> - **验收（当前）**：**Wave 39 —— 验收取证通道**。修的是「验收跑得起来但**拿不到判据**」：诊断日志原本只在内存环形缓冲、落盘 sink 只转 ERROR、全仓不写 logcat、诊断页不能导出 ⇒ 真机跑完还是「没抓到」。本波给 `AgentLogStore` 的 sink 并入 **logcat 出口**（TAG `LiquidAgentDiag`，全级别）、诊断页加**「复制全部」**、合并跨波验收清单到 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11。
+> - ⚠️ **真机验收积压 ≈32 条、至今零回收** —— 这是当前最大风险敞口；验收清单与取证命令见 §11。
+
 ---
 
 ## 挂账台账（🟡 已实现未接线）
@@ -317,6 +325,7 @@ Android-Agent/
 | 条目 | 现状与挂账理由 | 重启前提 |
 |---|---|---|
 | **完整 i18n（含 RTL）** | `app/src/main/res/values/strings.xml` 只有 1 条串（`app_name`），Composable 里 ~145 处中文硬编码 ⇒ RTL 布局从未被验证、也无从验证。Wave 32 已撤下 `AndroidManifest.xml` 的 `android:supportsRtl="true"` —— 先不声明未验证过的能力 | ① 硬编码中文串抽到 `strings.xml`；② 补 `values-ldrtl` / 布局镜像的真机或预览验证；③ 验证通过后才恢复 `supportsRtl` 声明 |
+| **`termsVersion`（法务条款版本化）** ⚠️ **时序风险** | `SettingsRepository` 的 `is_tos_accepted` / `is_gemma_terms_accepted` 都是**无版本 boolean**，只能表达「同意过 / 没同意过」，表达不了「同意的是**哪一版**」。⇒ 一旦替换法务文本，**当天所有老用户**都会命中 `true` 而被视为「已同意新条款」，首启门禁与法律页开关被直接跳过（**未同意却被视为已同意**，合规事故），且事后无法反推用户当年同意的是哪一版。Wave 39 只把债务固化为注释（`SettingsRepository.kt` 的 `IS_TOS_ACCEPTED` 上方），**未改行为** —— 实现涉及产品/法务决策（老用户的 `true` 算「已同意第 1 版」还是「未同意任何版本」） | ✅ **落地顺序是硬约束**：`termsVersion` **必须先于任何法务文本替换落地**，不能反序（反序则老用户同意状态不可区分、不可补征）。行为实现需先裁定上述产品/法务问题 |
 
 ### 已裁定（不再是挂账）
 
@@ -324,6 +333,19 @@ Android-Agent/
   理由：语义前提（「REMOTE+EngineException → journal ProviderStop」）随远程供应商通道整体移除而失效；
   全仓零生产写入点、无 `valueOf` 反解析（journal 只写 `termination.name` 字符串）⇒ 删除零持久化兼容风险。
   模型侧确定性故障现统一归入 `BreakerTripped` / 引擎异常路径，不再保留第二种口径。
+
+- **THIN `backgroundAlpha = 0.21f`** —— **Wave 39 裁定销账，不再跟进**（此前跨 6 波未裁决）。
+  所谓「与 KDoc 规范 ≤0.15 冲突」的**前提已不存在**：`≤0.15` 只存活于 2026-09-26 的两份 handoff
+  （`docs/handoff-20260926-211413.md` / `handoff-20260926-234500.md`），**现役源码里零命中**；
+  `core-design/.../GlassMaterial.kt` 的 KDoc 早已把 `0.21f` 写成**有意值**（Wave 9 真机反馈「卡片更实」后整体加厚一档，
+  并顺带捋直了 Thin(0.18) > Regular(0.16) 的历史倒挂）。⇒ 它不是待裁决的临时值，改它等于改回 Wave 9 已否掉的方向。
+
+- **三项「挂账蒸发」实为从未存在** —— **Wave 39 核实销账**：`SubagentProgress` 事件、
+  `ConversationRepository` 增量写、`formatVersion` 三者**全仓 grep 零命中**（不是「做过又丢了」，是**从未实现过**，
+  此前作为「蒸发项」挂在台账里属记录失真）。
+
+- **`build.yml` 的 lint `continue-on-error`（G1③）** —— **Wave 39 确认已是有意保留并显式标注**
+  （workflow 注释已写明观察期与摘除前提），该项不再是待确认挂账。
 
 ### `AgentRequest` 可空字段的接线归属（`@wire-owner` 三态）
 

@@ -100,15 +100,32 @@ interface RunTokenLedger {
  * 注意 [RunTokenSnapshot] 含时间戳字段：只要时钟前进，即便 token 数完全没变也会发射
  * （这是「最后活跃时刻」语义的应有之义，不是噪音）。
  *
- * ⚠️ 生命周期红线（run 级 vs 会话级，尚未解决的口径张力）：本实现被 AppContainer 按
- * **conversationId** 池化、跨 run 存活，而 [RunTokenSnapshot.sentTokens] 镜像的
- * RunState.sentTokens 是**run 级**（每轮新建、从 0 起）。后果是两条字段的时间窗不一致：
- * sentTokens 靠覆盖写天然跟得住（新 run 首轮回写即归零重来），而
- * [RunTokenSnapshot.cumulativeIn] / [RunTokenSnapshot.cumulativeOut] 单调累加、
- * 跨 run 永不归零 —— 自第二次 run 起，「估算 vs 真实」的双口径对比就不再可比
- * （估算侧是本次 run，引擎侧是历史全部 run）。本波账本尚无消费方（只读侧投影），
- * 故不在本文件内引入无人调用的 reset API；真正接线前必须先解决这个生命周期错配
- * （要么账本改按 run 实例化，要么新增 run 起点重置入口并由 AgentRunner 在 run 头调用）。
+ * ⚠️ 生命周期错配（run 级 vs 会话级）—— **已按「第三条路」接线解决，原红线作废**：
+ * 本实现被 AppContainer 按 **conversationId** 池化、跨 run 存活，而
+ * [RunTokenSnapshot.sentTokens] 镜像的 RunState.sentTokens 是**run 级**
+ * （每轮新建、从 0 起）。后果是两条字段的时间窗不一致：sentTokens 靠覆盖写天然
+ * 跟得住（新 run 首轮回写即归零重来），而 [RunTokenSnapshot.cumulativeIn] /
+ * [RunTokenSnapshot.cumulativeOut] 单调累加、跨 run 永不归零 —— 自第二次 run 起，
+ * 「估算 vs 真实」的双口径**对比**就不再可比（估算侧是本次 run，引擎侧是历史全部 run）。
+ *
+ * **当初为什么挂这条红线**：写注解时账本**没有消费方**（只有只读侧投影），一旦接线
+ * 就会立刻把「跨 run 累计」当成本轮值读出去，故要求接线前先解决错配，并提出两个方案
+ * —— ① 账本改按 run 实例化；② 新增 run 起点重置入口、由 AgentRunner 在 run 头调用。
+ *
+ * ✅ **实况：接线走的是第三条路，上面两个方案均已作废**（Wave 31 流2 落地，
+ * Wave 39 复核仍在用）。消费方（Wave 39 时位于
+ * `feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt`
+ * 的 `observeTokenLedger`）**只消费 `sentTokens` 这一个 run 级口径**，从不消费
+ * cumulativeIn / cumulativeOut；双口径在 UI 上只是**并列展示、不换算不对账**
+ * （`ChatContextMeter` 的「估算≈ / 实测」）。错配因此**没有暴露面**。
+ * 至于 StateFlow 订阅立即重放上一轮残留值的问题，消费方也是用账本自己的时间戳做基线
+ * 滤掉的（`snap.updatedAtWallClockMillis > baseline`，baseline 取订阅前的
+ * `ledger.snapshot.value.updatedAtWallClockMillis`），同样**没有**给账本加 reset API。
+ * ⇒ 本实现**不需要** reset API、也**不需要**改成按 run 实例化；方案 ①② 不要再捡起来做。
+ *
+ * ⚠️ **这条结论的前提是「消费方不读累计口径」**：将来任何人要拿 cumulativeIn /
+ * cumulativeOut 当「本轮引擎用量」、或做「估算 vs 真实」对账，错配会**立刻复活** ——
+ * 届时必须重新引入 run 级锚点（按 run 实例化，或 run 头清零），不要沿用本注解的结论。
  *
  * 时间戳口径：账本按会话池化（AppContainer），**没有 run 起点锚**，因此
  * [RunTokenSnapshot.updatedAtWallClockMillis] 记录的是最后一次写入的进程墙钟

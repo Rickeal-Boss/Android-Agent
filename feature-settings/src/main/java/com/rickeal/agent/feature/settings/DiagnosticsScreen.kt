@@ -1,6 +1,10 @@
 package com.rickeal.agent.feature.settings
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Build
+import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.data.perf.PerfSample
@@ -71,6 +76,10 @@ import kotlinx.coroutines.withContext
  * 两个数据源刻意**分开呈现**、不合并：内存缓冲是「本次运行」，磁盘文件是「上次崩溃之前」。
  * 混在一起会让人误以为崩溃前的记录也在内存里（那样的话它们根本活不到现在）。
  *
+ * 「复制全部」把这两区**当前可见**的日志拼成纯文本进剪贴板（取证/贴给他人看）。它是静默
+ * 操作，因此**必须有 Toast 反馈**（成功与「剪贴板不可用」都要说）—— 没有反馈时用户无法
+ * 区分「复制成功」与「点了没反应」，这正是本项目「失败可见化」铁律要避免的形态。
+ *
  * @param readPersistedErrors 读回落盘的 ERROR 记录（阻塞 IO，调用方保证在 IO 线程执行）
  * @param clearPersistedErrors 清空落盘记录
  */
@@ -92,6 +101,8 @@ fun DiagnosticsScreen(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val scope = rememberCoroutineScope()
+    // 只在 onClick 里用（拿剪贴板 + 弹 Toast）：读写都不参与组合，故不需要 remember。
+    val context = LocalContext.current
 
     // 物理量观测窗口（Wave 30 acquire 点 ②）：进入即采样、离开即停。
     DisposableEffect(Unit) {
@@ -177,6 +188,46 @@ fun DiagnosticsScreen(
                                 snapshot = AgentLogStore.recent(MAX_SHOWN)
                                 scope.launch {
                                     persisted = withContext(Dispatchers.IO) { readPersistedErrors() }
+                                }
+                            },
+                            modifier = Modifier.padding(start = 10.dp),
+                        )
+                        GlassButton(
+                            text = "复制全部",
+                            onClick = {
+                                // 复制**当前可见**的两区（磁盘区只在「全部 / ERROR」筛选下显示，
+                                // 故这里用同一个 showPersisted 判据，保证「所见即所复制」）。
+                                val shownPersisted = if (showPersisted) persisted else emptyList()
+                                val text = diagnosticsPlainText(shownPersisted, visible)
+                                // 用 android.content.ClipboardManager 而不是 LocalClipboardManager：
+                                // 后者面向富文本（AnnotatedString），取证场景要的是可粘贴的纯文本。
+                                // 写剪贴板不需要权限；ClipData / setPrimaryClip 远早于 minSdk 31。
+                                val manager = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                    as? ClipboardManager
+                                if (manager == null) {
+                                    // 失败可见化：静默失败 = 用户以为复制成功，然后白等一场。
+                                    Toast.makeText(context, "剪贴板不可用", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    // 显式绑成非空局部量：后面在 runCatching 的 lambda 里用，
+                                    // 不依赖「智能转换穿透 lambda」这种边界行为。
+                                    val clipboard: ClipboardManager = manager
+                                    // setPrimaryClip 会抛（远端剪贴板服务异常等）：它跑在 onClick
+                                    // 里，抛出去就是一次崩溃，而这只是「复制点日志」这种低价值动作。
+                                    val copied = runCatching {
+                                        clipboard.setPrimaryClip(
+                                            ClipData.newPlainText("LiquidAgent 诊断日志", text),
+                                        )
+                                    }.isSuccess
+                                    // 两种结局都说了：写入失败 / 成功（带条数）。
+                                    Toast.makeText(
+                                        context,
+                                        if (copied) {
+                                            "已复制 ${shownPersisted.size + visible.size} 条日志"
+                                        } else {
+                                            "复制失败（剪贴板拒绝写入）"
+                                        },
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
                                 }
                             },
                             modifier = Modifier.padding(start = 10.dp),
@@ -461,6 +512,28 @@ private val FILTER_LABELS: List<String> = listOf("全部", "INFO", "WARN", "ERRO
 private val LOG_TIME_FORMAT = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
 
 private fun formatLogTime(atMillis: Long): String = LOG_TIME_FORMAT.format(Date(atMillis))
+
+/** 一行日志的纯文本形态：「时间  级别  消息」。 */
+private fun formatLogLine(log: AgentLog): String =
+    "${formatLogTime(log.atMillis)}  ${log.level.name}  ${log.message}"
+
+/**
+ * 两区日志拼成可粘贴的纯文本：**最新的排在最上面**（与页面呈现顺序一致，避免复制出来
+ * 和屏幕上看到的是反的，那会让「贴给别人看」变成事故现场）。
+ *
+ * 刻意保留「磁盘区 / 内存区」两个小标题：粘贴出去的受众看不到本页的分区卡片，
+ * 丢了标题就分不清哪条是崩溃前的、哪条是本次运行的。
+ */
+private fun diagnosticsPlainText(persisted: List<AgentLog>, visible: List<AgentLog>): String =
+    buildString {
+        if (persisted.isNotEmpty()) {
+            appendLine("── 上次崩溃前的记录（磁盘 ${persisted.size} 条）──")
+            persisted.asReversed().forEach { appendLine(formatLogLine(it)) }
+            appendLine()
+        }
+        appendLine("── 本次运行（内存 ${visible.size} 条）──")
+        visible.asReversed().forEach { appendLine(formatLogLine(it)) }
+    }
 
 /** 下标 0 = 全部（不过滤）。 */
 private fun levelOfFilter(index: Int): AgentLogLevel? = when (index) {

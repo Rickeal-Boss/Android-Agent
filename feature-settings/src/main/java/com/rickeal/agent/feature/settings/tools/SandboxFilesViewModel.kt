@@ -202,6 +202,18 @@ class SandboxFilesViewModel(
      * 并发：新的一单会先 `Job.cancel()` 掉上一单（见 previewJob），落结果时再经
      * [commitPreview] 对一次账 —— 取消是「少做无用功」，对账是「保证结果与画面
      * 一致」，两层都不能省（取消不及时会让旧结果晚到，对账兜住这种晚到）。
+     *
+     * 🔒 信任边界（Wave 39 补记，与 `SandboxFilesScreen.openSandboxFile` 同口径）：
+     * 下方 `File(container.sandboxDir, info.relativePath)` **没有**调用
+     * `SandboxFileScanner.resolveWithinSandbox`，这不是漏写 —— [info] 来自
+     * `SandboxFileScanner.scan` 的 listing：目录段在 `scan` 入口已过
+     * `resolveWithinSandbox`（不通过即空结果，fail-closed），名字段来自 `listFiles()`
+     * （Android/Linux 文件名不可能含 `/`，`.` / `..` 已被隐藏文件规则剔除）；
+     * 目录条目另过 canonical 逃逸过滤，**文件条目不经该检查**（`scan` 的有意取舍）。
+     * ⇒ 实害≈0，但前提是「[info] 只会来自 scan 的 listing」：将来若新增未经
+     * `resolveWithinSandbox` 的入口（外部 Intent / 深度链接 / 工具回传路径），
+     * **必须在那个新入口补校验**，不能沿用本注解。另注：读盘本身走
+     * `runCatching` + 弹层内报错，路径不成立只会是「读取失败」，不会崩。
      */
     fun onPreview(info: SandboxFileInfo) {
         previewJob?.cancel()
@@ -214,6 +226,9 @@ class SandboxFilesViewModel(
                 SandboxFilePreview(info = info, text = null, truncated = false, loading = false)
             } else {
                 withContext(Dispatchers.IO) {
+                    // 🔒 信任边界：`info.relativePath` 未经 resolveWithinSandbox —— 安全前提
+                    // 见本函数 KDoc（入参来自 scan 的 listing，目录段已过校验、名字段来自
+                    // listFiles()；新增非 listing 入口时必须在新入口补校验）。
                     runCatching { readPreviewHead(File(container.sandboxDir, info.relativePath)) }
                         .fold(
                             onSuccess = { (text, truncated) ->

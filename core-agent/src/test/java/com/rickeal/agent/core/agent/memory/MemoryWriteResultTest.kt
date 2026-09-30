@@ -24,8 +24,9 @@ import kotlinx.coroutines.runBlocking
  *     tmp 写入抛异常）；
  *  ⑥ `remove` 五个变体：文件 / 条目不存在 → [MemoryRemoveResult.NotFound]；损坏 → Corrupted；
  *     读不了 → Unreadable；写失败 → WriteFailed；
- *  ⑦ **读不了**（权限 / IO）→ [MemoryWriteResult.Unreadable] / [MemoryRemoveResult.Unreadable]
- *     （Wave 38 新增：与「能读但解析失败」的 Corrupted 是两条独立结局，处置建议相反）。
+ *  ⑦ **读不了**（权限 / IO）→ [MemoryWriteResult.Unreadable] / [MemoryRemoveResult.Unreadable]，
+ *     且**原文件一字不动**（Wave 38 新增：与「能读但解析失败」的 Corrupted 是两条独立结局，
+ *     处置建议相反；Wave 39 补上「不落盘」断言 —— 拒写才是 Unreadable 的完整语义）。
  *
  * 全程纯 JVM：只碰 `java.io.File` + `core-model` 的 JSON（无 Android 类）。
  *
@@ -99,13 +100,14 @@ class MemoryWriteResultTest {
     }
 
     @Test
-    fun `文件存在但读不了 —— upsert 与 remove 均回 Unreadable 而非 Corrupted`() =
+    fun `文件存在但读不了 —— upsert 与 remove 均回 Unreadable 且原文件一字不动`() =
         withTempDir("cam-p-mwr-unreadable") { dir ->
             // 构造「读不了」：文件存在且是合法 JSON，但去掉读权限 ⇒ `readText` 抛 ⇒ 必须回
             // Unreadable。Wave 38 之前这会与「解析失败」同归 Corrupted，把权限问题报成
             // 「文件损坏，请修复或删除」—— 而那个文件其实内容完好（读不了 ≠ 坏了）。
+            val original = """[{"title":"t","content":"c"}]"""
             val file = File(dir, "memory.json")
-            file.writeText("""[{"title":"t","content":"c"}]""")
+            file.writeText(original)
             file.setReadable(false, false)
             try {
                 // 能力探测（同 WriteFailed 用例惯例）：若以 root 运行 / 文件系统忽略权限位，
@@ -117,6 +119,13 @@ class MemoryWriteResultTest {
                 assertTrue(write is MemoryWriteResult.Unreadable, "读不了必须回 Unreadable：$write")
                 val remove = runBlocking { memory.remove("t") }
                 assertTrue(remove is MemoryRemoveResult.Unreadable, "读不了必须回 Unreadable：$remove")
+                // 补强（Wave 39 D-3）：「回 Unreadable」还不够 —— 必须证明**没有写坏磁盘**。
+                // 语义是「读不了 ⇒ 拒写以免覆盖不可读内容」：若只拒了回值却在半路落了盘，
+                // 用户按提示修好权限后拿到的就是一个被截断/覆盖的坏文件 —— 那比报错更糟，
+                // 因为内容已丢且没有任何人被告知。故这里恢复读权限后逐字节比对原内容。
+                // 先恢复再读：否则读操作自己会先抛。
+                file.setReadable(true, false)
+                assertEquals(original, file.readText(), "Unreadable 分支不得改写原文件")
             } finally {
                 file.setReadable(true, false)
             }

@@ -76,8 +76,16 @@ class EngineException(message: String, cause: Throwable? = null) : RuntimeExcept
  *
  * 存在理由：用户真机反复出现的「只输出提示词然后胡言乱语」在 Wave 24 修了主根因
  * （角色通道），但仍存在两类**静默降级**没有用户可见的出口：
- *  1. 「第三态」—— `createConversation` 成功、但模型 chat template 渲染时丢失/错位
+ *  1. 「第三态」—— `createConversation` 成功、但模型 chat template 渲染时**丢失**
  *     systemInstruction（Gemma 系模板原生无 system role），此前只有诊断日志没有动作；
+ *     ⚠️ 口径收窄（Wave 39）：本诊断只证明「**丢失**」，**证明不了「错位」** ——
+ *     判据是归一化**子串**匹配（Wave 39 时位于
+ *     `core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt`
+ *     的 `normalizeForPrefaceCheck(preface).contains(window)`），它只对「窗口串有没有
+ *     **出现**」敏感，对「出现在**什么位置 / 哪个 role 段**」完全不敏感 —— 系统提示词
+ *     被渲染到用户消息之后、或被塞进别的 role 段里，`contains` 照样返回 true。
+ *     所以它能抓「渲染丢了 / 截断到窗口拼不出来」，抓不了「渲染到了错的位置」；
+ *     后者本仓**没有**代码侧观测点（详见 LiteRtLmEngine 同口径注释）。
  *  2. GPU 降级实际生效后端无记录 —— 用户以为在跑 GPU，实际在 CPU。
  *
  * 快照在**会话建成**与**降级/回退事件**时整体发布（不逐字段更新），`null` = 当前没有

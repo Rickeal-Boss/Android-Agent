@@ -3781,6 +3781,15 @@ fun rememberWindowSizeClass(): WindowSizeClass {
 
 ### 8.1 材质 `GlassMaterial.kt`
 
+> ⚠️ **本节下方的整段 `GlassMaterialSpec` / `GlassMaterials` 代码是「历史快照」，已与现役源码漂移，请勿照抄。**
+> 现役值（唯一事实源）见 `core-design/src/main/java/com/rickeal/agent/core/design/GlassMaterial.kt`。
+> 已知漂移（Wave 39 核对）：① 五档 `backgroundAlpha` 现为 `0.09 / 0.21 / 0.22 / 0.36 / 0.72`（本节仍是
+> `0.14 / 0.22 / 0.34 / 0.52 / 0.92`，其中 `0.14f` 即 ULTRA_THIN 的陈旧值）；② `blurRadius` 现为
+> `3 / 5 / 7` …（从 `14~40` 降到 `3~12`，对齐 Kyant0）；③ 字段 `refractionAlpha` **已不存在**，
+> 折射改由 `refractionHeight` / `refractionAmount` 两个 `Dp` 字段表达（且都在构造里带默认值）。
+> 另：THIN 的 `0.21f` 是 Wave 9 裁定的有意值（曾与仅存在于 2026-09-26 两份 handoff 的
+> 「≤0.15」草稿冲突，Wave 39 已销账），不要再当作待裁决项。
+
 ```kotlin
 package com.rickeal.agent.core.design
 
@@ -3817,8 +3826,8 @@ data class GlassMaterialSpec(
 
 object GlassMaterials {
     val UltraThin = GlassMaterialSpec(
-        backgroundAlpha = 0.14f,
-        blurRadius = 14.dp,
+        backgroundAlpha = 0.14f, // ⚠️ 历史快照（现役 ULTRA_THIN 为 0.09f）—— 见本节上方说明
+        blurRadius = 14.dp, // ⚠️ 历史快照（现役 3.dp）
         refractionAlpha = 0.30f,
         borderAlpha = 0.30f,
         specularAlpha = 0.16f,
