@@ -2,8 +2,8 @@ package com.rickeal.agent.core.data
 
 import android.app.DownloadManager
 import android.content.Context
-import android.net.Uri
 import android.os.Environment
+import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -75,7 +75,7 @@ class ModelDownloader(private val context: Context) {
         // 否则会留一条陈旧条目 —— 本次下载中途被用户删掉 DM 任务、磁盘留半截 .part 时，
         // 那次陈旧的"曾成功过"会让半截文件被转正（详见 downloadedPath 的 KDoc）。
         confirmedNames.remove(safeName)
-        val request = DownloadManager.Request(Uri.parse(url))
+        val request = DownloadManager.Request(url.toUri())
             .setTitle(safeName)
             .setDescription("LiquidAgent 模型下载")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
@@ -194,7 +194,7 @@ class ModelDownloader(private val context: Context) {
         // 上层是在协程里调用的，但默认可能是主线程，所以这里必须显式切到 IO。
         val fromUri = localUri
             ?.takeIf { it.startsWith("file://", ignoreCase = true) }
-            ?.let { runCatching { Uri.parse(it).path }.getOrNull() }
+            ?.let { runCatching { it.toUri().path }.getOrNull() }
         // 绝不允许把 .part 路径交出去：那会登记成一个扫不到、加载必崩的模型条目
         if (fromUri != null && File(fromUri).isFile && !fromUri.endsWith(PART_SUFFIX)) {
             return@withContext fromUri

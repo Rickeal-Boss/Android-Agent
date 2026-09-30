@@ -3,6 +3,7 @@ package com.rickeal.agent.feature.models
 import android.app.DownloadManager
 import android.net.Uri
 import androidx.compose.runtime.Immutable
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rickeal.agent.core.data.AppContainer
@@ -699,7 +700,7 @@ class ModelsViewModel(
         )
         if (path != null) return container.modelRepository.importFromPath(path)
         val raw = localUri ?: return null
-        return container.modelRepository.importFromUri(Uri.parse(raw), fileName)
+        return container.modelRepository.importFromUri(raw.toUri(), fileName)
     }
 
     /** 扫描内部 / 外部 models 目录里用户自己放的文件。 */

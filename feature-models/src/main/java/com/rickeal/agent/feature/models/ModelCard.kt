@@ -57,6 +57,9 @@ fun ModelCard(
     onProbe: () -> Unit,
     onDelete: (deleteFile: Boolean) -> Unit,
     onBackendChange: (InferenceBackend) -> Unit,
+    // Modifier 必须排在第一个带默认值的参数位（lint ModifierParameter）：Compose 约定
+    // modifier 是「可选修饰」参数中的第一个，否则调用方按位置传参会踩坑。
+    modifier: Modifier = Modifier,
     /**
      * 是否放行 GPU（2026-09-26 GPU 白名单）。由调用方按预设元数据算好传入
      * （`ModelPresets.findByFileName(...)?.gpuSupported`；无预设 = false 从严）。
@@ -66,7 +69,6 @@ fun ModelCard(
     gpuAllowed: Boolean = true,
     /** GPU 禁用/放行的依据（来自预设 backendBasis），展示在选择器下方。 */
     gpuBasis: String = "",
-    modifier: Modifier = Modifier,
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current

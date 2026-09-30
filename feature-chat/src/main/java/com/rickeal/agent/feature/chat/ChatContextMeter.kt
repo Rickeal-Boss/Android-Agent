@@ -51,8 +51,8 @@ private val CONTEXT_WARN_RATIO: Float = AgentPolicy().compressThreshold
 fun ChatContextMeter(
     usedTokens: Int?,
     limitTokens: Int,
-    sentTokensEstimate: Long? = null,
     modifier: Modifier = Modifier,
+    sentTokensEstimate: Long? = null,
 ) {
     val estimate = sentTokensEstimate?.takeIf { it > 0L }
     val measured = usedTokens?.takeIf { it > 0 }

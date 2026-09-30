@@ -2,6 +2,7 @@ package com.rickeal.agent.core.design.liquid.platform
 
 import android.graphics.RuntimeShader as AndroidRuntimeShaderNative
 import android.os.Build
+import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.annotation.RequiresApi
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shader
@@ -106,11 +107,23 @@ private class AndroidRuntimeShaderImpl(val shader: AndroidRuntimeShaderNative) :
 }
 
 /**
- * 是否支持 Compose 原生 RenderEffect（BlurEffect 等）：API 31+。
+ * 是否支持 Compose 原生 RenderEffect（BlurEffect 等）。
+ *
+ * minSdk = 31 ⇒ 恒为 true。保留此函数（而非删除）是为了给现有 5 个文件的 6 处调用点
+ * （DrawBackdropModifier / Blur / ColorFilter ×2 / InnerShadowModifier / DiagnosticsScreen）
+ * 一个统一门控点；删函数会让版本判断散落到 6 处，反而更难维护。
+ *
+ * 如实交代：这 6 处现在是**死守卫** —— minSdk 31 下本函数改前改后都恒为 true，
+ * 故 `if (!isRenderEffectSupported()) return` 永不触发。保留函数与这些守卫只是为了
+ * 不动那 5 个文件的调用面；若将来要清理死分支，可连同本函数一并删除（零行为变化）。
+ * Wave 38 如实化。
  */
-fun isRenderEffectSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+fun isRenderEffectSupported(): Boolean = true
 
 /**
  * 是否支持 AGSL RuntimeShader：API 33+。
+ *
+ * `@ChecksSdkIntAtLeast` 让 lint 在调用点识别「已做版本守卫」，避免误报 NewApi。
  */
+@ChecksSdkIntAtLeast(Build.VERSION_CODES.TIRAMISU)
 fun isRuntimeShaderSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU

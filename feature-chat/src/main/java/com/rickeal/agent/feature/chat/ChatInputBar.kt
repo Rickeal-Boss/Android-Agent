@@ -48,8 +48,8 @@ fun ChatInputBar(
     isGenerating: Boolean,
     onPickImage: () -> Unit,
     onPickAudio: () -> Unit,
-    supportsImages: Boolean = true,
     modifier: Modifier = Modifier,
+    supportsImages: Boolean = true,
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current

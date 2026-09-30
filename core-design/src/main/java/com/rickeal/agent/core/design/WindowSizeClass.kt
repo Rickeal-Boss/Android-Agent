@@ -38,7 +38,16 @@ internal fun heightClassOf(heightDp: Int): WindowHeightClass = when {
     else -> WindowHeightClass.EXPANDED
 }
 
-/** 依据当前配置推断窗口尺寸等级，用于平板 / 折叠屏布局切换。 */
+/**
+ * 依据当前配置推断窗口尺寸等级，用于平板 / 折叠屏布局切换。
+ *
+ * 这里用 `LocalConfiguration.screenWidthDp/screenHeightDp` 是**正确口径**：
+ * `LocalConfiguration` 由 Activity 重建驱动，与 `MainActivity` 的配置变更处理一致；
+ * 改用 `LocalWindowInfo.current.containerSize`（px）需要 `LocalDensity` 换算，且语义
+ * 从「窗口 dp」变成「容器 dp」，在断点边界可能翻档 —— 那是需真机验证的行为变更，故不改。
+ * 断点单测（600/840/480/900）也钉在 dp 语义上。抑制 lint 的 ConfigurationScreenWidthHeight。
+ */
+@Suppress("ConfigurationScreenWidthHeight")
 @Composable
 fun rememberWindowSizeClass(): WindowSizeClass {
     val configuration = LocalConfiguration.current

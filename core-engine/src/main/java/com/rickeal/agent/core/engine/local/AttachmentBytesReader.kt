@@ -2,6 +2,7 @@ package com.rickeal.agent.core.engine.local
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import androidx.core.graphics.scale
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -72,6 +73,6 @@ object AttachmentBytesReader {
         val ratio = kotlin.math.sqrt(maxPixels.toDouble() / pixels.toDouble())
         val w = (bitmap.width * ratio).toInt().coerceAtLeast(1)
         val h = (bitmap.height * ratio).toInt().coerceAtLeast(1)
-        return Bitmap.createScaledBitmap(bitmap, w, h, true)
+        return bitmap.scale(w, h, true)
     }
 }

@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -92,9 +93,9 @@ private fun openSource(context: android.content.Context, uri: String): java.io.I
     // Uri 一律 FileNotFoundException —— 旧版缩略图永远显示占位图标的根因。
     uri.startsWith("/") -> runCatching { java.io.FileInputStream(uri) }.getOrNull()
     uri.startsWith("file://") -> runCatching {
-        java.io.FileInputStream(android.net.Uri.parse(uri).path ?: return@runCatching null)
+        java.io.FileInputStream(uri.toUri().path ?: return@runCatching null)
     }.getOrNull()
-    else -> runCatching { context.contentResolver.openInputStream(android.net.Uri.parse(uri)) }.getOrNull()
+    else -> runCatching { context.contentResolver.openInputStream(uri.toUri()) }.getOrNull()
 }
 
 /**

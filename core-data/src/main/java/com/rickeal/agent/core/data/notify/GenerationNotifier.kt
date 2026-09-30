@@ -1,5 +1,6 @@
 package com.rickeal.agent.core.data.notify
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -120,6 +121,21 @@ class AndroidGenerationNotifier(
             }
             text += " · PSS ${perfSample.pssKb / 1024} MB"
         }
+        postGenerationNotification(text)
+    }
+
+    /**
+     * 构建并发出一条生成进度通知。
+     *
+     * **调用契约**：调用方必须已确认 POST_NOTIFICATIONS 已授予且通知未被关闭
+     * （见 [onTick] 的两道守卫）—— 本函数不做权限检查。
+     *
+     * `@SuppressLint` **只覆盖本函数**（不放在 [onTick] 上）：lint 看不见 [onTick] 里
+     * 那个 helper 内部的 `checkSelfPermission`，而把抑制扩大到整个 [onTick] 会让将来
+     * 在该函数内新增的权限敏感调用被静默吞掉。
+     */
+    @SuppressLint("MissingPermission")
+    private fun postGenerationNotification(text: String) {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(smallIconRes)
             .setContentTitle("端侧生成中")
@@ -130,7 +146,7 @@ class AndroidGenerationNotifier(
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .build()
-        runCatching { manager.notify(NOTIFICATION_ID, notification) }
+        runCatching { NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification) }
             .onFailure { throwable ->
                 // 走到这里通常是权限被撤销 / 渠道被删（SecurityException）。通知失败不落
                 // ERROR 级（会刷屏），但也不能完全无声 —— 用户开了开关却看不到通知时，

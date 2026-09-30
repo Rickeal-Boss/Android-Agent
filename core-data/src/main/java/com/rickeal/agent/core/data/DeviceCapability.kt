@@ -61,15 +61,12 @@ object DeviceCapability {
     /**
      * 设备 SoC 型号（大写）。拿不到时返回空串。
      *
-     * `Build.SOC_MODEL` 是 API 31（S）才有的；我们 minSdk 31，所以版本判断
-     * 只是为了在**万一**有人下调 minSdk 时不至于编译失败/崩溃。
+     * `Build.SOC_MODEL` 是 API 31（S）才有的；我们 minSdk 31，所以此前的
+     * `SDK_INT >= S` 版本判断**恒真**（lint `ObsoleteSdkInt`），已删除。
+     * 删掉后若将来有人下调 minSdk，`Build.SOC_MODEL` 会由 lint 的 `NewApi`
+     * 在 CI 直接拦下 —— 比运行期静默返回空串更早暴露。
      */
-    fun socModel(): String =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            Build.SOC_MODEL.orEmpty().uppercase()
-        } else {
-            ""
-        }
+    fun socModel(): String = Build.SOC_MODEL.orEmpty().uppercase()
 
     /** 是否高通平台（新旧两套命名都算）。 */
     fun isQualcomm(socModel: String = socModel()): Boolean =

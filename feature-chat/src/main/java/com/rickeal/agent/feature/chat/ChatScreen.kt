@@ -70,8 +70,8 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     onOpenModels: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenDrawer: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    onOpenDrawer: (() -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     val colors = LocalGlassColors.current

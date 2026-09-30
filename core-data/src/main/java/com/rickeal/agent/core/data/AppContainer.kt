@@ -3,13 +3,13 @@ package com.rickeal.agent.core.data
 import android.app.ActivityManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.net.Uri
 import android.os.Environment
 import android.os.PowerManager
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.core.net.toUri
 import com.rickeal.agent.core.agent.AgentRunner
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.agent.ToolContext
@@ -472,7 +472,7 @@ class AppContainer(
             val direct = if (raw.startsWith("file://")) raw.removePrefix("file://") else raw
             if (direct.startsWith("/") && File(direct).exists()) return@withContext direct
             runCatching {
-                val uri = Uri.parse(raw)
+                val uri = raw.toUri()
                 // 目录从 [attachmentStore] 取（唯一事实来源），不再就地拼 filesDir/attachments。
                 // ⚠️ `mkdirs()` 必须在这里显式调用，**不能依赖 AttachmentStore 构造器里的
                 // `.apply { mkdirs() }` 副作用**：那个类现在只为暴露 directory 而存在（其自带的

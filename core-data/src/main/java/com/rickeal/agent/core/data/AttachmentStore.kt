@@ -1,7 +1,7 @@
 package com.rickeal.agent.core.data
 
 import android.content.Context
-import android.net.Uri
+import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -46,7 +46,7 @@ class AttachmentStore(private val context: Context) {
                 if (maybeFile.exists() && maybeFile.isFile) return@withContext maybeFile.absolutePath
             }
             runCatching {
-                val uri = Uri.parse(uriString)
+                val uri = uriString.toUri()
                 val safeName = sanitize(displayName)
                 val target = uniqueFile(safeName)
                 val input = context.contentResolver.openInputStream(uri)

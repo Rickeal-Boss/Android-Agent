@@ -67,7 +67,7 @@ data class PerfSample(
  *   同时发生时，两个采样线程会短暂共存，旧线程可能在 startWorker 清空之后再写一个
  *   样本进新窗口。影响上限是一个多写样本，不值得为此给整条路径加锁。
  *
- * 数据出口：[samples] StateFlow（环形 180 个 = 3 分钟 @1s，超限 removeFirst —— 与
+ * 数据出口：[samples] StateFlow（环形 180 个 = 3 分钟 @1s，超限 removeAt(0) 移除最旧 —— 与
  * BLOCK_CYCLE_HISTORY 同款环形纪律）+ [latest]（GenerationNotifier 通知文案的低开销读点）。
  *
  * @param context 仅用于取 [ActivityManager.MemoryInfo]。可空是**测试缝**：JVM 单测无
@@ -285,7 +285,7 @@ class PerformanceMonitorManager(private val context: Context?) {
 
         val next = _samples.value.toMutableList()
         next.add(sample)
-        while (next.size > HISTORY_CAPACITY) next.removeFirst()
+        while (next.size > HISTORY_CAPACITY) next.removeAt(0)
         _samples.value = next
     }
 

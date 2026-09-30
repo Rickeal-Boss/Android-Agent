@@ -16,6 +16,14 @@ internal class RuntimeShaderCacheImpl : RuntimeShaderCache {
 
     private val runtimeShaders = mutableMapOf<String, RuntimeShader>()
 
+    /**
+     * **调用契约**：调用方必须先判 [LiquidGlassCapabilities.hasRuntimeShader]（或
+     * [isRuntimeShaderSupported]）再调用 —— [liquidRuntimeShader] 需要 API 33，而 minSdk 31。
+     *
+     * 此处不静默降级：降级会在渲染层产生「无折射」的静默差异，用户只看到「效果不对」
+     * 却拿不到任何信号。lint 看不到跨文件调用点的版本守卫，故显式抑制并在此声明契约。
+     */
+    @Suppress("NewApi")
     override fun obtainRuntimeShader(key: String, string: String): RuntimeShader {
         return runtimeShaders.getOrPut(key) { liquidRuntimeShader(string) }
     }

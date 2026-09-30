@@ -7,7 +7,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import com.rickeal.agent.core.design.GlassChip
 
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.GlassCard
@@ -356,7 +356,7 @@ fun ModelsScreen(
 
     val uri = pendingUriText
         .takeIf { it.isNotBlank() }
-        ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        ?.let { runCatching { it.toUri() }.getOrNull() }
     if (uri != null) {
         ModelImportDialog(
             fileName = pendingName,
