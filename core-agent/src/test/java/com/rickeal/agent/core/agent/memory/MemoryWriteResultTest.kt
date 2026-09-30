@@ -26,6 +26,13 @@ import kotlinx.coroutines.runBlocking
  *     写失败 → WriteFailed。
  *
  * 全程纯 JVM：只碰 `java.io.File` + `core-model` 的 JSON（无 Android 类）。
+ *
+ * ⚠️ 高复用价值的坑（JUnit 4）：测试方法必须返回 **void**。Kotlin 表达式体 `fun x() = ...` 的返回
+ * 类型由**末表达式**决定，而 `assertNotNull` / `assertIs` / `assertFailsWith` / `assertFails` 会
+ * **返回一个值**（非 Unit）—— 若以它们收尾，方法被推断成返回非 Unit ⇒ JUnit 校验失败 ⇒ 整个测试类
+ * `initializationError`，该类**所有**用例一个都不跑（日志只报「182 tests completed, 1 failed」，
+ * 极具误导性）。故每个用例的末语句必须是返回 Unit 的断言（`assertEquals` / `assertTrue` /
+ * `assertNull` / `assertSame`）；需要 `assertNotNull` 的值语义时先绑局部 `val`，再用 Unit 型断言收尾。
  */
 class MemoryWriteResultTest {
 
@@ -60,7 +67,10 @@ class MemoryWriteResultTest {
         val result = runBlocking { memory.upsert("新条目", tooLong) }
         assertTrue(result is MemoryWriteResult.TooLong, "超限必须回 TooLong：$result")
         assertEquals(AgentMemory.MAX_CONTENT_CHARS + 1, (result as MemoryWriteResult.TooLong).length)
-        assertNotNull(result.userMessage, "TooLong 必须带面向人的原因")
+        // ⚠️ 末语句必须返回 Unit：assertNotNull 会返回其 actual（非 Unit），单独收尾会让本方法
+        // 推断成返回 String ⇒ JUnit 4 校验失败 ⇒ 整类 initializationError、本文件 9 个用例全不跑。
+        val message = assertNotNull(result.userMessage, "TooLong 必须带面向人的原因")
+        assertTrue(message.contains(AgentMemory.MAX_CONTENT_CHARS.toString()), "原因文案应含上限数值（防常量漂移）：$message")
     }
 
     @Test
@@ -81,7 +91,9 @@ class MemoryWriteResultTest {
         val memory = AgentMemory(File(blocker, "memory.json"))
         val result = runBlocking { memory.upsert("t", "c") }
         assertTrue(result is MemoryWriteResult.WriteFailed, "父路径是文件时必须回 WriteFailed：$result")
-        assertNotNull(result.userMessage, "WriteFailed 必须带面向人的原因")
+        // 末语句返回 Unit（同上）：assertNotNull 的返回值先绑到局部，再用 assertTrue 收尾。
+        val message = assertNotNull(result.userMessage, "WriteFailed 必须带面向人的原因")
+        assertTrue(message.contains("磁盘"), "原因文案应说明是落盘失败：$message")
     }
 
     @Test
