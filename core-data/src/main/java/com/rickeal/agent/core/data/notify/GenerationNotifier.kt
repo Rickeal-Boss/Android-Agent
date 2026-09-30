@@ -25,8 +25,13 @@ import java.util.Locale
  * 通知只是观测窗口，不是能力。 Manifest 的注释里也写了同一条承诺。
  *
  * 「降级」不等于**静默**：没权限 / 通知被关时 [AndroidGenerationNotifier] 会落一条
- * WARN（每次进程一次，不刷屏），否则用户在设置里开了开关却永远等不到通知，
- * 诊断页也查不到原因 —— 那正是「功能静默失效」的形态。
+ * WARN（**每类原因各一次**、上界 3 行/进程，不刷屏），否则用户在设置里开了开关却永远
+ * 等不到通知，诊断页也查不到原因 —— 那正是「功能静默失效」的形态。
+ *
+ * ⚠️ Wave 36 E1 行为变化（有意交付）：三条降级出口（缺权限 / 通知被关 / `notify` 抛异常）
+ * 此前共用**单个进程级布尔**，第一条命中的出口置闩后另外两条永不落痕；现按
+ * [NotifyWarnReason] 三分类各闩一次 —— 同一进程内 warn 行数由「恒 1 行」变为「最多 3 行」。
+ * 这是修复本质：三个出口互不隶属，任一被观测到都不该遮蔽另外两个。
  */
 interface GenerationNotifier {
     /**
@@ -74,9 +79,14 @@ class AndroidGenerationNotifier(
     @Volatile
     override var enabled: Boolean = false
 
-    /** 无权限的 WARN 是否已经落过（onTick 每秒一次，逐次落会把诊断页刷满）。 */
-    @Volatile
-    private var permissionWarned: Boolean = false
+    /**
+     * 「通知发不出去」的 WARN 闩（onTick 每秒一次，逐次落会把诊断页刷满）。
+     *
+     * Wave 36 E1：由单个进程级布尔改为按 [NotifyWarnReason] 三分类各闩一次 —— 三条降级
+     * 出口互不隶属，共用一把闩会让第一条命中的出口遮蔽另外两条。闩类自带同步，见
+     * [NotificationWarnLatch]。
+     */
+    private val warnLatch = NotificationWarnLatch()
 
     override fun onTick(tps: Float, ttftMillis: Long) {
         if (!enabled) return
@@ -91,12 +101,12 @@ class AndroidGenerationNotifier(
         // 通知是观测窗口不是能力 —— 宁可放弃也绝不把推理打崩
         // （fail-open 给推理、fail-closed 给通知），但放弃必须可见。
         if (!hasPostNotificationsPermission()) {
-            warnNoNotificationOnce("缺少 POST_NOTIFICATIONS 权限")
+            warnNoNotificationOnce(NotifyWarnReason.PERMISSION, "缺少 POST_NOTIFICATIONS 权限")
             return
         }
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) {
-            warnNoNotificationOnce("通知已被系统 / 渠道关闭")
+            warnNoNotificationOnce(NotifyWarnReason.CHANNEL_DISABLED, "通知已被系统 / 渠道关闭")
             return
         }
 
@@ -125,7 +135,10 @@ class AndroidGenerationNotifier(
                 // 走到这里通常是权限被撤销 / 渠道被删（SecurityException）。通知失败不落
                 // ERROR 级（会刷屏），但也不能完全无声 —— 用户开了开关却看不到通知时，
                 // 诊断页这一行是唯一的解释。
-                warnNoNotificationOnce("notify 失败：${throwable::class.java.simpleName}")
+                warnNoNotificationOnce(
+                    NotifyWarnReason.NOTIFY_FAILED,
+                    "notify 失败：${throwable::class.java.simpleName}",
+                )
             }
     }
 
@@ -148,11 +161,15 @@ class AndroidGenerationNotifier(
         ) == PackageManager.PERMISSION_GRANTED
     }
 
-    /** 同一个进程内只落一次「通知发不出去」的 WARN（onTick 是每秒一次的节流流）。 */
-    private fun warnNoNotificationOnce(reason: String) {
-        if (permissionWarned) return
-        permissionWarned = true
-        AgentLogStore.warn("生成速度通知已跳过（$reason）：端侧推理不受影响")
+    /**
+     * 每类原因在同一个进程内只落一次「通知发不出去」的 WARN（onTick 是每秒一次的节流流）。
+     *
+     * Wave 36 E1：闩按 [reason] 三分类（上界 3 行/进程），不再共用单个布尔。日志文案主体
+     * 逐字节不变 —— 只是把「分类」从文案前移到了闩的维度。
+     */
+    private fun warnNoNotificationOnce(reason: NotifyWarnReason, detail: String) {
+        if (!warnLatch.shouldWarn(reason)) return
+        AgentLogStore.warn("生成速度通知已跳过（$detail）：端侧推理不受影响")
     }
 
     companion object {
