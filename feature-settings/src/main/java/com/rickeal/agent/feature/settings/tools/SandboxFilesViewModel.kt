@@ -65,7 +65,7 @@ data class SandboxFilePreview(
 @Immutable
 data class SandboxFilesUiState(
     /**
-     * 根层条目（已按最后修改时间降序排好，直接渲染）。
+     * **当前层**（[currentDirPath] 这一层）的条目（已按最后修改时间降序排好，直接渲染）。
      *
      * ⚠️ 这是**被展示上限截断过**的列表，计数口径必须用 [totalEntries] —— 直接用
      * `entries.size` 会在超限时显示「共 200 项」，而工具页入口卡（同源 Scanner）
@@ -79,6 +79,14 @@ data class SandboxFilesUiState(
     val totalEntries: Int = 0,
     /** 是否发生了截断（[totalEntries] 超过扫描上限）。 */
     val truncated: Boolean = false,
+    /**
+     * 当前所在目录（**root-relative**，`/` 连接；空串 = 沙箱根层）。
+     *
+     * 与 [entries] 是**同一层**的关系 —— [entries] 恒为 [currentDirPath] 这一层的条目，
+     * [totalEntries] / [truncated] 也按这一层计（计数口径不变，见 A7）。默认空串 ⇒
+     * 既有具名构造与纯逻辑测试不受影响。
+     */
+    val currentDirPath: String = "",
     val loading: Boolean = true,
     /** 非空表示扫描失败（磁盘 IO 异常等），UI 呈现错误态 + 重试。 */
     val error: String? = null,
@@ -87,10 +95,12 @@ data class SandboxFilesUiState(
 )
 
 /**
- * 沙箱工作区文件子页（Wave 33）。
+ * 沙箱工作区文件子页（Wave 33；Wave 36 起支持逐层下钻）。
  *
  * 数据面唯一来源是 [SandboxFileScanner]（与工具页入口卡同一实现）；删除 / 重命名 /
  * 写入**刻意不做** —— 清理走存储页的「沙箱工作区」分桶，职责不混。
+ * 下钻 = 换当前目录再扫一层（[navigateInto] / [navigateUp]），**不做递归扫描**：
+ * [SandboxFilesUiState.totalEntries] 恒为「当前层」计数，与工具页入口卡的根层口径不冲突。
  * VM 只产 [SandboxFileInfo] 与文本内容；「打开」的 Intent 组装在 UI 层
  * （需要 Context 与 FileProvider，不属于 VM 职责）。
  */
@@ -113,12 +123,14 @@ class SandboxFilesViewModel(
         refresh()
     }
 
-    /** 重新扫描沙箱根层（首次进入 / 返回本页时手动触发）。 */
+    /** 重新扫描**当前目录**（首次进入 / 下钻 / 返回上一层时手动触发）。 */
     fun refresh() {
         viewModelScope.launch {
             _uiState.update { it.copy(loading = true, error = null) }
+            // 在切 IO 之前把当前目录读出来（避免在 withContext 里读状态）。
+            val dirPath = _uiState.value.currentDirPath
             val result = withContext(Dispatchers.IO) {
-                runCatching { SandboxFileScanner.scan(container.sandboxDir) }
+                runCatching { SandboxFileScanner.scan(container.sandboxDir, dirPath = dirPath) }
             }
             result.fold(
                 onSuccess = { scan ->
@@ -145,6 +157,40 @@ class SandboxFilesViewModel(
                 },
             )
         }
+    }
+
+    /**
+     * 进入 [info] 这个目录（逐层下钻）。
+     *
+     * 只应由 UI 在目录行上调用（[SandboxFileInfo.isDirectory] 为 true）。新的当前目录
+     * 路径由 [joinRelativePath] 从「当前目录 + 条目名」拼出 —— 与 [SandboxFileScanner]
+     * 拼 `relativePath` 的公式同源（字面 `/`），保证两处口径一致。
+     *
+     * **扫描在途时忽略本次导航**（[SandboxFilesUiState.loading] 为 true）：此时 [SandboxFilesUiState.entries]
+     * 仍是**上一层**的旧列表，行点击会拿过期的 `currentDirPath` 拼出幻影路径（如点两次
+     * 「sub」得到 `sub/sub`，扫到不存在目录 → 空列表 + 面包屑显示 `sub/sub`，看起来像坏了）。
+     * 宁可丢掉一次极快的连点，也不要拼出不存在的一层。
+     */
+    fun navigateInto(info: SandboxFileInfo) {
+        // 读真源 _uiState.value（不用 collect 快照）—— 本仓既有纪律。
+        if (_uiState.value.loading) return
+        _uiState.update { it.copy(currentDirPath = joinRelativePath(it.currentDirPath, info.name)) }
+        refresh()
+    }
+
+    /**
+     * 返回上一层目录并重扫。
+     *
+     * 已在根层时 [parentRelativePath] 仍返回空串（等于重扫根层）—— UI 在根层不应调本方法，
+     * 而应走 `onBack`（退出子页），见 SandboxFilesScreen 的上下文返回逻辑。
+     *
+     * 与 [navigateInto] 同款**扫描在途守卫**：在途时忽略，避免用过期 `currentDirPath` 连点
+     * 上溯出错误层级。
+     */
+    fun navigateUp() {
+        if (_uiState.value.loading) return
+        _uiState.update { it.copy(currentDirPath = parentRelativePath(it.currentDirPath)) }
+        refresh()
     }
 
     /**
@@ -217,6 +263,30 @@ internal fun SandboxFilesUiState.commitPreview(outcome: SandboxFilePreview): San
     if (current.info != outcome.info) return this
     return copy(selectedPreview = outcome)
 }
+
+/**
+ * 把子项名 [name] 接到父目录 [parent]（root-relative）之后，得到新的 root-relative 路径。
+ *
+ * 分隔符恒为字面 `'/'`（**不用 `File.separator`**）—— 与 [SandboxFileScanner] 拼
+ * `relativePath` 的公式同源；CI 在 Linux、本地在 Windows，用 separator 会让路径串
+ * 跨平台不一致。[parent] 为空串（根层）时直接返回 [name]（不带前导 `/`）。
+ *
+ * `internal`：纯函数，下钻导航的路径拼接逻辑（本模块测试源集无 coroutines-test，
+ * VM 的协程时序无法在 JVM 上驱动，导航路径的判定逻辑必须能脱离协程直测 —— 同
+ * [commitPreview] 的既定惯例）。
+ */
+internal fun joinRelativePath(parent: String, name: String): String =
+    if (parent.isEmpty()) name else "$parent/$name"
+
+/**
+ * 取 root-relative 路径 [path] 的父目录（上溯一层）。
+ *
+ * 无 `/` 时返回空串（已在根层 → 上溯仍是根层）；空串入参返回空串。与 [joinRelativePath]
+ * 互为逆运算（`parentRelativePath(joinRelativePath(p, n)) == p`，当 `n` 不含 `/`）。
+ *
+ * `internal`：纯函数，返回上一层导航的判定逻辑，理由同 [joinRelativePath]。
+ */
+internal fun parentRelativePath(path: String): String = path.substringBeforeLast('/', "")
 
 /**
  * 流式读取文件头部，最多 [SANDBOX_PREVIEW_LIMIT_CHARS] 字符。

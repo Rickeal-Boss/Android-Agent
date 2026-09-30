@@ -114,6 +114,26 @@ class SandboxFilesPureLogicTest {
         assertNull(dismissed.commitPreview(preview(a, "A 的内容")).selectedPreview)
     }
 
+    // ── joinRelativePath / parentRelativePath（逐层下钻路径拼接，Wave 36）──────
+
+    @Test
+    fun `joinRelativePath 空父路径直接返回名字`() {
+        assertEquals("a.txt", joinRelativePath("", "a.txt"))
+        assertEquals("sub", joinRelativePath("", "sub"))
+        assertEquals("sub/a.txt", joinRelativePath("sub", "a.txt"))
+        assertEquals("a/b/c", joinRelativePath("a/b", "c"))
+    }
+
+    @Test
+    fun `parentRelativePath 逐层上溯到根`() {
+        assertEquals("", parentRelativePath(""))
+        assertEquals("", parentRelativePath("top"))
+        assertEquals("a", parentRelativePath("a/b"))
+        assertEquals("a/b", parentRelativePath("a/b/c"))
+        // 与 joinRelativePath 互为逆运算。
+        assertEquals("a/b", parentRelativePath(joinRelativePath("a/b", "c")))
+    }
+
     // ── sandboxTextPreviewEligible ──────────────────────────────────────────
 
     @Test

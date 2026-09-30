@@ -1,9 +1,12 @@
 package com.rickeal.agent.core.data
 
 import java.io.File
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -121,5 +124,106 @@ class SandboxFileScannerTest {
         assertEquals(3, result.entries.size)
         assertEquals(5, result.totalEntries)
         assertTrue(result.truncated)
+    }
+
+    // ── resolveWithinSandbox（路径安全，Wave 36）──────────────────────────────
+
+    @Test
+    fun `resolveWithinSandbox 接受合法相对路径`() {
+        val root = newTempDir("resolve_ok")
+        File(root, "sub").mkdirs()
+        // 空串 → 沙箱根自身。
+        assertEquals(root, SandboxFileScanner.resolveWithinSandbox(root, ""))
+        // 单层 / 多层相对路径 → 规范化后的目标（canonical 比对）。
+        assertEquals(
+            File(root, "sub").canonicalFile,
+            SandboxFileScanner.resolveWithinSandbox(root, "sub"),
+        )
+        assertEquals(
+            File(root, "a/b").canonicalFile,
+            SandboxFileScanner.resolveWithinSandbox(root, "a/b"),
+        )
+    }
+
+    @Test
+    fun `resolveWithinSandbox 拒绝逃逸与非法段`() {
+        val root = newTempDir("resolve_bad")
+        val illegal = listOf(
+            "..",            // 直接上溯
+            "a/../..",       // 多段上溯
+            "sub/../../etc", // 穿越到沙箱外
+            "/abs",          // 绝对路径（POSIX）
+            "\\abs",         // 绝对路径（Windows 反斜杠）
+            "a//b",          // 空段
+            "a/./b",         // "." 段
+            "a\\..\\b",      // 反斜杠分隔的 ".."（结构化段判定，非字符串子串匹配）
+        )
+        illegal.forEach { path ->
+            assertNull(SandboxFileScanner.resolveWithinSandbox(root, path), "应拒绝：$path")
+        }
+    }
+
+    @Test
+    fun `符号链接指向沙箱外的目录被拒绝并剔除`() {
+        val root = newTempDir("symlink_root")
+        val outside = newTempDir("symlink_outside")
+        File(outside, "secret.txt").writeText("secret")
+        val escape = File(root, "escape")
+        val insideLink = File(root, "inside")
+        val insideTarget = File(root, "real").apply { mkdirs() }
+
+        // 能力探测：环境不支持符号链接（Windows 无特权 / 文件系统不支持）时**跳过**
+        // 该条断言而不是 fail（CI 是 Linux，但本机 / 某些挂载卷可能不支持）。
+        val created = runCatching {
+            Files.createSymbolicLink(escape.toPath(), outside.toPath())
+            Files.createSymbolicLink(insideLink.toPath(), insideTarget.toPath())
+        }.isSuccess
+        if (!created) return
+
+        // 指向沙箱外的链接：resolveWithinSandbox 必须拒绝。
+        assertNull(SandboxFileScanner.resolveWithinSandbox(root, "escape"))
+        // 指向沙箱内的链接：合法，放行。
+        assertNotNull(SandboxFileScanner.resolveWithinSandbox(root, "inside"))
+
+        // scan 必须把逃逸目录从 listing 剔除，同时保留合法的内部链接。
+        val names = SandboxFileScanner.scan(root).entries.map { it.name }.toSet()
+        assertFalse(names.contains("escape"), "逃逸符号链接目录不得出现在 listing：$names")
+        assertTrue(names.contains("inside"), "指向沙箱内的符号链接目录应保留：$names")
+    }
+
+    // ── 逐层下钻（Wave 36）────────────────────────────────────────────────────
+
+    @Test
+    fun `下钻时条目 relativePath 带目录前缀`() {
+        val root = newTempDir("drill")
+        val sub = File(root, "sub").apply { mkdirs() }
+        File(sub, "inner.txt").writeText("inner")
+        File(sub, "deeper").apply { mkdirs() }
+        File(root, "top.txt").writeText("top")
+
+        val result = SandboxFileScanner.scan(root, dirPath = "sub")
+        assertEquals(
+            setOf("sub/inner.txt", "sub/deeper"),
+            result.entries.map { it.relativePath }.toSet(),
+        )
+        // 根层仍不带前缀（回归锚：dirPath 默认空串与 Wave 33 逐字节一致）。
+        val rootResult = SandboxFileScanner.scan(root)
+        assertEquals(
+            setOf("sub", "top.txt"),
+            rootResult.entries.map { it.relativePath }.toSet(),
+        )
+    }
+
+    @Test
+    fun `下钻到不存在的目录或非法路径返回空结果`() {
+        val root = newTempDir("drill_missing")
+        File(root, "real.txt").writeText("x")
+        val missing = SandboxFileScanner.scan(root, dirPath = "nope")
+        assertTrue(missing.entries.isEmpty())
+        assertEquals(0, missing.totalEntries)
+        assertFalse(missing.truncated)
+        // 非法路径（逃逸）同样 fail-closed。
+        val escaped = SandboxFileScanner.scan(root, dirPath = "..")
+        assertTrue(escaped.entries.isEmpty())
     }
 }

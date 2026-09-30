@@ -53,11 +53,12 @@ import com.rickeal.agent.core.design.LocalGlassColors
 import java.io.File
 
 /**
- * 沙箱工作区文件子页（Wave 33）：Agent 工具产出文件的**根层**列表。
+ * 沙箱工作区文件子页（Wave 33；Wave 36 起支持逐层下钻）：Agent 工具产出文件的列表。
  *
  * 能力边界（刻意收窄，职责不混）：
  *  - 只读浏览 + 应用内文本预览（限长截断）+ 经 [FileProvider] 跳转系统「打开」；
- *  - 目录不下钻（首版仅根层，点了给一句 Toast 说明而不是"没反应"）、不提供删除 / 重命名 —— 清理走存储页「沙箱工作区」分桶。
+ *  - 目录**逐层下钻**（点目录进入、顶栏返回钮上溯一层）；不做递归扫描，也不提供删除 /
+ *    重命名 —— 清理走存储页「沙箱工作区」分桶。
  *
  * 「打开」的 Intent 在本层组装（需要 Context 与 FileProvider），VM 只产
  * [SandboxFileInfo]；MIME 决策逻辑抽在 [resolveMimeType] 纯函数里可单测。
@@ -84,14 +85,25 @@ fun SandboxFilesScreen(
                     // 计数口径必须用 totalEntries（entries 已被上限截断）：否则超限时
                     // 这里显示「共 200 项」而工具页入口卡显示「200+ 项」，同一时刻
                     // 两个数字打架（两处共用 sandboxEntryCountText，文案也同源）。
-                    "共 ${sandboxEntryCountText(state.totalEntries, state.truncated)}（根层）"
+                    // 位置后缀按当前目录呈现：根层保留「（根层）」字样（与工具页入口卡
+                    // 同口径），下钻后显示当前目录名（完整路径由下方面包屑承担）。
+                    val location = if (state.currentDirPath.isEmpty()) {
+                        "（根层）"
+                    } else {
+                        "（${state.currentDirPath.substringAfterLast('/')}）"
+                    }
+                    "共 ${sandboxEntryCountText(state.totalEntries, state.truncated)}$location"
                 },
                 modifier = Modifier.statusBarsPadding(),
                 titleAlignment = Alignment.CenterHorizontally,
                 navigationIcon = {
                     // pressOnly：顶栏图标位于 GlassTopBar 自己的玻璃之上（见 GlassIconButton KDoc）。
                     GlassIconButton(
-                        onClick = onBack,
+                        // 上下文返回：根层时退出本页，下钻后先上溯一层（在子目录里按「返回」
+                        // 应当回到上一层，而不是直接跳出整个子页）。
+                        onClick = {
+                            if (state.currentDirPath.isEmpty()) onBack() else viewModel.navigateUp()
+                        },
                         shape = GlassIconButtonShape.Capsule,
                         pressOnly = true,
                     ) {
@@ -117,6 +129,15 @@ fun SandboxFilesScreen(
                 .padding(bottom = LocalBottomBarOverlay.current),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // 面包屑（朴素版）：一行文本显示当前 root-relative 路径；根层不渲染。
+            // 刻意不做可点分段（第一版避免引入新的可点组件 / 布局 API）—— 上溯走顶栏返回钮。
+            if (state.currentDirPath.isNotEmpty()) {
+                Text(
+                    text = state.currentDirPath,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onGlassSubtle,
+                )
+            }
             when {
                 state.error != null -> {
                     GlassEmptyState(
@@ -130,12 +151,18 @@ fun SandboxFilesScreen(
                     )
                 }
                 state.loading && state.entries.isEmpty() -> {
-                    GlassEmptyState(title = "读取中…", subtitle = "正在扫描沙箱根层")
+                    GlassEmptyState(title = "读取中…", subtitle = "正在读取沙箱目录")
                 }
                 state.entries.isEmpty() -> {
+                    // 空目录复用同一空态组件：文案按「根层 / 子目录」区分 —— 在空子目录里
+                    // 显示「沙箱暂无文件」会被读成「沙箱被清空了」。
                     GlassEmptyState(
-                        title = "沙箱暂无文件",
-                        subtitle = "Agent 写入的文件会出现在这里",
+                        title = if (state.currentDirPath.isEmpty()) "沙箱暂无文件" else "此目录为空",
+                        subtitle = if (state.currentDirPath.isEmpty()) {
+                            "Agent 写入的文件会出现在这里"
+                        } else {
+                            "点左上角返回上一层"
+                        },
                     )
                 }
                 else -> {
@@ -144,12 +171,8 @@ fun SandboxFilesScreen(
                             info = entry,
                             onPreview = viewModel::onPreview,
                             onOpen = { openSandboxFile(context, sandboxRoot, entry) },
-                            // 目录行渲染得和文件行几乎一样（Folder 图标 +「N 项」），
-                            // 点了却毫无反应会被当成"坏了"。首版不打算做下钻，就把
-                            // 这句说明直接给出来（A8）。
-                            onDirectoryClick = {
-                                Toast.makeText(context, "目录下钻将在后续版本支持", Toast.LENGTH_SHORT).show()
-                            },
+                            // 目录行点击 = 逐层下钻（Wave 36）：换当前目录再扫一层。
+                            onDirectoryClick = { viewModel.navigateInto(entry) },
                         )
                     }
                 }
@@ -235,8 +258,7 @@ fun SandboxFilesScreen(
  *  - 文本文件：整行点击 → 应用内预览；行尾 chevron。
  *  - 二进制文件：整行点击 → 系统「打开」；行尾 OpenInNew（预览对它无意义，
  *    但「打开」必须可达 —— 只藏在预览弹层里会变成死路）。
- *  - 目录：行尾给出直接子项计数；整行点击 → [onDirectoryClick]（首版不下钻，
- *    但必须给反馈 —— 静默无反应的行看起来就是坏了）。
+ *  - 目录：行尾给出直接子项计数；整行点击 → [onDirectoryClick]（逐层下钻）。
  */
 @Composable
 private fun SandboxFileRow(
