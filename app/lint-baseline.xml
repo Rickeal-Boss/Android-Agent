@@ -30,5 +30,15 @@
             line="80"
             column="37"/>
     </issue>
+    <issue
+        id="NotShrinkingResources"
+        message="Avoid setting isShrinkResources = false"
+        errorLine1="            isShrinkResources = false"
+        errorLine2="                                ~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="88"
+            column="33"/>
+    </issue>
 
 </issues>

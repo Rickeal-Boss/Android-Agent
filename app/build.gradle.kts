@@ -85,9 +85,13 @@ android {
 
         release {
             isMinifyEnabled = true
-            // Wave 38：`isShrinkResources` 默认即 false，显式声明被 lint 判 NotShrinkingResources；
-            // 删除该行后行为逐字节等价。若将来要开资源收缩，需真机验证动态引用资源
-            // （getIdentifier / 按名查资源）不被误删。
+            // ⚠️ 显式 `false` 是**有意保留**的（不是遗留）：lint 的 `NotShrinkingResources` 在
+            //    「显式 false」与「缺省但开了 minify」**两种情形都会报**（只是消息不同）——
+            //    Wave 38 实测删掉本行后报的是 "If enabling minification, also set
+            //    isShrinkResources = true"，**并不会消掉 issue**。翻 true 属 release 行为变更
+            //    （R8 资源收缩会删掉「只被动态引用」的资源：按名查资源 / getIdentifier），
+            //    必须真机验证后才可动，故继续留在 baseline 豁免（见下方 lint{} 块注释）。
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -118,12 +122,12 @@ android {
     //     检查的失效条目**（lint 自己在报告里以 LintBaselineFixed 建议删除，见下），
     //     另 16 条 AutoboxingStateCreation + 4 条 RenderEffect 的冗余
     //     @RequiresApi(S)（minSdk 31 = S ⇒ 恒真）已在同波修掉。
-    //     【Wave 38 清障】35 → **3 条**。D1~D4 四路把 35 条里 32 条的**底层代码问题
+    //     【Wave 38 清障】35 → **4 条**。D1~D4 四路把 35 条里 31 条的**底层代码问题
     //     真修掉**（UseKtx 换 toUri/scale、ObsoleteSdkInt 删恒真版本判断与 -v26 冗余
     //     目录、AnnotateVersionCheck 补 @ChecksSdkIntAtLeast、NewApi 改 removeAt(0)/
     //     显式 @Suppress、ConfigurationScreenWidthHeight 与 ModifierParameter 就地
     //     抑制/重排、Manifest 的 DiscouragedApi/DataExtractionRules、isShrinkResources、
-    //     monochrome 图标、MissingPermission 补 @SuppressLint），这 32 条随之变成
+    //     monochrome 图标、MissingPermission 补 @SuppressLint），这 31 条随之变成
     //     LintBaselineFixed（lint 主动建议删除）—— 留着的唯一后果是「被重新引入的问题」
     //     静默命中旧条目而**永不报出**，故必须同步删除。保留的 3 条均为「需真机/行为
     //     变更才能修」的诚实豁免：2 条 OldTargetApi（targetSdk=36，升版本是行为变更，
@@ -136,7 +140,7 @@ android {
     //     ⛔ 不要手工**新增/合成**条目 —— 路径形态与 id 匹配规则由 lint 决定；
     //        **删除**失效条目则是允许的（lint 会以 LintBaselineFixed 主动建议删：
     //        留着会让「被重新引入的问题」静默命中旧条目而永不报出）。
-    //     ⛔ 基线只许缩不许涨：arch-guard 第 14 项守卫冻结其条目数（3）。
+    //     ⛔ 基线只许缩不许涨：arch-guard 第 14 项守卫冻结其条目数（4）。
     //   * abortOnError = true + warningAsErrors = true —— 【Wave 32 第二轮翻转】
     //     CI 从此拦**新增**的 lint 问题（含 Warning 级 —— 只翻 abortOnError 的
     //     门禁面仅 3 条 Error，形同虚设；Wave 32 首轮的 83 条里 Warning 占 63 条）。
