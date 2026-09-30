@@ -99,7 +99,7 @@ class MemoryWriteResultTest {
     }
 
     @Test
-    fun `文件存在但读不了 —— upsert / remove 均回 Unreadable 而非 Corrupted`() =
+    fun `文件存在但读不了 —— upsert 与 remove 均回 Unreadable 而非 Corrupted`() =
         withTempDir("cam-p-mwr-unreadable") { dir ->
             // 构造「读不了」：文件存在且是合法 JSON，但去掉读权限 ⇒ `readText` 抛 ⇒ 必须回
             // Unreadable。Wave 38 之前这会与「解析失败」同归 Corrupted，把权限问题报成
