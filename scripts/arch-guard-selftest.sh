@@ -81,8 +81,8 @@ data class AgentRequest(
     val userInput: ChatMessage,
 )
 KT
-  # 第 14 条（Wave 32 起）要求 app/lint-baseline.xml 存在且条目数 <= 冻结值 83：
-  # 骨架给 2 条条目（远低于冻结值），干净树保持绿。
+  # 第 14 条（Wave 32 起）要求 app/lint-baseline.xml 存在且条目数 <= 冻结值 35
+  # （Wave 37 清障后由 83 降到 35）：骨架给 2 条条目（远低于冻结值），干净树保持绿。
   mkdir -p "$root/app"
   cat > "$root/app/lint-baseline.xml" <<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -365,7 +365,9 @@ fi
 # case 11：baseline 条目数超冻结值 ⇒ 第 14 条必须报红（防 baseline 变成
 #          「顺手把新问题 regen 进去」的僵尸豁免入口 —— 那会让整条 lint 门禁失效）。
 #          fixture 用 84 条 issue：验证计数只数 <issue 元素、不计根元素 <issues
-#          （若把 <issues 也算进去，85 > 83 恒红会让本 case 的判据失真）。
+#          （若把 <issues 也算进去，85 > 35 恒红会让本 case 的判据失真）。
+#          ⚠️ 84 是相对冻结值 35 取的「明显超出」样本；冻结值再降时本样本仍成立
+#          （只要 84 > 冻结值）。若冻结值涨到 84 以上，必须同步调大本样本。
 # case11b：条目数低于冻结值（清了存量）⇒ 必须不红（「只许缩不许涨」的另一面）。
 # ---------------------------------------------------------------------------
 d="$TMP/case11-baseline-overage"
@@ -392,7 +394,7 @@ open(p, 'w', encoding='utf-8').write(
 PYGEN
 out="$(run_guard "$d")"; rc=$?
 assert_red "case11 baseline 超冻结值 (第 14 条)" "$rc" "$out" \
-  "lint baseline 条目数未超冻结值（83，只许清障不许新增豁免）"
+  "lint baseline 条目数未超冻结值（35，只许清障不许新增豁免）"
 if printf '%s\n' "$out" | grep -qF "现有 84 条"; then
   echo "PASS [case11b] 报出「现有 84 条」（计数恰为 84 个 issue 元素，根元素 <issues 未被计入）"
   PASS=$((PASS + 1))

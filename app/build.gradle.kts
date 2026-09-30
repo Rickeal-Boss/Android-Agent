@@ -111,19 +111,29 @@ android {
     //     覆盖 :app 与全部 8 个 library 模块 —— checkDependencies=true 时
     //     library 的 issue 会写进 :app 的基线，首轮 CI 已实证）。存量之外的
     //     **任何新问题**都会被 lint 抓到。
+    //     【Wave 37 清障】83 → **35 条**。依据 = 上一轮 CI 的 `lint-reports-<sha>`
+    //     artifact（唯一零 CI 成本的真实 issue 来源）：83 条里 28 条是**对已 disable
+    //     检查的失效条目**（lint 自己在报告里以 LintBaselineFixed 建议删除，见下），
+    //     另 16 条 AutoboxingStateCreation + 4 条 RenderEffect 的冗余
+    //     @RequiresApi(S)（minSdk 31 = S ⇒ 恒真）已在同波修掉。
+    //     ⚠️ 教训：清障前**必须先读 lint artifact** —— 否则无从知道基线是否已失配
+    //     （本波实测：55 条真实抑制仍精确匹配，未失配）。
     //     重新生成基线 = 删掉 app/lint-baseline.xml 再跑一次 :app:lintDebug
     //     （lint 会重建并中止构建，取产物提交后再跑一次即绿）；
-    //     ⛔ 不要手工编辑该 XML —— 路径形态与 id 匹配规则由 lint 决定。
-    //     ⛔ 基线只许缩不许涨：arch-guard 第 14 项守卫冻结其条目数（83）。
+    //     ⛔ 不要手工**新增/合成**条目 —— 路径形态与 id 匹配规则由 lint 决定；
+    //        **删除**失效条目则是允许的（lint 会以 LintBaselineFixed 主动建议删：
+    //        留着会让「被重新引入的问题」静默命中旧条目而永不报出）。
+    //     ⛔ 基线只许缩不许涨：arch-guard 第 14 项守卫冻结其条目数（35）。
     //   * abortOnError = true + warningAsErrors = true —— 【Wave 32 第二轮翻转】
     //     CI 从此拦**新增**的 lint 问题（含 Warning 级 —— 只翻 abortOnError 的
-    //     门禁面仅 3 条 Error，形同虚设；83 条里 Warning 占 63 条）。
+    //     门禁面仅 3 条 Error，形同虚设；Wave 32 首轮的 83 条里 Warning 占 63 条）。
     //     实测分布（Build #262）：3 Error / 63 Warning / 17 Hints。
     //   * disable 三项版本通告类（GradleDependency 19 / NewerVersionAvailable 6 /
     //     AndroidGradlePluginVersion 3）—— 这三类会在**上游发版**时自动产生新
     //     issue：「没改代码 CI 也红」的门禁是坏门禁，会训练人无视红灯。它们是
-    //     环境通告而非代码质量；需要跟进版本时手动查。基线里这三类的 28 条
-    //     条目随之失效（留着无害）。
+    //     环境通告而非代码质量；需要跟进版本时手动查。**Wave 37 已把这 28 条
+    //     失效条目从基线里删除** —— 它们因检查被 disable 而永远匹配不上（lint
+    //     会报 LintBaselineFixed），留着只会让「基线里到底还剩什么」不可读。
     //   * checkReleaseBuilds = false —— 关掉 assembleRelease 附带的
     //     lintVital（fatal-only），release 构建不再被 lint 意外卡住。
     //   * checkDependencies = true —— 单点 :app:lintDebug 即覆盖 :app 与

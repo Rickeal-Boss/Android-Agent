@@ -228,14 +228,20 @@ check "AgentRequest 可空字段无孤儿（代码完备但未接线）" \
 
 # 14) lint baseline 只许缩不许涨（Wave 32）：baseline 是门禁的豁免清单 —— 它一旦
 #     变成「顺手把新问题也 regen 进去」的入口，整条 lint 门禁就死了（僵尸豁免）。
-#     冻结数 = Wave 32 首轮实测 83 条（3 Error + 63 Warning + 17 Hints，lint 9.3.2）。
-#     语义：条目数 > 83 即红（新增了豁免）；< 83 合法（清了存量，请顺手把这里的
-#     83 改成新值）；文件缺失即红（门禁面失效）。
-check "lint baseline 条目数未超冻结值（83，只许清障不许新增豁免）" \
+#     冻结数沿革：Wave 32 首轮实测 **83** 条（3 Error + 63 Warning + 17 Hints，lint 9.3.2）
+#       → **Wave 37 清障后 35 条**。清障依据 = 上一轮 CI 的 `lint-reports-<sha>` artifact
+#       （唯一零 CI 成本的真实 issue 来源）：83 条里 28 条是**对已 disable 检查的失效条目**
+#       （GradleDependency 19 / NewerVersionAvailable 6 / AndroidGradlePluginVersion 3，
+#       lint 自己在报告里以 LintBaselineFixed 建议删除），另 16 条 AutoboxingStateCreation
+#       + 4 条 RenderEffect 的冗余 @RequiresApi(S)（minSdk 31 = S ⇒ 恒真）已在同波修掉。
+#       ⚠️ 教训：清障前**必须先读 lint artifact** —— 否则无从知道 baseline 是否已失配。
+#     语义：条目数 > 35 即红（新增了豁免）；< 35 合法（清了存量，请顺手把这里的
+#     35 改成新值）；文件缺失即红（门禁面失效）。
+check "lint baseline 条目数未超冻结值（35，只许清障不许新增豁免）" \
   bash -c 'f=app/lint-baseline.xml
            if [ ! -f "$f" ]; then echo "app/lint-baseline.xml 不存在（lint 门禁面失效：abortOnError=true 会拦掉全部存量）"; exit 0; fi
            n=$(grep -cE "^[[:space:]]*<issue[[:space:]]*$" "$f")
-           if [ "$n" -gt 83 ]; then echo "lint baseline 现有 $n 条，超冻结值 83（⛔ 基线只许缩不许涨 —— 新问题应该修掉，而不是 regen 进豁免清单；确属应豁免的存量需主理人改本守卫的冻结值并写明理由）"; fi'
+           if [ "$n" -gt 35 ]; then echo "lint baseline 现有 $n 条，超冻结值 35（⛔ 基线只许缩不许涨 —— 新问题应该修掉，而不是 regen 进豁免清单；确属应豁免的存量需主理人改本守卫的冻结值并写明理由）"; fi'
 
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
