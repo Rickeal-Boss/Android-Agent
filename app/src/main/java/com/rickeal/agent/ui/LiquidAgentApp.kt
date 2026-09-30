@@ -345,6 +345,16 @@ private fun MainShell() {
     //    重载（Int/Long/Float…），传 Dp 会「None of the following candidates is
     //    applicable」（Wave 40 CI 实测），并连带让下一行 `with(LocalDensity)` 的
     //    类型参数 R 推导不出来。Dp 是 Comparable<Dp>，coerceAtMost 才是它的取小。
+    //
+    // ⚠️ screenWidthDp（而非 lint 建议的 LocalWindowInfo.containerSize）是**正确口径**：
+    //    面板宽度要跟「窗口可用宽度」走，与左抽屉（M3 DrawerSheet 360dp）同语义；
+    //    containerSize 是 **px 且语义为 ComposeView 容器尺寸**，经 LocalDensity 换算后
+    //    在折叠屏/分屏边界会翻档 —— 属需真机验证的行为变更。故按本仓既有约定就地
+    //    抑制（先例：core-design/WindowSizeClass.kt:50 与 onboarding/ConsentScreens.kt:134
+    //    均如此，且都写明「刻意不改」的理由）。
+    //    抑制范围压到**这一行**（局部 @Suppress，非函数级）—— MainShell 是大函数，
+    //    函数级抑制会把将来同函数内的真问题一起吞掉。
+    @Suppress("ConfigurationScreenWidthHeight")
     val workspaceWidth = 360.dp.coerceAtMost(LocalConfiguration.current.screenWidthDp.dp * 0.82f)
     val workspaceWidthPx = with(LocalDensity.current) { workspaceWidth.toPx() }
     // Closed 锚 = +面板宽度（屏外右侧）、Open 锚 = 0（贴右缘）：手指左滑减小 offset =
