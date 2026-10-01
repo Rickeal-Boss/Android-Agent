@@ -171,10 +171,20 @@ object ModelPresets {
             ramText = "≥ 3.6 GB",
             requiredRamBytes = (3.6 * GB).toLong(),
             memBasis = BASIS_GPU,
-            note = "端侧主力：画质与速度平衡，有 GPU/NPU 的手机首选",
+            // ⚠️ Wave 43 真机实测（OPPO PDRM00 / 骁龙 8s Gen3，LiteRT-LM 0.17.1）：
+            // 本变体**输出退化**，不要推荐给用户下载。判据级证据：
+            //  - temp 0.4/topK 20：结构化英文 CoT 中途崩 → `[current` n-gram 死锁 →
+            //    连续 3 轮触发轮内重复检测被终止；
+            //  - temp 1.0/topK 64（官方口径）：采样出 `<unused1556>`/`<unused4347>`
+            //    等**保留未训练 token**（正常模型概率≈0）→ logits 分布退化，调采样救不回来；
+            //  - 容器 section 表只有 `tf_lite_artisan_text_decoder`（无 audio/vision
+            //    encoder），CPU 后端 engine init 直接 NOT_FOUND。
+            // 对照：同 prompt、同管线下 CPU 变体（下方条目）多轮工具调用正常收尾；
+            // MiniCPM5-2B / Qwen2.5-1.5B 亦正常 ⇒ 应用侧健康，属容器↔运行时错配。
+            note = "⚠️ 已知输出退化（真机实测）：GPU 特化变体在 0.17.1 下不可用，请用下方 CPU 变体",
             sizeBytes = 2008432640,
-            recommended = true,
-            backendBasis = "官方 GPU 特化变体（LiteRT 的 ML Drift GPU，README 含 Galaxy S26 GPU 基准）",
+            recommended = false,
+            backendBasis = "官方 GPU 特化变体（ML Drift GPU）——⚠️ 实测输出退化，待上游修复后再开放",
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -184,10 +194,12 @@ object ModelPresets {
             ramText = "≥ 3.9 GB",
             requiredRamBytes = (3.9 * GB).toLong(),
             memBasis = BASIS_CPU,
-            note = "同上的 CPU 版：兼容性最好，慢一些但不容易出错",
+            // Wave 43 真机实测：同 prompt 下多轮工具调用（current_time / ask_actor /
+            // memory_write）解析正常、run 正常收尾，是该型号目前的**唯一可用变体**。
+            note = "端侧主力（实测可用）：多轮工具调用与正常收尾均验证通过",
             sizeBytes = 2588147712,
-            recommended = false,
-            backendBasis = "CPU 特化变体；GPU 路径请选 GPU 变体（本变体未单独验证 GPU 图）",
+            recommended = true,
+            backendBasis = "CPU 特化变体（实测通过）；GPU 变体已知输出退化，勿用",
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it.litertlm"),
         ),
         ModelPreset(
@@ -197,10 +209,12 @@ object ModelPresets {
             ramText = "≥ 5.2 GB",
             requiredRamBytes = (5.2 * GB).toLong(),
             memBasis = BASIS_GPU,
-            note = "更大的模型：回答更好，需要 8GB 以上内存的手机",
+            // 同 E2B · GPU：同一转换线的 GPU 特化变体，未单独真机验证；E2B GPU 已实测
+            // 输出退化（见上条注记），本条按同源风险标注「未验证」，待真机或上游修复。
+            note = "更大的模型：回答更好，需要 8GB 以上内存的手机（GPU 特化变体，未真机验证）",
             sizeBytes = 2969059328,
             recommended = false,
-            backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）",
+            backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）——⚠️ 同源变体 E2B GPU 实测退化，未验证前谨慎",
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
         ),
         ModelPreset(
