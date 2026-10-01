@@ -308,7 +308,7 @@ Android-Agent/
   - [ ] Wave 3：历史版本化、定时任务、检索记忆、人格系统、插件化装载
 
 > **Wave 24–39 实况（2026-09-30 同步）**：Wave 3 的大项**尚未开工**，实际推进的是「Harness 加固 + 治理 + 验收」这条线，逐波细节见
-> [`docs/handoff-*.md`](docs/)（最新在前）。当前分支 `harness-improve`，功能 tip `a822407`（CI 双绿）。
+> [`docs/handoff-*.md`](docs/)（最新在前）。当前分支 `harness-improve`，功能 tip `2c9febb`（CI 双绿）。
 >
 > - **加固**：W24 角色通道根治（回显主根因）→ W26 Operit 侦察（**许可证不兼容 ⇒ 零代码搬运**）→ W27 渐进式披露 → W28 KV 预算 → W29 A1 拆分 → W30 断路器 → W31 接线收口 → W33 preface 第三态闸门 + 沙箱 → W34 原生工具通道 + 记忆 pull 化
 > - **治理**：W32 lint 门禁翻转 → W35 外部报告批处理 → W36/W37/W38 挂账清零 + **lint baseline 83 → 35 → 4** + 记忆存储契约 + 守卫网 15 项 / selftest 21 例
