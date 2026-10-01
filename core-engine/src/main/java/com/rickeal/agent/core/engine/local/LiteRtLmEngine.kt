@@ -59,6 +59,34 @@ import java.util.Locale
 internal const val THOUGHT_CHANNEL = "thought"
 
 /**
+ * thought 通道的**输出解析声明**（Wave 43 真机实锤后新增，随全部会话构造点下发）。
+ *
+ * 背景：Gemma-4 的 chat template（litert-lm `google-gemma-4-multi-prefill.jinja`）在
+ * 带 tools / system 角色时，模型会以 `<|channel>thought ... <channel|>` 自发输出思维链；
+ * 而 0.17.1 运行时只有在容器元数据或 [ConversationConfig.channels] **声明**了该通道时
+ * 才会做流式切分——未声明时标记连同思维链全部混进正文（OPPO PDRM00 真机 journal 实锤：
+ * `<|channel>thought` 原样泄漏 + 思维链噪声触发轮内重复检测三连 → run 终止）。
+ *
+ * 声明后的行为：运行时把 start/end 标记之间的增量送进 `message.channels["thought"]`
+ * （引擎回调侧 [THOUGHT_CHANNEL] 消费路径已有），正文不再含思维链与标记。
+ * 防御性统一声明：MiniCPM5 等不输出该标记的模型零影响（无 start 标记即不触发切分）。
+ *
+ * 标记字面量出处：litert-lm 源码 `channel_util.h` kThoughtChannelName 注释
+ * 「e.g. "<|channel>thought"」+ `io_types.h` 同款示例，与真机泄漏文本逐字节一致。
+ * ⚠️ 类型注意：`ConversationConfig.channels` 的形参是 **List<Channel>**（通道定义
+ * 列表，运行时按 channelName 归档），不是 Map —— 0.17.1 class 常量池里的 getChannels
+ * 取出的就是 List，首版误判为 Map 编译期被拦。
+ * ⚠️ 引用必须**全限定**：本文件 :42 已 import kotlinx.coroutines.channels.Channel，
+ * 短名 `Channel(...)` 会被解析到协程工厂函数而非 litertlm 构造器（首版实测两个编译错）。
+ * ⚠️ 构造必须**位置实参**（channelName, start, end）：AAR 编译未带 -java-parameters，
+ * 参数名不保留，具名实参编译期被拦（首版实测）。
+ */
+internal val THOUGHT_CHANNEL_DEFS: List<com.google.ai.edge.litertlm.Channel> = listOf(
+    // Channel(channelName, start, end)
+    com.google.ai.edge.litertlm.Channel(THOUGHT_CHANNEL, "<|channel>thought", "<channel|>"),
+)
+
+/**
  * 模型文件预检的体积下限（64MB）。
  *
  * 低于它视为「下载中断的残片」：内置最小的预设（450M 视觉模型）也有 ~0.25GB，
@@ -795,6 +823,8 @@ class LiteRtLmEngine(
             systemInstruction = systemText?.let { Contents.of(it) },
             tools = nativeTools,
             initialMessages = seedMessages,
+            // thought 通道输出解析声明（THOUGHT_CHANNEL_DEFS KDoc：Wave 43 真机实锤）。
+            channels = THOUGHT_CHANNEL_DEFS,
             // 红线：automaticToolCalling **默认 true** —— 一旦为 true，native 会自己去调
             // OpenApiTool.execute() 执行工具，完全绕过 AgentRunner 的审批/沙箱/熔断管线。
             // 这里必须**显式**写 false（漏写即静默绕过审批，无报错、无日志）。
@@ -807,6 +837,12 @@ class LiteRtLmEngine(
         val created = try {
             val conv = currentEngine.createConversation(roleConfig)
             roleChannelActive = true
+            // Wave 43 真机验收关键字：thought 通道声明是否随会话下发（Gemma-4 思维链
+            // 泄漏治理）。channel 切分是运行时行为，创建成功 ≠ 运行时一定切分
+            // （元数据/模板差异），生效与否以生成期正文无 `<|channel>` 泄漏为准。
+            AgentLogStore.info(
+                "thought 通道解析声明已随会话下发（正文剥离 <|channel>thought…<channel|>，思维链入 channels[$THOUGHT_CHANNEL]）"
+            )
             var thirdState = false
             // preface 渲染诊断（Wave 28，@OptIn ExperimentalApi）：preface = systemInstruction +
             // initialMessages 在 native chat template 下的**实际渲染结果**。若某转换件对
@@ -847,6 +883,8 @@ class LiteRtLmEngine(
                         systemInstruction = null,
                         tools = nativeTools,
                         initialMessages = seedMessages,
+                        // thought 通道输出解析声明（同 roleConfig）。
+                        channels = THOUGHT_CHANNEL_DEFS,
                         // 红线：automaticToolCalling 默认 true，必须显式 false（同 roleConfig）。
                         automaticToolCalling = false,
                     )
@@ -877,6 +915,8 @@ class LiteRtLmEngine(
                             systemInstruction = systemText?.let { Contents.of(it) },
                             tools = emptyList(),
                             initialMessages = seedMessages,
+                            // thought 通道输出解析声明（同 roleConfig）。
+                            channels = THOUGHT_CHANNEL_DEFS,
                             // 红线：automaticToolCalling 默认 true，必须显式 false（同 roleConfig）。
                             automaticToolCalling = false,
                         )
@@ -942,6 +982,9 @@ class LiteRtLmEngine(
                         // 写回提示词，整体自愈回已验证的文本协议路径。
                         tools = emptyList(),
                         initialMessages = emptyList(),
+                        // thought 通道输出解析声明（同 roleConfig；纯输出侧解析配置，
+                        // 不参与模板渲染，legacy 路径下发无风险）。
+                        channels = THOUGHT_CHANNEL_DEFS,
                         // 红线：automaticToolCalling 默认 true，必须显式 false（同 roleConfig）。
                         automaticToolCalling = false,
                     )
@@ -1535,6 +1578,10 @@ class LiteRtLmEngine(
                 ConversationConfig(
                     systemInstruction = null,
                     tools = nativeToolProbeProviders(),
+                    // thought 通道声明随探针同口径下发：探针通过即证明「channels 配置 +
+                    // 哑工具」的组合形状被本转换件接受（channels 是纯输出侧解析配置，
+                    // 不进模板，风险远低于 tools，但保持「探针盖住生产构造面」的纪律）。
+                    channels = THOUGHT_CHANNEL_DEFS,
                     // 红线：automaticToolCalling 默认 true，必须显式 false
                     // （探针虽不会真调用，但保持与生产构造点同一口径）。
                     automaticToolCalling = false,
