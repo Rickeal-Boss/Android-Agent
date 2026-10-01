@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
  *
  * 钉住的语义：
  *  1. 预算公式与 AgentRunner 压缩预算同源（base = (contextLength − maxTokens)
- *     .coerceAtLeast(512) × threshold；再减 visible 占用，钳 0）；
+ *     .coerceAtLeast(512) × threshold；再减 visible 与本次输入占用，钳 0）；
  *  2. 去重口径与 onRecover 逐行一致 —— 只剔「MODEL 且 role+text 已在可见历史」；
  *  3. TOOL / 中间 toolCall 消息永远保留（它们只存在于 journal）；
  *  4. 可见历史在前、过程消息按 run 时间序排在之后（第一版拼接语义）；
@@ -104,18 +104,29 @@ class HistoryWithProcessTest {
 
     // ------------------------------------------------------ processTokenBudget
 
-    @Test fun `预算公式与 AgentRunner 压缩预算同源并减去可见历史占用`() {
+    @Test fun `预算公式与 AgentRunner 压缩预算同源并减去可见历史与本次输入占用`() {
         // 4096 − 1024 = 3072，×0.75f = 2304（与 AgentRunner 轮头 budget 同算式）。
-        // visible 十个 CJK 字 = 10 tok（TokenEstimator 的 CJK 口径）。
+        // visible 十个 CJK 字 = 10 tok（TokenEstimator 的 CJK 口径）；本次输入 U 与
+        // 生产调用点同构（TokenEstimator.estimate(userMessage) 实算）—— 复审 P1-1：
+        // 不预减本次输入则预算吃满时 engineHistory 总量超 base，AgentRunner 轮头
+        // 每轮必触发压缩（全量 re-prefill），开窗收益被完全吐回。
         val visible = listOf(ChatMessage(role = Role.USER, text = "一二三四五六七八九十"))
-        assertEquals(2304 - 10, processTokenBudget(4096, 1024, visible, 0.75f))
+        val input = ChatMessage(role = Role.USER, text = "帮我查一下天气")
+        assertEquals(
+            2304 - 10 - TokenEstimator.estimate(input),
+            processTokenBudget(4096, 1024, visible, TokenEstimator.estimate(input), 0.75f),
+        )
     }
 
     @Test fun `预算公式 coerceAtLeast512 与钳 0 两道保底`() {
         // maxTokens ≥ contextLength → (0).coerceAtLeast(512) = 512，×0.75f = 384；
-        // visible 500 tok > 384 → 余量为负，钳 0。
+        // visible 500 tok + 本次输入占用已超 384 → 余量为负，钳 0。
         val visible = List(50) { ChatMessage(role = Role.USER, text = "一二三四五六七八九十") }
-        assertEquals(0, processTokenBudget(512, 32768, visible, 0.75f))
+        val input = ChatMessage(role = Role.USER, text = "帮我查一下天气")
+        assertEquals(
+            0,
+            processTokenBudget(512, 32768, visible, TokenEstimator.estimate(input), 0.75f),
+        )
     }
 
     // ------------------------------------------------ mergeProcessIntoVisible

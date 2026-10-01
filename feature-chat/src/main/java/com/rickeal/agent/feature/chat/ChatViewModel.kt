@@ -982,18 +982,20 @@ class ChatViewModel(
             // 会排在旧工具残骸之前（时序倒挂）。
             // Wave 41 P2-1 预算口径：传给 historyWithProcess 的 visible **不含**本次
             // 新输入（userMessage 先滤、拼在过程消息之后），故按 [processTokenBudget]
-            // 的公式减「不含新输入」的 visible —— 硬不变量：visible + 回灌过程 +
-            // 本次输入 ≤ AgentRunner 压缩预算（同源算式，见 [processTokenBudget] KDoc）。
+            // 的公式减 visible 占用、本次输入经 inputTokens 单独预减 —— 硬不变量：
+            // visible + 回灌过程 + 本次输入 ≤ AgentRunner 压缩预算（SYSTEM 段不计入，
+            // 由引擎压缩器兜底；复审 P1-1：不预减本次输入则预算吃满时每轮必触发压缩）。
             val visibleWithoutInput = history.filterNot { it.id == userMessage.id }
             val engineHistory = withContext(Dispatchers.IO) {
                 historyWithProcess(
                     visibleWithoutInput,
                     container.journalRoot,
                     cid,
-                    processTokenBudget = processTokenBudget(
+                    budget = processTokenBudget(
                         contextLength = config.contextLength,
                         maxTokens = config.maxTokens,
                         visible = visibleWithoutInput,
+                        inputTokens = TokenEstimator.estimate(userMessage),
                         compressThreshold = policy.compressThreshold,
                     ),
                 ) + userMessage
@@ -1133,18 +1135,20 @@ class ChatViewModel(
             // C3（Wave 40）：同 onSend —— 重跑同样要把 journal 过程消息回灌进引擎
             // 上下文（重试恰恰是最需要工具残骸的场景：上一轮失败前已执行的工具
             // 结果全部只在 journal 里）。任务输入先滤后拼，过程消息排在任务输入前。
-            // Wave 41 P2-1 预算口径：同 onSend —— visible 不含本次新输入，
-            // 硬不变量：visible + 回灌过程 + 本次输入 ≤ AgentRunner 压缩预算。
+            // Wave 41 P2-1 预算口径：同 onSend —— visible 不含本次新输入，本次输入
+            // 经 inputTokens 单独预减，硬不变量：visible + 回灌过程 + 本次输入 ≤
+            // AgentRunner 压缩预算（SYSTEM 段由引擎压缩器兜底）。
             val visibleWithoutInput = history.filterNot { it.id == userMessage.id }
             val engineHistory = withContext(Dispatchers.IO) {
                 historyWithProcess(
                     visibleWithoutInput,
                     container.journalRoot,
                     cid,
-                    processTokenBudget = processTokenBudget(
+                    budget = processTokenBudget(
                         contextLength = config.contextLength,
                         maxTokens = config.maxTokens,
                         visible = visibleWithoutInput,
+                        inputTokens = TokenEstimator.estimate(userMessage),
                         compressThreshold = policy.compressThreshold,
                     ),
                 ) + userMessage
@@ -1555,16 +1559,21 @@ internal fun mergeProcessIntoVisible(
  * budget = ((contextLength - maxTokens).coerceAtLeast(512) * policy.compressThreshold).toInt()
  * ```
  *
- * 本函数取**同一算式**得到 `base`，再减去可见历史的 token 估算占用，余量即允许
- * 回灌的过程消息预算：
+ * 本函数取**同一算式**得到 `base`，再减去可见历史与本次输入的 token 估算占用，
+ * 余量即允许回灌的过程消息预算：
  *
  *  - `coerceAtLeast(512)`：极端配置（maxTokens ≥ contextLength）下保底预算，
  *    与 AgentRunner 同理 —— 压缩器仍能工作而不是把预算算成 0/负数；
  *  - 预留输出额度：litertlm 的 KV cache = 输入 + 输出总和（Wave 28），不预留的话
  *    长回答会越过 KV 顶直接硬报错；
- *  - 减 [visible]：调用点（onSend / onSendFrom）传给 [historyWithProcess] 的
- *    visible **不含本次新输入**（userMessage 先滤、拼在过程消息之后），所以这里
- *    减「不含新输入」的占用，硬不变量为「visible + 回灌过程 + 本次输入 ≤ 压缩预算」；
+ *  - 减 [visible] 与 [inputTokens]：调用点（onSend / onSendFrom）传给
+ *    [historyWithProcess] 的 visible **不含本次新输入**（userMessage 先滤、拼在
+ *    过程消息之后），故可见历史占用经 [visible] 减、本次输入占用单独经
+ *    [inputTokens] 预减（调用点传 `TokenEstimator.estimate(userMessage)`，与
+ *    visible 同构实算）—— 硬不变量为「visible + 回灌过程 + 本次输入 ≤ 压缩预算」。
+ *    不预减本次输入的话，预算吃满时 engineHistory 总量会超 base，AgentRunner
+ *    轮头判据每轮必触发压缩（全量 re-prefill），开窗的收益被完全吐回（复审 P1-1）；
+ *  - SYSTEM 段（buildSystemInstruction）不计入本预算，由引擎压缩器兜底；
  *  - `coerceAtLeast(0)`：可见历史已超压缩预算时余量为负，钳到 0 —— 过程消息预算
  *    归零，但 [historyWithProcess] 仍按「最新 run 保底」语义运行。
  *
@@ -1576,10 +1585,11 @@ internal fun processTokenBudget(
     contextLength: Int,
     maxTokens: Int,
     visible: List<ChatMessage>,
+    inputTokens: Int,
     compressThreshold: Float,
 ): Int {
     val base = ((contextLength - maxTokens).coerceAtLeast(512) * compressThreshold).toInt()
-    return (base - TokenEstimator.estimate(visible)).coerceAtLeast(0)
+    return (base - TokenEstimator.estimate(visible) - inputTokens).coerceAtLeast(0)
 }
 
 /**
@@ -1609,7 +1619,9 @@ internal fun processTokenBudget(
  *    开窗发生在 merge 之前的**读取层**；
  *  - 发生裁剪时打一条 INFO 日志（对齐 AgentRunner 压缩日志纪律：只在真的发生
  *    决策时记一条）。文案「过程消息开窗：保留 N/M 个 run（预算 X tok）」是
- *    **真机验收关键字，不要改动措辞**。
+ *    **真机验收关键字，不要改动措辞**；其中 M 是「本次已读到的非空 run 数（含
+ *    触发 break 的那个）」，不含更旧未读 run 与空 run —— 验收时勿把它当
+ *    「会话全部 run 数」解读。
  *
  * ## 为什么结果**不进** uiState.messages
  *
@@ -1647,7 +1659,7 @@ internal fun historyWithProcess(
     visible: List<ChatMessage>,
     journalRoot: File,
     conversationId: String,
-    processTokenBudget: Int,
+    budget: Int,
 ): List<ChatMessage> {
     val runDir = File(journalRoot, conversationId)
     val runIds = runDir.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") }
@@ -1665,7 +1677,7 @@ internal fun historyWithProcess(
         totalRuns++
         val runTokens = messages.sumOf { TokenEstimator.estimate(it).toLong() }
         // totalRuns == 1 即最新 run：无条件保底，不参与预算判定。
-        if (totalRuns > 1 && usedTokens + runTokens > processTokenBudget) break
+        if (totalRuns > 1 && usedTokens + runTokens > budget) break
         usedTokens += runTokens
         keptRuns.add(messages)
     }
@@ -1673,7 +1685,7 @@ internal fun historyWithProcess(
         // 只在真的发生决策时记一条（对齐 AgentRunner 压缩日志纪律）。这条文案同时
         // 是真机验收关键字，不要改动措辞。
         AgentLogStore.info(
-            "过程消息开窗：保留 ${keptRuns.size}/$totalRuns 个 run（预算 $processTokenBudget tok）",
+            "过程消息开窗：保留 ${keptRuns.size}/$totalRuns 个 run（预算 $budget tok）",
         )
     }
     // keptRuns 是新→旧序，反转恢复时间序后交给 merge（去重口径不变，开窗只发生在
