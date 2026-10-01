@@ -784,19 +784,7 @@ class ChatViewModel(
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                policy = AgentPolicy(
-                    maxRounds = config.maxAgentRounds.coerceAtLeast(1),
-                    // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
-                    // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
-                    // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
-                    // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
-                    // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
-                    agentSamplingOverride = if (config.enableTools) {
-                        SamplingParams(temperature = 0.4f, topK = 20)
-                    } else {
-                        null
-                    },
-                ),
+                policy = chatAgentPolicy(config),
                 journal = journal,
                 // 长期记忆**标题索引**（Wave 34 pull 化）：正文不再进提示词 —— 记忆正文
                 // 随 memory_write 变化会让 systemText 变化，而 systemText 是引擎的会话重建
@@ -960,19 +948,7 @@ class ChatViewModel(
             // Wave 41 P2-1：AgentPolicy 构造上提到 engineHistory 计算之前 —— 过程消息
             // 回灌的 token 预算要取 policy.compressThreshold（与 AgentRunner 压缩预算
             // 同源、不写死阈值），预算必须先于 engineHistory 组装算出。
-            val policy = AgentPolicy(
-                maxRounds = config.maxAgentRounds.coerceAtLeast(1),
-                // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
-                // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
-                // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
-                // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
-                // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
-                agentSamplingOverride = if (config.enableTools) {
-                    SamplingParams(temperature = 0.4f, topK = 20)
-                } else {
-                    null
-                },
-            )
+            val policy = chatAgentPolicy(config)
             // C3（Wave 40）：会话文件只存 USER + 最终 MODEL 答案（commitAssistant），
             // TOOL / 中间 toolCall 消息只进 journal。重开会话 / 进程重启后引擎重建，
             // initialMessages 只播问答对 —— 模型丢失全部工具执行上下文。发送前把
@@ -1119,19 +1095,7 @@ class ChatViewModel(
                 runId = "run_" + System.currentTimeMillis(),
             )
             // Wave 41 P2-1：AgentPolicy 构造上提到 engineHistory 计算之前（同 onSend）。
-            val policy = AgentPolicy(
-                maxRounds = config.maxAgentRounds.coerceAtLeast(1),
-                // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
-                // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
-                // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
-                // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
-                // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
-                agentSamplingOverride = if (config.enableTools) {
-                    SamplingParams(temperature = 0.4f, topK = 20)
-                } else {
-                    null
-                },
-            )
+            val policy = chatAgentPolicy(config)
             // C3（Wave 40）：同 onSend —— 重跑同样要把 journal 过程消息回灌进引擎
             // 上下文（重试恰恰是最需要工具残骸的场景：上一轮失败前已执行的工具
             // 结果全部只在 journal 里）。任务输入先滤后拼，过程消息排在任务输入前。
@@ -1496,6 +1460,30 @@ class ChatViewModel(
         super.onCleared()
     }
 }
+
+/**
+ * 主对话 run 的 [AgentPolicy] 构造单点（Wave 42 P2-4：onRecover / onSend / onSendFrom
+ * 三处逐行相同的构造收敛为一）。
+ *
+ * ## agent 会话采样折衷（Wave 19 P1-1，权威注释）
+ *
+ * enableTools 的主对话用低温 + 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方
+ * 姿态，但保留少量随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型
+ * 下限生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器负责。数值
+ * 会被档案钳进各模型安全区间，真机反馈后校准。
+ *
+ * maxRounds 钳 `coerceAtLeast(1)`：防 0 轮配置直接空转。收敛后采样数值
+ * （temperature / topK 字面量）全文件只剩函数体这一处，改动采样口径不再需要
+ * 三处同步。
+ */
+private fun chatAgentPolicy(config: InferenceConfig): AgentPolicy = AgentPolicy(
+    maxRounds = config.maxAgentRounds.coerceAtLeast(1),
+    agentSamplingOverride = if (config.enableTools) {
+        SamplingParams(temperature = 0.4f, topK = 20)
+    } else {
+        null
+    },
+)
 
 /**
  * 「终态事件 → 诊断卡 + 终止原因」的纯映射（Wave 31 流2 提取，供 JVM 单测）。
