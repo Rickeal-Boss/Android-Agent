@@ -657,15 +657,13 @@ class ChatViewModel(
         .getOrNull()
 
     /**
-     * 热闸（Wave 30 §2.1）：SEVERE 及以上拒新 run。只挡 ChatViewModel 主入口
+     * 热闸（Wave 30 §2.1 引入；Wave 43 计量更换）：拒新 run 判据与文案统一收口到
+     * [ThermalGovernor.heatBlockReason] —— 电池温度熔断（主判据，≥44.9℃）与
+     * CRITICAL 档位各说各的事实，不再笼统报档位名。只挡 ChatViewModel 主入口
      * （onSend / onRetry→onSendFrom / onRecover），子 run 不挡 —— 在跑 run 由
      * 轮头 Abort 兜底，语义闭环（R7-2）。返回 null = 放行；非 null = 拒绝文案。
      */
-    private fun thermalRejection(): String? {
-        val governor = container.thermalGovernor
-        if (governor.canStartRun()) return null
-        return "设备过热保护中（${governor.tier.value.name} 档），请等待设备降温后再试"
-    }
+    private fun thermalRejection(): String? = container.thermalGovernor.heatBlockReason()
 
     /**
      * LIGHT 降档：新 run 启动时刻的 maxTokens 上限（对 1024 基准减半，保底 256）。

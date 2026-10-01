@@ -49,6 +49,20 @@ class ThermalGovernorTest {
         fun on(status: Int) = governor.onThermalStatus(status)
     }
 
+    /**
+     * Wave 43 电池温度源接线版 Harness。[tenths] 可变 —— 用例内可模拟推理过程中
+     * 温度爬升（读数是每次决策点实时取的，不是构造时快照）。
+     */
+    private class BatteryHarness(release: () -> Unit = {}, tenths: Int = 350) {
+        var releases = 0
+        var tenths: Int = tenths
+        val governor = ThermalGovernor(
+            releaseEngineIfIdle = { releases++; release() },
+            batteryTempTenths = { this@BatteryHarness.tenths },
+        )
+        fun on(status: Int) = governor.onThermalStatus(status)
+    }
+
     // ── 档位映射 ─────────────────────────────────────────────────────────────
 
     @Test
@@ -167,6 +181,91 @@ class ThermalGovernorTest {
         assertEquals(ThermalDecision.Abort("设备热状态已达 SEVERE 档"), h.governor.asGate().beforeRound(2))
         h.on(STATUS_SHUTDOWN)
         assertEquals(ThermalDecision.Abort("设备热状态已达 CRITICAL 档"), h.governor.asGate().beforeRound(2))
+    }
+
+    // ── Wave 43：电池温度熔断（主判据）──────────────────────────────────────
+
+    @Test
+    fun `电池温度达 449 熔断，evidence 带实时温度且优先于档位`() {
+        val h = BatteryHarness(tenths = 452)
+        // 档位 NONE 也不例外：电池熔断是主判据，档位（跨设备不可比）只是降速信号
+        assertEquals(
+            ThermalDecision.Abort("电池温度 45.2℃ 已达 44.9℃ 保护线"),
+            h.governor.asGate().beforeRound(0),
+        )
+        // 拒新 run 同判据
+        assertFalse(h.governor.canStartRun())
+        // 文案同源（ChatViewModel 热闸）
+        assertEquals(
+            "电池温度 45.2℃ 已达 44.9℃ 保护线，请等待设备降温后再试",
+            h.governor.heatBlockReason(),
+        )
+    }
+
+    @Test
+    fun `电池 448 是保护线下的最后一格：放行`() {
+        val h = BatteryHarness(tenths = 448)
+        assertEquals(ThermalDecision.Proceed, h.governor.asGate().beforeRound(0))
+        assertTrue(h.governor.canStartRun())
+        assertEquals(null, h.governor.heatBlockReason())
+    }
+
+    @Test
+    fun `接线后 SEVERE 降级为轮间冷却 10s，首轮豁免（旧行为是熔断）`() {
+        val h = BatteryHarness(tenths = 350)
+        h.on(STATUS_SEVERE)
+        // 真机实测依据：SEVERE 在部分 ROM 上 NONE→SEVERE 仅 15s、90s 回落，
+        // 电池 35℃ 即报 —— 挂在它上面熔断会让长任务永远跑不完
+        assertEquals(ThermalDecision.Proceed, h.governor.asGate().beforeRound(0))
+        assertEquals(ThermalDecision.Cooldown(10_000L), h.governor.asGate().beforeRound(1))
+        assertEquals(ThermalDecision.Cooldown(10_000L), h.governor.asGate().beforeRound(5))
+        // SEVERE 放行新 run（降速不拦截）
+        assertTrue(h.governor.canStartRun())
+    }
+
+    @Test
+    fun `接线后 CRITICAL 仍熔断（OS 紧急兜底不撤），引擎释放照常`() {
+        val h = BatteryHarness(tenths = 300)
+        h.on(STATUS_CRITICAL)
+        assertEquals(
+            ThermalDecision.Abort("设备热状态已达 CRITICAL 档"),
+            h.governor.asGate().beforeRound(0),
+        )
+        assertFalse(h.governor.canStartRun())
+        assertEquals("设备热状态已达 CRITICAL 档，请等待设备降温后再试", h.governor.heatBlockReason())
+        assertEquals(1, h.releases) // CRITICAL 跃迁释放路径原样
+    }
+
+    @Test
+    fun `电池熔断与档位无关：NONE 也能熔断、温度回落即解除`() {
+        val h = BatteryHarness(tenths = 449) // 恰好压线
+        assertTrue(h.governor.canStartRun().not())
+        h.tenths = 431 // 推理间歇降温
+        assertTrue(h.governor.canStartRun())
+        assertEquals(ThermalDecision.Proceed, h.governor.asGate().beforeRound(1))
+        h.tenths = 470 // 下一轮再爬升 → 轮头熔断（实时读取，非构造快照）
+        assertEquals(
+            ThermalDecision.Abort("电池温度 47.0℃ 已达 44.9℃ 保护线"),
+            h.governor.asGate().beforeRound(2),
+        )
+    }
+
+    @Test
+    fun `读取失败（MIN_VALUE）不误熔断，退回档位判据`() {
+        val h = BatteryHarness(tenths = Int.MIN_VALUE)
+        h.on(STATUS_SEVERE)
+        // 温度不可得 → 电池熔断恒 false → SEVERE 走冷却（不是 Wave 30 的 Abort）
+        assertEquals(ThermalDecision.Cooldown(10_000L), h.governor.asGate().beforeRound(1))
+        assertTrue(h.governor.canStartRun())
+    }
+
+    @Test
+    fun `未接线（null 源）时行为与 Wave 30 逐字节一致：SEVERE 仍 Abort`() {
+        val h = Harness()
+        h.on(STATUS_SEVERE)
+        assertFalse(h.governor.canStartRun())
+        assertEquals(ThermalDecision.Abort("设备热状态已达 SEVERE 档"), h.governor.asGate().beforeRound(0))
+        assertEquals("设备过热保护中（SEVERE 档），请等待设备降温后再试", h.governor.heatBlockReason())
     }
 
     // ── CRITICAL 释放引擎 ────────────────────────────────────────────────────

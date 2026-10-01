@@ -3,6 +3,9 @@ package com.rickeal.agent.core.data
 import android.app.ActivityManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.os.Environment
 import android.os.PowerManager
 import android.content.ClipboardManager
@@ -274,6 +277,15 @@ class AppContainer(
         releaseEngineIfIdle = { releaseEngineIfIdle() },
         isBusy = agentRunner.isBusy,
         scope = observationScope,
+        // Wave 43：电池温度源（熔断主判据）。ACTION_BATTERY_CHANGED 是 sticky
+        // broadcast —— registerReceiver(null, …) 同步取回最新粘性 Intent，零阻塞、
+        // 无需注销；EXTRA_TEMPERATURE 口径 = 十分之一℃。读取失败（无 extra）返回
+        // Int.MIN_VALUE → 熔断不触发（档位判据兜底，见 ThermalGovernor KDoc）。
+        batteryTempTenths = {
+            context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+                ?: Int.MIN_VALUE
+        },
     )
 
     // ---- 子代理框架（ZCode Actor / Octop ask_agent 移植）----

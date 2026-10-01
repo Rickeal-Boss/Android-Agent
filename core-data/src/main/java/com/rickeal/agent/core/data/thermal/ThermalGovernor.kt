@@ -47,16 +47,37 @@ enum class ThermalTier { NONE, LIGHT, MODERATE, SEVERE, CRITICAL }
  * [isBusy] == null（未接线）时 releaseDeferred 恒 false，[onThermalStatus] 行为与
  * 引入本机制前**逐字节一致**。
  *
+ * **Wave 43 熔断计量更换：PowerManager 档位 → 电池温度**（2026-10-01 真机实测裁决）。
+ * 实测证据（OPPO PDRM00 / 骁龙 8s Gen3）：① SEVERE 与可用性严重脱钩 —— NONE→SEVERE
+ * 仅 15s、90s 后回落，反复振荡，电池 35℃ 即报 SEVERE；② SEVERE 瞬间 SoC 结温 83℃
+ * （NPU 推理发热在芯片内部，外部散热压得住外壳压不住结温）。根因：PowerManager 档位
+ * 反映的是 **SoC 结温**，而结温阈值是厂商各自调教的 —— **跨设备完全不可比**，挂在
+ * SEVERE 上熔断会让 NPU 推理设备的长任务永远跑不完（每轮轮头必熔断，已实证）。
+ * Wave 43 裁决（产品决策）：
+ *  - **应用层熔断主判据 = 电池温度 ≥ [Companion.BATTERY_FUSE_CELSIUS]℃**：跨设备
+ *    可比、贴近用户可感知（外壳）温度、贴近锂电安全线（~45℃）。每次决策点经
+ *    [batteryTempTenths]（ACTION_BATTERY_CHANGED sticky broadcast，同步、零阻塞）
+ *    实时读取。SoC 结温保护**让还给 OS 热框架**（系统自然限频，应用不重复保护）。
+ *  - **CRITICAL 及以上保留 Abort**：OS 判定真正紧急时的兜底不撤（引擎释放路径原样）。
+ *  - **SEVERE 从 Abort 降为轮间冷却**（[Companion.SEVERE_COOLDOWN_MILLIS]，首轮豁免
+ *    同 MODERATE）：档位降级为「降速信号」而非「死刑」。
+ *  - **[batteryTempTenths] 未接线（null）= Wave 30 旧行为逐字节保留**（SEVERE+ 仍
+ *    Abort）：退化安全 —— 判据换新不强制所有构造点同步升级。
+ *
  * @param releaseEngineIfIdle CRITICAL 跃迁时的引擎释放路径（AppContainer 传入，
  *   与 onTrimMemory 共用同一条；isBusy 硬闸门在其内部）。
  * @param isBusy 全应用唯一的「引擎忙」真值源（AppContainer.agentRunner.isBusy）。
  *   null = 不启用补释放（与引入本机制前的行为逐字节一致）。
  * @param scope 观察 [isBusy] 的协程作用域（应用级）。null = 不观察。
+ * @param batteryTempTenths 电池温度读取源（十分之一℃，即 BatteryManager 的
+ *   EXTRA_TEMPERATURE 口径；返回 Int.MIN_VALUE = 读取失败，熔断不触发）。null =
+ *   未接线，判定全部回落 Wave 30 旧行为（SEVERE+ Abort）。
  */
 class ThermalGovernor(
     private val releaseEngineIfIdle: () -> Unit,
     private val isBusy: StateFlow<Boolean>? = null,
     private val scope: CoroutineScope? = null,
+    private val batteryTempTenths: (() -> Int)? = null,
 ) {
     private val _tier = MutableStateFlow(ThermalTier.NONE)
     val tier: StateFlow<ThermalTier> = _tier.asStateFlow()
@@ -139,8 +160,55 @@ class ThermalGovernor(
         }
     }
 
-    /** SEVERE 拒新 run（含 CRITICAL）。只挡 ChatViewModel 主入口，子 run 不挡（R7-2）。 */
-    fun canStartRun(): Boolean = tier.value < ThermalTier.SEVERE
+    /**
+     * 电池温度熔断判据（Wave 43）。接线后每次决策点实时读取：
+     * 返回 tripped 与否；[Companion.BATTERY_FUSE_TENTHS] = 44.9℃（十分之一℃ 口径）。
+     * 未接线（null）或读取失败（Int.MIN_VALUE）恒 false —— 熔断退回档位判据。
+     */
+    private fun batteryFuseTripped(): Boolean {
+        val source = batteryTempTenths ?: return false
+        return source() >= Companion.BATTERY_FUSE_TENTHS
+    }
+
+    /** 电池熔断的 evidence 文案（给用户看的事实，含实时温度）。仅在 tripped 时调用。 */
+    private fun batteryFuseEvidence(): String {
+        val tenths = batteryTempTenths?.invoke() ?: Companion.BATTERY_FUSE_TENTHS
+        return "电池温度 ${tenths / 10.0}℃ 已达 ${Companion.BATTERY_FUSE_CELSIUS}℃ 保护线"
+    }
+
+    /**
+     * 拒新 run 判据（Wave 43 重定义）：
+     *  - 接线 [batteryTempTenths]：电池温度熔断 **或** 档位 CRITICAL+ 拒（SEVERE 放行
+     *    —— 降级为冷却信号后，热设备上新 run 由轮头冷却兜底）；
+     *  - 未接线（null）：Wave 30 旧行为逐字节保留（SEVERE+ 拒）。
+     */
+    fun canStartRun(): Boolean {
+        if (batteryTempTenths != null) {
+            return !batteryFuseTripped() && tier.value < ThermalTier.CRITICAL
+        }
+        return tier.value < ThermalTier.SEVERE
+    }
+
+    /**
+     * 拒新 run 的用户文案（Wave 43）：null = 放行；非 null = 拒绝理由（含实时事实）。
+     * ChatViewModel 的热闸文案统一从这里出 —— 电池熔断与档位熔断各说各的事实，
+     * 不再笼统报档位名（电池熔断时档位可能只是 NONE，报档位反而误导）。
+     */
+    fun heatBlockReason(): String? {
+        if (batteryTempTenths != null) {
+            if (batteryFuseTripped()) {
+                return "${batteryFuseEvidence()}，请等待设备降温后再试"
+            }
+            if (tier.value >= ThermalTier.CRITICAL) {
+                return "设备热状态已达 ${tier.value.name} 档，请等待设备降温后再试"
+            }
+            return null
+        }
+        if (tier.value >= ThermalTier.SEVERE) {
+            return "设备过热保护中（${tier.value.name} 档），请等待设备降温后再试"
+        }
+        return null
+    }
 
     /** MODERATE 及以上的轮间冷却（毫秒）。轮头 Cooldown 决策的取值（首轮不取，见 [asGate]）。 */
     fun roundCooldownMillis(): Long = if (tier.value >= ThermalTier.MODERATE) 2_000L else 0L
@@ -161,26 +229,50 @@ class ThermalGovernor(
         }
 
     /**
-     * AgentRunner 轮头消费的门视图。档位 → 决策：
-     * SEVERE/CRITICAL → Abort（拒新 run 在 ChatViewModel，在跑 run 由这里兜底）；
-     * MODERATE → Cooldown(2s)，**首轮（round == 0）除外**；LIGHT/NONE → Proceed
-     * （LIGHT 的降 maxTokens 在 ChatViewModel 新 run 启动时刻生效，轮头无事可做）。
+     * AgentRunner 轮头消费的门视图。Wave 43 映射（接线 [batteryTempTenths] 时）：
+     * 电池温度 ≥ 44.9℃ → Abort（主判据，优先于档位）；CRITICAL+ → Abort（OS 紧急
+     * 兜底）；SEVERE → Cooldown(10s)（**首轮豁免**，与 MODERATE 同理由 —— 见下）；
+     * MODERATE → Cooldown(2s)（首轮豁免）；LIGHT/NONE → Proceed。
+     *
+     * 未接线（null）= Wave 30 旧行为逐字节保留：SEVERE/CRITICAL → Abort（拒新 run
+     * 在 ChatViewModel，在跑 run 由这里兜底）；MODERATE → Cooldown(2s)，首轮除外。
      *
      * 首轮不冷却的理由：「轮间」冷却的定义是两轮之间 —— run 刚起来还没产生热量，
      * 白等 2s 只拖慢首字；而按 maxRounds 累计（8 轮 = 14s、20 轮 = 38s）是实打实
-     * 吃掉墙钟硬预算（5min）的份额，换不到任何降温收益。
+     * 吃掉墙钟硬预算（5min）的份额，换不到任何降温收益。（SEVERE 的 10s 同理：
+     * 首轮豁免让热设备立即开跑，若真过热，电池温度会随推理上升并在轮头被主判据熔断。）
      */
     fun asGate(): RunThermalGate = object : RunThermalGate {
         override fun beforeRound(round: Int): ThermalDecision {
+            // 电池温度熔断（Wave 43）：主判据，优先于档位 —— 档位在部分 ROM 上跨设备
+            // 不可比（SEVERE ≠ 可用性），电池温度是唯一可比口径。
+            if (batteryTempTenths != null) {
+                if (batteryFuseTripped()) return ThermalDecision.Abort(batteryFuseEvidence())
+            }
             val current = tier.value
             return when {
-                current >= ThermalTier.SEVERE -> ThermalDecision.Abort(
+                current >= ThermalTier.CRITICAL -> ThermalDecision.Abort(
+                    "设备热状态已达 ${current.name} 档",
+                )
+                // 未接线 = Wave 30 旧行为：SEVERE+ 直接 Abort（退化安全）。
+                batteryTempTenths == null && current >= ThermalTier.SEVERE -> ThermalDecision.Abort(
                     "设备热状态已达 ${current.name} 档",
                 )
                 // round 由 AgentRunner 的 RunState.round 传入（0 起，首轮为 0）。
+                current >= ThermalTier.SEVERE && round > 0 ->
+                    ThermalDecision.Cooldown(Companion.SEVERE_COOLDOWN_MILLIS)
                 current >= ThermalTier.MODERATE && round > 0 -> ThermalDecision.Cooldown(roundCooldownMillis())
                 else -> ThermalDecision.Proceed
             }
         }
+    }
+
+    companion object {
+        /** 电池温度熔断线：44.9℃（十分之一℃ 口径 449）。Wave 43 产品裁决值。 */
+        const val BATTERY_FUSE_CELSIUS = "44.9"
+        const val BATTERY_FUSE_TENTHS = 449
+
+        /** SEVERE 档轮间冷却（Wave 43：档位从熔断降级为降速信号后的新冷却时长）。 */
+        const val SEVERE_COOLDOWN_MILLIS = 10_000L
     }
 }
