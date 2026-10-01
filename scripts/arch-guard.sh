@@ -361,6 +361,41 @@ check "AgentLogStore.setSink( 全仓只允许 1 处调用点（AgentLogFileStore
   bash -c 'n=$(grep -rnE "\.setSink[[:space:]]*[( {]" --include="*.kt" '"${EXCL[*]}"' . | grep -vE "'"$EXCLUDE_COMMENT"'" | wc -l)
            [ "$n" -le 1 ] || echo "发现 $n 处 .setSink( 调用：第二个 sink 会静默顶掉第一个（ERROR 落盘丢失），见 AgentLogFileStore.install KDoc"'
 
+# 17) ViewModel 直构造点全仓 ≤ 1（Wave 42）：正规路径必须走 core-data 的
+#     viewModelFactory（ViewModelStore 接管 clear / viewModelScope.cancel 生命周期）。
+#     全仓唯一合法白名单 = LiquidAgentApp.kt:378 的 SandboxFilesViewModel(container)
+#     （工作区覆盖层「首次打开才创建 + 旋转即关」的刻意取舍，见该处注释与挂账台账）。
+#     第二处直构造一旦出现，等于悄悄复制了「绕过 ViewModelStore」的生命周期债务
+#     （DisposableEffect 手工补偿清理），故 n≥2 即红。
+#     判据三层过滤（按本仓实际形态实测调通，Wave 42）：
+#       ① class 声明行排除 —— `class XxxViewModel(` 的定义行全命中构造模式，
+#          不过滤则恒红；
+#       ② 单行 viewModelFactory 排除 —— SettingsRoute.kt:82
+#          `viewModel(factory = viewModelFactory { StorageViewModel(container) })`
+#          等正规路，factory 块与构造同行（实测全仓 8 处 factory 构造全部单行）；
+#       ③ EXCLUDE_COMMENT 过滤 KDoc / 注释里的提及。
+#     ⚠️ 已知局限（如实记录）：② 的过滤是**行级**的 —— 若将来格式化把
+#        viewModelFactory 块拆成多行（构造落在不含该关键字的行上），那行会缺关键字
+#        被**误红**。届时把 factory 块改回单行，或把判据升级为跨行状态机。
+#     扫描面是单根 `.`（见顶部「管道守卫 rc 洗白矩阵」③：避开多路径 rc 洗白）。
+check "ViewModel 直构造点全仓 ≤ 1（LiquidAgentApp.kt:378 白名单，正规路径须走 viewModelFactory）" \
+  bash -c 'n=$(grep -rnE "[A-Za-z][A-Za-z0-9]*ViewModel\(" --include="*.kt" '"${EXCL[*]}"' . | grep -vE "class [A-Za-z0-9]*ViewModel\(" | grep -vF "viewModelFactory" | grep -vE "'"$EXCLUDE_COMMENT"'" | wc -l)
+           [ "$n" -le 1 ] || echo "发现 $n 处 ViewModel 直构造点：正规路径必须走 viewModelFactory（唯一白名单 = LiquidAgentApp.kt:378，第二处直构造 = 复制绕过 ViewModelStore 的生命周期债务）"'
+
+# 18) ChatViewModel.kt 总行数上限（Wave 42）：Wave 41 落地后实测 1682 行，本波
+#     三处 AgentPolicy 构造收敛（P2-4）+ 纯函数组迁出（J3）后 **1510 行**，≤ 1550
+#     故冻结值取 1600（口径：向上取整到 50）。行数是「ViewModel 职责堆积」的代理
+#     指标 —— 它涨回 1600 意味着该类又在吞本该外提的职责。
+#     ⚠️ **触顶不是改数字，是启动「onSend / onSendFrom 合并」候选评审**：两函数的
+#     journal 回灌 + engineHistory 组装已高度趋同（见两处 Wave 41 P2-1 注释），
+#     评审通过后合并/拆分，再按实际行数下调本值（与第 14 条 lint baseline 同款
+#     「只许缩不许涨」精神，但触顶动作是评审而非 regen）。
+check "ChatViewModel.kt 总行数 ≤ 1600（触顶 = 启动 onSend/onSendFrom 合并候选评审，非改阈值）" \
+  bash -c 'f=feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt
+           if [ ! -f "$f" ]; then echo "$f 不存在（被改名/删除？守卫面已失效）"; exit 0; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 1600 ] || echo "ChatViewModel.kt 当前 $n 行，超 1600 行上限（触顶不是改数字，是启动「onSend/onSendFrom 合并」候选评审）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

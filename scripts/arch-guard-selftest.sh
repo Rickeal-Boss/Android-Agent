@@ -89,6 +89,17 @@ data class AgentRequest(
     val userInput: ChatMessage,
 )
 KT
+  # 第 18 条（Wave 42 起）在 ChatViewModel.kt 缺失时判「守卫面失效」⇒ 骨架必须提供它。
+  # 给一个只有类声明的最小文件：类声明行被第 17 条的 class 过滤器排除（非直构造），
+  # 行数远低于冻结值 ⇒ 干净树对 17 / 18 两条新守卫都保持绿。
+  mkdir -p "$root/feature-chat/src/main/java/com/rickeal/agent/feature/chat"
+  cat > "$root/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt" <<'KT'
+package com.rickeal.agent.feature.chat
+
+class ChatViewModel(
+    val container: com.rickeal.agent.core.data.AppContainer,
+)
+KT
   # 第 14 条（Wave 32 起）要求 app/lint-baseline.xml 存在且条目数 <= 冻结值 4
   # （沿革 83 → Wave 37 后 35 → Wave 38 清障后 3）：骨架给 2 条 dummy 条目，
   # 2 <= 3 仍低于冻结值，干净树保持绿 —— 故 scaffold() 无需随冻结值下调而改动。
@@ -590,6 +601,99 @@ elif printf '%s\n' "$out" | grep -qF "处 .setSink("; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case14b] 输出里看不到「处 .setSink(」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 15：注入 2 处 ViewModel **直构造**（真代码行，非注释）⇒ 第 17 条
+#          （ViewModel 直构造点全仓 ≤ 1）必须报红。骨架默认直构造数为 0（白名单
+#          未注入，≤1 绿），本 case 注入 2 处 ⇒ n=2 红。
+#          fixture 用裸 `new` 形态（无 viewModelFactory、非 class 声明行）——
+#          钉住三层过滤全穿透：class 过滤器与 factory 关键字都救不了它。
+# case15b：红必须来自**真命中**（输出含「处 ViewModel 直构造点」计数行），而不是
+#          「守卫命令自身执行失败」—— 后者那行也含守卫名，会让 assert_red 假绿
+#          （与 case12b / case13b / case14b 同一范式）。
+# case15c：绿面 —— 1 处**单行 factory 形态**的构造 + 0 处直构造 ⇒ 必须不红。
+#          钉死「正规路放行」：若 ② 的单行 factory 过滤失效（例如误把关键词过滤
+#          写成只匹配文件名），本 case 会误红。绿面缺失会让第 17 条成为永远红的
+#          僵尸规则（挂着正规路也过不了）。
+# ---------------------------------------------------------------------------
+d="$TMP/case15-second-viewmodel"
+scaffold "$d"
+cat > "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/RogueVm.kt" <<'KT'
+package com.rickeal.agent.feature.chat
+
+fun rogueConstruct(container: com.rickeal.agent.core.data.AppContainer): ChatViewModel {
+    val a = ChatViewModel(container)
+    val b = ChatViewModel(container)
+    return if (a.hashCode() > b.hashCode()) a else b
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case15 第二处 ViewModel 直构造 (第 17 条)" "$rc" "$out" \
+  "ViewModel 直构造点全仓 ≤ 1（LiquidAgentApp.kt:378 白名单，正规路径须走 viewModelFactory）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case15b] 第 17 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "处 ViewModel 直构造点"; then
+  echo "PASS [case15b] 红来自真命中（输出含「处 ViewModel 直构造点」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case15b] 输出里看不到「处 ViewModel 直构造点」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case15c-factory-form-green"
+scaffold "$d"
+mkdir -p "$d/feature-settings/src/main/java/com/rickeal/agent/feature/settings"
+cat > "$d/feature-settings/src/main/java/com/rickeal/agent/feature/settings/LegitVm.kt" <<'KT'
+package com.rickeal.agent.feature.settings
+
+val legit = viewModel(factory = viewModelFactory { MemoryViewModel(container) })
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case15c 单行 factory 形态 + 0 直构造 (第 17 条绿面)] 退出 0（未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case15c] 单行 viewModelFactory 正规构造被误红（第 17 条② 过滤失效）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 16：注入超阈的 ChatViewModel.kt（1705 行 > 1600）⇒ 第 18 条
+#          （ChatViewModel.kt 总行数）必须报红。骨架默认只有 5 行（≤1600 绿），
+#          本 case 用「类声明 + 参数行」灌到 1705 行。
+# case16b：红必须来自**真命中**（输出含「超 1600 行」计数行），而不是「文件不存在
+#          判守卫面失效」或「守卫命令自身执行失败」—— 前者同样含守卫名，会让
+#          assert_red 假绿（fixture 没铺对路径时就是这种形态，与 case12b 范式一致）。
+# ---------------------------------------------------------------------------
+d="$TMP/case16-viewmodel-oversize"
+scaffold "$d"
+{ echo 'package com.rickeal.agent.feature.chat'
+  echo ''
+  echo 'class ChatViewModel('
+  echo '    val container: com.rickeal.agent.core.data.AppContainer,'
+  local_i=1
+  while [ "$local_i" -le 1700 ]; do echo "    val v$local_i: Int = $local_i,"; local_i=$((local_i + 1)); done
+  echo ')'
+} > "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case16 ChatViewModel.kt 超行数上限 (第 18 条)" "$rc" "$out" \
+  "ChatViewModel.kt 总行数 ≤ 1600（触顶 = 启动 onSend/onSendFrom 合并候选评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case16b] 第 18 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "超 1600 行上限"; then
+  echo "PASS [case16b] 红来自真命中（输出含「超 1600 行上限」计数行，fixture 确被 wc -l 计到）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case16b] 输出里看不到「超 1600 行上限」计数行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

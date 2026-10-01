@@ -377,6 +377,7 @@ private fun MainShell() {
     val workspaceViewModel = remember(workspaceRequested) {
         if (workspaceRequested) SandboxFilesViewModel(container) else null
     }
+    // 该直构造点的全仓唯一性由 arch-guard 第 17 项冻结；迁移正规 viewModel 路径 = 行为变更（重开覆盖层的重扫语义/「旋转即关」取舍），触发条件见挂账台账。
     // 绕过 ViewModelStore 的**补偿清理**：上面是 `new` 出来的 VM（不走 viewModelFactory），
     // 没有人会在面板离场时替它调 clear() ⇒ viewModelScope 永不 cancel。现状无实害（VM 内
     // 只有自终止任务：一次扫盘 / 一次预览读盘），但这是全仓唯一绕过 store 的 VM 实例化点
