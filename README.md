@@ -308,7 +308,7 @@ Android-Agent/
   - [ ] Wave 3：历史版本化、定时任务、检索记忆、人格系统、插件化装载
 
 > **Wave 24–39 实况（2026-09-30 同步）**：Wave 3 的大项**尚未开工**，实际推进的是「Harness 加固 + 治理 + 验收」这条线，逐波细节见
-> [`docs/handoff-*.md`](docs/)（最新在前）。当前分支 `harness-improve`，功能 tip `2c9febb`（CI 双绿）。
+> [`docs/handoff-*.md`](docs/)（最新在前）。当前分支 `harness-improve`，功能 tip `bb149f5`（CI 双绿）。
 >
 > - **加固**：W24 角色通道根治（回显主根因）→ W26 Operit 侦察（**许可证不兼容 ⇒ 零代码搬运**）→ W27 渐进式披露 → W28 KV 预算 → W29 A1 拆分 → W30 断路器 → W31 接线收口 → W33 preface 第三态闸门 + 沙箱 → W34 原生工具通道 + 记忆 pull 化
 > - **治理**：W32 lint 门禁翻转 → W35 外部报告批处理 → W36/W37/W38 挂账清零 + **lint baseline 83 → 35 → 4** + 记忆存储契约 + 守卫网 15 项 / selftest 21 例
@@ -326,6 +326,7 @@ Android-Agent/
 |---|---|---|
 | **完整 i18n（含 RTL）** | `app/src/main/res/values/strings.xml` 只有 1 条串（`app_name`），Composable 里 ~145 处中文硬编码 ⇒ RTL 布局从未被验证、也无从验证。Wave 32 已撤下 `AndroidManifest.xml` 的 `android:supportsRtl="true"` —— 先不声明未验证过的能力 | ① 硬编码中文串抽到 `strings.xml`；② 补 `values-ldrtl` / 布局镜像的真机或预览验证；③ 验证通过后才恢复 `supportsRtl` 声明 |
 | **`termsVersion`（法务条款版本化）** ⚠️ **时序风险** | `SettingsRepository` 的 `is_tos_accepted` / `is_gemma_terms_accepted` 都是**无版本 boolean**，只能表达「同意过 / 没同意过」，表达不了「同意的是**哪一版**」。⇒ 一旦替换法务文本，**当天所有老用户**都会命中 `true` 而被视为「已同意新条款」，首启门禁与法律页开关被直接跳过（**未同意却被视为已同意**，合规事故），且事后无法反推用户当年同意的是哪一版。Wave 39 只把债务固化为注释（`SettingsRepository.kt` 的 `IS_TOS_ACCEPTED` 上方），**未改行为** —— 实现涉及产品/法务决策（老用户的 `true` 算「已同意第 1 版」还是「未同意任何版本」） | ✅ **落地顺序是硬约束**：`termsVersion` **必须先于任何法务文本替换落地**，不能反序（反序则老用户同意状态不可区分、不可补征）。行为实现需先裁定上述产品/法务问题 |
+| **J4：`SandboxFilesViewModel` 直构造白名单唯一（工作区覆盖层）** | `LiquidAgentApp.kt:378` 是全仓**唯一**绕过 `viewModelFactory` / ViewModelStore 的 VM 实例化点（「首次打开才创建 + 旋转即关」刻意取舍；VM 内目前只有自终止任务，现状无实害，但绕过 store ⇒ 离场时靠 `DisposableEffect` 手工补偿 cancel）。唯一性已由 `scripts/arch-guard.sh` **第 17 项冻结**（第二处直构造即红）；迁移正规 viewModel 路径 = **行为变更项**（改变重开覆盖层的重扫语义 /「旋转即关」取舍） | 触发条件：① 给该 VM 加轮询 / 常驻监听（旋转会从「无实害」变真泄漏）；② 需跨开关保留面板状态。实施时必须一并处理重开覆盖层的重扫语义，并过真机验证；迁移落地后 `LiquidAgentApp.kt` 的补偿清理块随删、守卫白名单同步清空 |
 
 ### 已裁定（不再是挂账）
 
