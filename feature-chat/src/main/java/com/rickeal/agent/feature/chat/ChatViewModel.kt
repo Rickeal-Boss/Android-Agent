@@ -23,6 +23,7 @@ import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
+import com.rickeal.agent.core.model.ModelSamplingProfiles
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.SamplingParams
 import com.rickeal.agent.core.model.TokenEstimator
@@ -782,7 +783,7 @@ class ChatViewModel(
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                policy = chatAgentPolicy(config),
+                policy = chatAgentPolicy(config, _uiState.value.activeModel),
                 journal = journal,
                 // 长期记忆**标题索引**（Wave 34 pull 化）：正文不再进提示词 —— 记忆正文
                 // 随 memory_write 变化会让 systemText 变化，而 systemText 是引擎的会话重建
@@ -946,7 +947,7 @@ class ChatViewModel(
             // Wave 41 P2-1：AgentPolicy 构造上提到 engineHistory 计算之前 —— 过程消息
             // 回灌的 token 预算要取 policy.compressThreshold（与 AgentRunner 压缩预算
             // 同源、不写死阈值），预算必须先于 engineHistory 组装算出。
-            val policy = chatAgentPolicy(config)
+            val policy = chatAgentPolicy(config, _uiState.value.activeModel)
             // C3（Wave 40）：会话文件只存 USER + 最终 MODEL 答案（commitAssistant），
             // TOOL / 中间 toolCall 消息只进 journal。重开会话 / 进程重启后引擎重建，
             // initialMessages 只播问答对 —— 模型丢失全部工具执行上下文。发送前把
@@ -1093,7 +1094,7 @@ class ChatViewModel(
                 runId = "run_" + System.currentTimeMillis(),
             )
             // Wave 41 P2-1：AgentPolicy 构造上提到 engineHistory 计算之前（同 onSend）。
-            val policy = chatAgentPolicy(config)
+            val policy = chatAgentPolicy(config, _uiState.value.activeModel)
             // C3（Wave 40）：同 onSend —— 重跑同样要把 journal 过程消息回灌进引擎
             // 上下文（重试恰恰是最需要工具残骸的场景：上一轮失败前已执行的工具
             // 结果全部只在 journal 里）。任务输入先滤后拼，过程消息排在任务输入前。
@@ -1463,25 +1464,54 @@ class ChatViewModel(
  * 主对话 run 的 [AgentPolicy] 构造单点（Wave 42 P2-4：onRecover / onSend / onSendFrom
  * 三处逐行相同的构造收敛为一）。
  *
- * ## agent 会话采样折衷（Wave 19 P1-1，权威注释）
+ * ## agent 会话采样折衷（Wave 19 P1-1 立，Wave 43 真机校准）
  *
  * enableTools 的主对话用低温 + 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方
  * 姿态，但保留少量随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型
- * 下限生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器负责。数值
- * 会被档案钳进各模型安全区间，真机反馈后校准。
+ * 下限生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器负责。
+ *
+ * ⚠️ **Wave 43 修正**：折衷值（0.4 / 20）此前是**死值**，不区分模型。真机实锤
+ * （OPPO PDRM00，Gemma-4 E2B GPU）：档案 temp 1.0/topK 64 的模型被压到 0.4/20 后
+ * 输出分布崩塌 —— 连 `<|channel>thought` 的通道名都生成不准（吐出 `<|channel>तरह`），
+ * 正文陷入 `[current` n-gram 死锁，连续 3 轮触发轮内重复检测被终止。
+ * 对照：`google-ai-edge/gallery` 的 `Consts.kt` 默认值是
+ * `DEFAULT_TEMPERATURE = 1.0f / DEFAULT_TOPK = 64 / DEFAULT_TOPP = 0.95f`
+ * —— 即**不覆盖模型官方采样口径**，这是它跑 Gemma 系正常的原因。
+ *
+ * 现口径：**以模型档案为下界采信**（Gemma-4 → 1.0/64 与 Gallery 一致；
+ * MiniCPM5-2B 档案 0.5/20 → 0.5/20，Qwen 0.7/20 → 0.7/20），钳在折衷值之上、
+ * 1.0 / 64 之内防过热。topP 不动（沿用会话配置，避免多变量）。
+ * 回归风险点：档案值高于 0.4 的模型（MiniCPM5 由 0.4 → 0.5）需真机复查。
  *
  * maxRounds 钳 `coerceAtLeast(1)`：防 0 轮配置直接空转。收敛后采样数值
  * （temperature / topK 字面量）全文件只剩函数体这一处，改动采样口径不再需要
  * 三处同步。
+ *
+ * @param model 当前激活模型（取采样档案用）；null = 无档案可查，退回折衷死值。
  */
-private fun chatAgentPolicy(config: InferenceConfig): AgentPolicy = AgentPolicy(
-    maxRounds = config.maxAgentRounds.coerceAtLeast(1),
-    agentSamplingOverride = if (config.enableTools) {
-        SamplingParams(temperature = 0.4f, topK = 20)
-    } else {
-        null
-    },
-)
+private fun chatAgentPolicy(config: InferenceConfig, model: ModelDescriptor?): AgentPolicy {
+    val profile = model?.fileName?.let { ModelSamplingProfiles.forFileName(it) }
+    return AgentPolicy(
+        maxRounds = config.maxAgentRounds.coerceAtLeast(1),
+        agentSamplingOverride = if (config.enableTools) {
+            SamplingParams(
+                // 档案值在折衷值之上时采信档案（Gemma 系 1.0；无档案维持 0.4 折衷）
+                temperature = if (profile == null) {
+                    0.4f
+                } else {
+                    0.4f.coerceAtLeast(profile.recommendedTemperature.coerceAtMost(1.0f))
+                },
+                topK = if (profile == null) {
+                    20
+                } else {
+                    20.coerceAtLeast(profile.recommendedTopK.coerceAtMost(64))
+                },
+            )
+        } else {
+            null
+        },
+    )
+}
 
 /**
  * 「终态事件 → 诊断卡 + 终止原因」的纯映射（Wave 31 流2 提取，供 JVM 单测）。
