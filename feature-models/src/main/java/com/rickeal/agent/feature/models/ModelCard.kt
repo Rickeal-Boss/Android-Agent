@@ -57,6 +57,8 @@ fun ModelCard(
     onProbe: () -> Unit,
     onDelete: (deleteFile: Boolean) -> Unit,
     onBackendChange: (InferenceBackend) -> Unit,
+    /** 打开能力位编辑弹窗（Wave 43；对话框状态由调用方 ModelsScreen 管理）。 */
+    onEditCapabilities: () -> Unit,
     // Modifier 必须排在第一个带默认值的参数位（lint ModifierParameter）：Compose 约定
     // modifier 是「可选修饰」参数中的第一个，否则调用方按位置传参会踩坑。
     modifier: Modifier = Modifier,
@@ -146,6 +148,9 @@ fun ModelCard(
                 if (model.capabilities.toolCalling) GlassChip(text = "工具")
                 if (model.capabilities.thinking) GlassChip(text = "思考")
                 if (model.capabilities.speculativeDecoding) GlassChip(text = "投机解码")
+                // 能力位编辑入口（Wave 43）：启发式只是文件名初值，容器实际子图可能
+                // 缺失（Gemma-4 GPU 变体无音频编码器）—— 用户需要随时校正。
+                GlassChip(text = "编辑能力位", onClick = onEditCapabilities)
             }
 
             Text(

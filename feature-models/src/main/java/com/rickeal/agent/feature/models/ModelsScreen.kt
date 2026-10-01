@@ -65,6 +65,7 @@ import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.rememberGlassHaptics
 import com.rickeal.agent.core.model.ModelCapabilities
+import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelFamily
 import java.util.Locale
 
@@ -90,6 +91,10 @@ fun ModelsScreen(
     // 不重置）小于引入一个自定义 Saver 的风险，本轮先留着，已在回报里标注。
     var pendingCaps by remember { mutableStateOf(ModelCapabilities()) }
     var showPresetDialog by rememberSaveable { mutableStateOf(false) }
+    // 能力位编辑（Wave 43）：editingCapsModel 非 null 即弹编辑框。仍是 remember
+    //（同 pendingCaps 理由：ModelDescriptor 非 Parcelable，rememberSaveable 存不了）。
+    var editingCapsModel by remember { mutableStateOf<ModelDescriptor?>(null) }
+    var editingCaps by remember { mutableStateOf(ModelCapabilities()) }
 
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -220,6 +225,10 @@ fun ModelsScreen(
                     onProbe = { viewModel.onProbe(model.id) },
                     onDelete = { deleteFile -> viewModel.onDelete(model.id, deleteFile) },
                     onBackendChange = viewModel::onBackendChange,
+                    onEditCapabilities = {
+                        editingCapsModel = model
+                        editingCaps = model.capabilities
+                    },
                 )
             }
             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -366,6 +375,20 @@ fun ModelsScreen(
             onConfirm = {
                 pendingUriText = ""
                 viewModel.onImportUri(uri)
+            },
+        )
+    }
+
+    // 能力位编辑框（Wave 43）：接通此前是死代码的 onEditCapabilities —— 预设下载
+    // 的模型此前没有任何能力位校正入口（只有导入弹窗一次性机会）。
+    editingCapsModel?.let { editing ->
+        ModelCapabilitiesDialog(
+            modelName = editing.displayName.ifBlank { editing.fileName },
+            capabilities = editingCaps,
+            onCapabilitiesChange = { editingCaps = it },
+            onDismiss = { editingCapsModel = null },
+            onConfirm = {
+                viewModel.onEditCapabilities(editing.id, editingCaps)
             },
         )
     }

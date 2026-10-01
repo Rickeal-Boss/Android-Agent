@@ -91,6 +91,81 @@ private fun ToggleChip(text: String, checked: Boolean, onToggle: (Boolean) -> Un
     )
 }
 
+/**
+ * 能力位编辑弹窗（Wave 43）：已入库模型（预设下载 / 已导入）随时校正能力位。
+ *
+ * 为什么要有它：能力位来自文件名启发式（[ModelHeuristics]）的「初值」，而启发式
+ * 只看文件名不探测容器 —— 真机实锤案例：Gemma-4 E2B **GPU 变体**容器没有音频
+ * 编码器子图（section 表只有 text_decoder），但按 Google 模型卡推断 audio=true，
+ * 引擎因此请求音频后端 → 会话创建 NOT_FOUND 硬失败（litert-lm 源码
+ * litert_lm_lib.cc：audio_backend 有值即无条件读 AUDIO_ENCODER_HW section）。
+ * 用户手动关掉「音频」位即可解锁 —— 但此前 onEditCapabilities 是死代码，
+ * 预设模型根本没有编辑入口（只有导入弹窗一次性校正）。
+ *
+ * 与 [ModelImportDialog] 共用 ToggleChip 组；onConfirm 由调用方接
+ * `viewModel.onEditCapabilities(id, capabilities)`（持久化到 modelRepository）。
+ */
+@Composable
+fun ModelCapabilitiesDialog(
+    modelName: String,
+    capabilities: ModelCapabilities,
+    onCapabilitiesChange: (ModelCapabilities) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val colors = LocalGlassColors.current
+    LiquidDialog(
+        onDismissRequest = onDismiss,
+        title = "编辑能力位",
+        actions = { dismiss ->
+            GlassButton(text = "取消", onClick = dismiss, material = GlassMaterial.THIN)
+            GlassButton(text = "保存", onClick = {
+                onConfirm()
+                dismiss()
+            })
+        },
+    ) {
+        Column {
+            Text(
+                text = modelName,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onGlass,
+            )
+            Text(
+                text = "能力位决定引擎行为（如「音频」会请求音频后端）。若模型容器实际" +
+                    "不含某模态的编码器子图，开启对应能力位会导致加载失败：",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onGlassSubtle,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                ToggleChip("图片", capabilities.image) {
+                    onCapabilitiesChange(capabilities.copy(image = it))
+                }
+                ToggleChip("音频", capabilities.audio) {
+                    onCapabilitiesChange(capabilities.copy(audio = it))
+                }
+            }
+            Row(
+                modifier = Modifier.padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                ToggleChip("工具调用", capabilities.toolCalling) {
+                    onCapabilitiesChange(capabilities.copy(toolCalling = it))
+                }
+                ToggleChip("思考模式", capabilities.thinking) {
+                    onCapabilitiesChange(capabilities.copy(thinking = it))
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun HowToGetModelsCard(modifier: Modifier = Modifier, importDirPath: String = "") {
     val colors = LocalGlassColors.current
