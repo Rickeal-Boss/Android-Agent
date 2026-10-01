@@ -25,6 +25,7 @@ import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.SamplingParams
+import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.TokenUsage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -956,6 +957,22 @@ class ChatViewModel(
                 runDir = File(container.journalRoot, cid),
                 runId = "run_" + System.currentTimeMillis(),
             )
+            // Wave 41 P2-1：AgentPolicy 构造上提到 engineHistory 计算之前 —— 过程消息
+            // 回灌的 token 预算要取 policy.compressThreshold（与 AgentRunner 压缩预算
+            // 同源、不写死阈值），预算必须先于 engineHistory 组装算出。
+            val policy = AgentPolicy(
+                maxRounds = config.maxAgentRounds.coerceAtLeast(1),
+                // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
+                // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
+                // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
+                // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
+                // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
+                agentSamplingOverride = if (config.enableTools) {
+                    SamplingParams(temperature = 0.4f, topK = 20)
+                } else {
+                    null
+                },
+            )
             // C3（Wave 40）：会话文件只存 USER + 最终 MODEL 答案（commitAssistant），
             // TOOL / 中间 toolCall 消息只进 journal。重开会话 / 进程重启后引擎重建，
             // initialMessages 只播问答对 —— 模型丢失全部工具执行上下文。发送前把
@@ -963,11 +980,22 @@ class ChatViewModel(
             // visible 里滤掉、拼在结果末尾：过程消息统一排在可见历史之后（照抄
             // onRecover 的拼接语义），任务输入必须在其后再交给引擎 —— 否则新问题
             // 会排在旧工具残骸之前（时序倒挂）。
+            // Wave 41 P2-1 预算口径：传给 historyWithProcess 的 visible **不含**本次
+            // 新输入（userMessage 先滤、拼在过程消息之后），故按 [processTokenBudget]
+            // 的公式减「不含新输入」的 visible —— 硬不变量：visible + 回灌过程 +
+            // 本次输入 ≤ AgentRunner 压缩预算（同源算式，见 [processTokenBudget] KDoc）。
+            val visibleWithoutInput = history.filterNot { it.id == userMessage.id }
             val engineHistory = withContext(Dispatchers.IO) {
                 historyWithProcess(
-                    history.filterNot { it.id == userMessage.id },
+                    visibleWithoutInput,
                     container.journalRoot,
                     cid,
+                    processTokenBudget = processTokenBudget(
+                        contextLength = config.contextLength,
+                        maxTokens = config.maxTokens,
+                        visible = visibleWithoutInput,
+                        compressThreshold = policy.compressThreshold,
+                    ),
                 ) + userMessage
             }
             val request = AgentRequest(
@@ -980,19 +1008,7 @@ class ChatViewModel(
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                policy = AgentPolicy(
-                    maxRounds = config.maxAgentRounds.coerceAtLeast(1),
-                    // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
-                    // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
-                    // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
-                    // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
-                    // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
-                    agentSamplingOverride = if (config.enableTools) {
-                        SamplingParams(temperature = 0.4f, topK = 20)
-                    } else {
-                        null
-                    },
-                ),
+                policy = policy,
                 journal = journal,
                 // 长期记忆**标题索引**（Wave 34 pull 化，替代此前的全量正文注入）：
                 // 正文随 memory_write 变化会让 systemText 变化，而 systemText 是引擎的会话
@@ -1100,14 +1116,37 @@ class ChatViewModel(
                 runDir = File(container.journalRoot, cid),
                 runId = "run_" + System.currentTimeMillis(),
             )
+            // Wave 41 P2-1：AgentPolicy 构造上提到 engineHistory 计算之前（同 onSend）。
+            val policy = AgentPolicy(
+                maxRounds = config.maxAgentRounds.coerceAtLeast(1),
+                // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
+                // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
+                // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
+                // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
+                // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
+                agentSamplingOverride = if (config.enableTools) {
+                    SamplingParams(temperature = 0.4f, topK = 20)
+                } else {
+                    null
+                },
+            )
             // C3（Wave 40）：同 onSend —— 重跑同样要把 journal 过程消息回灌进引擎
             // 上下文（重试恰恰是最需要工具残骸的场景：上一轮失败前已执行的工具
             // 结果全部只在 journal 里）。任务输入先滤后拼，过程消息排在任务输入前。
+            // Wave 41 P2-1 预算口径：同 onSend —— visible 不含本次新输入，
+            // 硬不变量：visible + 回灌过程 + 本次输入 ≤ AgentRunner 压缩预算。
+            val visibleWithoutInput = history.filterNot { it.id == userMessage.id }
             val engineHistory = withContext(Dispatchers.IO) {
                 historyWithProcess(
-                    history.filterNot { it.id == userMessage.id },
+                    visibleWithoutInput,
                     container.journalRoot,
                     cid,
+                    processTokenBudget = processTokenBudget(
+                        contextLength = config.contextLength,
+                        maxTokens = config.maxTokens,
+                        visible = visibleWithoutInput,
+                        compressThreshold = policy.compressThreshold,
+                    ),
                 ) + userMessage
             }
             val request = AgentRequest(
@@ -1120,19 +1159,7 @@ class ChatViewModel(
                 userInput = userMessage,
                 config = config,
                 model = _uiState.value.activeModel,
-                policy = AgentPolicy(
-                    maxRounds = config.maxAgentRounds.coerceAtLeast(1),
-                    // agent 会话采样折衷（Wave 19 P1-1）：enableTools 的主对话用低温 +
-                    // 收窄 topK —— 对齐 gallery agent 任务 TopK=1 的官方姿态，但保留少量
-                    // 随机性防 token 级循环；重复惩罚由 ModelSamplingProfiles 按模型下限
-                    // 生效（Wave 20 起 0.17.1 支持），循环兜底由 AgentRunner 轮内检测器
-                    // 负责。数值会被档案钳进各模型安全区间，真机反馈后校准。
-                    agentSamplingOverride = if (config.enableTools) {
-                        SamplingParams(temperature = 0.4f, topK = 20)
-                    } else {
-                        null
-                    },
-                ),
+                policy = policy,
                 journal = journal,
                 // 长期记忆**标题索引**（Wave 34 pull 化，替代此前的全量正文注入）：
                 // 正文随 memory_write 变化会让 systemText 变化，而 systemText 是引擎的会话
@@ -1518,15 +1545,71 @@ internal fun mergeProcessIntoVisible(
 }
 
 /**
- * 组装发送给引擎的完整 history（Wave 40 C3）：可见历史 + 本会话**全部 run** 的
- * journal 过程消息。
+ * 过程消息回灌的 token 预算（Wave 41 P2-1）—— **与 AgentRunner 压缩预算同源**。
+ *
+ * ## 公式来源（逐字镜像，不在此硬编码任何阈值）
+ *
+ * AgentRunner 轮头的压缩预算（AgentRunner.kt，「预算必须显式预留输出额度」处）：
+ *
+ * ```
+ * budget = ((contextLength - maxTokens).coerceAtLeast(512) * policy.compressThreshold).toInt()
+ * ```
+ *
+ * 本函数取**同一算式**得到 `base`，再减去可见历史的 token 估算占用，余量即允许
+ * 回灌的过程消息预算：
+ *
+ *  - `coerceAtLeast(512)`：极端配置（maxTokens ≥ contextLength）下保底预算，
+ *    与 AgentRunner 同理 —— 压缩器仍能工作而不是把预算算成 0/负数；
+ *  - 预留输出额度：litertlm 的 KV cache = 输入 + 输出总和（Wave 28），不预留的话
+ *    长回答会越过 KV 顶直接硬报错；
+ *  - 减 [visible]：调用点（onSend / onSendFrom）传给 [historyWithProcess] 的
+ *    visible **不含本次新输入**（userMessage 先滤、拼在过程消息之后），所以这里
+ *    减「不含新输入」的占用，硬不变量为「visible + 回灌过程 + 本次输入 ≤ 压缩预算」；
+ *  - `coerceAtLeast(0)`：可见历史已超压缩预算时余量为负，钳到 0 —— 过程消息预算
+ *    归零，但 [historyWithProcess] 仍按「最新 run 保底」语义运行。
+ *
+ * `compressThreshold` 必须取自调用点真实下发进 [AgentRequest] 的 [AgentPolicy]
+ * 实例（两处调用点已把 AgentPolicy 构造上提到 engineHistory 计算之前），保证本
+ * 预算与引擎侧压缩门禁永远同一口径。纯函数，JVM 可测。
+ */
+internal fun processTokenBudget(
+    contextLength: Int,
+    maxTokens: Int,
+    visible: List<ChatMessage>,
+    compressThreshold: Float,
+): Int {
+    val base = ((contextLength - maxTokens).coerceAtLeast(512) * compressThreshold).toInt()
+    return (base - TokenEstimator.estimate(visible)).coerceAtLeast(0)
+}
+
+/**
+ * 组装发送给引擎的完整 history（Wave 40 C3）：可见历史 + 本会话 journal 过程消息
+ * （Wave 41 P2-1 起：按 [processTokenBudget] 的 token 预算**开窗**，不再无上限全量回灌）。
  *
  * ## 为什么需要它（上下文丢失根因）
  *
  * 会话文件只存 USER + 最终 MODEL 答案（[ChatViewModel.commitAssistant]），TOOL /
  * 中间 toolCall 消息只进 journal。重开会话 / 进程重启后引擎重建，initialMessages
  * 只播问答对 —— 模型丢失全部工具执行上下文（当场续聊不丢：引擎不重建；
- * 重启 / 切会话后丢：重建播种缩水）。修复方向：发送时让引擎拿到完整过程历史。
+ * 重启 / 切会话后丢：重建播种缩水）。修复方向：发送时让引擎拿到过程历史。
+ *
+ * ## token 预算开窗（Wave 41 P2-1：新者优先 + 最新 run 保底 + run 粒度原子裁剪）
+ *
+ * 预算由调用方按 [processTokenBudget] 算出后传入（与 AgentRunner 压缩预算同源）。
+ * 本函数按 **run 粒度**裁剪：
+ *  - runId 字典序**降序**（= 时间序降序，runId = `run_` + currentTimeMillis，
+ *    排序口径实证见下节）逐 run 读取，按 [TokenEstimator] 累计（Long 防溢出 ——
+ *    estimate 返回 Int，Wave 5 教训）；
+ *  - 累计超预算即停止读更旧 run：**旧 run 文件根本不读** —— 这既是 token 治理
+ *    也是 IO 治理，读取成本不再随会话年龄线性涨；
+ *  - 只按 run 边界裁剪，绝不切开单个 run：M(toolCalls) 与 TOOL 结果必须成对存活；
+ *  - **最新 run 无条件保底**：即使它单独超预算也完整保留 —— 最新的工具残骸是当前
+ *    任务最相关的上下文。预算 = 0 也只意味着「不再读任何更旧 run」，不吞最新 run；
+ *  - 拼回时反转恢复时间序；`mergeProcessIntoVisible` 的去重口径原样保留 ——
+ *    开窗发生在 merge 之前的**读取层**；
+ *  - 发生裁剪时打一条 INFO 日志（对齐 AgentRunner 压缩日志纪律：只在真的发生
+ *    决策时记一条）。文案「过程消息开窗：保留 N/M 个 run（预算 X tok）」是
+ *    **真机验收关键字，不要改动措辞**。
  *
  * ## 为什么结果**不进** uiState.messages
  *
@@ -1564,14 +1647,36 @@ internal fun historyWithProcess(
     visible: List<ChatMessage>,
     journalRoot: File,
     conversationId: String,
+    processTokenBudget: Int,
 ): List<ChatMessage> {
     val runDir = File(journalRoot, conversationId)
     val runIds = runDir.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") }
         ?.map { it.name.removeSuffix(".jsonl") }
         ?.sorted()
         ?: return visible
-    val process = runIds.asSequence()
-        .flatMap { runId -> AgentRunJournal.open(runDir, runId).committedMessagesSync().asSequence() }
-        .toList()
-    return mergeProcessIntoVisible(visible, process)
+    if (runIds.isEmpty()) return visible
+    // 新者优先：字典序降序 = 时间序降序（run_ + currentTimeMillis，见类头实证）。
+    var usedTokens = 0L
+    val keptRuns = mutableListOf<List<ChatMessage>>()
+    var totalRuns = 0
+    for (runId in runIds.asReversed()) {
+        val messages = AgentRunJournal.open(runDir, runId).committedMessagesSync()
+        if (messages.isEmpty()) continue
+        totalRuns++
+        val runTokens = messages.sumOf { TokenEstimator.estimate(it).toLong() }
+        // totalRuns == 1 即最新 run：无条件保底，不参与预算判定。
+        if (totalRuns > 1 && usedTokens + runTokens > processTokenBudget) break
+        usedTokens += runTokens
+        keptRuns.add(messages)
+    }
+    if (keptRuns.size < totalRuns) {
+        // 只在真的发生决策时记一条（对齐 AgentRunner 压缩日志纪律）。这条文案同时
+        // 是真机验收关键字，不要改动措辞。
+        AgentLogStore.info(
+            "过程消息开窗：保留 ${keptRuns.size}/$totalRuns 个 run（预算 $processTokenBudget tok）",
+        )
+    }
+    // keptRuns 是新→旧序，反转恢复时间序后交给 merge（去重口径不变，开窗只发生在
+    // 读取层）。
+    return mergeProcessIntoVisible(visible, keptRuns.asReversed().flatten())
 }

@@ -3,28 +3,36 @@ package com.rickeal.agent.feature.chat
 import com.rickeal.agent.core.agent.journal.AgentRunJournal
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.Role
+import com.rickeal.agent.core.model.TokenEstimator
 import java.io.File
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Wave 40 C3：`mergeProcessIntoVisible`（纯核心）与 `historyWithProcess`
- * （目录层）的 JVM 单测。
+ * Wave 40 C3 + Wave 41 P2-1：`processTokenBudget`（预算公式）、`mergeProcessIntoVisible`
+ * （纯核心）与 `historyWithProcess`（目录层 + token 开窗）的 JVM 单测。
  *
  * 钉住的语义：
- *  1. 去重口径与 onRecover 逐行一致 —— 只剔「MODEL 且 role+text 已在可见历史」；
- *  2. TOOL / 中间 toolCall 消息永远保留（它们只存在于 journal）；
- *  3. 可见历史在前、过程消息按 run 时间序排在之后（第一版拼接语义）；
- *  4. 目录层：跨 run 按文件名时间戳排序合并、用户丢弃（.dismissed.jsonl）的
+ *  1. 预算公式与 AgentRunner 压缩预算同源（base = (contextLength − maxTokens)
+ *     .coerceAtLeast(512) × threshold；再减 visible 占用，钳 0）；
+ *  2. 去重口径与 onRecover 逐行一致 —— 只剔「MODEL 且 role+text 已在可见历史」；
+ *  3. TOOL / 中间 toolCall 消息永远保留（它们只存在于 journal）；
+ *  4. 可见历史在前、过程消息按 run 时间序排在之后（第一版拼接语义）；
+ *  5. 目录层：跨 run 按文件名时间戳排序合并、用户丢弃（.dismissed.jsonl）的
  *     run 也读、user_input 行不混入过程消息、损坏行按 decode 既有纪律跳过、
- *     目录不存在按「无过程消息」处理。
+ *     目录不存在按「无过程消息」处理；
+ *  6. token 开窗（Wave 41）：预算内全保留（回归锚）、截断只发生在 run 边界
+ *     （丢最旧 run、保序、无半 run）、最新 run 无条件保底（预算 0 也保底）、
+ *     kept run 的最终 MODEL 命中 visible 去重口径被剔。
  *
  * 目录层测试用真实 [AgentRunJournal] 落 fixture（suspend append 经 runBlocking
- * 驱动，JVM 纯文件 IO），覆盖的是生产读路径本身而非镜像。
+ * 驱动，JVM 纯文件 IO），覆盖的是生产读路径本身而非镜像。截断阈值不硬编码
+ * token 数，统一用 [TokenEstimator] 对 fixture 实算 —— 与生产同一估算口径。
  */
 class HistoryWithProcessTest {
 
@@ -32,7 +40,7 @@ class HistoryWithProcessTest {
      * 本轮跑测试建过的临时根目录（[tempRoot] 建一个登记一个）。
      *
      * Wave 40 审查 P2-4：原先 `Files.createTempDirectory` 建完不清理，每次跑测试在
-     * %TEMP% 里留 4 个空壳目录（CI 上是 runner 的临时区，本机就是越攒越多）。统一在
+     * %TEMP% 里留空壳目录（CI 上是 runner 的临时区，本机就是越攒越多）。统一在
      * [tearDown] 里递归删除 —— 让用例只留下「跑过」这件事，不留垃圾。
      */
     private val tempRoots = mutableListOf<File>()
@@ -57,6 +65,13 @@ class HistoryWithProcessTest {
         ChatMessage(role = Role.MODEL, text = answer),
     )
 
+    /** 带 tag 的过程消息 fixture（开窗测试用：每个 run 的文案互不混淆）。 */
+    private fun runFixture(tag: String, answer: String): List<ChatMessage> = listOf(
+        ChatMessage(role = Role.MODEL, text = "调用$tag", toolCalls = emptyList()),
+        ChatMessage(role = Role.TOOL, text = "结果$tag"),
+        ChatMessage(role = Role.MODEL, text = answer),
+    )
+
     /** 在临时目录里落一个 run 的 journal（真实写路径）。 */
     private fun writeRun(dir: File, runId: String, messages: List<ChatMessage>, userInput: ChatMessage? = null) {
         runBlocking {
@@ -64,6 +79,43 @@ class HistoryWithProcessTest {
             userInput?.let { journal.appendUserInput(it) }
             messages.forEach { journal.appendMessage(it) }
         }
+    }
+
+    /** 若干个 run 的 token 实算合计（与生产同一 [TokenEstimator] 口径）。 */
+    private fun costOf(vararg runs: List<ChatMessage>): Int {
+        var total = 0
+        for (run in runs) for (message in run) total += TokenEstimator.estimate(message)
+        return total
+    }
+
+    /** 断言一个 run 的过程消息**完整**在 texts 里（M(toolCalls) 与 TOOL 成对存活）。 */
+    private fun assertRunFullyKept(texts: List<String>, tag: String, answer: String) {
+        assertTrue("调用$tag" in texts, "run $tag 的中间 toolCall 消息应保留")
+        assertTrue("结果$tag" in texts, "run $tag 的 TOOL 结果应与 toolCall 成对保留")
+        assertTrue(answer in texts, "run $tag 的最终 MODEL 答案应保留")
+    }
+
+    /** 断言一个 run 的过程消息**整体**不在 texts 里（run 原子：绝不出现半 run）。 */
+    private fun assertRunAbsent(texts: List<String>, tag: String, answer: String) {
+        assertFalse("调用$tag" in texts, "run $tag 被裁剪则中间 toolCall 不得残留")
+        assertFalse("结果$tag" in texts, "run $tag 被裁剪则 TOOL 结果不得残留")
+        assertFalse(answer in texts, "run $tag 被裁剪则最终 MODEL 答案不得残留")
+    }
+
+    // ------------------------------------------------------ processTokenBudget
+
+    @Test fun `预算公式与 AgentRunner 压缩预算同源并减去可见历史占用`() {
+        // 4096 − 1024 = 3072，×0.75f = 2304（与 AgentRunner 轮头 budget 同算式）。
+        // visible 十个 CJK 字 = 10 tok（TokenEstimator 的 CJK 口径）。
+        val visible = listOf(ChatMessage(role = Role.USER, text = "一二三四五六七八九十"))
+        assertEquals(2304 - 10, processTokenBudget(4096, 1024, visible, 0.75f))
+    }
+
+    @Test fun `预算公式 coerceAtLeast512 与钳 0 两道保底`() {
+        // maxTokens ≥ contextLength → (0).coerceAtLeast(512) = 512，×0.75f = 384；
+        // visible 500 tok > 384 → 余量为负，钳 0。
+        val visible = List(50) { ChatMessage(role = Role.USER, text = "一二三四五六七八九十") }
+        assertEquals(0, processTokenBudget(512, 32768, visible, 0.75f))
     }
 
     // ------------------------------------------------ mergeProcessIntoVisible
@@ -122,10 +174,10 @@ class HistoryWithProcessTest {
     @Test fun `目录不存在或无 run 文件 —— 返回可见历史原样`() {
         val root = tempRoot("c3-empty")
         val visible = listOf(ChatMessage(id = "u1", role = Role.USER, text = "问题"))
-        assertEquals(visible, historyWithProcess(visible, root, "不存在的会话"))
+        assertEquals(visible, historyWithProcess(visible, root, "不存在的会话", Int.MAX_VALUE))
         // 目录存在但没有任何 journal 文件。
         assertTrue(File(root, "some-cid").mkdirs())
-        assertEquals(visible, historyWithProcess(visible, root, "some-cid"))
+        assertEquals(visible, historyWithProcess(visible, root, "some-cid", Int.MAX_VALUE))
     }
 
     @Test fun `跨 run 按文件名时间序合并且 user_input 行不混入`() {
@@ -145,7 +197,7 @@ class HistoryWithProcessTest {
             ChatMessage(id = "u2", role = Role.USER, text = "第二个问题"),
             ChatMessage(id = "m2", role = Role.MODEL, text = "答案乙"),
         )
-        val merged = historyWithProcess(visible, root, cid)
+        val merged = historyWithProcess(visible, root, cid, Int.MAX_VALUE)
         val tail = merged.drop(visible.size)
         // run_1700000000000 的 TOOL 与中间消息在前，run_1700000001000 的在后；
         // 两个 run 的最终 MODEL 答案与 user_input 行都被剔除。
@@ -159,7 +211,119 @@ class HistoryWithProcessTest {
         assertTrue(tail.none { it.role == Role.USER }, "user_input 行不得混进过程消息")
     }
 
-    @Test fun `用户丢弃的 run 也读 —— dismissed 归档同样回灌过程消息`() {
+    @Test fun `预算内全保留 —— 与开窗前行为一致（回归锚）`() {
+        val root = tempRoot("c3-window-all")
+        val cid = "cid-w1"
+        assertTrue(File(root, cid).mkdirs())
+        val runDir = File(root, cid)
+        val early = runFixture("甲", "答案甲")
+        val late = runFixture("乙", "答案乙")
+        writeRun(runDir, "run_1700000000000", early)
+        writeRun(runDir, "run_1700000001000", late)
+
+        val visible = listOf(ChatMessage(id = "u1", role = Role.USER, text = "问题"))
+        // 预算 = 两个 run 的实算合计 → 全保留，且与「无上限回灌」的旧行为逐条一致。
+        val merged = historyWithProcess(visible, root, cid, costOf(early, late))
+        assertEquals(
+            listOf("问题", "调用甲", "结果甲", "答案甲", "调用乙", "结果乙", "答案乙"),
+            merged.map { it.text },
+        )
+    }
+
+    @Test fun `预算截断 —— 丢最旧 run 保序且 run 原子`() {
+        val root = tempRoot("c3-window-trim")
+        val cid = "cid-w2"
+        assertTrue(File(root, cid).mkdirs())
+        val runDir = File(root, cid)
+        val oldest = runFixture("甲", "答案甲")
+        val middle = runFixture("乙", "答案乙")
+        val newest = runFixture("丙", "答案丙")
+        writeRun(runDir, "run_1700000000000", oldest)
+        writeRun(runDir, "run_1700000001000", middle)
+        writeRun(runDir, "run_1700000002000", newest)
+
+        val visible = listOf(ChatMessage(id = "u1", role = Role.USER, text = "问题"))
+        // 预算只装得下最新的两个 run（新者优先）→ 最旧 run 被裁、其余完整保留。
+        val merged = historyWithProcess(visible, root, cid, costOf(middle, newest))
+        val texts = merged.map { it.text }
+        // 保序：可见历史在前，kept run 按时间序（乙 → 丙）排在后面。
+        assertEquals(
+            listOf("问题", "调用乙", "结果乙", "答案乙", "调用丙", "结果丙", "答案丙"),
+            texts,
+        )
+        // run 原子：被保留 run 的 M(toolCalls) 与 TOOL 成对存活（无半 run）。
+        assertRunFullyKept(texts, "乙", "答案乙")
+        assertRunFullyKept(texts, "丙", "答案丙")
+        assertRunAbsent(texts, "甲", "答案甲")
+    }
+
+    @Test fun `最新 run 单独超预算 —— 保底完整保留`() {
+        val root = tempRoot("c3-window-newest")
+        val cid = "cid-w3"
+        assertTrue(File(root, cid).mkdirs())
+        val runDir = File(root, cid)
+        val oldest = runFixture("甲", "答案甲")
+        val newest = runFixture("乙", "答案乙")
+        writeRun(runDir, "run_1700000000000", oldest)
+        writeRun(runDir, "run_1700000001000", newest)
+
+        val visible = listOf(ChatMessage(id = "u1", role = Role.USER, text = "问题"))
+        // 预算比最新 run 自己还小 → 最新 run 无条件保底（不参与预算判定），
+        // 更旧 run 一个都不读。
+        val merged = historyWithProcess(visible, root, cid, costOf(newest) - 1)
+        val texts = merged.map { it.text }
+        assertRunFullyKept(texts, "乙", "答案乙")
+        assertRunAbsent(texts, "甲", "答案甲")
+    }
+
+    @Test fun `预算为 0 —— 仍保底最新 run（语义文档化：0 只是不读更旧 run）`() {
+        val root = tempRoot("c3-window-zero")
+        val cid = "cid-w4"
+        assertTrue(File(root, cid).mkdirs())
+        val runDir = File(root, cid)
+        val oldest = runFixture("甲", "答案甲")
+        val newest = runFixture("乙", "答案乙")
+        writeRun(runDir, "run_1700000000000", oldest)
+        writeRun(runDir, "run_1700000001000", newest)
+
+        val visible = listOf(ChatMessage(id = "u1", role = Role.USER, text = "问题"))
+        // 语义钉死：预算 = 0（visible 已吃满压缩预算）≠「一条过程消息都不给」。
+        // 最新 run 的工具残骸是当前任务最相关的上下文，无条件保留；预算 0 只意味着
+        // 不再读任何更旧 run。这是「最新 run 保底」语义在极端输入下的边界行为。
+        val merged = historyWithProcess(visible, root, cid, 0)
+        val texts = merged.map { it.text }
+        assertRunFullyKept(texts, "乙", "答案乙")
+        assertRunAbsent(texts, "甲", "答案甲")
+    }
+
+    @Test fun `开窗后 kept run 的最终 MODEL 命中可见历史去重口径被剔`() {
+        val root = tempRoot("c3-window-dedup")
+        val cid = "cid-w5"
+        assertTrue(File(root, cid).mkdirs())
+        val runDir = File(root, cid)
+        val oldest = runFixture("甲", "答案甲")
+        val newest = runFixture("乙", "答案乙")
+        writeRun(runDir, "run_1700000000000", oldest)
+        writeRun(runDir, "run_1700000001000", newest)
+
+        // 可见历史里已有与最新 run 最终答案同 role+text 的 MODEL 消息
+        // （commitAssistant 落库形态）→ merge 层按 onRecover 口径去剔。
+        val visible = listOf(
+            ChatMessage(id = "u1", role = Role.USER, text = "问题"),
+            ChatMessage(id = "m1", role = Role.MODEL, text = "答案乙"),
+        )
+        // 预算只装最新 run：开窗 + 去重同时生效。
+        val merged = historyWithProcess(visible, root, cid, costOf(newest))
+        assertEquals(
+            listOf("问题", "答案乙", "调用乙", "结果乙"),
+            merged.map { it.text },
+        )
+        assertRunAbsent(merged.map { it.text }, "甲", "答案甲")
+        // TOOL 与中间 toolCall 不在可见历史 → 永不被剔（去重只剔 MODEL）。
+        assertRunFullyKept(merged.map { it.text }, "乙", "答案乙")
+    }
+
+    @Test fun `用户丢弃的 run 也读 —— dismissed 归档同样回灌，旧命名归档跳过`() {
         val root = tempRoot("c3-dismissed")
         val cid = "cid-2"
         assertTrue(File(root, cid).mkdirs())
@@ -168,13 +332,23 @@ class HistoryWithProcessTest {
         // markDismissed 同款改名：runId.dismissed.jsonl。
         val raw = File(runDir, "run_1700000000000.jsonl")
         assertTrue(raw.renameTo(File(runDir, "run_1700000000000.dismissed.jsonl")))
+        // 旧命名归档（.jsonl.archived / .jsonl.dismissed）：无法经 open() 还原
+        // 文件名，必须整体跳过 —— 塞进去内容，验证它不会混进结果。
+        val archivedJunk = listOf(
+            "{\"seq\":1,\"atMillis\":1,\"kind\":\"message\"," +
+                "\"payload\":{\"role\":\"TOOL\",\"text\":\"归档垃圾甲\"}}\n",
+        )
+        File(runDir, "run_1700000002000.jsonl.archived").writeText(archivedJunk.joinToString(""))
+        File(runDir, "run_1700000003000.jsonl.dismissed").writeText(archivedJunk.joinToString(""))
 
         val visible = listOf(ChatMessage(id = "u1", role = Role.USER, text = "第一个问题"))
-        val merged = historyWithProcess(visible, root, cid)
+        val merged = historyWithProcess(visible, root, cid, Int.MAX_VALUE)
         // 最终 MODEL 答案「被打断的答案」不在可见历史 → 保留；TOOL / 中间消息同样在。
         val texts = merged.map { it.text }
         assertTrue("被打断的答案" in texts, "dismissed run 的过程消息必须回灌")
         assertTrue("工具执行结果甲" in texts)
+        // 旧命名归档整体跳过（文件名去 .jsonl 后缀后 open 拼不回去，读不到）。
+        assertFalse("归档垃圾甲" in texts, ".jsonl.archived / .jsonl.dismissed 必须跳过")
     }
 
     @Test fun `损坏行按既有 decode 纪律跳过 —— 绝不抛异常挡发送`() {
@@ -189,7 +363,7 @@ class HistoryWithProcessTest {
         file.appendText("{\"seq\":99,\"atMillis\":1,\"kind\":\"message\",\"payload\":{\"broken\":true\n")
 
         val visible = listOf(ChatMessage(id = "u1", role = Role.USER, text = "问题"))
-        val merged = historyWithProcess(visible, root, cid)
+        val merged = historyWithProcess(visible, root, cid, Int.MAX_VALUE)
         assertTrue("正常答案" in merged.map { it.text }, "坏行只跳过自身，好行必须完整保留")
     }
 }
