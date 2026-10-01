@@ -294,7 +294,7 @@ Android-Agent/
 - [x] **M6** — 模型市场：导入、能力探测、下载管理
 - [x] **M7** — ~~远程后端：OkHttp + SSE，与本地引擎统一切换~~ 已移除（云端 API 整体删除，现为纯端侧）
 - [ ] **M8** — 打磨：动效、无障碍、性能、发布签名
-- [ ] **M9** — **Harness 升级**（`harness` 分支）：移植 ZCode（Journal/Actor/typed-ask）
+- [ ] **M9** — **Harness 升级**（`harness` 分支）—— `harness` 分支自 2026-09-26 起冻结，活跃开发在 `harness-improve`：移植 ZCode（Journal/Actor/typed-ask）
   与 Octop（工具审批/长期记忆/委派）的核心机制 —— 蓝图见
   [`docs/11-harness-blueprint.md`](docs/11-harness-blueprint.md)
   - [x] Wave 1：Journal、参数 Schema 校验、审批闸门、ask_actor 子代理、长期记忆
