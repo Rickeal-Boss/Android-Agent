@@ -44,7 +44,7 @@
 - 全量审查**通过**：**0 P0 / 0 P1 + 3 P2**（对比 Wave 41 的 1 P0 + 1 P1 + 4 P2）。
 - **P2-1（J4 台账悬空引用）**：由本 commit（docs-only）收口——挂账台账 J4 条目随本件落 README，LiquidAgentApp.kt 注释里的「见挂账台账」不再悬空。
 - **P2-2（备忘留档）**：第 17 项判据对 `src/test` 源集与 `hiltViewModel(...)` 形态敏感——当前全仓无此两种形态（无测试内直构造、零 Hilt），判据安全；**将来引入 Compose-Hilt 时必须复评**（`hiltViewModel()` 内部的工厂形态是否被误判为直构造，需实测）。
-- **P2-3（编译验证）**：本地无 JDK 无法编译验证，由 **CI 双绿实证收口**（Build 36848060374 含 unit tests + lint + assembleDebug 全过）。
+- **P2-3（编译验证）**：本地无 JDK 无法编译验证，由 **CI 双绿实证收口**（Build 36848060374 含 unit tests + lint + assembleDebug 全过）。〔2026-10-01 纠偏：此后本地构建解禁，`_j2env/` + `_ci-tools/localbuild.sh` 已对 Wave 42 代码跑通 `compileDebugKotlin` 与 `assembleDebug`；「本地无 JDK」表述不再成立，后续波次推送前应本地预验证〕
 
 ## 四、挂账（下波）
 
@@ -56,7 +56,7 @@
 | W40-2 接缝排序策略 | 条件立项 | 验收项已入 §11.9，真机复现才提前 |
 | P2-2 onRecover 与 C3 口径统一 | 挂账 | Wave 41 裁决不变：先真机对比观测再统一 |
 | N4 termsVersion | 维持挂账 | 需产品/法务决策，时序硬约束已固化 |
-| 历史挂账 | 不变 | 法务 TODO×4、G4 ACTION_VIEW 三选一、0 tags/releases、本地 gradle 基建 |
+| 历史挂账 | 不变 | 法务 TODO×4、G4 ACTION_VIEW 三选一、0 tags/releases（**本地 gradle 基建已销账**：2026-10-01 `_j2env/` 就绪，本地增量构建 15s，见 `_ci-tools/LOCALBUILD.md`） |
 
 ## 五、真机验收入口
 

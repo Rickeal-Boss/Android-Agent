@@ -147,7 +147,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ### 没有本地 JDK / SDK？
 
-完全可以直接开 PR —— GitHub Actions 的 **Build** 工作流就是唯一且权威的验证通道：
+**本地构建是第一验证通道**（2026-10-01 起本机已有 JDK 21 + SDK，全落在工作区 `_j2env/`，经 `_ci-tools/localbuild.sh` 封装）。无本地环境时走 CI：GitHub Actions 的 **Build** 工作流是第二验证通道：
 
 ```bash
 # 手动触发一次构建
