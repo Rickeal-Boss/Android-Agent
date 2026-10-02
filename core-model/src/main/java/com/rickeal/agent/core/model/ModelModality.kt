@@ -6,7 +6,8 @@ package com.rickeal.agent.core.model
  * ## 为什么单独立枚举（不复用 `ModelCapabilities.image/audio` 布尔）
  *
  * `ModelCapabilities` 是**用户请求 / 静态声明**（「这个模型支持视觉吗」），而本枚举用于
- * 表达**加载期运行时事实**（「这次加载因容器缺 section 去掉了哪个模态」）。两者语义正交：
+ * 表达**加载期 / 会话创建期运行时事实**（「这次加载（或会话创建）因容器缺 section 去掉了
+ * 哪个模态」）。两者语义正交：
  * 请求支持视觉、但容器里没有 VISION_ENCODER 子图时，能力位仍为 true（用户没改设置），
  * 而 [com.rickeal.agent.core.engine.EngineSessionDiagnostics.degradedModality] 会记下
  * 「VISION 被去掉了」。用同一个类型表达两件事会让「能力位 = 请求」这条纪律失效。

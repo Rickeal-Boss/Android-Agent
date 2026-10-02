@@ -134,9 +134,9 @@ fun ChatScreen(
     val pickImage = rememberImagePicker { uri, name -> viewModel.onAttachImage(uri, name) }
     val pickAudio = rememberAudioPicker { uri, name -> viewModel.onAttachAudio(uri, name) }
 
-    // 附件门控（Wave 44 P2-1 收口）：静态能力位（模型描述符）× 加载期模态降级事实。
+    // 附件门控（Wave 44 P2-1 收口）：静态能力位（模型描述符）× 加载期 / 会话创建期模态降级事实。
     // 此前只读 `capabilities.image` —— 那是**模型描述符**的静态位，容器缺 section 时
-    // 引擎已在加载期去掉该模态（`degradedModality`），静态位却仍为 true ⇒ UI 继续允许发图/发音频
+    // 引擎已在加载期或会话创建期去掉该模态（`degradedModality`），静态位却仍为 true ⇒ UI 继续允许发图/发音频
     // 而底层没有该后端（静默失效）。这里叠加会话诊断里的降级事实把它堵上。
     // 降级事实随 `_sessionDiagnostics` 在**会话建成时**发布；诊断为 null（无会话）时为空集
     // ⇒ 门控退化为原静态位，**不误关**附件（默认行为不变）。
@@ -685,7 +685,8 @@ private fun terminationHintOf(reason: TerminationReason?): String? = when (reaso
  * 会话期分支（①②③）**可能共存** —— 例：某 Gemma 既 legacy 回退、容器又缺 audio section。
  * 本函数只显示**首个**命中，故此时模态提示会被 ①②③ 抢先吞掉（这是**有意**的优先级：
  * ①②③ 描述的通道/模板形态更本质）。模态降级优先级高于 backend 降级、低于 legacy/中档/原生工具。
- * 第 4 与第 5 类同属加载期但描述不同事实（模态 vs 后端），插在 backend 分支之前是因为
+ * 第 4 与第 5 类描述不同事实（模态 vs 后端）—— 第 4 类（模态降级）可发生于加载期或会话
+ * 创建期（Wave 45），第 5 类（后端降级）仅加载期；插在 backend 分支之前是因为
  * 「发图/发音频直接失败」比「跑在 CPU 上」更需优先告知。
  *
  * @param nativeToolChannelEnabled 用户在设置里是否**开了**「原生工具通道」开关
@@ -717,7 +718,7 @@ private fun sessionDiagnosticsHintOf(
     if (nativeToolChannelEnabled && !diagnostics.nativeToolChannel) {
         return "原生工具通道未生效，已退回文本协议"
     }
-    // 模态降级（Wave 44 P0-2）：加载期容器缺 section ⇒ 去掉视觉/音频模态完成加载。
+    // 模态降级（Wave 44 P0-2）：加载期 / 会话创建期容器缺 section ⇒ 去掉视觉/音频模态完成加载。
     // 插在 backend 降级**之前**（理由见上方 KDoc）；与上面各分支**可能共存**，此处只显示首个命中。
     if (diagnostics.degradedModality.isNotEmpty()) {
         val names = diagnostics.degradedModality.joinToString("/") {

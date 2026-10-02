@@ -137,11 +137,18 @@ internal fun prefaceContainsSystem(preface: String, systemText: String): Boolean
 }
 
 /**
- * 一次 `load()` 尝试的完整状态（Wave 44 P0-2 降级链）。
+ * 一次 `load()` / 会话期重建尝试的完整状态（Wave 44 P0-2 降级链；Wave 45 会话创建期复用）。
  *
- * 为什么必须从 `Pair<Backend, Backend?>` 升级：旧结构只表达「主后端 → 视觉后端」，
- * **audio 后端在元组外**（`audioBackend = resolvedAudioBackend?.let { … }` 恒取原值），
- * 因此无法表达「去 audio 重建」；也无法记录「相对用户请求已去掉哪些模态」这一累积事实。
+ * 为什么必须从 `Pair<Backend, Backend?>` 升级：旧结构只表达「主后端 → 视觉后端」，且
+ * audio 后端在元组外（`audioBackend = resolvedAudioBackend?.let { … }` 恒取原值 —— ⚠️ 这是
+ * **Wave 44 之前**的旧结构描述，**已不适用**），因此无法表达「去 audio 重建」；也无法记录
+ * 「相对用户请求已去掉哪些模态」这一累积事实。
+ *
+ * ⚠️ **当前事实（Wave 44 起，回源见 `loadLocked`）**：audio / vision 后端**均在元组内**
+ * （见下方 `audioBackend` 字段）；`EngineConfig` 读 `current.visionBackend` /
+ * `current.audioBackend`（**不是** `resolved*`）。`resolved*` 仅用于 `sameEngine` 判据、
+ * `initial(...)` 入参、`loaded*Backend` 赋值（恒记用户请求值）。Wave 45 起 `initial(...)`
+ * 按 `seedDegrade` 把对应模态后端置 null。
  *
  * [degraded] 是**累积**的（跨尝试保留），最终写入诊断出口
  * [EngineSessionDiagnostics.degradedModality]。
@@ -161,8 +168,9 @@ internal data class EngineAttempt(
 /**
  * NOT_FOUND 错误驱动的模态降级链**纯决策逻辑**（Wave 44 P0-2）。
  *
- * 抽成纯函数（无 native、无状态）以便 JVM 单测覆盖全部决策分支；`load()` 只做
- * 「建引擎 → 失败 → 问 [next] → 建下一个」的驱动循环。
+ * 抽成纯函数（无 native、无状态）以便 JVM 单测覆盖全部决策分支；`loadLocked()`（`load()` 与
+ * 会话期降级重建 `reloadForDegrade` 共用）只做「建引擎 → 失败 → 问 [next] → 建下一个」的
+ * 驱动循环；会话创建期的失败另经 [modalityToDegradeOnSessionError] 判定（Wave 45）。
  *
  * ## 核心纪律：只认 NOT_FOUND
  *
@@ -178,7 +186,7 @@ internal data class EngineAttempt(
 internal object EngineLoadDegrade {
 
     /**
-     * 一次 load 的最大尝试次数（防循环）。
+     * 一次 `loadLocked` 的最大尝试次数（防循环）。
      *
      * 上界推导：原样 → 去 audio → 去 vision → GPU 回退，任意组合 ≤ 4。配合 `visited` 集合
      * 去重（任何重复状态不再入队），循环必终止。
@@ -575,7 +583,8 @@ class LiteRtLmEngine(
     private var loadConfig: EngineLoadConfig? = null
 
     /**
-     * 加载时因容器缺 section 而被去掉的模态（Wave 44 P0-2，空集 = 未降级）。
+     * 加载期 / 会话创建期因容器缺 section 而被去掉的模态（Wave 44 P0-2；Wave 45 起会话
+     * 创建期亦可触发，空集 = 未降级）。
      *
      * **另立字段的理由（不许并进复用判据）**：[EngineAttempt.degraded] 是**运行时事实**，
      * 与 [loadedVisionBackend] / [loadedAudioBackend]（记**用户请求的解析值**，进 `sameEngine`
@@ -772,6 +781,8 @@ class LiteRtLmEngine(
                 //  1. 模态降级（只认 NOT_FOUND）：容器缺 VISION_ENCODER / AUDIO_ENCODER_HW
                 //     子图时，去掉对应模态重建（先 AUDIO 后 VISION）。Wave 43 真机根因：
                 //     Gemma-4 E2B 启发式 audio=true 但容器无 audio section ⇒ 旧实现直接失败。
+                //     ⚠️ Wave 45 起模态降级**亦可发生于会话创建期**（NOT_FOUND 实际由
+                //     createConversation 抛出）：见 ensureConversation 的 catch 与 reloadForDegrade。
                 //  2. 后端降级（既有，2026-09-26）：Manifest 未声明 libOpenCL.so（Android 12+
                 //     访问厂商非 NDK 库必须 <uses-native-library>）时 GPU 委托 dlopen 失败 →
                 //     CompiledModel::Create 抛 INTERNAL（llm_litert_compiled_model_executor.cc:1928）。
@@ -1321,7 +1332,8 @@ class LiteRtLmEngine(
             // 用**实际登记**的工具集签名判定（legacy 回退与「证伪重试」两条路都没注册工具，
             // 而 nativeTools 此时仍非空 —— 拿它判断会报出「注册了但没注册」的假事实）。
             nativeToolChannel = registeredToolsSignature != null,
-            // 加载期模态降级事实（Wave 44 P0-2）：与 requested/actualBackend 正交。
+            // 加载期 / 会话创建期模态降级事实（Wave 44 P0-2；Wave 45 起会话创建期亦可触发）：
+            // 与 requested/actualBackend 正交。
             degradedModality = degradedModality,
         )
         return created
@@ -1968,11 +1980,11 @@ class LiteRtLmEngine(
             }
             val model = loadConfig?.model
             val caps = model?.capabilities
-            // 模态降级收窄（Wave 44 P0-2）：容器缺 section 时加载期已把该模态去掉，
-            // 能力位必须同步收窄。⚠️ 本收窄只覆盖「模型卡文案 / 能力查询」；对话页发图/发音频
-            // 的门控在 `ChatScreen`（读模型描述符静态位），已在 Wave 44 收口时叠加本降级事实
-            // ⇒ 两处合起来才杜绝「底层无该后端、UI 仍允许发」的静默失效。降级事实读 @Volatile
-            // 字段，与 load() 同源；空集时行为与 Wave 43 逐字节一致。
+            // 模态降级收窄（Wave 44 P0-2）：容器缺 section 时（加载期或 Wave 45 起的会话创建期）
+            // 已把该模态去掉，能力位必须同步收窄。⚠️ 本收窄只覆盖「模型卡文案 / 能力查询」；
+            // 对话页发图/发音频的门控在 `ChatScreen`（读模型描述符静态位），已在 Wave 44 收口时
+            // 叠加本降级事实 ⇒ 两处合起来才杜绝「底层无该后端、UI 仍允许发」的静默失效。
+            // 降级事实读 @Volatile 字段，与 loadLocked 同源；空集时行为与 Wave 43 逐字节一致。
             val degraded = degradedModality
             EngineCapabilities(
                 supportsText = caps?.text ?: true,

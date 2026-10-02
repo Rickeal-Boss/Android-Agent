@@ -147,7 +147,7 @@ fun ChatInputBar(
         // 动作区回调拿到的 `dismiss` 会先播完出场动画再真正关闭（见 LiquidDialog KDoc）；
         // 若在内容区直接翻转 showAttachmentPanel，弹窗会"瞬间消失"。
         // supportsImages / supportsAudio 为 false 时不列出对应项（Wave 44 收口：二者均已由
-        // ChatScreen 叠加「静态能力位 × 加载期模态降级事实」—— 降级后不再列出底层没有后端的模态）。
+        // ChatScreen 叠加「静态能力位 × 加载期 / 会话创建期模态降级事实」—— 降级后不再列出底层没有后端的模态）。
         if (showAttachmentPanel) {
             LiquidDialog(
                 onDismissRequest = { showAttachmentPanel = false },

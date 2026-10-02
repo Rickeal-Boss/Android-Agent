@@ -162,12 +162,14 @@ data class EngineSessionDiagnostics(
      */
     val nativeToolChannel: Boolean = false,
     /**
-     * 加载时因容器缺 section 而被去掉的模态（Wave 44 P0-2，空集 = 未降级）。
+     * 加载期 / 会话创建期因容器缺 section 而被去掉的模态（Wave 44 P0-2；Wave 45 起会话创建期
+     * 亦可触发，空集 = 未降级）。
      *
      * 与 [requestedBackend] / [actualBackend] **正交**：后者表达「请求 GPU 实际 CPU」的后端
-     * 降级，本字段表达「请求视觉/音频，但容器没有对应编码器子图 ⇒ 去模态加载」。
+     * 降级，本字段表达「请求视觉/音频，但容器没有对应编码器子图 ⇒ 去模态」。
      * 触发根因是 litert-lm 请求 `VISION_ENCODER` / `AUDIO_ENCODER_HW` 子图时容器无该
-     * section（抛 `NOT_FOUND`），见 `LiteRtLmEngine` 的降级链 KDoc。
+     * section（抛 `NOT_FOUND`），见 `LiteRtLmEngine` 的降级链 KDoc：加载期在 `loadLocked`
+     * 的 attempts 循环；会话创建期在 `ensureConversation` 的 catch → `reloadForDegrade`。
      *
      * 消费方（Wave 44 收口后效果已落地）：
      *  - `LlmEngine.capabilities()` 据此收窄 `supportsImage` / `supportsAudio`；
