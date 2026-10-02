@@ -1430,6 +1430,23 @@ class LiteRtLmEngine(
         }
         val extraContext: Map<String, Any> =
             if (thinkingOn) mapOf("enable_thinking" to true) else emptyMap()
+        // thinking 独立 token 预算（Wave 47 项1）：上游 litertlm 0.17.1 的 `ThinkingConfig`
+        // 是 native **硬约束** —— 到预算即强制吐出 thinking 结束符、转入正文，从根上消灭
+        // 「thinking 烧光 maxTokens ⇒ 无可见输出 ⇒ 空转 ⇒ 撞墙钟熔断」（真机 222s 空转）。
+        // `thinkingOn == false` 时恒 null ⇒ 与既有路径逐字节一致（不显式写
+        // enableThinking=false，避开「模板对 absent/false 处理不同」的未知风险）。
+        // 预算**计入** maxOutputToken（thinking + 正文共享）⇒ 必须 < maxTokens，见
+        // [resolveThinkingBudget]（纯函数，可 JVM 单测）。
+        // ⚠️ `ThinkingConfig` 必须**全限定名 + 位置实参**：本文件 :43 已 import 协程
+        // `Channel`；AAR 未带 `-java-parameters`（与 THOUGHT_CHANNEL_DEFS 同因，见其 KDoc）。
+        val thinkingConfig = if (thinkingOn) {
+            com.google.ai.edge.litertlm.ThinkingConfig(
+                true,
+                resolveThinkingBudget(request.config.thinkingTokenBudget, request.config.maxTokens),
+            )
+        } else {
+            null
+        }
 
         // UNLIMITED：LLM 流式决不能丢 token，宁可堆积内存（chunk 只有几十字节）
         val channel = Channel<GenerationChunk>(Channel.UNLIMITED)
@@ -1602,6 +1619,11 @@ class LiteRtLmEngine(
             // 不进 Conversation 状态：用户改输出上限既不重建引擎也不重建会话，立即生效。
             // NPU 后端无此约束（约束的是 samplerConfig，见上），照常传递。
             maxOutputToken = request.config.maxTokens,
+            // thinking 独立预算（Wave 47 项1）：非 null 时 native 到预算强制转正文
+            // （`ThinkingBudgetConstraint`，0.17.1 AAR `.so` 字节级证实已编入）。
+            // 与上方 `extraContext["enable_thinking"]` 同值、互补不冲突（native 侧
+            // `contains` 守卫保证 extraContext 优先）；thinkingOn=false 时为 null。
+            thinkingConfig = thinkingConfig,
         )
 
         try {

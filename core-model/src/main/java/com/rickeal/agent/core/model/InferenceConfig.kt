@@ -14,6 +14,17 @@ data class InferenceConfig(
     val visionBackend: InferenceBackend? = null,
     val audioBackend: InferenceBackend? = null,
     val thinking: ThinkingMode = ThinkingMode.AUTO,
+    /**
+     * thinking 通道的**独立 token 预算**（上游 litertlm 0.17.1 `ThinkingConfig.thinkingTokenBudget`）。
+     *
+     * `0` = 自动（= [maxTokens] 的一半，为正文保留等量余量）；`> 0` = 显式上限。
+     * ⚠️ 预算**计入** [maxTokens]（上游口径：thinking + 正文共享 `maxOutputToken`），故必须
+     * `< maxTokens`，否则正文仍可能被挤空 —— [coerce] 据此归一。此前本仓完全没接线：
+     * thinking 与可见答案共享同一个 [maxTokens]，thinking 烧光即无可见输出（真机 222s 空转 ⇒ 熔断）。
+     *
+     * 带默认值，旧 JSON 前后兼容（`ignoreUnknownKeys` + `explicitNulls=false`）。
+     */
+    val thinkingTokenBudget: Int = 0,
     val systemInstruction: String = "",
     val maxAgentRounds: Int = 8,
     val enableTools: Boolean = true,
@@ -36,10 +47,16 @@ data class InferenceConfig(
     val stream: Boolean = true,
 ) {
     /** 归一化：把所有字段压回合法区间。 */
-    fun coerce(): InferenceConfig = copy(
-        sampling = sampling.coerce(),
-        maxTokens = maxTokens.coerceIn(64, 32768),
-        contextLength = contextLength.coerceIn(512, 131072),
-        maxAgentRounds = maxAgentRounds.coerceIn(1, 32),
-    )
+    fun coerce(): InferenceConfig {
+        // maxTokens 先归一，thinkingTokenBudget 的「< maxTokens」上界必须取**归一后**的值
+        // （否则 maxTokens 越界时上界算错）。下界 0 保留「自动」语义。
+        val normalizedMaxTokens = maxTokens.coerceIn(64, 32768)
+        return copy(
+            sampling = sampling.coerce(),
+            maxTokens = normalizedMaxTokens,
+            contextLength = contextLength.coerceIn(512, 131072),
+            maxAgentRounds = maxAgentRounds.coerceIn(1, 32),
+            thinkingTokenBudget = thinkingTokenBudget.coerceIn(0, (normalizedMaxTokens - 1).coerceAtLeast(0)),
+        )
+    }
 }
