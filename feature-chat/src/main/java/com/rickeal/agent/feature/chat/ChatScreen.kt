@@ -247,6 +247,10 @@ fun ChatScreen(
                 .fillMaxWidth()
                 .padding(bottom = LocalBottomBarOverlay.current)
             ) {
+                // 生成中的实时速度状态行（Wave 47 项4）：自收集独立 composable，不订阅顶层
+                // streaming（避免每 120ms 全屏重组，见 ChatSpeedIndicator 的 R5 红线）。
+                // 放在上下文占用条之上：占用条仍紧贴输入框（原纪律不变）。
+                ChatSpeedIndicator(streamingFlow = viewModel.streaming)
                 ChatContextMeter(
                     usedTokens = state.contextTokens,
                     limitTokens = state.config.contextLength,
