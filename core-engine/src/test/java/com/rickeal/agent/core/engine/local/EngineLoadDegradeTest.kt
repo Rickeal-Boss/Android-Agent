@@ -22,6 +22,43 @@ class EngineLoadDegradeTest {
     private fun notFound() = RuntimeException("NOT_FOUND: section AUDIO_ENCODER_HW not found")
     private fun internalError() = RuntimeException("INTERNAL: dlopen failed for libOpenCL.so")
 
+    /** 命名视觉缺失（Wave 45 会话路径：真机消息含 section 名）。 */
+    private fun notFoundVision() = RuntimeException("NOT_FOUND: VISION_ENCODER not found in the model")
+
+    /** NOT_FOUND 但**不含** section 名（Wave 45 会话路径的盲降兜底入口）。 */
+    private fun notFoundUnnamed() = RuntimeException("NOT_FOUND: text decoder missing")
+
+    /**
+     * 复刻 `ensureConversationWithDegrade` 的驱动循环（Wave 45，不含 native 重建）：每轮问
+     * [EngineLoadDegrade.modalityToDegradeOnSessionError] 是否要去模态，是则计一次重建并
+     * **模拟重建后状态**（degraded 累积、current 减去该模态），否则终止。
+     *
+     * @param signals 注入的「第 i 次建会话失败」错误；null / 越界 = 成功（终止）。
+     * @return 实际发生的重建次数。
+     */
+    private fun simulateSessionDegrade(
+        initialModalities: Set<ModelModality>,
+        signals: List<Throwable?>,
+    ): Int {
+        var currentModalities = initialModalities
+        var degraded = emptySet<ModelModality>()
+        var reloads = 0
+        var index = 0
+        while (true) {
+            val error = signals.getOrNull(index) ?: return reloads
+            index++
+            val degrade = EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = error,
+                currentModalities = currentModalities,
+                degradedModality = degraded,
+            ) ?: return reloads
+            if (reloads >= EngineLoadDegrade.MAX_SESSION_DEGRADE_ATTEMPTS) return reloads
+            reloads++
+            degraded = degraded + degrade
+            currentModalities = currentModalities - degrade
+        }
+    }
+
     /** 复刻 `load()` 的驱动循环（含 visited 去重 + 上限）：`errors[i]` = 第 i 次尝试的失败，null = 成功。 */
     private fun simulate(
         initial: EngineAttempt,
@@ -230,5 +267,161 @@ class EngineLoadDegradeTest {
     @Test
     fun `诊断默认空集旧消费方零变化`() {
         assertEquals(emptySet<ModelModality>(), EngineSessionDiagnostics().degradedModality)
+    }
+
+    // ─────────────── Wave 45：会话创建路径降级（missingModality，纯函数）───────────────
+
+    @Test
+    fun `会话错误解析缺失模态`() {
+        assertEquals(ModelModality.AUDIO, EngineLoadDegrade.missingModality(notFound()))
+        assertEquals(ModelModality.VISION, EngineLoadDegrade.missingModality(notFoundVision()))
+        assertNull(
+            EngineLoadDegrade.missingModality(RuntimeException("INVALID_ARGUMENT: Unsupported model type")),
+        )
+        assertNull(EngineLoadDegrade.missingModality(notFoundUnnamed()))
+        assertNull(EngineLoadDegrade.missingModality(RuntimeException()))
+    }
+
+    // ─────── Wave 45：modalityToDegradeOnSessionError（纯函数，核心决策）───────
+
+    @Test
+    fun `会话降级命名且可用去命名模态`() {
+        assertEquals(
+            ModelModality.AUDIO,
+            EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = notFound(),
+                currentModalities = setOf(ModelModality.VISION, ModelModality.AUDIO),
+                degradedModality = emptySet(),
+            ),
+        )
+    }
+
+    @Test
+    fun `会话降级命名但已降过不重复`() {
+        assertNull(
+            EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = notFound(),
+                currentModalities = setOf(ModelModality.VISION, ModelModality.AUDIO),
+                degradedModality = setOf(ModelModality.AUDIO),
+            ),
+        )
+    }
+
+    @Test
+    fun `会话降级命名但未启用不触发`() {
+        assertNull(
+            EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = notFound(),
+                currentModalities = setOf(ModelModality.VISION),
+                degradedModality = emptySet(),
+            ),
+        )
+    }
+
+    @Test
+    fun `会话降级未命名盲降优先音频`() {
+        assertEquals(
+            ModelModality.AUDIO,
+            EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = notFoundUnnamed(),
+                currentModalities = setOf(ModelModality.VISION, ModelModality.AUDIO),
+                degradedModality = emptySet(),
+            ),
+        )
+    }
+
+    @Test
+    fun `会话降级未命名仅视觉可用降视觉`() {
+        assertEquals(
+            ModelModality.VISION,
+            EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = notFoundUnnamed(),
+                currentModalities = setOf(ModelModality.VISION),
+                degradedModality = emptySet(),
+            ),
+        )
+    }
+
+    @Test
+    fun `会话降级无可降模态不触发`() {
+        assertNull(
+            EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = notFoundUnnamed(),
+                currentModalities = setOf(ModelModality.VISION, ModelModality.AUDIO),
+                degradedModality = setOf(ModelModality.VISION, ModelModality.AUDIO),
+            ),
+        )
+    }
+
+    @Test
+    fun `会话降级非NOT_FOUND不触发`() {
+        assertNull(
+            EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = RuntimeException("INVALID_ARGUMENT: Unsupported model type"),
+                currentModalities = setOf(ModelModality.VISION, ModelModality.AUDIO),
+                degradedModality = emptySet(),
+            ),
+        )
+    }
+
+    // ───────────────────── Wave 45：会话降级上限与幂等 ─────────────────────
+
+    @Test
+    fun `会话降级上限为模态数`() {
+        assertEquals(2, EngineLoadDegrade.MAX_SESSION_DEGRADE_ATTEMPTS)
+    }
+
+    @Test
+    fun `会话降级重试循环每模态一次后停止`() {
+        // 连续「命名 AUDIO」→「命名 VISION」两个信号 ⇒ 重建恰 2 次后成功（第三个信号 = 成功）。
+        val reloads = simulateSessionDegrade(
+            initialModalities = setOf(ModelModality.AUDIO, ModelModality.VISION),
+            signals = listOf(notFound(), notFoundVision(), null),
+        )
+        assertEquals(2, reloads)
+    }
+
+    @Test
+    fun `会话降级幂等失效被上限截断`() {
+        // 人为让「重建后状态不收敛」（current 不缩小、degraded 不累积）模拟幂等失效：
+        // 每轮都判定可去 AUDIO，但重试上限 MAX_SESSION_DEGRADE_ATTEMPTS 必须截断，不死循环。
+        val current = setOf(ModelModality.AUDIO, ModelModality.VISION)
+        val degraded = emptySet<ModelModality>()
+        var reloads = 0
+        var index = 0
+        while (true) {
+            val error = List(5) { notFoundUnnamed() }.getOrNull(index) ?: break
+            index++
+            if (EngineLoadDegrade.modalityToDegradeOnSessionError(error, current, degraded) == null) break
+            if (reloads >= EngineLoadDegrade.MAX_SESSION_DEGRADE_ATTEMPTS) break
+            reloads++
+        }
+        assertEquals(EngineLoadDegrade.MAX_SESSION_DEGRADE_ATTEMPTS, reloads)
+    }
+
+    // ───────────────────── Wave 45：initial 默认参回归 ─────────────────────
+
+    @Test
+    fun `initial默认参回归与旧行为一致`() {
+        // 不传 degraded（Wave 44 逐字调用）⇒ degraded 空集。
+        assertEquals(
+            EngineAttempt(
+                InferenceBackend.CPU,
+                InferenceBackend.CPU,
+                InferenceBackend.CPU,
+                emptySet(),
+            ),
+            EngineLoadDegrade.initial(InferenceBackend.CPU, InferenceBackend.CPU, InferenceBackend.CPU),
+        )
+        // 传 degraded（Wave 45 会话期重建的 seed）⇒ 原样记录。
+        assertEquals(
+            EngineAttempt(InferenceBackend.CPU, null, InferenceBackend.CPU, setOf(ModelModality.AUDIO)),
+            EngineLoadDegrade.initial(
+                InferenceBackend.CPU,
+                null,
+                InferenceBackend.CPU,
+                degraded = setOf(ModelModality.AUDIO),
+            ),
+        )
     }
 }
