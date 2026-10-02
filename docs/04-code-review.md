@@ -943,7 +943,7 @@ core-data/src/test/java/.../JsonFileStoreTest.kt          // 并发写 / 损坏�
 |---|---|---|
 | P0-1 | 远程 TOOL 消息 content 为空，工具结果从未回传 | ✅ `buildContent()` 对 TOOL 角色特判，取 `output ?: errorMessage` |
 | P0-2 | 本地引擎只发最后一条 user 消息，系统提示词与工具结果全丢 | ✅ 改为按 `message.id` 做发送水印，增量装配 system/user/model/tool 全量上下文 |
-| P0-3 | 回答被提交两次（双气泡 + 会话文件两份） | ✅ `MessageCommitted` 仅渲染并去重，落库统一由 `Finished` 负责 |
+| P0-3 | 回答被提交两次（双气泡 + 会话文件两份） | ⚠️ 原修法（`MessageCommitted` 仅渲染并去重，落库统一由 `Finished` 负责）**本身引入 P0 数据丢失**：去重判据在 `MessageCommitted` 已渲染后必然命中 ⇒ 落库被跳过（回归 `7ec83af`）。**Wave 46 复核修正**：`MessageCommitted` 落库富消息 + `Finished` 按 id 跳过（`252fc19`） |
 | P0-4 | `content://` 附件被当文件路径，多模态 100% 丢失 | ✅ 附件选中即落盘到内部目录，领域模型存真实文件路径 |
 | P1-1 | 用户消息被塞进上下文两次 | ✅ `AgentRunner` 按 message id 去重后再追加 |
 | P1-2 | 轮次耗尽把原始工具 JSON 当答案提交 | ✅ 回退到最后一轮可见文本并剥离工具协议片段 |

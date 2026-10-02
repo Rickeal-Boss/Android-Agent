@@ -92,7 +92,7 @@ HEAD 提交 `d6e6d02` 的 `:app:assembleDebug` 构建**成功**，产物为 `liq
 |---|---|---|---|
 | P0-1 | 远端工具调用无意义 | `buildContent()` 只读 `text`，而 TOOL 消息的载荷在 `toolResults` 里 → 发出 `content:""` | TOOL 角色特判，取 `output ?: errorMessage` |
 | P0-2 | 本地 Agent 循环退化为单轮瞎猜 | `buildContents()` 只取最后一条 USER 消息，系统提示词与工具结果全丢 | 改为按 message.id 做**发送水印**，增量装配 system/user/model/tool 全量上下文 |
-| P0-3 | 每条回答出现两个气泡、会话文件写两份 | `MessageCommitted` 与 `Finished` 两条路径都落库 | `MessageCommitted` 只渲染（去重），落库统一交给 `Finished` |
+| P0-3 | 每条回答出现两个气泡、会话文件写两份 | `MessageCommitted` 与 `Finished` 两条路径都落库 | ⚠️ 原修法「`MessageCommitted` 只渲染（去重），落库统一交给 `Finished`」**本身引入 P0 数据丢失**（去重判据在 `MessageCommitted` 已渲染后必然命中 ⇒ 落库被跳过）；**Wave 46 复核修正**：改为 `MessageCommitted` 落库富消息 + `Finished` 按 id 跳过 |
 | P0-4 | 多模态附件 100% 丢失（用户看得见图，模型看不到） | SAF 返回 `content://`，引擎侧按文件路径 `File(uri)` 读取必然失败 | 附件**选中即落盘**到 `filesDir/attachments`，领域模型里存真实路径 |
 
 另修 P1-2：Agent 轮次耗尽时原本会把「上一轮带工具 JSON 的原始输出」当答案，
