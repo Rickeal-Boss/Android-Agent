@@ -1,7 +1,5 @@
 package com.rickeal.agent.core.model
 
-import java.util.Locale
-
 /**
  * 模型自检的健康度结论（Wave 44 P0-1）。
  *
@@ -178,10 +176,14 @@ object ModelHealthCriteria {
     /**
      * 判据 B2：尾部窗口是否为周期 p 的整周期复读。做**原始字符比较、不归一化**。
      *
-     * @param window 需要覆盖的尾部窗口长度（由 [charPeriodicRepeat] 计算）
+     * @param window 需要覆盖的尾部窗口长度（由 [charPeriodicRepeat] 计算）。
+     *   前置条件 `window ≥ p`（生产恒成立：`charPeriodicRepeat` 传 `window = max(48, 4p) > p`）；
+     *   违反时**显式返回 false** —— 否则 `start + p until len` 为空区间、函数会**真空为真**
+     *   （Wave 44 审查 P3-2：`isPeriodicTail("abc", 10, 3)` 曾误返 true）。
      */
     fun isPeriodicTail(text: String, p: Int, window: Int): Boolean {
         if (p <= 0 || window <= 0 || text.length < window) return false
+        if (p > window) return false
         val start = text.length - window
         for (i in start + p until text.length) {
             if (text[i] != text[i - p]) return false

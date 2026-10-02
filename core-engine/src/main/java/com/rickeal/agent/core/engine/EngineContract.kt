@@ -169,9 +169,10 @@ data class EngineSessionDiagnostics(
      * 触发根因是 litert-lm 请求 `VISION_ENCODER` / `AUDIO_ENCODER_HW` 子图时容器无该
      * section（抛 `NOT_FOUND`），见 `LiteRtLmEngine` 的降级链 KDoc。
      *
-     * 消费方：
-     *  - `LlmEngine.capabilities()` 据此收窄 `supportsImage` / `supportsAudio`
-     *    —— 否则 UI 会继续允许发图/发音频，而底层根本没有该后端（静默失效）；
+     * 消费方（Wave 44 收口后效果已落地）：
+     *  - `LlmEngine.capabilities()` 据此收窄 `supportsImage` / `supportsAudio`；
+     *  - **对话页附件门控已在 Wave 44 接线**：`ChatScreen` 的 `supportsImages` / `supportsAudio`
+     *    叠加本事实 ⇒ 降级后不再列出对应附件项，杜绝「底层无该后端、UI 仍允许发」的静默失效；
      *  - `ChatScreen.sessionDiagnosticsHintOf` 据此渲染「已去 X 模态完成加载」小字。
      */
     val degradedModality: Set<ModelModality> = emptySet(),

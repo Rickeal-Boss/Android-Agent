@@ -214,6 +214,11 @@ internal object EngineLoadDegrade {
      *
      * 「每模态最多降一次」由结构保证：去模态即把对应后端置 null，null 不再入选；
      * [EngineAttempt.degraded] 只用于累积记录（写入诊断出口）。
+     *
+     * ⚠️ **盲降（留档，Wave 44 审查 P3-5）**：[isDeterministicMissingSection] 只判 `NOT_FOUND`
+     * 字符串，**无法从 message 可靠解析缺的是哪个 section**（上游文案不保证含 section 名）⇒
+     * 只能按固定优先级盲降。若容器**只缺 VISION**（audio 正常），首个尝试会白白去掉 audio 再
+     * 重试，多付 1 次失败的引擎构建；有界（[MAX_LOAD_ATTEMPTS]=4 兜底），仅性能/日志噪声。
      */
     fun dropOneModality(current: EngineAttempt): EngineAttempt? {
         if (current.audioBackend != null) {
@@ -1786,9 +1791,10 @@ class LiteRtLmEngine(
             val model = loadConfig?.model
             val caps = model?.capabilities
             // 模态降级收窄（Wave 44 P0-2）：容器缺 section 时加载期已把该模态去掉，
-            // 能力位必须同步收窄 —— 否则 UI 继续允许发图/发音频，而底层根本没有该后端
-            // （静默失效，与 L447-451 记录的历史坑同类）。降级事实读 @Volatile 字段，
-            // 与 load() 同源；空集时行为与 Wave 43 逐字节一致。
+            // 能力位必须同步收窄。⚠️ 本收窄只覆盖「模型卡文案 / 能力查询」；对话页发图/发音频
+            // 的门控在 `ChatScreen`（读模型描述符静态位），已在 Wave 44 收口时叠加本降级事实
+            // ⇒ 两处合起来才杜绝「底层无该后端、UI 仍允许发」的静默失效。降级事实读 @Volatile
+            // 字段，与 load() 同源；空集时行为与 Wave 43 逐字节一致。
             val degraded = degradedModality
             EngineCapabilities(
                 supportsText = caps?.text ?: true,

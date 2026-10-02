@@ -50,6 +50,7 @@ fun ChatInputBar(
     onPickAudio: () -> Unit,
     modifier: Modifier = Modifier,
     supportsImages: Boolean = true,
+    supportsAudio: Boolean = true,
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
@@ -145,7 +146,8 @@ fun ChatInputBar(
         // 附件面板：模态选择「图片 / 音频」。两个选项放在 LiquidDialog 的**动作区** ——
         // 动作区回调拿到的 `dismiss` 会先播完出场动画再真正关闭（见 LiquidDialog KDoc）；
         // 若在内容区直接翻转 showAttachmentPanel，弹窗会"瞬间消失"。
-        // supportsImages 为 false（当前模型不吃图片）时不列出图片项；音频不受此门控。
+        // supportsImages / supportsAudio 为 false 时不列出对应项（Wave 44 收口：二者均已由
+        // ChatScreen 叠加「静态能力位 × 加载期模态降级事实」—— 降级后不再列出底层没有后端的模态）。
         if (showAttachmentPanel) {
             LiquidDialog(
                 onDismissRequest = { showAttachmentPanel = false },
@@ -159,17 +161,20 @@ fun ChatInputBar(
                             material = GlassMaterial.THIN,
                         )
                     }
-                    GlassButton(
-                        text = "音频",
-                        onClick = { onPickAudio(); dismiss() },
-                    )
+                    if (supportsAudio) {
+                        GlassButton(
+                            text = "音频",
+                            onClick = { onPickAudio(); dismiss() },
+                        )
+                    }
                 },
                 content = {
                     Text(
-                        text = if (supportsImages) {
-                            "图片和音频会随下一条消息一起发送。"
-                        } else {
-                            "当前模型不支持图片输入，只能添加音频。"
+                        text = when {
+                            supportsImages && supportsAudio -> "图片和音频会随下一条消息一起发送。"
+                            supportsImages -> "当前模型不支持音频输入，只能添加图片。"
+                            supportsAudio -> "当前模型不支持图片输入，只能添加音频。"
+                            else -> "当前模型不支持图片和音频输入。"
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.onGlassMuted,

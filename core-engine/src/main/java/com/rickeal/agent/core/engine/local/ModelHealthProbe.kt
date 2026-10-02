@@ -130,7 +130,11 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
                     }
                 }
             } catch (t: TimeoutCancellationException) {
-                return ProbeOutcome.Failed("自检超时（上限 ${PROBE_TOTAL_TIMEOUT_MS / 1000} 秒）")
+                // 内层单轮（PROBE_TURN_TIMEOUT_MS）与外层总计（PROBE_TOTAL_TIMEOUT_MS）的超时
+                // 都被这一处捕获 ⇒ 文案并列两个上限，不谎报单一值（Wave 44 审查 P3-4）。
+                return ProbeOutcome.Failed(
+                    "自检超时（单轮 ${PROBE_TURN_TIMEOUT_MS / 1000}s / 总计 ${PROBE_TOTAL_TIMEOUT_MS / 1000}s）",
+                )
             }
 
             val hits = ModelHealthCriteria.evaluate(sample.toString())

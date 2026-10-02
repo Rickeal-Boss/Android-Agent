@@ -96,6 +96,12 @@ class ModelHealthCriteriaTest {
     }
 
     @Test
+    fun `判据B2周期大于窗口显式返回假`() {
+        // Wave 44 审查 P3-2 回归：p > window 时循环区间为空 ⇒ 旧实现真空为真；现须显式 false
+        assertFalse(ModelHealthCriteria.isPeriodicTail("abc", 10, 3))
+    }
+
+    @Test
     fun `判据B2正常文本不命中`() {
         val normal = "这是一个完全正常的模型回答，内容自然流畅没有任何退化迹象，" +
             "句子之间没有严格的周期性重复结构，因此多字符周期判据不应命中。"
