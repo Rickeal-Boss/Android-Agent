@@ -30,6 +30,7 @@ import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.GenerationChunk
 import com.rickeal.agent.core.model.InferenceBackend
+import com.rickeal.agent.core.model.ModelModality
 import com.rickeal.agent.core.model.newId
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.SamplingParams
@@ -133,6 +134,134 @@ internal fun prefaceContainsSystem(preface: String, systemText: String): Boolean
     if (normalizedSystem.isEmpty()) return true
     val window = normalizedSystem.take(PREFACE_CHECK_WINDOW)
     return normalizeForPrefaceCheck(preface).contains(window)
+}
+
+/**
+ * 一次 `load()` 尝试的完整状态（Wave 44 P0-2 降级链）。
+ *
+ * 为什么必须从 `Pair<Backend, Backend?>` 升级：旧结构只表达「主后端 → 视觉后端」，
+ * **audio 后端在元组外**（`audioBackend = resolvedAudioBackend?.let { … }` 恒取原值），
+ * 因此无法表达「去 audio 重建」；也无法记录「相对用户请求已去掉哪些模态」这一累积事实。
+ *
+ * [degraded] 是**累积**的（跨尝试保留），最终写入诊断出口
+ * [EngineSessionDiagnostics.degradedModality]。
+ *
+ * @param backend 本次尝试的主后端
+ * @param visionBackend 本次尝试的视觉后端（null = 不用视觉 / 已去视觉模态）
+ * @param audioBackend 本次尝试的音频后端（null = 不用音频 / 已去音频模态）
+ * @param degraded 相对用户请求，本尝试**已去掉**的模态（空集 = 原样请求）
+ */
+internal data class EngineAttempt(
+    val backend: InferenceBackend,
+    val visionBackend: InferenceBackend?,
+    val audioBackend: InferenceBackend?,
+    val degraded: Set<ModelModality> = emptySet(),
+)
+
+/**
+ * NOT_FOUND 错误驱动的模态降级链**纯决策逻辑**（Wave 44 P0-2）。
+ *
+ * 抽成纯函数（无 native、无状态）以便 JVM 单测覆盖全部决策分支；`load()` 只做
+ * 「建引擎 → 失败 → 问 [next] → 建下一个」的驱动循环。
+ *
+ * ## 核心纪律：只认 NOT_FOUND
+ *
+ *  - `NOT_FOUND`（容器缺 `VISION_ENCODER` / `AUDIO_ENCODER_HW` 子图）⇒ **触发模态降级**；
+ *  - `INTERNAL`（GPU 委托 dlopen / CompiledModel）⇒ **不触发模态降级**，属既有 GPU
+ *    二段降级辖区（见 [next] 的第 2 步）；
+ *  - 超时 / SIGSEGV / 其它 ⇒ 不触发（SIGSEGV 不是 `Throwable`，进程直接被内核杀，本函数
+ *    根本收不到）；
+ *  - **text 级 NOT_FOUND 不触发**：若当前尝试既无 vision 又无 audio（模态已降无可降），
+ *    NOT_FOUND 只能是 text decoder 缺失 ⇒ [dropOneModality] 返回 null ⇒ [next] 返回 null
+ *    ⇒ 调用方直接抛（与「无 GPU 可退」同理）。
+ */
+internal object EngineLoadDegrade {
+
+    /**
+     * 一次 load 的最大尝试次数（防循环）。
+     *
+     * 上界推导：原样 → 去 audio → 去 vision → GPU 回退，任意组合 ≤ 4。配合 `visited` 集合
+     * 去重（任何重复状态不再入队），循环必终止。
+     */
+    const val MAX_LOAD_ATTEMPTS = 4
+
+    /**
+     * 确定性「缺子图」错误：litert-lm 请求 `AUDIO_ENCODER_HW` / `VISION_ENCODER` 子图，
+     * 但容器 section 表里没有 ⇒ 抛含 `NOT_FOUND` 的错误（Wave 43 真机根因实证）。
+     */
+    fun isDeterministicMissingSection(t: Throwable): Boolean =
+        t.message.orEmpty().contains("NOT_FOUND", ignoreCase = true)
+
+    /** 从用户请求（解析后的值）构造首个尝试。 */
+    fun initial(
+        backend: InferenceBackend,
+        visionBackend: InferenceBackend?,
+        audioBackend: InferenceBackend?,
+    ): EngineAttempt = EngineAttempt(backend, visionBackend, audioBackend)
+
+    /**
+     * 用户请求是否涉及 GPU（主后端或视觉后端为 GPU）—— GPU 文案门控与二段降级的共同判据，
+     * 等价于旧 `attempts.size > 1`（用户请求 CPU 且视觉非 GPU 时为 false，不得拼 GPU 文案）。
+     */
+    fun gpuInvolved(backend: InferenceBackend, visionBackend: InferenceBackend?): Boolean =
+        backend == InferenceBackend.GPU || visionBackend == InferenceBackend.GPU
+
+    /**
+     * 去掉一个模态（保持主后端）：**先 AUDIO 后 VISION**。
+     *
+     * 优先级理由：audio 最不常用、误判面最小（Wave 43 真机根因正是 audio）；vision 是多模态
+     * 主力，尽量后降。返回 null = 已无可降模态（两个模态后端都为 null）。
+     *
+     * 「每模态最多降一次」由结构保证：去模态即把对应后端置 null，null 不再入选；
+     * [EngineAttempt.degraded] 只用于累积记录（写入诊断出口）。
+     */
+    fun dropOneModality(current: EngineAttempt): EngineAttempt? {
+        if (current.audioBackend != null) {
+            return current.copy(
+                audioBackend = null,
+                degraded = current.degraded + ModelModality.AUDIO,
+            )
+        }
+        if (current.visionBackend != null) {
+            return current.copy(
+                visionBackend = null,
+                degraded = current.degraded + ModelModality.VISION,
+            )
+        }
+        return null
+    }
+
+    /**
+     * GPU→CPU 二段降级（既有语义，保持模态）：主后端落 CPU，**视觉后端跟随主后端**落 CPU
+     * （与旧 `add(CPU to if (wantsVision) CPU else null)` 逐字等价）；audio 后端与主后端正交，
+     * 保持不变。
+     */
+    fun toCpu(current: EngineAttempt): EngineAttempt = current.copy(
+        backend = InferenceBackend.CPU,
+        visionBackend = current.visionBackend?.let { InferenceBackend.CPU },
+    )
+
+    /**
+     * 根据失败原因决定下一个尝试；返回 null = 终态失败（调用方抛 [error]）。
+     *
+     * @param gpuInvolved 用户请求是否涉及 GPU（主后端或视觉后端为 GPU）。等价于旧
+     *   `attempts.size > 1`（既有 GPU 二段降级门控，用于 [next] 第 2 步与 GPU 文案门控）。
+     */
+    fun next(current: EngineAttempt, error: Throwable, gpuInvolved: Boolean): EngineAttempt? {
+        // 1) 确定性缺 section：保持后端，只去一个模态（先 AUDIO 后 VISION）。
+        if (isDeterministicMissingSection(error)) {
+            return dropOneModality(current)
+        }
+        // 2) 既有 GPU→CPU 二段降级：保持模态，只换后端。GPU 仍参与（主后端或视觉后端）且
+        //    尚未落 CPU 时才可退；toCpu 后 backend==CPU 且 vision∈{CPU,null} ⇒ 自动不可再退。
+        if (gpuInvolved &&
+            (current.backend == InferenceBackend.GPU || current.visionBackend == InferenceBackend.GPU)
+        ) {
+            return toCpu(current)
+        }
+        // 3) 终态失败。
+        return null
+    }
 }
 
 /** GPU 失败的特征串（Wave 33，大小写不敏感）：命中即可断定是 GPU 委托层的问题。 */
@@ -381,6 +510,21 @@ class LiteRtLmEngine(
     private var actualBackend: InferenceBackend? = null
     private var loadConfig: EngineLoadConfig? = null
 
+    /**
+     * 加载时因容器缺 section 而被去掉的模态（Wave 44 P0-2，空集 = 未降级）。
+     *
+     * **另立字段的理由（不许并进复用判据）**：[EngineAttempt.degraded] 是**运行时事实**，
+     * 与 [loadedVisionBackend] / [loadedAudioBackend]（记**用户请求的解析值**，进 `sameEngine`
+     * 判据）**正交**。若把降级写进 `loaded*Backend`，则「请求 GPU 实际去 audio」会在下次
+     * `load()` 被判成配置变化而整引擎重建（重新加载权重，纯浪费；降级结果在进程生命周期内
+     * 稳定）—— 与 `actualBackend` 分离 [loadedBackend] 是同一纪律。
+     *
+     * ⚠️ **必须加进 [releaseInternal] 复位**（唯一复位点纪律）：历史上漏抄字段清单出过事故
+     * （`sentMessageIds` 漏复位 ⇒ 模型失忆）。
+     */
+    @Volatile
+    private var degradedModality: Set<ModelModality> = emptySet()
+
     @Volatile
     private var loaded: Boolean = false
 
@@ -533,42 +677,42 @@ class LiteRtLmEngine(
                     java.io.File(path).apply { runCatching { mkdirs() } }.absolutePath
                 }
 
-                // ── 创建引擎：GPU 不可用自动降级 CPU（2026-09-26）────────────────────
-                // 真机实锤：Manifest 未声明 libOpenCL.so（Android 12+ 访问厂商非 NDK 库
-                // 必须 <uses-native-library>）时，GPU 委托 dlopen 失败 → CompiledModel::
-                // Create 抛 INTERNAL（llm_litert_compiled_model_executor.cc:1928）。
-                // 上游 issue #1860 的结论就是「SDK 没有预检 API，调用方自己降级重试 CPU」。
-                // 这里做成同一次 load() 内的二段尝试：主配置失败且涉及 GPU → 直接换
-                // CPU/CPU 再试一次，用户无感。复用判据仍记**用户请求的**解析值 ——
-                // 降级是运行时事实、不是新配置，否则「请求 GPU 实际 CPU」会在下次
-                // load() 被判成配置变化而整引擎重建（重新加载权重，纯浪费；降级结果
-                // 在进程生命周期内是稳定的）。
-                val attempts = buildList {
-                    add(config.config.backend to resolvedVisionBackend)
-                    if (config.config.backend == InferenceBackend.GPU ||
-                        resolvedVisionBackend == InferenceBackend.GPU
-                    ) {
-                        add(InferenceBackend.CPU to if (wantsVision) InferenceBackend.CPU else null)
-                    }
-                }
-                // GPU 提示的门控（复审 P1-2）：只有真的做过 GPU→CPU 的二段尝试
-                // （attempts 有第二段）才允许说「GPU 委托不可用」——用户请求 CPU、
-                // attempts 只有一段时，CPU 失败拼 GPU 文案是自相矛盾。
-                val hadGpuAttempt = attempts.size > 1
+                // ── 创建引擎：错误驱动降级链（Wave 44 P0-2）──────────────────────────
+                // 两条**正交、可叠加**的降级链，决策逻辑全在 [EngineLoadDegrade]（纯函数、
+                // 可单测）；这里只做「建引擎 → 失败 → 问 next() → 建下一个」的驱动循环。
+                //  1. 模态降级（只认 NOT_FOUND）：容器缺 VISION_ENCODER / AUDIO_ENCODER_HW
+                //     子图时，去掉对应模态重建（先 AUDIO 后 VISION）。Wave 43 真机根因：
+                //     Gemma-4 E2B 启发式 audio=true 但容器无 audio section ⇒ 旧实现直接失败。
+                //  2. 后端降级（既有，2026-09-26）：Manifest 未声明 libOpenCL.so（Android 12+
+                //     访问厂商非 NDK 库必须 <uses-native-library>）时 GPU 委托 dlopen 失败 →
+                //     CompiledModel::Create 抛 INTERNAL（llm_litert_compiled_model_executor.cc:1928）。
+                //     上游 issue #1860：SDK 无预检 API，调用方自己降级重试 CPU。
+                // 复用判据仍记**用户请求的**解析值 —— 降级是运行时事实、不是新配置，否则
+                // 「请求 GPU 实际 CPU」会在下次 load() 被判成配置变化而整引擎重建。
+                //
+                // GPU 文案门控（复审 P1-2）：只有用户请求真的涉及 GPU（主后端或视觉后端）
+                // 才允许说「GPU 委托不可用」——与旧 `attempts.size > 1` 逐字等价。
+                val gpuInvolved = EngineLoadDegrade.gpuInvolved(
+                    config.config.backend,
+                    resolvedVisionBackend,
+                )
+                val hadGpuAttempt = gpuInvolved
 
+                var current = EngineLoadDegrade.initial(
+                    backend = config.config.backend,
+                    visionBackend = resolvedVisionBackend,
+                    audioBackend = resolvedAudioBackend,
+                )
+                // visited 去重 + 上限 4（防循环）：任何重复状态不再入队。
+                val visited = mutableSetOf(current)
+                var attemptIndex = 0
                 var lastError: Throwable? = null
-                for ((index, attempt) in attempts.withIndex()) {
-                    if (index > 0) {
-                        AgentLogStore.warn(
-                            "LiteRT-LM GPU 后端不可用（${lastError?.message?.take(160) ?: "未知错误"}），" +
-                                "自动降级 CPU 重试"
-                        )
-                    }
+                while (true) {
                     val engineConfig = EngineConfig(
                         modelPath = modelPath,
-                        backend = toBackend(attempt.first, config.nativeLibraryDir),
-                        visionBackend = attempt.second?.let { toBackend(it, config.nativeLibraryDir) },
-                        audioBackend = resolvedAudioBackend?.let { toBackend(it, config.nativeLibraryDir) },
+                        backend = toBackend(current.backend, config.nativeLibraryDir),
+                        visionBackend = current.visionBackend?.let { toBackend(it, config.nativeLibraryDir) },
+                        audioBackend = current.audioBackend?.let { toBackend(it, config.nativeLibraryDir) },
                         maxNumTokens = config.config.contextLength,
                         cacheDir = effectiveCacheDir,
                     )
@@ -593,9 +737,11 @@ class LiteRtLmEngine(
                         // 默认关闭时 load() 与 Wave 33 完全一致（零额外 Conversation）。
                         loadedContextLength = config.config.contextLength
                         loadedBackend = config.config.backend
-                        // 实际生效后端（Wave 33）：index==0 = 请求值原样生效；
-                        // index>0 = GPU 降级成功，实际是 CPU（attempt.first 即本轮尝试值）。
-                        actualBackend = attempt.first
+                        // 实际生效后端（Wave 33）：attemptIndex==0 = 请求值原样生效；
+                        // attemptIndex>0 = 至少降过一次，实际是 current.backend。
+                        actualBackend = current.backend
+                        // 降级事实另立出口（Wave 44 P0-2）：与 loaded*Backend（复用判据）正交。
+                        degradedModality = current.degraded
                         loadedSampling = config.config.sampling
                         // 记**解析后的值**，与 sameEngine 判据同源；记原始配置会让
                         // 「能力位从 false 改 true」时两侧都是同一个原始值而误判为可复用。
@@ -603,10 +749,15 @@ class LiteRtLmEngine(
                         loadedAudioBackend = resolvedAudioBackend
                         loadConfig = config
                         loaded = true
-                        if (index > 0) {
+                        if (attemptIndex > 0) {
+                            val degradedLabel = if (current.degraded.isEmpty()) {
+                                "无"
+                            } else {
+                                current.degraded.joinToString("/")
+                            }
                             AgentLogStore.warn(
-                                "LiteRT-LM 已以 CPU 后端完成加载（本次会话 GPU 不可用，" +
-                                    "请求的后端：${config.config.backend}）"
+                                "LiteRT-LM 已以降级配置完成加载（请求后端：${config.config.backend}，" +
+                                    "实际后端：${current.backend}，已去模态：$degradedLabel）"
                             )
                         }
                         // GPU 大上下文风险留档（Wave 33，log-only）：GPU 变体的 OpenCL
@@ -632,6 +783,28 @@ class LiteRtLmEngine(
                         // 「可复用」，引擎就永久卡在坏状态里。
                         releaseInternal()
                         lastError = t
+                        val next = EngineLoadDegrade.next(current, t, gpuInvolved)
+                        attemptIndex++
+                        if (next == null ||
+                            attemptIndex >= EngineLoadDegrade.MAX_LOAD_ATTEMPTS ||
+                            !visited.add(next)
+                        ) {
+                            break
+                        }
+                        // 只做留档：区分「去模态」与「后端降级」两条链，便于真机归因。
+                        if (next.degraded.size > current.degraded.size) {
+                            val removed = (next.degraded - current.degraded).joinToString("/")
+                            AgentLogStore.warn(
+                                "LiteRT-LM 容器缺少 $removed 编码器 section" +
+                                    "（NOT_FOUND：${t.message?.take(160) ?: "未知错误"}），自动去模态重试"
+                            )
+                        } else {
+                            AgentLogStore.warn(
+                                "LiteRT-LM GPU 后端不可用（${t.message?.take(160) ?: "未知错误"}），" +
+                                    "自动降级 CPU 重试"
+                            )
+                        }
+                        current = next
                     }
                 }
                 lastError?.let { t ->
@@ -1044,6 +1217,8 @@ class LiteRtLmEngine(
             // 用**实际登记**的工具集签名判定（legacy 回退与「证伪重试」两条路都没注册工具，
             // 而 nativeTools 此时仍非空 —— 拿它判断会报出「注册了但没注册」的假事实）。
             nativeToolChannel = registeredToolsSignature != null,
+            // 加载期模态降级事实（Wave 44 P0-2）：与 requested/actualBackend 正交。
+            degradedModality = degradedModality,
         )
         return created
     }
@@ -1610,10 +1785,15 @@ class LiteRtLmEngine(
             }
             val model = loadConfig?.model
             val caps = model?.capabilities
+            // 模态降级收窄（Wave 44 P0-2）：容器缺 section 时加载期已把该模态去掉，
+            // 能力位必须同步收窄 —— 否则 UI 继续允许发图/发音频，而底层根本没有该后端
+            // （静默失效，与 L447-451 记录的历史坑同类）。降级事实读 @Volatile 字段，
+            // 与 load() 同源；空集时行为与 Wave 43 逐字节一致。
+            val degraded = degradedModality
             EngineCapabilities(
                 supportsText = caps?.text ?: true,
-                supportsImage = caps?.image ?: false,
-                supportsAudio = caps?.audio ?: false,
+                supportsImage = (caps?.image ?: false) && ModelModality.VISION !in degraded,
+                supportsAudio = (caps?.audio ?: false) && ModelModality.AUDIO !in degraded,
                 supportsTools = caps?.toolCalling ?: false,
                 supportsThinking = caps?.thinking ?: false,
                 supportedBackends = caps?.preferredBackends ?: setOf(InferenceBackend.CPU),
@@ -1726,6 +1906,9 @@ class LiteRtLmEngine(
         // 「没有已建会话」，不渲染任何降级提示。
         systemMergedPending = false
         actualBackend = null
+        // 模态降级事实随引擎释放作废（Wave 44 P0-2）：它描述「本次加载」的运行时事实，
+        // 引擎没了就没有「本次加载」—— 漏复位会让下次加载的诊断出口报出上一次的降级。
+        degradedModality = emptySet()
         _sessionDiagnostics.value = null
         loaded = false
         // 「复用判据」的记忆必须和 engine 一起清掉：只清 engine 而留着这几个参数，

@@ -6,6 +6,7 @@ import com.rickeal.agent.core.model.GenerationChunk
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
+import com.rickeal.agent.core.model.ModelModality
 import com.rickeal.agent.core.model.ToolSpec
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -160,6 +161,20 @@ data class EngineSessionDiagnostics(
      * 走哪条通道」，只能读本字段。
      */
     val nativeToolChannel: Boolean = false,
+    /**
+     * 加载时因容器缺 section 而被去掉的模态（Wave 44 P0-2，空集 = 未降级）。
+     *
+     * 与 [requestedBackend] / [actualBackend] **正交**：后者表达「请求 GPU 实际 CPU」的后端
+     * 降级，本字段表达「请求视觉/音频，但容器没有对应编码器子图 ⇒ 去模态加载」。
+     * 触发根因是 litert-lm 请求 `VISION_ENCODER` / `AUDIO_ENCODER_HW` 子图时容器无该
+     * section（抛 `NOT_FOUND`），见 `LiteRtLmEngine` 的降级链 KDoc。
+     *
+     * 消费方：
+     *  - `LlmEngine.capabilities()` 据此收窄 `supportsImage` / `supportsAudio`
+     *    —— 否则 UI 会继续允许发图/发音频，而底层根本没有该后端（静默失效）；
+     *  - `ChatScreen.sessionDiagnosticsHintOf` 据此渲染「已去 X 模态完成加载」小字。
+     */
+    val degradedModality: Set<ModelModality> = emptySet(),
 )
 
 /**

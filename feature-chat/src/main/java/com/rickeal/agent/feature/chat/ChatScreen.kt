@@ -63,6 +63,7 @@ import com.rickeal.agent.core.design.rememberGlassHaptics
 import com.rickeal.agent.core.design.rememberOverlayBlurProgress
 import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.core.model.AgentLogStore
+import com.rickeal.agent.core.model.ModelModality
 import com.rickeal.agent.core.model.Role
 import kotlinx.coroutines.launch
 
@@ -658,15 +659,21 @@ private fun terminationHintOf(reason: TerminationReason?): String? = when (reaso
 /**
  * 引擎会话诊断 → 一行小字（Wave 33）。
  *
- * 只对四类**静默降级**渲染（引擎已自动处理、但用户此前完全不可见）：
+ * 只对五类**静默降级**渲染（引擎已自动处理、但用户此前完全不可见）：
  *  1. legacy 回退（角色通道未激活）：「引擎已回退纯文本模式（<原因截断 80 字>）」；
  *  2. 中档回退（系统提示词并入用户消息，Gemma 系模板兼容模式）；
  *  3. **原生工具通道未生效**（Wave 34 复审 P1-4）：「原生工具通道未生效，已退回文本协议」；
- *  4. 后端降级：「请求 GPU 已降级 CPU 运行」。
+ *  4. **模态降级**（Wave 44 P0-2）：「已去 视觉/音频 模态完成加载（该容器不含对应编码器）」；
+ *  5. 后端降级：「请求 GPU 已降级 CPU 运行」。
  *
  * 其余情况（诊断 null / 角色通道 active 且后端一致）返回 null = **不渲染任何东西**，
- * 正常路径零 UI 变化。优先级：legacy > 中档 > 原生工具通道 > 后端降级（降级链上越靠前
- * 的信息越本质 —— legacy 回退时后端信息照常可用，不必同屏两条）。
+ * 正常路径零 UI 变化。优先级：legacy > 中档 > 原生工具通道 > 模态降级 > 后端降级
+ * （降级链上越靠前的信息越本质 —— legacy 回退时后端信息照常可用，不必同屏两条）。
+ *
+ * ⚠️ 本函数返回**首个**命中，插分支即改优先级（Wave 44 复核）：第 4 类（模态降级）是
+ * **加载期**事实（会话尚未建立），前 3 类是**会话期**事实 —— 二者天然互斥，实际冲突面为零；
+ * 第 4 与第 5 类同属加载期但描述不同事实（模态 vs 后端），插在 backend 分支之前是因为
+ * 「发图/发音频直接失败」比「跑在 CPU 上」更需优先告知。
  *
  * @param nativeToolChannelEnabled 用户在设置里是否**开了**「原生工具通道」开关
  *   （`InferenceConfig.nativeToolChannel`）。第 3 类**必须带这个判据**：诊断字段
@@ -696,6 +703,14 @@ private fun sessionDiagnosticsHintOf(
     // 会同步落一条含「原生工具通道」关键字的 warn，二者分工：这里给结论、那里留证据）。
     if (nativeToolChannelEnabled && !diagnostics.nativeToolChannel) {
         return "原生工具通道未生效，已退回文本协议"
+    }
+    // 模态降级（Wave 44 P0-2）：加载期容器缺 section ⇒ 去掉视觉/音频模态完成加载。
+    // 插在 backend 降级**之前**（理由见上方 KDoc）；与上面各分支天然互斥（加载期 vs 会话期）。
+    if (diagnostics.degradedModality.isNotEmpty()) {
+        val names = diagnostics.degradedModality.joinToString("/") {
+            if (it == ModelModality.VISION) "视觉" else "音频"
+        }
+        return "已去 $names 模态完成加载（该容器不含对应编码器）"
     }
     val requested = diagnostics.requestedBackend
     val actual = diagnostics.actualBackend
