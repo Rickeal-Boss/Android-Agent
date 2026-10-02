@@ -250,6 +250,9 @@ class ChatViewModel(
         if (t.isNotEmpty() || th.isNotEmpty()) {
             _streaming.update { it.copy(text = it.text + t, thinking = it.thinking + th) }
         }
+        // 熔断救援缓冲（Wave 47 项2）：记录「用户已看到」的正文（合并后非空才覆盖），
+        // 跨 StreamReset / Retrying 存活（见 [salvageText] 的 KDoc）。
+        _streaming.value.text.takeIf { it.isNotEmpty() }?.let { salvageText = it }
     }
 
     /** 流式实时指标（E 项）：TTFT 精确；tps 用字符数粗估（中英混合按 2 字符/token）。 */
@@ -301,6 +304,20 @@ class ChatViewModel(
      * 调 `beginRun()` 清零。**⛔ 不得放进 resetStreaming / resetStreamingText**（见该类头 KDoc）。
      */
     private var persistState = AssistantPersistenceState()
+
+    /**
+     * 熔断救援缓冲（Wave 47 项2）：本 run 内**用户已看到**的最后一段流式正文。
+     *
+     * 独立于 `_streaming` 的原因：`StreamReset` / `Retrying` 会 `resetStreamingText()` 清掉流式
+     * 缓冲（设计意图：被丢弃的乱文不该交付），但**预算 / 外部型**熔断发生时，用户已经看到的那段
+     * 正文不该跟着消失（真机 r5）。故本缓冲**跨 `StreamReset` / `Retrying` 存活**。
+     *
+     * 生命周期（与 [persistState] 同一纪律）：run 起点（[collectRunWithPerfWindow] 首行 +
+     * [onNewConversation]）清零；**⛔ 严禁放进 resetStreaming / resetStreamingText**（那两处被
+     * `Finished` / `Cancelled` 在决策之后调用，且是散点）。更新点唯一：`flushNow()`；消费点唯一：
+     * `AgentEvent.Failed` 分支（判据 [shouldSalvageOutput]）。
+     */
+    private var salvageText: String = ""
 
     /** token 账本观察作业（Wave 31 流2）：把发送侧估算镜像进 [ChatUiState.sentTokensEstimate]。 */
     private var ledgerJob: Job? = null
@@ -848,6 +865,8 @@ class ChatViewModel(
         // 新会话 = 旧 run 的落库去重状态作废（Wave 46）：与 conversationId 同处清零，
         // 防止上一会话的 committedMessageId / lastCommittedText 粘到新会话首轮。
         persistState = persistState.beginRun()
+        // 熔断救援缓冲（Wave 47 项2）与 persistState 同一清零点（新会话）。
+        salvageText = ""
         // 会话销毁 = 授权作用域消失：审批缓存全清（key 含 cid 本就隔离，这里保超额清）。
         container.toolApprovalCache.revokeAll(null)
         resetStreaming(role = null, isStreaming = false)
@@ -870,8 +889,9 @@ class ChatViewModel(
      * 落库统一走 [commitAssistant]：取消与 `AgentEvent.Cancelled` 谁先到是不确定的竞态，
      * 两条路径都会提交同样的文本，靠它的 **run 级文本判据**（`lastCommittedText`，先到者生效）
      * 去重，不会写两份（见 [commitAssistant] 与 [AssistantPersistenceState] 的判据说明）。
-     * 只提交文本、不带 thinking，与 `Cancelled` 分支保持一致 —— 否则同一个操作会因为竞态
-     * 胜负不同而存出不同的东西。
+     * 两条路径均取 `_streaming.value.thinking` 作 thinking（Wave 47 项3，与 `Cancelled` 分支
+     * 同源）—— 竞态判据仍**只吃 text**（`shouldCommitAssistant` 不看 thinking），故「谁先落库」
+     * 与 thinking 无关，不会因竞态胜负存出不同的东西。
      */
     fun onStop() {
         // 保序（A 项节流改造后仍然关键）：先 flushNow 同步排空缓冲 → 取快照 →
@@ -879,6 +899,10 @@ class ChatViewModel(
         // 终态清空不会与残留 delta 竞争。
         flushNow()
         val partial = _streaming.value.text
+        // thinking 必须与 partial 同点取快照：下方 resetStreaming() 会清空 _streaming（含
+        // thinking），在其之后读 `_streaming.value.thinking` 恒为空 ⇒ 取消路径会静默丢思考
+        // （Wave 47 项3 的核心：取消也要带 thinking 落盘）。
+        val thinking = _streaming.value.thinking.ifBlank { null }
         runJob?.cancel()
         runJob = null
         _uiState.update {
@@ -894,7 +918,7 @@ class ChatViewModel(
         if (partial.isNotBlank()) {
             // conversationId 为空说明首轮的用户消息都还没落库（极窄窗口），此时没有可写入的
             // 会话，不提交，避免出现「界面有气泡但历史里没有」的假象。
-            conversationId?.let { commitAssistant(partial, null, null, it) }
+            conversationId?.let { commitAssistant(partial, thinking, null, it) }
         }
     }
 
@@ -1197,6 +1221,8 @@ class ChatViewModel(
         // ⛔ 严禁改放进 resetStreaming / resetStreamingText（那两处被 Finished / Cancelled
         // 在决策之后调用，且是散点）—— 详见 AssistantPersistenceState 类头 KDoc。
         persistState = persistState.beginRun()
+        // 熔断救援缓冲（Wave 47 项2）与 persistState 同一清零点（run 起点）。
+        salvageText = ""
         // token 账本观察（Wave 31 流2）：与 run 窗口同起，把发送侧估算镜像进 UI 状态。
         // 放在这个共享入口 = 三条 run 路径（onSend / onSendFrom / onRecover）一次接线。
         observeTokenLedger(cid)
@@ -1356,6 +1382,12 @@ class ChatViewModel(
             }
 
             is AgentEvent.Failed -> {
+                // 熔断救援（Wave 47 项2）：预算 / 外部型熔断时把用户**已看到**的正文落库，而非让它随
+                // resetStreamingText() 消失（真机 r5）。判据外提为纯函数 shouldSalvageOutput（可 JVM 单测）；
+                // 复用 commitAssistant 唯一入口 —— 熔断路径无 MessageCommitted ⇒ id 判据不参与，不会误跳。
+                if (shouldSalvageOutput(event.terminatedBy, event.report, salvageText)) {
+                    commitAssistant(salvageText, _streaming.value.thinking.ifBlank { null }, null, conversationId)
+                }
                 // 失败尝试的半截输出不落库（与 Retrying 同理），但缓冲必须清。
                 resetStreamingText()
                 _uiState.update {
@@ -1387,7 +1419,8 @@ class ChatViewModel(
                 flushNow()
                 val partial = event.partialText.ifBlank { _streaming.value.text }
                 if (partial.isNotBlank()) {
-                    commitAssistant(partial, null, null, conversationId)
+                    // thinking 同源（Wave 47 项3）：此处 resetStreaming 尚未执行，缓冲仍在。
+                    commitAssistant(partial, _streaming.value.thinking.ifBlank { null }, null, conversationId)
                 }
                 _uiState.update {
                     it.copy(

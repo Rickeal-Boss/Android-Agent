@@ -1,5 +1,9 @@
 package com.rickeal.agent.feature.chat
 
+import com.rickeal.agent.core.agent.TerminationReason
+import com.rickeal.agent.core.agent.breaker.BottleneckReport
+import com.rickeal.agent.core.agent.breaker.BreakerKind
+
 /**
  * 「助手回答落库」的 **run 级纯状态**（Wave 46 外提，供 JVM 单测；生产路径
  * [ChatViewModel] 真实调用本文件，测试覆盖的是真实逻辑而非镜像）。
@@ -75,3 +79,51 @@ internal fun AssistantPersistenceState.shouldCommitAssistant(lastMessageId: Stri
 
 /** `commitAssistant` 落库后调用：记住已落库文本（服务文本判据）。 */
 internal fun AssistantPersistenceState.onCommitted(text: String) = copy(lastCommittedText = text)
+
+/**
+ * 熔断终态「已见输出是否应保留」的判据（Wave 47 项2，纯函数，可 JVM 单测）。
+ *
+ * ## 背景
+ *
+ * 熔断（`AgentEvent.Failed`）时 UI 会 `resetStreamingText()` 清掉流式缓冲；但**预算 / 外部型**
+ * 熔断（墙钟 / 热 / 振荡 / 失败连击 / 生成超时）发生时，用户**已经看到**的正文不该跟着消失
+ * （真机 r5：文本被 `StreamReset` 清掉，但用户已看到 ⇒ 数据丢失）。本判据决定「要不要把
+ * UI 侧 run 级救援缓冲 `ChatViewModel.salvageText` 落库」。
+ *
+ * ## 判据（两级，全部用既有字段，不新造枚举）
+ *
+ * `应保留 = terminatedBy == BreakerTripped`
+ *         ∧ 终止者 kind ∈ {WallClockBudget, ThermalThrottle, ToolCallOscillation,
+ *                          ToolFailureStreak, GenerationTimeout}
+ *         ∧ 待保留文本非空
+ *
+ * - 排除 `StreamLoop` / `EmptyOutput` 是**语义正确**的：它们的输出是「被判定的乱文 / 空」，
+ *   `resetStreamingText()` 清掉是设计意图（见 `AgentEvent.StreamReset` KDoc）。
+ * - 真失败（`terminatedBy != BreakerTripped`，如引擎加载 / 重载 / 生成失败）不保留：那些
+ *   路径没有「用户已见的有效输出」语义。
+ * - 终止者取 `report.tripped` 里**最后一个 HARD** —— `WallClockBudget` 首次 SOFT trip 只进
+ *   ledger 不中断，HARD 再 trip 一次才终止（见 `BreakerKind.WallClockBudget` KDoc）。
+ *
+ * @param terminatedBy `AgentEvent.Failed.terminatedBy`（既有真失败路径恒 null）。
+ * @param report `AgentEvent.Failed.report` 诊断卡（含 tripped 清单）；null = 无归因数据。
+ * @param salvageText UI 侧 run 级救援缓冲（用户已见的正文）。
+ */
+internal fun shouldSalvageOutput(
+    terminatedBy: TerminationReason?,
+    report: BottleneckReport?,
+    salvageText: String,
+): Boolean {
+    if (terminatedBy != TerminationReason.BreakerTripped) return false
+    if (salvageText.isBlank()) return false
+    val terminator = report?.tripped?.lastOrNull { it.kind.severity == BreakerKind.Severity.HARD }?.kind
+    return terminator in SALVAGEABLE_BREAKER_KINDS
+}
+
+/** 应保留已见输出的熔断判据（预算 / 外部型；**不含**内容型 `StreamLoop` / `EmptyOutput`）。 */
+private val SALVAGEABLE_BREAKER_KINDS = setOf(
+    BreakerKind.WallClockBudget,
+    BreakerKind.ThermalThrottle,
+    BreakerKind.ToolCallOscillation,
+    BreakerKind.ToolFailureStreak,
+    BreakerKind.GenerationTimeout,
+)
