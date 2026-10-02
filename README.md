@@ -327,7 +327,8 @@ Android-Agent/
 | **完整 i18n（含 RTL）** | `app/src/main/res/values/strings.xml` 只有 1 条串（`app_name`），Composable 里 ~145 处中文硬编码 ⇒ RTL 布局从未被验证、也无从验证。Wave 32 已撤下 `AndroidManifest.xml` 的 `android:supportsRtl="true"` —— 先不声明未验证过的能力 | ① 硬编码中文串抽到 `strings.xml`；② 补 `values-ldrtl` / 布局镜像的真机或预览验证；③ 验证通过后才恢复 `supportsRtl` 声明 |
 | **`termsVersion`（法务条款版本化）** ⚠️ **时序风险** | `SettingsRepository` 的 `is_tos_accepted` / `is_gemma_terms_accepted` 都是**无版本 boolean**，只能表达「同意过 / 没同意过」，表达不了「同意的是**哪一版**」。⇒ 一旦替换法务文本，**当天所有老用户**都会命中 `true` 而被视为「已同意新条款」，首启门禁与法律页开关被直接跳过（**未同意却被视为已同意**，合规事故），且事后无法反推用户当年同意的是哪一版。Wave 39 只把债务固化为注释（`SettingsRepository.kt` 的 `IS_TOS_ACCEPTED` 上方），**未改行为** —— 实现涉及产品/法务决策（老用户的 `true` 算「已同意第 1 版」还是「未同意任何版本」） | ✅ **落地顺序是硬约束**：`termsVersion` **必须先于任何法务文本替换落地**，不能反序（反序则老用户同意状态不可区分、不可补征）。行为实现需先裁定上述产品/法务问题 |
 | **J4：`SandboxFilesViewModel` 直构造白名单唯一（工作区覆盖层）** | `LiquidAgentApp.kt:378` 是全仓**唯一**绕过 `viewModelFactory` / ViewModelStore 的 VM 实例化点（「首次打开才创建 + 旋转即关」刻意取舍；VM 内目前只有自终止任务，现状无实害，但绕过 store ⇒ 离场时靠 `DisposableEffect` 手工补偿 cancel）。唯一性已由 `scripts/arch-guard.sh` **第 17 项冻结**（第二处直构造即红）；迁移正规 viewModel 路径 = **行为变更项**（改变重开覆盖层的重扫语义 /「旋转即关」取舍） | 触发条件：① 给该 VM 加轮询 / 常驻监听（旋转会从「无实害」变真泄漏）；② 需跨开关保留面板状态。实施时必须一并处理重开覆盖层的重扫语义，并过真机验证；迁移落地后 `LiquidAgentApp.kt` 的补偿清理块随删、守卫白名单同步清空 |
-| **模型加载后小样本自检（健康度门禁）** 🆕 **Wave 43 立项** | **痛点（真机实锤）**：坏容器要等用户下完 2GB、发第一条消息才发现 —— `gemma-4-E2B-it-gpu.litertlm` 输出退化到采样出 `<unused1556>` 等**保留未训练 token**；同类问题 MiniCPM-V-4 是 `Unsupported model type`。当前**没有任何自动化判据**，全靠 preset 文案人工标注（Wave 43 已给该 preset 加警告，属止血不是根治）。<br>**候选设计（未实现、需评审）**：模型首次加载成功后跑一条固定短 prompt（如「1+1=?」级别、≤64 token 输出），对输出做三条机器判据 —— ① 含保留 token（`<unused\d+>` / `<\|channel>` 后非白名单通道名）；② n-gram 重复率超阈值；③ 非空/非纯标点。任一命中即在模型卡打「⚠️ 疑似输出异常」并给「换变体/反馈」入口，不阻断使用 | ① 先裁定判据阈值（误报成本 vs 漏报成本：误标可用模型是事故）；② 确定触发时机（加载后自动 / 用户手动「自检」按钮）与是否写库持久化结果；③ 至少在 1 个已知坏容器（Gemma-4 GPU）+ 2 个已知好容器（MiniCPM5 / Gemma-4 CPU）上验证判据不误报；④ 自检本身不得显著拖慢加载（考虑后台线程 + 可取消） |
+| **模型加载后小样本自检（健康度门禁）** ✅ **Wave 44 已实现（手动档）** | **痛点（真机实锤）**：坏容器要等用户下完 2GB、发第一条消息才发现 —— `gemma-4-E2B-it-gpu.litertlm` 输出退化到采样出 `<unused1556>` 等**保留未训练 token**。<br>**Wave 44 已实现手动档**：诊断页「运行自检」按钮（`ModelHealthProbe` + `ModelHealthCriteria`）—— 两条固定短 prompt（`PROBE_MAX_TOKENS=96`）、独立探针会话（`conversationId="__health_probe__"` + 递增 `contextVersion`）、判据 A 保留 token / A′ 非白名单通道（软）/ B1 单字符 run / B2 多字符周期 / C 空输出，重复类判据复用 `StreamRepetitionDetector`（零口径分叉）；结论 PASS/DEGRADED/BAD，BAD 经既有 sink 自动落盘。**仅手动触发，绝不加载后自动跑**（会话重建成本只由按钮支付）。 | 二段翻转（**自动档**）前提：① 真机验证判据不误报（1 个坏容器 Gemma-4 GPU + 2 个好容器 MiniCPM5 / Gemma-4 CPU）；② 裁定自动触发时机与是否在模型卡展示结论；③ 自动档需解决「加载后自动跑 = 无条件付 1 次会话重建」的成本（仅在上层确认可接受时才翻转） |
+| **NOT_FOUND 错误驱动模态降级链** ✅ **Wave 44 已实现** | **痛点（真机实锤）**：Gemma-4 E2B 启发式 `audio=true` 但容器无 audio section ⇒ 旧实现加载直接失败；`gemma-4-E2B-it-gpu` 容器 section 表只有 text decoder ⇒ GPU 加载亦失败。**Wave 44 已实现**：`LiteRtLmEngine.load()` 改为**动态事件驱动降级**（`EngineLoadDegrade` 纯逻辑 + `EngineAttempt`）—— 只认 `NOT_FOUND` 触发模态降级（先 AUDIO 后 VISION），GPU→CPU 二段正交叠加，上限 4、每模态降一次；降级事实经 `EngineSessionDiagnostics.degradedModality` 出口，`capabilities()` 随降级收窄能力位，对话页小字提示「已去 X 模态完成加载」。 | ① 真机验证降级链端到端（Gemma-4 E2B CPU 去 audio 加载成功 + UI 小字）；② 上游容器补全 section / litert-lm 支持该变体后，可移除此降级（`NOT_FOUND` 不再出现）；③ 本轮不推仓库、不跑 CI，验证在本地闸门 |
 | **Gemma-4 GPU 特化变体输出退化（上游错配）** 🆕 | `gemma-4-E2B-it-gpu.litertlm`（2.0GB）在 LiteRT-LM **0.17.1** 下输出退化：temp 0.4/20 → n-gram 死锁；temp 1.0/64（官方口径）→ 采样出保留未训练 token（logits 分布退化）；容器 section 表只有 `tf_lite_artisan_text_decoder`，CPU 后端 engine init 直接 `NOT_FOUND`。同转换线的 `gemma-4-E4B-it-gpu` 未验证（已标注谨慎）。CPU 变体（2.41GB）实测通过，是唯一推荐 | ① 等 LiteRT-LM 发布含该变体支持的新版本后 bump `litertlm` 并重测；或 ② 改用上游单文件双后端容器（README 实证 `gemma-4-E4B-it.litertlm --backend=gpu` 单文件跑 GPU）；或 ③ 上游确认该变体仅适配更高版本 runtime → 从预设下架。恢复前 preset 维持 `recommended=false` |
 
 ### 已裁定（不再是挂账）
@@ -343,9 +344,18 @@ Android-Agent/
   `core-design/.../GlassMaterial.kt` 的 KDoc 早已把 `0.21f` 写成**有意值**（Wave 9 真机反馈「卡片更实」后整体加厚一档，
   并顺带捋直了 Thin(0.18) > Regular(0.16) 的历史倒挂）。⇒ 它不是待裁决的临时值，改它等于改回 Wave 9 已否掉的方向。
 
-- **三项「挂账蒸发」实为从未存在** —— **Wave 39 核实销账**：`SubagentProgress` 事件、
-  `ConversationRepository` 增量写、`formatVersion` 三者**全仓 grep 零命中**（不是「做过又丢了」，是**从未实现过**，
-  此前作为「蒸发项」挂在台账里属记录失真）。
+- **三项「挂账蒸发」实为从未存在** —— **Wave 39 核实销账**、**Wave 44 复核修正**（原论据不成立，见下）：
+  - `SubagentProgress` 事件：**源码零命中**（从未实现）。`AgentEvent` 现役 14 分支无此值，
+    `git log -S"SubagentProgress" --all -- '*.kt'` 零 commit ⇒ 是**从未开工的提案项**（非「做过又丢」）。
+  - `ConversationRepository` 增量写：**类存在、增量写机制不存在** —— `ConversationRepository`
+    全仓**有命中**（类定义在 `core-data/.../ConversationRepository.kt` + 多处生产引用），
+    原「全仓 grep 零命中」对它是**字面假命题**；现役写路径是**全量读 → 全量写**
+    （`appendMessage` → `save` 整份重写 `<id>.json`）。「增量写」是**机制描述符**、非可 grep 符号，
+    以 grep 判其不存在属方法错误。此为**从未开工的性能改造提案**。
+  - `formatVersion`：**源码零命中**（从未实现为具名版本字段）。跨版本读兼容意图已由
+    **「全字段带默认值」**这一替代纪律覆盖（`AgentRunJournal` / `TurnRecord` / `SubagentSessionStore`
+    三处明文）—— 不是「schema 兼容空白」。来源仅为 Wave 26 Operit 侦察的「别家做法」待办，从未落地。
+  - 结论方向（三者都不在现役源码中）与台账一致，但**论据与笼统措辞已按上述逐项做实**。
 
 - **`build.yml` 的 lint `continue-on-error`（G1③）** —— **Wave 39 确认已是有意保留并显式标注**
   （workflow 注释已写明观察期与摘除前提），该项不再是待确认挂账。
