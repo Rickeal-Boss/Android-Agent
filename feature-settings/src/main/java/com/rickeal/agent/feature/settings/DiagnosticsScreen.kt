@@ -56,9 +56,12 @@ import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.liquid.platform.isRenderEffectSupported
 import com.rickeal.agent.core.design.liquid.platform.isRuntimeShaderSupported
+import com.rickeal.agent.core.engine.local.ModelHealthProbe
 import com.rickeal.agent.core.model.AgentLog
 import com.rickeal.agent.core.model.AgentLogLevel
 import com.rickeal.agent.core.model.AgentLogStore
+import com.rickeal.agent.core.model.CriterionSeverity
+import com.rickeal.agent.core.model.ModelHealthVerdict
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -67,11 +70,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 诊断页：展示进程内最近的运行日志（黑匣子），以及**上次崩溃前落盘的 ERROR 记录**。
+ * 诊断页：展示进程内最近的运行日志（黑匣子）、**上次崩溃前落盘的 ERROR 记录**，
+ * 以及**模型自检**入口（Wave 44 P0-1）。
  *
- * 为什么没有 ViewModel：日志收集器在 `:core-model`，那里**没有协程依赖**（该模块只有
- * kotlinx-serialization），因此没有 StateFlow 可以订阅。与其为此新增依赖或把状态机搬来搬去，
- * 不如老老实实「进页面取一次快照 + 手动刷新」—— 简单、无新依赖、行为可预期。
+ * 为什么现在**有** ViewModel（Wave 44 改写）：此前本页刻意无 ViewModel，理由是「日志收集器
+ * 在 `:core-model`，那里**没有协程依赖**（该模块只有 kotlinx-serialization），没有 StateFlow
+ * 可订阅，故取只读快照」。该理由因**模型自检探针**的引入**已不成立** —— 探针带来异步 +
+ * 可变状态（running / 结果 / 错误 / 取消），需要生命周期持有者。日志区仍走「取一次快照 +
+ * 手动刷新」（本函数内的 `snapshot`），探针状态经 [DiagnosticsViewModel] 注入（见下方参数）。
  *
  * 两个数据源刻意**分开呈现**、不合并：内存缓冲是「本次运行」，磁盘文件是「上次崩溃之前」。
  * 混在一起会让人误以为崩溃前的记录也在内存里（那样的话它们根本活不到现在）。
@@ -82,6 +88,8 @@ import kotlinx.coroutines.withContext
  *
  * @param readPersistedErrors 读回落盘的 ERROR 记录（阻塞 IO，调用方保证在 IO 线程执行）
  * @param clearPersistedErrors 清空落盘记录
+ * @param probeState 模型自检状态机（Wave 44，带默认值向后兼容：不传 = 不显示自检结论）
+ * @param onRunProbe 点「运行自检」的回调（Wave 44，带默认值向后兼容）
  */
 @Composable
 fun DiagnosticsScreen(
@@ -97,6 +105,9 @@ fun DiagnosticsScreen(
     perfHeader: String? = null,
     /** true = 进入页面（acquire）；false = 离开（release）。 */
     onPerfObservation: (Boolean) -> Unit = {},
+    // ── 模型自检（Wave 44 P0-1）─────────────────────────────────────
+    probeState: ProbeUiState = ProbeUiState.Idle,
+    onRunProbe: () -> Unit = {},
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
@@ -278,6 +289,83 @@ fun DiagnosticsScreen(
                         color = colors.onGlassSubtle,
                         modifier = Modifier.padding(top = 6.dp),
                     )
+                }
+            }
+
+            /* ------------------------------------------ 模型自检（Wave 44 P0-1） */
+            // 手动触发的小样本自检：对当前模型跑两条固定短 prompt，检查输出是否退化。
+            // 质量结论（PASS/DEGRADED/BAD）与「执行失败 / 未运行」严格区分（见 ProbeUiState
+            // KDoc）—— 后者不是「模型坏」的结论，文案与配色都必须区分。
+            GlassCard(contentPadding = PaddingValues(14.dp)) {
+                Column {
+                    Text(
+                        text = "模型自检",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = colors.onGlass,
+                    )
+                    Text(
+                        text = "对当前模型跑两条固定短 prompt，检查输出是否退化（保留 token / 复读 / " +
+                            "空输出）。手动触发；会重建一次会话，用户下一条消息会重新 prefill。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = probeHeadline(probeState),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = probeHeadlineColor(probeState),
+                            modifier = Modifier.weight(1f),
+                        )
+                        GlassButton(
+                            text = "运行自检",
+                            onClick = onRunProbe,
+                            loading = probeState is ProbeUiState.Running,
+                            enabled = probeState !is ProbeUiState.Running,
+                            modifier = Modifier.padding(start = 10.dp),
+                        )
+                    }
+                    probeDetail(probeState)?.let { detail ->
+                        Text(
+                            text = detail,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onGlassSubtle,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                    // 命中明细（仅 Completed 有）：HARD=danger / SOFT=warning，与结论同口径。
+                    if (probeState is ProbeUiState.Completed) {
+                        for (hit in probeState.hits) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp),
+                                verticalAlignment = Alignment.Top,
+                            ) {
+                                Text(
+                                    text = "${hit.id} · ${hit.severity.name}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (hit.severity == CriterionSeverity.HARD) {
+                                        colors.danger
+                                    } else {
+                                        colors.warning
+                                    },
+                                )
+                                Text(
+                                    text = hit.evidence,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = colors.onGlassSubtle,
+                                    modifier = Modifier.padding(start = 8.dp),
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -491,6 +579,56 @@ private fun CpuSecondsChart(
         }
         drawPath(path, color = color, style = Stroke(width = 2.dp.toPx()))
     }
+}
+
+/**
+ * 自检结论的一行标题（Wave 44）。
+ *
+ * ⚠️ **「未运行 / 执行失败」与「质量结论」必须文案区分**：前者不是「模型坏」的结论，
+ * 否则会把「引擎没加载」误导成「模型有问题」。
+ */
+private fun probeHeadline(state: ProbeUiState): String = when (state) {
+    ProbeUiState.Idle -> "尚未运行"
+    ProbeUiState.Running -> "正在自检…"
+    is ProbeUiState.Completed -> when (state.verdict) {
+        ModelHealthVerdict.PASS -> "结论：通过（PASS）"
+        ModelHealthVerdict.DEGRADED -> "结论：降级（DEGRADED）"
+        ModelHealthVerdict.BAD -> "结论：异常（BAD）"
+    }
+    is ProbeUiState.NotRun -> when (state.reason) {
+        ModelHealthProbe.NotRunReason.ENGINE_NOT_LOADED -> "请先在模型页加载模型，再运行自检"
+        ModelHealthProbe.NotRunReason.ENGINE_BUSY -> "正在生成，请稍后再试"
+        ModelHealthProbe.NotRunReason.NO_ACTIVE_MODEL -> "当前没有激活模型"
+    }
+    is ProbeUiState.Failed -> "自检未跑通：${state.message}"
+}
+
+/** 自检结论配色：PASS=`onGlassMuted` / DEGRADED=`warning` / BAD=`danger`（与 [CapabilityRow] 同口径）。 */
+@Composable
+private fun probeHeadlineColor(state: ProbeUiState): Color {
+    val colors = LocalGlassColors.current
+    return when (state) {
+        is ProbeUiState.Completed -> when (state.verdict) {
+            ModelHealthVerdict.PASS -> colors.onGlassMuted
+            ModelHealthVerdict.DEGRADED -> colors.warning
+            ModelHealthVerdict.BAD -> colors.danger
+        }
+        is ProbeUiState.Failed -> colors.warning
+        is ProbeUiState.NotRun -> colors.onGlassSubtle
+        ProbeUiState.Running -> colors.onGlass
+        ProbeUiState.Idle -> colors.onGlassSubtle
+    }
+}
+
+/** 自检结论的补充说明（采样预览 / 执行失败澄清）；null = 不渲染第二行。 */
+private fun probeDetail(state: ProbeUiState): String? = when (state) {
+    is ProbeUiState.Completed -> {
+        val preview = state.sample.replace('\n', ' ').take(120)
+        "耗时 ${state.elapsedMs}ms · 采样：${preview.ifBlank { "（空）" }}"
+    }
+    is ProbeUiState.Failed ->
+        "执行失败（非质量结论）：这不代表模型坏，请确认模型已加载、设备未过热后重试"
+    else -> null
 }
 
 @Composable

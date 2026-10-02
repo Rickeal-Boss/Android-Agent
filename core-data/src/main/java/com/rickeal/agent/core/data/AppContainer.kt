@@ -36,6 +36,7 @@ import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
 import com.rickeal.agent.core.engine.EngineInitStatus
 import com.rickeal.agent.core.engine.EngineLoadCoordinator
+import com.rickeal.agent.core.engine.local.ModelHealthProbe
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.data.notify.GenerationNotifier
 import com.rickeal.agent.core.data.perf.PerformanceMonitorManager
@@ -211,6 +212,15 @@ class AppContainer(
 
     /** 引擎加载状态流（本轮仅供观察/日志，不接 UI）。 */
     val engineInitStatus: StateFlow<EngineInitStatus> get() = engineLoadCoordinator.status
+
+    /**
+     * 模型加载后小样本自检探针（Wave 44 P0-1）。
+     *
+     * 由诊断页的「运行自检」按钮**手动触发**（绝不加载后自动跑 —— 见探针 KDoc 的会话重建
+     * 代价申报）。进程级单例：探针内部持单飞标志与递增 epoch，跨页面切换保持单飞语义。
+     * 依赖 [engineFactory]（取当前激活引擎实例），故声明在其后。
+     */
+    val modelHealthProbe: ModelHealthProbe = ModelHealthProbe(engineFactory)
 
     /** 长期记忆目录（`filesDir/agent_memory`）：[agentMemory] 的落点，也是存储用量分桶之一。 */
     private val agentMemoryDir: File = File(context.filesDir, "agent_memory")

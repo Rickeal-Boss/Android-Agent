@@ -94,6 +94,12 @@ fun NavGraphBuilder.settingsGraph(
         // 物理量观测（Wave 30 §2.2）：StateFlow 收集 + 窗口开关经引用计数交给
         // DiagnosticsScreen 的 DisposableEffect（进入 acquire / 离开 release）。
         val perfSamples by container.perfMonitorManager.samples.collectAsState()
+        // 模型自检（Wave 44 P0-1）：探针状态机归 DiagnosticsViewModel（本页此前无 VM，
+        // 探针引入异步/可变状态后该姿态已不成立 —— 见 DiagnosticsScreen KDoc）。
+        val diagnosticsViewModel: DiagnosticsViewModel = viewModel(
+            factory = viewModelFactory { DiagnosticsViewModel(container) },
+        )
+        val probeState by diagnosticsViewModel.probeState.collectAsState()
         DiagnosticsScreen(
             onBack = { navController.popBackStack() },
             readPersistedErrors = { container.agentLogFileStore.read() },
@@ -105,6 +111,8 @@ fun NavGraphBuilder.settingsGraph(
                 if (active) container.perfMonitorManager.acquire("diagnostics")
                 else container.perfMonitorManager.release("diagnostics")
             },
+            probeState = probeState,
+            onRunProbe = diagnosticsViewModel::onRunProbe,
         )
     }
 
