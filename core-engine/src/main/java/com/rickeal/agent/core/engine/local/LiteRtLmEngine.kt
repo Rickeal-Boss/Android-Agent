@@ -186,18 +186,77 @@ internal object EngineLoadDegrade {
     const val MAX_LOAD_ATTEMPTS = 4
 
     /**
+     * 一次**会话期**模态降级重建的最大次数（Wave 45）：每模态最多降一次 ⇒ 上界 = 模态数（2）。
+     *
+     * 与 [MAX_LOAD_ATTEMPTS] 正交：本常量兜 `ensureConversationWithDegrade` 的重试循环
+     * （即便 [EngineAttempt.degraded] 幂等失效，也最多重建 2 次）；[MAX_LOAD_ATTEMPTS]
+     * 兜 `loadLocked` 内「重建 → 再失败 → 再重建」的驱动循环。
+     */
+    const val MAX_SESSION_DEGRADE_ATTEMPTS = 2
+
+    /**
      * 确定性「缺子图」错误：litert-lm 请求 `AUDIO_ENCODER_HW` / `VISION_ENCODER` 子图，
      * 但容器 section 表里没有 ⇒ 抛含 `NOT_FOUND` 的错误（Wave 43 真机根因实证）。
      */
     fun isDeterministicMissingSection(t: Throwable): Boolean =
         t.message.orEmpty().contains("NOT_FOUND", ignoreCase = true)
 
-    /** 从用户请求（解析后的值）构造首个尝试。 */
+    /**
+     * 从用户请求（解析后的值）构造首个尝试。
+     *
+     * [degraded] 默认空集 ⇒ 既有调用（load 路径）逐字不变；会话期降级重建
+     * （[LiteRtLmEngine.loadLocked] 的 `seedDegrade`）用它**预置**「已去模态」。
+     */
     fun initial(
         backend: InferenceBackend,
         visionBackend: InferenceBackend?,
         audioBackend: InferenceBackend?,
-    ): EngineAttempt = EngineAttempt(backend, visionBackend, audioBackend)
+        degraded: Set<ModelModality> = emptySet(),
+    ): EngineAttempt = EngineAttempt(backend, visionBackend, audioBackend, degraded)
+
+    /**
+     * 从错误消息解析**缺失的模态**（Wave 45，会话创建路径）。
+     *
+     * 与 load 路径的 [dropOneModality] 盲降不同：真机会话创建失败消息含 section 名
+     * （`TF_LITE_AUDIO_ENCODER_HW` / `VISION_ENCODER`）⇒ 可精确解析（Wave 45 §1.3 纠偏）。
+     *
+     * @return 命中的模态；null = 非确定性缺 section / 消息不含可识别 section 名
+     *   （交由 [modalityToDegradeOnSessionError] 走盲降兜底）。
+     */
+    fun missingModality(error: Throwable): ModelModality? {
+        if (!isDeterministicMissingSection(error)) return null
+        val message = error.message.orEmpty()
+        return when {
+            message.contains("AUDIO_ENCODER", ignoreCase = true) -> ModelModality.AUDIO
+            message.contains("VISION_ENCODER", ignoreCase = true) -> ModelModality.VISION
+            else -> null
+        }
+    }
+
+    /**
+     * **会话创建**失败 → 是否需去模态重建；null = 不触发（落既有「工具重试 / legacy 回退」路径）。
+     *
+     * 三道闸（Wave 45 §4-4「text 级 NOT_FOUND 不触发」纪律）：
+     *  1. 非确定性缺 section（[isDeterministicMissingSection] 为 false）⇒ null；
+     *  2. `available = currentModalities - degradedModality` 为空（已降无可降 / text 级
+     *     NOT_FOUND）⇒ null；
+     *  3. 命名模态 `∉ available`（如已降过）⇒ null。
+     *
+     * 解析优先：命中 [missingModality] 时按 section 名精确去；解析不出时按 [dropOneModality]
+     * 的盲降优先级兜底（**先 AUDIO 后 VISION** —— 复用同一优先级，不另起一套）。
+     */
+    fun modalityToDegradeOnSessionError(
+        error: Throwable,
+        currentModalities: Set<ModelModality>,
+        degradedModality: Set<ModelModality>,
+    ): ModelModality? {
+        if (!isDeterministicMissingSection(error)) return null
+        val available = currentModalities - degradedModality
+        if (available.isEmpty()) return null
+        val named = missingModality(error)
+        if (named != null) return if (named in available) named else null
+        return if (ModelModality.AUDIO in available) ModelModality.AUDIO else ModelModality.VISION
+    }
 
     /**
      * 用户请求是否涉及 GPU（主后端或视觉后端为 GPU）—— GPU 文案门控与二段降级的共同判据，
@@ -548,6 +607,30 @@ class LiteRtLmEngine(
         if (!waitForGenerationsToFinish()) {
             throw EngineException("LiteRT-LM：上一次生成仍在继续，请稍候重试")
         }
+        loadLocked(config, seedDegrade = emptySet(), forceRebuild = false)
+    }
+
+    /**
+     * 加锁加载段（Wave 45）：[load] 与会话期模态降级重建 [reloadForDegrade] **共用**。
+     *
+     * **闸门由各调用方在入口施加**（本函数不重复 [waitForGenerationsToFinish]）：
+     *  - [load]：闸门 → `loadLocked(∅, false)`；
+     *  - [reloadForDegrade]：闸门 → `loadLocked(degradedModality + modality, true)`。
+     *
+     * 为什么共用而非另写一份（Wave 45 R1，规避「两份实现各自演化 ⇒ 静默失效」的历史坑）：
+     * Engine 构造 + GPU 二段降级 + 诊断 + 日志是一整块，复制必然分叉。
+     *
+     * @param seedDegrade 会话期降级重建时**预置**的「已去模态」集合（load 路径恒 ∅）；
+     *   作为 [EngineAttempt.degraded] 的种子，并据它把对应模态后端置 null。
+     * @param forceRebuild 为 true 时**强制**整引擎重建（`sameEngine` 复用判据失效）——
+     *   会话期降级重建必须换掉 native Engine（audio / vision 后端是 EngineConfig 级参数，
+     *   不重建改不了）。
+     */
+    private suspend fun loadLocked(
+        config: EngineLoadConfig,
+        seedDegrade: Set<ModelModality>,
+        forceRebuild: Boolean,
+    ) {
         withContext(engineDispatcher) {
             mutex.withLock {
                 val modelPath = config.model?.path
@@ -598,7 +681,8 @@ class LiteRtLmEngine(
                 // 解析值就从 null 变成 GPU —— 判据为 false，引擎重建，视觉后端才会真正存在。
                 // 若改成拿原始配置比并加 `!wantsVision ||` 前缀，这条路径会判成「可复用」，
                 // 于是模型被标成支持视觉、UI 允许发图，而底层 Engine 根本没有视觉后端 —— 静默失效。
-                val sameEngine = loaded &&
+                val sameEngine = !forceRebuild &&
+                    loaded &&
                     engine != null &&
                     loadedModelPath == modelPath &&
                     loadedContextLength == config.config.contextLength &&
@@ -705,8 +789,12 @@ class LiteRtLmEngine(
 
                 var current = EngineLoadDegrade.initial(
                     backend = config.config.backend,
-                    visionBackend = resolvedVisionBackend,
-                    audioBackend = resolvedAudioBackend,
+                    // 会话期降级重建（Wave 45）：seedDegrade 里的模态把对应后端置 null，
+                    // 于是本轮 EngineConfig 不再带该模态 —— 这是「audio 真降得掉」的关键
+                    // （EngineConfig 读的是 current.*，不是 resolved*）。
+                    visionBackend = if (ModelModality.VISION in seedDegrade) null else resolvedVisionBackend,
+                    audioBackend = if (ModelModality.AUDIO in seedDegrade) null else resolvedAudioBackend,
+                    degraded = seedDegrade,
                 )
                 // visited 去重 + 上限 4（防循环）：任何重复状态不再入队。
                 val visited = mutableSetOf(current)
@@ -1071,6 +1159,17 @@ class LiteRtLmEngine(
                 conv
             }
         } catch (t: Throwable) {
+            // ① 模态降级（最高优先级，Wave 45）：确定性缺编码器子图（NOT_FOUND）⇒ 抛信号，
+            //    由 flow 层（ensureConversationWithDegrade）去该模态重建后重试建会话。
+            //    次序纪律（Wave 45 §4-3）：模态 → ② 工具重试 → ③ legacy 回退。
+            //    NOT_FOUND 来自 audio/vision 子图，**与工具无关** —— 若先走「不带工具重试」会
+            //    必然同样失败，且会永久置 nativeToolsRejected=true（一次假证伪）。
+            val degrade = EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = t,
+                currentModalities = currentEngineModalities(),
+                degradedModality = degradedModality,
+            )
+            if (degrade != null) throw ModalityDegradeNeeded(degrade)
             val reason = t.message?.take(160) ?: "未知错误"
             // 原生工具通道的**自愈**（Wave 34 题 A）：会话创建失败的原因可能**就是**注册工具
             // （schema 形状被这个转换件拒绝 —— 探针只能用哑工具验证形状，无法覆盖每个真实
@@ -1228,10 +1327,89 @@ class LiteRtLmEngine(
         return created
     }
 
+    // ---------------------------------------------- 会话期模态降级（Wave 45）
+
+    /**
+     * 会话创建遇「容器缺编码器子图」的内部信号（非终态失败，需去模态重建后重试）。
+     *
+     * 为什么用「抛信号 + flow 层重试」而非把 [ensureConversation] 改成 suspend 内部重建
+     * （Wave 45 §4-2）：[ensureConversation] 在开头捕获 `currentEngine = engine` 局部引用后
+     * mutate ~15 个字段，若在其内部 suspend 并重建，`currentEngine` 会变陈旧（重建后 engine
+     * 是新对象）⇒ 极易踩 native use-after-free。信号方案让 [generateStream] 重建后**重新调用**
+     * [ensureConversation]（拿到全新 `currentEngine`），规避该陷阱。
+     *
+     * 可见性 `private`：仅本文件内抛 / 捕（[ensureConversation] 抛、[ensureConversationWithDegrade]
+     * 捕），不跨模块观测（Wave 45 裁决 §4）。
+     */
+    private class ModalityDegradeNeeded(val modality: ModelModality) :
+        Exception("会话创建缺 $modality 编码器子图，需去模态重建后重试")
+
+    /**
+     * 当前 Engine **实际启用**的模态 = 用户请求解析值（`loaded*Backend` 非空）− 已降级模态。
+     *
+     * ⚠️ `loadedVisionBackend` / `loadedAudioBackend` 记的是**用户请求的解析值**（Wave 45 §4-6，
+     * 有意错位：进 `sameEngine` 复用判据，防误重建），**不等于** Engine 实际启用的模态 ——
+     * 所以必须再减去 [degradedModality]，才是「本次会话还能拿它去降的模态」。
+     */
+    private fun currentEngineModalities(): Set<ModelModality> = buildSet {
+        if (loadedVisionBackend != null) add(ModelModality.VISION)
+        if (loadedAudioBackend != null) add(ModelModality.AUDIO)
+    } - degradedModality
+
+    /**
+     * 会话期模态降级重建：与 [load] 共用 [loadLocked]，差异 = `forceRebuild=true` + `seedDegrade`。
+     *
+     * 时序纪律（Wave 45 §4-5，**单点赋值**）：不在调用本函数**之前**写 [degradedModality] ——
+     * [loadLocked] 内部先 [releaseInternal]（会把 degradedModality 清空，V19/L1917），成功后再
+     * 由 L749 统一赋值 `degradedModality = current.degraded`。故「要去掉的模态」作为 `seedDegrade`
+     * **传参**进 [loadLocked]，最终值 = `degradedModality + modality`。
+     */
+    private suspend fun reloadForDegrade(modality: ModelModality) {
+        // 闸门（Wave 45 §4-1）：沿用既有安全契约 —— releaseInternal 会 engine?.close()，
+        // 对**并发**在途生成是 native use-after-free（SIGSEGV，runCatching 抓不住）。
+        if (!waitForGenerationsToFinish()) {
+            throw EngineException("LiteRT-LM：有在途生成，模态降级重建被跳过，请稍候重试")
+        }
+        val config = loadConfig
+            ?: throw EngineException("LiteRT-LM：会话期降级重建缺少 loadConfig")
+        AgentLogStore.warn(
+            "LiteRT-LM 会话创建遇容器缺 $modality 编码器 section（NOT_FOUND），" +
+                "已去该模态重建引擎后重试（请求后端：${config.config.backend}）"
+        )
+        loadLocked(
+            config = config,
+            seedDegrade = degradedModality + modality,
+            forceRebuild = true,
+        )
+    }
+
+    /**
+     * 建会话 + 会话期模态降级的有限重试（每模态一次，上限 [EngineLoadDegrade.MAX_SESSION_DEGRADE_ATTEMPTS]）。
+     *
+     * 🔴 **不得把 [activeGenerations] 的 `incrementAndGet()` 上提到本函数之前**（Wave 45 R12）：
+     * 会话期重建发生在自增**之前** ⇒ 本生成尚未计数 ⇒ [reloadForDegrade] 的闸门读到 0、零等待
+     * 返回。若把自增上提，[waitForGenerationsToFinish] 会**自等自**（等自己归零）⇒ 真死锁。
+     */
+    private suspend fun ensureConversationWithDegrade(request: GenerationRequest): LiteRtConversation {
+        var attempts = 0
+        while (true) {
+            try {
+                return ensureConversation(request)
+            } catch (signal: ModalityDegradeNeeded) {
+                attempts++
+                if (attempts > EngineLoadDegrade.MAX_SESSION_DEGRADE_ATTEMPTS) throw signal
+                reloadForDegrade(signal.modality)
+            }
+        }
+    }
+
     // -------------------------------------------------------- generate
 
     override fun generateStream(request: GenerationRequest): Flow<GenerationChunk> = flow {
-        val conv = ensureConversation(request)
+        // 会话期模态降级（Wave 45）：`NOT_FOUND: TF_LITE_AUDIO_ENCODER_HW` 由 createConversation
+        // 抛出（非 load），故降级链必须挂在这里。🔴 本调用**先于**下方 activeGenerations
+        // 自增 —— 不得调换顺序，否则重建闸门自等自死锁（见 ensureConversationWithDegrade KDoc）。
+        val conv = ensureConversationWithDegrade(request)
         activeGenerations.incrementAndGet()
         val thinkingOn = when (request.config.thinking) {
             ThinkingMode.ON -> true
