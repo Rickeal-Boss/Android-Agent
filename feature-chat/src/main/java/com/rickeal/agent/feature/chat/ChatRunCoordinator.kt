@@ -998,6 +998,11 @@ internal class ChatRunCoordinator(
                 if (shouldSalvageOutput(event.terminatedBy, event.report, salvageText)) {
                     commitAssistant(salvageText, _streaming.value.thinking.ifBlank { null }, null, conversationId)
                 }
+                // ⚠️ 刻意不 flushNow()（Wave 48 D1）：本分支读的 `salvageText` 由 `flushNow()` 单点产出，
+                // 其语义精确等于「已 flush 进 _streaming = 已上屏 = 用户已见」。而此刻未 flush 的
+                // textBuffer 尾部（最后一次 TextDelta 后 ≤120ms）**尚未渲染**，不属于「用户已见的正文」；
+                // 救它反而会把用户没见过的尾巴灌进历史、破坏判据。故四条终态里唯独 Failed 不 flushNow，
+                // 与 onStop/Cancelled/Finished 的「先 flush 再决策」是**有意的不对称**，不是漏写。
                 // 失败尝试的半截输出不落库（与 Retrying 同理），但缓冲必须清。
                 resetStreamingText()
                 uiState.update {
@@ -1028,9 +1033,13 @@ internal class ChatRunCoordinator(
             is AgentEvent.Cancelled -> {
                 flushNow()
                 val partial = event.partialText.ifBlank { _streaming.value.text }
+                // thinking 必须与 partial 同点取快照（Wave 48 G1，与 onStop 同形态）：下方
+                // resetStreaming() 会清空 _streaming（含 thinking），在其之后读
+                // `_streaming.value.thinking` 恒为空 ⇒ 取消路径会静默丢思考（Wave 47 项3）。
+                val thinking = _streaming.value.thinking.ifBlank { null }
                 if (partial.isNotBlank()) {
                     // thinking 同源（Wave 47 项3）：此处 resetStreaming 尚未执行，缓冲仍在。
-                    commitAssistant(partial, _streaming.value.thinking.ifBlank { null }, null, conversationId)
+                    commitAssistant(partial, thinking, null, conversationId)
                 }
                 uiState.update {
                     it.copy(
