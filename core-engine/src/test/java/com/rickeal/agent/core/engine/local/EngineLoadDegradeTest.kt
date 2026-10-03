@@ -424,4 +424,42 @@ class EngineLoadDegradeTest {
             ),
         )
     }
+
+    // ─────────────── Wave 48 D2：盲降路径「已降模态不再被选中」专测 ───────────────
+
+    @Test
+    fun `会话降级盲降跳过已降模态`() {
+        // 盲降（错误不含 section 名）+ 音频已降过 ⇒ 必须跳过 AUDIO、选 VISION（而非重选 AUDIO）。
+        // 这是「available 减法在盲降分支生效、已降模态不被重选」的专测 —— 现有用例只覆盖
+        // 盲降「无已降」（会话降级未命名盲降优先音频）与命名「已降」（会话降级命名但已降过不重复）。
+        // ⚠️ 构造必须带 degraded={AUDIO}，否则退化成已有用例（假绿）。
+        assertEquals(
+            ModelModality.VISION,
+            EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = notFoundUnnamed(),                       // 复用现有 helper（:29）
+                currentModalities = setOf(ModelModality.AUDIO, ModelModality.VISION),
+                degradedModality = setOf(ModelModality.AUDIO),
+            ),
+        )
+        // 命名路径同形态（已降 AUDIO，错误命名 AUDIO）⇒ 不重选，返回 null（已有用例，此处并置强化）。
+        assertNull(
+            EngineLoadDegrade.modalityToDegradeOnSessionError(
+                error = notFound(),                              // 复用现有 helper（:22，含 AUDIO_ENCODER）
+                currentModalities = setOf(ModelModality.AUDIO, ModelModality.VISION),
+                degradedModality = setOf(ModelModality.AUDIO),
+            ),
+        )
+    }
+
+    @Test
+    fun `会话降级盲降循环每模态一次后收敛`() {
+        // 循环级终止性：盲降信号连发两次 ⇒ 每模态恰降一次后收敛（reloads == 2），不超上限。
+        // 与 `会话降级重试循环每模态一次后停止`（:375）互补 —— 后者用**命名**信号，本条用**盲降**。
+        val reloads = simulateSessionDegrade(
+            initialModalities = setOf(ModelModality.AUDIO, ModelModality.VISION),
+            signals = listOf(notFoundUnnamed(), notFoundUnnamed(), null),
+        )
+        assertEquals(2, reloads)
+        assertTrue(reloads <= EngineLoadDegrade.MAX_SESSION_DEGRADE_ATTEMPTS)
+    }
 }
