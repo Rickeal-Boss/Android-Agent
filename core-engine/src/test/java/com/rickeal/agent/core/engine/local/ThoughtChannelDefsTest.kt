@@ -23,10 +23,10 @@ class ThoughtChannelDefsTest {
             ModelDescriptor(family = ModelFamily.MINICPM, fileName = "MiniCPM5-2B_int4.litertlm"),
         )
         assertEquals(1, defs.size)
-        // front() 必须就是 MiniCPM5 自己的思考通道 —— 预算正确性的落点。
-        assertEquals("thought", defs.front().channelName)
-        assertEquals("<think>", defs.front().start)
-        assertEquals("</think>", defs.front().end)
+        // 列表首元素（native 的 channels.front()）必须就是 MiniCPM5 自己的思考通道 —— 预算正确性的落点。
+        assertEquals("thought", defs.first().channelName)
+        assertEquals("<think>", defs.first().start)
+        assertEquals("</think>", defs.first().end)
     }
 
     @Test
@@ -35,7 +35,7 @@ class ThoughtChannelDefsTest {
         val upper = thoughtChannelDefsFor(
             ModelDescriptor(family = ModelFamily.MINICPM, fileName = "MINICPM5-2B.litertlm"),
         )
-        assertEquals("<think>", upper.front().start)
+        assertEquals("<think>", upper.first().start)
         // fileName 为空 ⇒ 回退 path 末段（与 ModelHeuristics.applyTo 同源口径）。
         val fromPath = thoughtChannelDefsFor(
             ModelDescriptor(
@@ -44,7 +44,7 @@ class ThoughtChannelDefsTest {
                 path = "/data/models/MiniCPM5-2B_int4.litertlm",
             ),
         )
-        assertEquals("<think>", fromPath.front().start)
+        assertEquals("<think>", fromPath.first().start)
     }
 
     @Test
@@ -53,8 +53,8 @@ class ThoughtChannelDefsTest {
         val defs = thoughtChannelDefsFor(
             ModelDescriptor(family = ModelFamily.MINICPM, fileName = "MiniCPM-V-4-int8.litertlm"),
         )
-        assertEquals("<|channel>thought", defs.front().start)
-        assertEquals("<channel|>", defs.front().end)
+        assertEquals("<|channel>thought", defs.first().start)
+        assertEquals("<channel|>", defs.first().end)
     }
 
     @Test
@@ -62,16 +62,16 @@ class ThoughtChannelDefsTest {
         val defs = thoughtChannelDefsFor(
             ModelDescriptor(family = ModelFamily.GEMMA_4, fileName = "gemma-4-E2B-it.litertlm"),
         )
-        assertEquals("thought", defs.front().channelName)
-        assertEquals("<|channel>thought", defs.front().start)
-        assertEquals("<channel|>", defs.front().end)
+        assertEquals("thought", defs.first().channelName)
+        assertEquals("<|channel>thought", defs.first().start)
+        assertEquals("<channel|>", defs.first().end)
     }
 
     @Test
     fun `null 模型回退 Gemma 标记`() {
         val defs = thoughtChannelDefsFor(null)
-        assertEquals("thought", defs.front().channelName)
-        assertEquals("<|channel>thought", defs.front().start)
-        assertEquals("<channel|>", defs.front().end)
+        assertEquals("thought", defs.first().channelName)
+        assertEquals("<|channel>thought", defs.first().start)
+        assertEquals("<channel|>", defs.first().end)
     }
 }
