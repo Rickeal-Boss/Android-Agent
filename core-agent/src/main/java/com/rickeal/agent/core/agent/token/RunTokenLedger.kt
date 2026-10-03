@@ -12,9 +12,13 @@ import kotlinx.coroutines.flow.update
  * 两个口径**刻意分开**，不做换算也不做对账：
  * - [sentTokens]：发送侧估算累计（[com.rickeal.agent.core.model.TokenEstimator] 口径），
  *   由 AgentRunner 发送侧记账块回写 —— 是「我们打算给模型多少上下文」的预估；
- * - [cumulativeIn] / [cumulativeOut]：引擎逐轮回报的 promptTokens / completionTokens
- *   累计 —— 是「引擎真实吃了多少」。两者的偏差（估算 vs 真实）本身就是观测信号，
- *   在这里合并或校准只会制造第三种口径。
+ * - [cumulativeIn] / [cumulativeOut]：**本仓自算**的 prompt / completion 累计，来自
+ *   `LiteRtLmEngine` 构造的 [TokenUsage]（本仓唯一产出点）—— `promptTokens` 是
+ *   [com.rickeal.agent.core.model.TokenEstimator] 的**估算**，`completionTokens` 是
+ *   **内容 chunk 帧计数**（流式回调里非空正文增量的帧数，**不是 token**）。
+ *   **引擎从不回报 usage**（native 侧无此出口），故它不是「引擎真实吃了多少」。
+ *   两者的偏差（估算 vs 帧计数）仍是观测信号，但其观测力**弱于**「估算 vs 真实」——
+ *   帧数与 token 数在字节级 BPE 下并不等价；在这里合并或校准只会制造第三种口径。
  *
  * 「只增不减」是语义目标而非实现约束：压缩触发全量重记时 sentTokens 会如实回落，
  * 投影方不做二次加工（见 [RunTokenLedger.onSendEstimated] KDoc）。

@@ -57,7 +57,7 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | ✨ **Liquid Glass UI** | Compose 液态玻璃设计系统（基于 Kyant0/AndroidLiquidGlass 移植改造，见 [NOTICE](NOTICE)）：背景模糊、折射高光、内描边、噪声微纹理、弹性动效 | ✅ 已落地 | 底层可降级（API 31~32 / 无 RuntimeShader） |
 | 🔌 **模型市场** | 模型清单管理、下载状态、能力探测（speculative decoding 等） | ✅ 已落地 | 13+ 官方预设 + 双镜像；直链下载依赖系统 DownloadManager |
 | 🛑 **物理断路器** | run 级物理量熔断与诊断卡（Wave 30）：墙钟预算（3min 提醒 / 5min 终止）、工具失败连击、调用振荡检测、Token 软预算、热保护四档（降参数 / 轮间冷却 / 拒新 run / 释放引擎）、熔断诊断卡（尝试清单 / 卡点 / 固定建议） | ✅ 已落地 | 纯函数判据 JVM 单测过；**热档位 / 墙钟 / 振荡真机未实测** |
-| 📒 **Token 账本** | run 级 token 账本（Wave 30/31）：发送侧估算（`sentTokens`）与引擎回报（`cumulativeIn` / `cumulativeOut`）双口径**并列、不换算不对账**；上下文占用条并列显示「估算≈ / 实测」 | ✅ 已落地 | 发送侧预估口径已接 UI（`ChatContextMeter`，Wave 31 流2）；**双口径一致性真机未实测** |
+| 📒 **Token 账本** | run 级 token 账本（Wave 30/31）：发送侧估算（`sentTokens`）与**本仓自算口径**（`cumulativeIn` / `cumulativeOut`）双口径**并列、不换算不对账**；上下文占用条并列显示「估算≈ / 实测」 | ✅ 已落地 | 发送侧预估口径已接 UI（`ChatContextMeter`，Wave 31 流2）；**双口径一致性真机未实测**。⚠️ `cumulativeIn`/`cumulativeOut` 是**本仓自算**（prompt 用 `TokenEstimator` 估算 + completion 为**内容 chunk 帧计数**，非 token）——**引擎从不回报 usage** ⇒ 该对照观测力弱于「估算 vs 真实」 |
 
 > 状态说明：**「代码状态」= 代码实际状态；「验证状态」= 真机验证程度，未标注项表示尚无真机数据**。代码状态分四态：
 > `✅ 已落地`（代码与单测完备，且生产路径上有构造点与消费方，运行时会执行）、
