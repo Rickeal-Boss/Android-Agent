@@ -36,7 +36,7 @@ object ModelHeuristics {
         )
     }
 
-    /** 推断出的能力合并进已有 descriptor（只覆盖「看起来更可信」的启发式结果）。 */
+    /** 推断出的能力合并进已有 descriptor（用户显式设置优先，否则按启发式重算）。 */
     fun applyTo(descriptor: ModelDescriptor): ModelDescriptor {
         val raw = descriptor.fileName.ifBlank {
             descriptor.path.substringAfterLast('/', descriptor.path)
@@ -51,7 +51,15 @@ object ModelHeuristics {
             } else {
                 descriptor.quantization
             },
-            capabilities = descriptor.capabilities.mergeHeuristic(result.capabilities),
+            // Wave 48：来源决定采信谁 —— 用户改过（USER）则以持久化值为准，否则用启发式**替换**
+            // （不再并集，避免「曾被启发式写 true」的位永久为 true）。
+            capabilities = resolveCapabilities(
+                descriptor.capabilities,
+                descriptor.capabilitiesSource,
+                result.capabilities,
+            ),
+            // 旧 null（Wave 48 之前的存量数据）首次重算即迁移为 HEURISTIC。
+            capabilitiesSource = descriptor.capabilitiesSource ?: CapabilitySource.HEURISTIC,
         )
     }
 
@@ -194,19 +202,19 @@ object ModelHeuristics {
         }
     }
 
-    /** 启发式结果只做「并集」：任一方说支持就支持，避免把用户手动打开的能力关掉。 */
-    private fun ModelCapabilities.mergeHeuristic(other: ModelCapabilities): ModelCapabilities =
-        ModelCapabilities(
-            text = text || other.text,
-            image = image || other.image,
-            audio = audio || other.audio,
-            toolCalling = toolCalling || other.toolCalling,
-            thinking = thinking || other.thinking,
-            speculativeDecoding = speculativeDecoding || other.speculativeDecoding,
-            preferredBackends = if (preferredBackends.size > other.preferredBackends.size) {
-                preferredBackends
-            } else {
-                other.preferredBackends
-            },
-        )
+    /**
+     * 能力位来源解析（Wave 48，纯函数，可 JVM 单测）。
+     *
+     * - `source == USER` ⇒ 采信持久化值（用户显式编辑优先，启发式**不再改写**）；
+     * - 其它（`HEURISTIC` / **旧数据 `null`**）⇒ 用启发式**替换**（旧 null 视作 HEURISTIC
+     *   ⇒ 重算，修好存量虚高；见 `wave48-design.md` §3.3 迁移策略 (i)）。
+     *
+     * 刻意不做并集（旧 `mergeHeuristic` 语义）：并集只增不减，会让「曾被启发式写 true」的位
+     * 永久为 true（真机 `_w45_models.json` 5 模型全虚高），用户手动关掉的位被反复抬回。
+     */
+    internal fun resolveCapabilities(
+        persisted: ModelCapabilities,
+        source: CapabilitySource?,
+        heuristic: ModelCapabilities,
+    ): ModelCapabilities = if (source == CapabilitySource.USER) persisted else heuristic
 }

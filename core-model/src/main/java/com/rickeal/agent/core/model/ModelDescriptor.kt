@@ -41,6 +41,22 @@ data class ModelCapabilities(
     val preferredBackends: Set<InferenceBackend> = setOf(InferenceBackend.CPU),
 )
 
+/**
+ * 能力位的**来源**（Wave 48）。
+ *
+ * 现有 schema 只有布尔值、无法区分「用户改的」与「启发式写的」，导致 `applyTo` 的并集语义
+ * 让「曾被启发式写 true」的位永久为 true（真机 `_w45_models.json` 5 模型全虚高）。本枚举
+ * 让 `applyTo` 能按来源决定「采信持久化值」还是「用启发式重算」。
+ *
+ * - [HEURISTIC]：启发式初值（`applyTo` 可重算覆盖）。
+ * - [USER]：用户显式编辑过（`setCapabilities`），此后启发式**不再改写**能力位。
+ *
+ * ⚠️ `ModelDescriptor.capabilitiesSource` 为 `null` = **Wave 48 之前的旧数据**（无法区分
+ * 来源）；`applyTo` 会把旧 `null` 迁移为 [HEURISTIC]（重算，见迁移策略）。
+ */
+@Serializable
+enum class CapabilitySource { HEURISTIC, USER }
+
 @Serializable
 data class ModelDescriptor(
     val id: String = newId(),
@@ -52,6 +68,14 @@ data class ModelDescriptor(
     val sizeBytes: Long = 0L,
     val sha256: String? = null,
     val capabilities: ModelCapabilities = ModelCapabilities(),
+    /**
+     * 能力位来源（Wave 48）：[CapabilitySource.USER] = 用户显式编辑过（`setCapabilities`），
+     * 此后启发式**不再改写**；[CapabilitySource.HEURISTIC] = 启发式初值（`applyTo` 可重算覆盖）；
+     * `null` = **Wave 48 之前的旧数据**（无法区分，`applyTo` 首次重算迁移为 HEURISTIC）。
+     *
+     * 新增带默认值的字段对旧 JSON **向后兼容**（缺失 → 取默认 `null`）。
+     */
+    val capabilitiesSource: CapabilitySource? = null,
     val defaultParams: SamplingParams = SamplingParams(),
     val quantization: Quantization = Quantization.UNKNOWN,
     val contextLength: Int = 4096,

@@ -6,6 +6,7 @@ import android.os.Environment
 import android.provider.OpenableColumns
 import com.rickeal.agent.core.engine.local.ModelCapabilityProbe
 import com.rickeal.agent.core.model.AgentLogStore
+import com.rickeal.agent.core.model.CapabilitySource
 import com.rickeal.agent.core.model.ModelCapabilities
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelHeuristics
@@ -139,6 +140,14 @@ class ModelRepository(
             val parseFailed = hasFile && parsed == null
             val known = parsed?.filter { it.path.isNotBlank() } ?: emptyList()
             val knownPaths = known.map { it.path }.toSet()
+            // 迁移可见化（Wave 48）：旧 `models.json` 无 `capabilitiesSource`（读入为 null）⇒
+            // 本次 refresh 会按启发式**重算并迁移为 HEURISTIC**（修好存量能力位虚高）。只记
+            // 「发生」这个事实与条数，**不记文件名 / 路径**（避免把用户模型清单带出日志）；
+            // 首次 refresh 写回后磁盘即带来源字段 ⇒ 该日志只出一次。
+            val migratedCount = known.count { it.capabilitiesSource == null }
+            if (migratedCount > 0) {
+                AgentLogStore.info("旧条目能力位来源未知，已按启发式重算：$migratedCount 条")
+            }
             val discovered = scanDirectories().filter { it.path !in knownPaths }
             // 双重去重：
             //  1) knownPaths 挡掉「已登记 + 又被扫描到」的同路径文件 —— 就地登记的下载文件正好走这条
@@ -217,13 +226,23 @@ class ModelRepository(
 
     suspend fun setCapabilities(id: String, capabilities: ModelCapabilities) {
         val current = find(id) ?: return
-        upsert(current.copy(capabilities = capabilities))
+        // Wave 48：用户显式编辑 ⇒ 置来源为 USER，此后启发式（applyTo / probe）不再改写能力位。
+        upsert(
+            current.copy(
+                capabilities = capabilities,
+                capabilitiesSource = CapabilitySource.USER,
+            ),
+        )
     }
 
     /**
      * 能力探测入口（架构文档 §5.3）。
      * 先跑文件名启发式补齐 family/量化/能力位，再用 LiteRT-LM 的 Capabilities 探测
      * 是否支持 speculative decoding。探测失败一律吞掉。
+     *
+     * ⚠️ Wave 48：`applyTo` 现按**来源**决定能力位 —— `capabilitiesSource == USER` 时
+     * **不覆盖**用户能力位（仅本处照旧更新 `speculativeDecoding`）；否则按启发式重算。
+     * `source` 不因探测而改变（USER 保持 USER）。
      */
     suspend fun probe(id: String): ModelDescriptor? = withContext(Dispatchers.IO) {
         val current = _models.value.firstOrNull { it.id == id } ?: return@withContext null
