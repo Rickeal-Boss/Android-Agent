@@ -30,6 +30,8 @@ import com.rickeal.agent.core.model.EngineKind
 import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.GenerationChunk
 import com.rickeal.agent.core.model.InferenceBackend
+import com.rickeal.agent.core.model.ModelDescriptor
+import com.rickeal.agent.core.model.ModelFamily
 import com.rickeal.agent.core.model.ModelModality
 import com.rickeal.agent.core.model.newId
 import com.rickeal.agent.core.model.Role
@@ -60,32 +62,70 @@ import java.util.Locale
 internal const val THOUGHT_CHANNEL = "thought"
 
 /**
- * thought 通道的**输出解析声明**（Wave 43 真机实锤后新增，随全部会话构造点下发）。
+ * thought 通道的**输出解析声明**（Wave 43 真机实锤后新增；Wave 48 起**按模型选择**）。
  *
- * 背景：Gemma-4 的 chat template（litert-lm `google-gemma-4-multi-prefill.jinja`）在
- * 带 tools / system 角色时，模型会以 `<|channel>thought ... <channel|>` 自发输出思维链；
- * 而 0.17.1 运行时只有在容器元数据或 [ConversationConfig.channels] **声明**了该通道时
- * 才会做流式切分——未声明时标记连同思维链全部混进正文（OPPO PDRM00 真机 journal 实锤：
+ * ## 背景（Gemma 侧）
+ *
+ * Gemma-4 的 chat template（litert-lm `google-gemma-4-multi-prefill.jinja`）在带 tools /
+ * system 角色时，模型会以 `<|channel>thought ... <channel|>` 自发输出思维链；而 0.17.1
+ * 运行时只有在容器元数据或 [ConversationConfig.channels] **声明**了该通道时才会做流式
+ * 切分——未声明时标记连同思维链全部混进正文（OPPO PDRM00 真机 journal 实锤：
  * `<|channel>thought` 原样泄漏 + 思维链噪声触发轮内重复检测三连 → run 终止）。
  *
- * 声明后的行为：运行时把 start/end 标记之间的增量送进 `message.channels["thought"]`
- * （引擎回调侧 [THOUGHT_CHANNEL] 消费路径已有），正文不再含思维链与标记。
- * 防御性统一声明：MiniCPM5 等不输出该标记的模型零影响（无 start 标记即不触发切分）。
+ * ## 为什么必须「按模型选择」而不是无条件下发 Gemma 标记（Wave 48 N1 根因）
  *
- * 标记字面量出处：litert-lm 源码 `channel_util.h` kThoughtChannelName 注释
- * 「e.g. "<|channel>thought"」+ `io_types.h` 同款示例，与真机泄漏文本逐字节一致。
+ * MiniCPM5 的 `.litertlm` 元数据**本就声明了** `<think>` / `</think>` 通道，但 native 的
+ * 通道配置是 **overwrite 语义**（litert-lm `conversation.cc:189-200`：只要配置非空，元数据
+ * 通道被整体丢弃）⇒ 无条件下发 Gemma 标记会**覆盖**元数据声明 ⇒ native 只找
+ * `<|channel>thought`（MiniCPM5 永不输出）⇒ 不切分 ⇒ `<think>…</think>` 明文混进正文、
+ * `message.channels["thought"]` 恒空（真机铁证 `_ci-tools/_w47_after/08bacd4c-…json`）。
+ *
+ * ## 为什么**不能**简单 append 第二个 def（方案 A 被否决）
+ *
+ * native `ThinkingBudgetConstraint` 只用 `channels.front()` 的 start/end token ids
+ * （`conversation.cc:371-392`，含上游 TODO b/521921341）⇒ 多通道下只有 **front()** 生效。
+ * 若把 `<think>` 追加到末尾，W47 的 thinking 预算对 MiniCPM5 **静默失效**；放 front 则
+ * Gemma 失效。**按模型选 def 保证 front() 恒为该模型自己的思考通道** ⇒ 切分与预算同时正确。
+ *
+ * ## 判定口径 = 模型身份（**不**读 `capabilities.thinking`）
+ *
+ * channel def 描述的是**容器真实的通道语法**（模型事实），不是用户偏好；若随用户开关变化，
+ * 会出现「用户关思考但模型仍自决输出 `<think>` ⇒ 再次泄漏」。故取
+ * `family == MINICPM && 文件名含 "minicpm5"`（MiniCPM-V 视觉系无 thinking，不命中）。
+ *
+ * ## 声明后的行为与字面量出处
+ *
+ * 运行时把 start/end 标记之间的增量送进 `message.channels["thought"]`（引擎回调侧
+ * [THOUGHT_CHANNEL] 消费路径已有），正文不再含思维链与标记。
+ * - Gemma 侧标记 = litert-lm 源码 `channel_util.h` kThoughtChannelName 注释
+ *   「e.g. "<|channel>thought"」+ `io_types.h` 同款示例，与真机泄漏文本逐字节一致；
+ * - MiniCPM5 侧标记 = `_research/models/RM_MiniCPM5-2B.md:163`「the `thought` channel as
+ *   `<think>\n` / `</think>`」。
+ *
  * ⚠️ 类型注意：`ConversationConfig.channels` 的形参是 **List<Channel>**（通道定义
  * 列表，运行时按 channelName 归档），不是 Map —— 0.17.1 class 常量池里的 getChannels
  * 取出的就是 List，首版误判为 Map 编译期被拦。
- * ⚠️ 引用必须**全限定**：本文件 :42 已 import kotlinx.coroutines.channels.Channel，
+ * ⚠️ 引用必须**全限定**：本文件已 import kotlinx.coroutines.channels.Channel，
  * 短名 `Channel(...)` 会被解析到协程工厂函数而非 litertlm 构造器（首版实测两个编译错）。
  * ⚠️ 构造必须**位置实参**（channelName, start, end）：AAR 编译未带 -java-parameters，
  * 参数名不保留，具名实参编译期被拦（首版实测）。
+ *
+ * 纯函数（文件级 internal，可被单测直接调）：未登记的新模型回退 Gemma 标记（泄漏依旧，
+ * 但不比现状差）。**断言 `front()` 的 start 与 family 一致**是把「预算 front() 正确性」
+ * 钉进测试的关键（方案 B 相对方案 A 的唯一优势）。
  */
-internal val THOUGHT_CHANNEL_DEFS: List<com.google.ai.edge.litertlm.Channel> = listOf(
-    // Channel(channelName, start, end)
-    com.google.ai.edge.litertlm.Channel(THOUGHT_CHANNEL, "<|channel>thought", "<channel|>"),
-)
+internal fun thoughtChannelDefsFor(model: ModelDescriptor?): List<com.google.ai.edge.litertlm.Channel> {
+    // 文件名口径与 ModelHeuristics.applyTo 同源：fileName 空则回退 path 末段。
+    val name = model?.let { m -> m.fileName.ifBlank { m.path.substringAfterLast('/') } }.orEmpty()
+    val isMiniCpm5 = model?.family == ModelFamily.MINICPM &&
+        name.lowercase(Locale.ROOT).contains("minicpm5")
+    return if (isMiniCpm5) {
+        // Channel(channelName, start, end)
+        listOf(com.google.ai.edge.litertlm.Channel(THOUGHT_CHANNEL, "<think>", "</think>"))
+    } else {
+        listOf(com.google.ai.edge.litertlm.Channel(THOUGHT_CHANNEL, "<|channel>thought", "<channel|>"))
+    }
+}
 
 /**
  * 模型文件预检的体积下限（64MB）。
@@ -1093,6 +1133,10 @@ class LiteRtLmEngine(
             )
         }
 
+        // thought 通道输出解析声明（Wave 48：按模型选 def，见 [thoughtChannelDefsFor] KDoc）。
+        // 本会话内 4 个构造点（roleConfig / 第三态重建 / 不带工具重试 / legacy 回退）共用同一份，
+        // 保证 front() 恒为该模型自己的思考通道（W47 thinking 预算只认 front()）。
+        val thoughtDefs = thoughtChannelDefsFor(request.model)
         val roleConfig = ConversationConfig(
             samplerConfig = samplerConfig,
             // ⚠️ systemInstruction 的类型是 **Contents?**（litertlm 0.17.1 起，旧版是 String?）
@@ -1100,8 +1144,8 @@ class LiteRtLmEngine(
             systemInstruction = systemText?.let { Contents.of(it) },
             tools = nativeTools,
             initialMessages = seedMessages,
-            // thought 通道输出解析声明（THOUGHT_CHANNEL_DEFS KDoc：Wave 43 真机实锤）。
-            channels = THOUGHT_CHANNEL_DEFS,
+            // thought 通道输出解析声明（[thoughtChannelDefsFor] KDoc：Wave 43 真机实锤）。
+            channels = thoughtDefs,
             // 红线：automaticToolCalling **默认 true** —— 一旦为 true，native 会自己去调
             // OpenApiTool.execute() 执行工具，完全绕过 AgentRunner 的审批/沙箱/熔断管线。
             // 这里必须**显式**写 false（漏写即静默绕过审批，无报错、无日志）。
@@ -1116,9 +1160,13 @@ class LiteRtLmEngine(
             roleChannelActive = true
             // Wave 43 真机验收关键字：thought 通道声明是否随会话下发（Gemma-4 思维链
             // 泄漏治理）。channel 切分是运行时行为，创建成功 ≠ 运行时一定切分
-            // （元数据/模板差异），生效与否以生成期正文无 `<|channel>` 泄漏为准。
+            // （元数据/模板差异），生效与否以生成期正文无泄漏为准。
+            // ⚠️ 文案**动态打印实际下发的 start/end**（Wave 48）：否则 MiniCPM5 场景日志
+            // 恒说「剥离 <|channel>thought」，与真实下发（<think>）自相矛盾、误导排查。
             AgentLogStore.info(
-                "thought 通道解析声明已随会话下发（正文剥离 <|channel>thought…<channel|>，思维链入 channels[$THOUGHT_CHANNEL]）"
+                "thought 通道解析声明已随会话下发（正文剥离 " +
+                    "${thoughtDefs.first().start}…${thoughtDefs.first().end}，" +
+                    "思维链入 channels[$THOUGHT_CHANNEL]）"
             )
             var thirdState = false
             // preface 渲染诊断（Wave 28，@OptIn ExperimentalApi）：preface = systemInstruction +
@@ -1161,7 +1209,7 @@ class LiteRtLmEngine(
                         tools = nativeTools,
                         initialMessages = seedMessages,
                         // thought 通道输出解析声明（同 roleConfig）。
-                        channels = THOUGHT_CHANNEL_DEFS,
+                        channels = thoughtDefs,
                         // 红线：automaticToolCalling 默认 true，必须显式 false（同 roleConfig）。
                         automaticToolCalling = false,
                     )
@@ -1204,7 +1252,7 @@ class LiteRtLmEngine(
                             tools = emptyList(),
                             initialMessages = seedMessages,
                             // thought 通道输出解析声明（同 roleConfig）。
-                            channels = THOUGHT_CHANNEL_DEFS,
+                            channels = thoughtDefs,
                             // 红线：automaticToolCalling 默认 true，必须显式 false（同 roleConfig）。
                             automaticToolCalling = false,
                         )
@@ -1272,7 +1320,7 @@ class LiteRtLmEngine(
                         initialMessages = emptyList(),
                         // thought 通道输出解析声明（同 roleConfig；纯输出侧解析配置，
                         // 不参与模板渲染，legacy 路径下发无风险）。
-                        channels = THOUGHT_CHANNEL_DEFS,
+                        channels = thoughtDefs,
                         // 红线：automaticToolCalling 默认 true，必须显式 false（同 roleConfig）。
                         automaticToolCalling = false,
                     )
@@ -1428,17 +1476,25 @@ class LiteRtLmEngine(
             ThinkingMode.OFF -> false
             ThinkingMode.AUTO -> request.model?.capabilities?.thinking == true
         }
-        val extraContext: Map<String, Any> =
-            if (thinkingOn) mapOf("enable_thinking" to true) else emptyMap()
+        // thinking 开关的**显式**下发（Wave 48 1-B 修法）：absent ≠ off。
+        // 上游 litert-lm `conversation.cc:241-244` 只在「extraContext 未显式含该键」时才用
+        // `ThinkingConfig` 兜底写入 ⇒ 关思考若走「不发 enable_thinking」（absent），
+        // MiniCPM5 **int4** 模板（默认思考开）会按默认自决继续思考，关不掉（真机 bbd8db82：
+        // 关闭思考仍有思考区）。故 thinkingOn == false 时必须**显式**下发
+        // `enable_thinking = false`（RM_MiniCPM5-2B.md:107「false switches to direct answers」）。
+        // ⚠️ W47 曾**刻意**不写 false（「避开模板对 absent/false 处理不同的未知风险」）——
+        // 现证据表明 absent 确实 ≠ off，该规避不再成立；本条影响**所有** thinking 模型的
+        // 关思考路径，须真机逐模型回归（见 wave48 设计 §1.4 真机必验项）。
+        val extraContext: Map<String, Any> = mapOf("enable_thinking" to thinkingOn)
         // thinking 独立 token 预算（Wave 47 项1）：上游 litertlm 0.17.1 的 `ThinkingConfig`
         // 是 native **硬约束** —— 到预算即强制吐出 thinking 结束符、转入正文，从根上消灭
         // 「thinking 烧光 maxTokens ⇒ 无可见输出 ⇒ 空转 ⇒ 撞墙钟熔断」（真机 222s 空转）。
-        // `thinkingOn == false` 时恒 null ⇒ 与既有路径逐字节一致（不显式写
-        // enableThinking=false，避开「模板对 absent/false 处理不同」的未知风险）。
+        // `thinkingOn == false` 时恒 null ⇒ 不设预算；关思考的**显式 false** 已由上方
+        // extraContext 下发（二者同值、互补不冲突，extraContext 优先）。
         // 预算**计入** maxOutputToken（thinking + 正文共享）⇒ 必须 < maxTokens，见
         // [resolveThinkingBudget]（纯函数，可 JVM 单测）。
-        // ⚠️ `ThinkingConfig` 必须**全限定名 + 位置实参**：本文件 :43 已 import 协程
-        // `Channel`；AAR 未带 `-java-parameters`（与 THOUGHT_CHANNEL_DEFS 同因，见其 KDoc）。
+        // ⚠️ `ThinkingConfig` 必须**全限定名 + 位置实参**：本文件已 import 协程
+        // `Channel`；AAR 未带 `-java-parameters`（与 thoughtChannelDefsFor 同因，见其 KDoc）。
         val thinkingConfig = if (thinkingOn) {
             com.google.ai.edge.litertlm.ThinkingConfig(
                 true,
@@ -1621,8 +1677,9 @@ class LiteRtLmEngine(
             maxOutputToken = request.config.maxTokens,
             // thinking 独立预算（Wave 47 项1）：非 null 时 native 到预算强制转正文
             // （`ThinkingBudgetConstraint`，0.17.1 AAR `.so` 字节级证实已编入）。
-            // 与上方 `extraContext["enable_thinking"]` 同值、互补不冲突（native 侧
-            // `contains` 守卫保证 extraContext 优先）；thinkingOn=false 时为 null。
+            // 与上方 `extraContext["enable_thinking"]` 互补不冲突（native 侧 `contains`
+            // 守卫保证 extraContext 优先）：thinkingOn=true 时二者同值（true）；thinkingOn=false
+            // 时本项为 null，关思考由 extraContext 的显式 `enable_thinking=false` 承担（Wave 48 1-B）。
             thinkingConfig = thinkingConfig,
         )
 
@@ -1963,17 +2020,24 @@ class LiteRtLmEngine(
      * 探针跑在 `capabilities()` 内**返回之前** ⇒ 上层拿到的能力位一定已含真实探针结论，
      * 由它决定的「提示词里是否保留工具清单段」在任何生成之前就已确定 —— 与「探针必须在
      * 任何生成之前」的原约束等价。
+     *
+     * ## ⚠️ 必须传入 model（Wave 48）
+     *
+     * 通道 def 自 Wave 48 起**按模型选择**（[thoughtChannelDefsFor]）。探针内没有 `request`，
+     * 故 model 由调用方（`capabilities()` 的 `loadConfig?.model`，即实际会话所用模型）**显式传入**
+     * —— 让探针与生产构造点下发**同一份**通道 def，维持「探针盖住生产构造面」的纪律（若探针
+     * 自行读别的模型，探针通过 ≠ 生产可用）。
      */
-    private fun probeNativeTools(engine: Engine) {
+    private fun probeNativeTools(engine: Engine, model: ModelDescriptor?) {
         probedNativeTools = runCatching {
             val probeConversation = engine.createConversation(
                 ConversationConfig(
                     systemInstruction = null,
                     tools = nativeToolProbeProviders(),
-                    // thought 通道声明随探针同口径下发：探针通过即证明「channels 配置 +
-                    // 哑工具」的组合形状被本转换件接受（channels 是纯输出侧解析配置，
-                    // 不进模板，风险远低于 tools，但保持「探针盖住生产构造面」的纪律）。
-                    channels = THOUGHT_CHANNEL_DEFS,
+                    // thought 通道声明随探针同口径下发（与生产构造点同一份 def）：探针通过即证明
+                    // 「channels 配置 + 哑工具」的组合形状被本转换件接受（channels 是纯输出侧解析
+                    // 配置，不进模板，风险远低于 tools，但保持「探针盖住生产构造面」的纪律）。
+                    channels = thoughtChannelDefsFor(model),
                     // 红线：automaticToolCalling 默认 true，必须显式 false
                     // （探针虽不会真调用，但保持与生产构造点同一口径）。
                     automaticToolCalling = false,
@@ -1994,13 +2058,14 @@ class LiteRtLmEngine(
 
     override suspend fun capabilities(): EngineCapabilities {
         return withContext(engineDispatcher) {
+            val model = loadConfig?.model
             // 开关打开时才探，结果按引擎实例缓存（null = 未探测 ⇒ 再问时重探）。
-            // 语义详见 probeNativeTools 的 KDoc。
+            // 语义详见 probeNativeTools 的 KDoc。model 显式传入：通道 def 按模型选择（Wave 48），
+            // 探针必须与生产构造点下发同一份 def。
             if (probedNativeTools == null && loadConfig?.config?.nativeToolChannel == true) {
                 val currentEngine = engine
-                if (currentEngine != null) probeNativeTools(currentEngine)
+                if (currentEngine != null) probeNativeTools(currentEngine, model)
             }
-            val model = loadConfig?.model
             val caps = model?.capabilities
             // 模态降级收窄（Wave 44 P0-2）：容器缺 section 时（加载期或 Wave 45 起的会话创建期）
             // 已把该模态去掉，能力位必须同步收窄。⚠️ 本收窄只覆盖「模型卡文案 / 能力查询」；
