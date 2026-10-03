@@ -262,12 +262,13 @@ Android-Agent/
 
 | 工作流 | 触发 | 产物 |
 |---|---|---|
-| [`build.yml`](.github/workflows/build.yml) | push `main` / `UI` / `harness` / `harness-improve` / PR → `main`·`UI`·`harness` / 手动 | debug APK（artifact，保留 30 天）；失败时上传 `**/build/reports` |
-| [`release.yml`](.github/workflows/release.yml) | push `UI` / `harness` / `harness-improve` / tag `v*` / 手动 | debug APK（保底）+ 可选签名 release APK / AAB + GitHub Release |
+| [`build.yml`](.github/workflows/build.yml) | push `main` / `UI` / `harness` / `harness-improve` / `improve` / PR → `main`·`UI`·`harness` / 手动 | debug APK（artifact，保留 30 天）；失败时上传 `**/build/reports` |
+| [`release.yml`](.github/workflows/release.yml) | push `UI` / `harness` / `harness-improve` / `improve` / tag `v*` / 手动 | debug APK（保底）+ 可选签名 release APK / AAB + GitHub Release |
 
-> **分支口径**：`harness-improve` 与 `harness` 同规格 —— `release.yml` 在两条分支上都出
-> 「仓库密钥签名正式包 + debug 包」双产物（`push.branches` 同时列了二者）。PR 不触发
+> **分支口径**：`improve` / `harness-improve` 与 `harness` 同规格 —— `release.yml` 在三条分支上都出
+> 「仓库密钥签名正式包 + debug 包」双产物（`push.branches` 同时列了三者）。PR 不触发
 > `release.yml`（PR 门禁走 `build.yml` 的零密钥快速轨）。
+> `improve` 是自 W48 起的主开发分支（云端自 `harness-improve` 的同一提交 `1a0b45a` 新建，W48 接入 CI 触发）。
 >
 > **纯文档改动**：`build.yml` 的 `on.push` / `on.pull_request` 已加 `paths-ignore`
 > （`docs/**`、`**/*.md`、`.github/ISSUE_TEMPLATE/**`），纯文档提交不再触发构建；
@@ -294,7 +295,7 @@ Android-Agent/
 - [x] **M6** — 模型市场：导入、能力探测、下载管理
 - [x] **M7** — ~~远程后端：OkHttp + SSE，与本地引擎统一切换~~ 已移除（云端 API 整体删除，现为纯端侧）
 - [ ] **M8** — 打磨：动效、无障碍、性能、发布签名
-- [ ] **M9** — **Harness 升级**（`harness` 分支）—— `harness` 分支自 2026-09-26 起冻结，活跃开发在 `harness-improve`：移植 ZCode（Journal/Actor/typed-ask）
+- [ ] **M9** — **Harness 升级**（`harness` 分支）—— `harness` 分支自 2026-09-26 起冻结；`harness-improve` 为过渡分支，**自 W48 起活跃开发迁至 `improve`**（云端自 `harness-improve` 的同一提交 `1a0b45a` 新建）：移植 ZCode（Journal/Actor/typed-ask）
   与 Octop（工具审批/长期记忆/委派）的核心机制 —— 蓝图见
   [`docs/11-harness-blueprint.md`](docs/11-harness-blueprint.md)
   - [x] Wave 1：Journal、参数 Schema 校验、审批闸门、ask_actor 子代理、长期记忆
@@ -307,13 +308,14 @@ Android-Agent/
     详见下文「挂账台账」节的「已裁定（不再是挂账）」小节。
   - [ ] Wave 3：历史版本化、定时任务、检索记忆、人格系统、插件化装载
 
-> **Wave 24–39 实况（2026-09-30 同步）**：Wave 3 的大项**尚未开工**，实际推进的是「Harness 加固 + 治理 + 验收」这条线，逐波细节见
-> [`docs/handoff-*.md`](docs/)（最新在前）。当前分支 `harness-improve`，功能 tip `bb149f5`（CI 双绿）。
+> **Wave 24–48 实况（2026-10-03 同步）**：Wave 3 的大项**尚未开工**，实际推进的是「Harness 加固 + 治理 + 验收」这条线，逐波细节见
+> [`docs/handoff-*.md`](docs/)（最新在前）。**当前分支 `improve`** —— 自 W48 起为本仓主开发分支，云端自 `harness-improve` 的同一提交 `1a0b45a` 新建（`harness-improve` 冻结保留）。
 >
-> - **加固**：W24 角色通道根治（回显主根因）→ W26 Operit 侦察（**许可证不兼容 ⇒ 零代码搬运**）→ W27 渐进式披露 → W28 KV 预算 → W29 A1 拆分 → W30 断路器 → W31 接线收口 → W33 preface 第三态闸门 + 沙箱 → W34 原生工具通道 + 记忆 pull 化
+> - **加固**：W24 角色通道根治（回显主根因）→ W26 Operit 侦察（**许可证不兼容 ⇒ 零代码搬运**）→ W27 渐进式披露 → W28 KV 预算 → W29 A1 拆分 → W30 断路器 → W31 接线收口 → W33 preface 第三态闸门 + 沙箱 → W34 原生工具通道 + 记忆 pull 化 → W42 策略收敛 + 守卫拆分
 > - **治理**：W32 lint 门禁翻转 → W35 外部报告批处理 → W36/W37/W38 挂账清零 + **lint baseline 83 → 35 → 4** + 记忆存储契约 + 守卫网 15 项 / selftest 21 例
-> - **验收（当前）**：**Wave 39 —— 验收取证通道**。修的是「验收跑得起来但**拿不到判据**」：诊断日志原本只在内存环形缓冲、落盘 sink 只转 ERROR、全仓不写 logcat、诊断页不能导出 ⇒ 真机跑完还是「没抓到」。本波给 `AgentLogStore` 的 sink 并入 **logcat 出口**（TAG `LiquidAgentDiag`，全级别）、诊断页加**「复制全部」**、合并跨波验收清单到 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11。
-> - ⚠️ **真机验收积压 ≈32 条、至今零回收** —— 这是当前最大风险敞口；验收清单与取证命令见 §11。
+> - **验收（W39–W47）**：W39 验收取证通道（诊断日志并入 logcat 出口 TAG `LiquidAgentDiag` + 诊断页「复制全部」+ 跨波清单合并到 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11）→ W43/W45/W46/W47 逐波真机验收
+> - **W44–W48（当前）**：W44 模型健康度门禁（小样本自检）+ NOT_FOUND 模态降级链 → W45 降级链迁到**会话创建路径**（真机三判据全命中）→ W46 修「模型回复从未落盘」（P0）→ W47 thinking 独立预算 + 熔断保留输出 + 取消带 thinking + 速度显示 → **W48 收官**：N1（MiniCPM5 `<think>` 明文混正文）根修 + `ChatRunCoordinator` 外提（`ChatViewModel` 1593 → 547 行）+ 能力位来源标记（用户显式设置优先）
+> - ⚠️ **真机验收积压：Wave 33 起累计 ≈32 条，已回收 12 条 / 剩 ≈20 条**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——这是当前最大风险敞口；验收清单与取证命令见 §11。
 
 ---
 
@@ -327,9 +329,12 @@ Android-Agent/
 | **完整 i18n（含 RTL）** | `app/src/main/res/values/strings.xml` 只有 1 条串（`app_name`），Composable 里 ~145 处中文硬编码 ⇒ RTL 布局从未被验证、也无从验证。Wave 32 已撤下 `AndroidManifest.xml` 的 `android:supportsRtl="true"` —— 先不声明未验证过的能力 | ① 硬编码中文串抽到 `strings.xml`；② 补 `values-ldrtl` / 布局镜像的真机或预览验证；③ 验证通过后才恢复 `supportsRtl` 声明 |
 | **`termsVersion`（法务条款版本化）** ⚠️ **时序风险** | `SettingsRepository` 的 `is_tos_accepted` / `is_gemma_terms_accepted` 都是**无版本 boolean**，只能表达「同意过 / 没同意过」，表达不了「同意的是**哪一版**」。⇒ 一旦替换法务文本，**当天所有老用户**都会命中 `true` 而被视为「已同意新条款」，首启门禁与法律页开关被直接跳过（**未同意却被视为已同意**，合规事故），且事后无法反推用户当年同意的是哪一版。Wave 39 只把债务固化为注释（`SettingsRepository.kt` 的 `IS_TOS_ACCEPTED` 上方），**未改行为** —— 实现涉及产品/法务决策（老用户的 `true` 算「已同意第 1 版」还是「未同意任何版本」） | ✅ **落地顺序是硬约束**：`termsVersion` **必须先于任何法务文本替换落地**，不能反序（反序则老用户同意状态不可区分、不可补征）。行为实现需先裁定上述产品/法务问题 |
 | **J4：`SandboxFilesViewModel` 直构造白名单唯一（工作区覆盖层）** | `LiquidAgentApp.kt:378` 是全仓**唯一**绕过 `viewModelFactory` / ViewModelStore 的 VM 实例化点（「首次打开才创建 + 旋转即关」刻意取舍；VM 内目前只有自终止任务，现状无实害，但绕过 store ⇒ 离场时靠 `DisposableEffect` 手工补偿 cancel）。唯一性已由 `scripts/arch-guard.sh` **第 17 项冻结**（第二处直构造即红）；迁移正规 viewModel 路径 = **行为变更项**（改变重开覆盖层的重扫语义 /「旋转即关」取舍） | 触发条件：① 给该 VM 加轮询 / 常驻监听（旋转会从「无实害」变真泄漏）；② 需跨开关保留面板状态。实施时必须一并处理重开覆盖层的重扫语义，并过真机验证；迁移落地后 `LiquidAgentApp.kt` 的补偿清理块随删、守卫白名单同步清空 |
-| **模型加载后小样本自检（健康度门禁）** ✅ **Wave 44 已实现（手动档）** | **痛点（真机实锤）**：坏容器要等用户下完 2GB、发第一条消息才发现 —— `gemma-4-E2B-it-gpu.litertlm` 输出退化到采样出 `<unused1556>` 等**保留未训练 token**。<br>**Wave 44 已实现手动档**：诊断页「运行自检」按钮（`ModelHealthProbe` + `ModelHealthCriteria`）—— 两条固定短 prompt（`PROBE_MAX_TOKENS=96`）、独立探针会话（`conversationId="__health_probe__"` + 递增 `contextVersion`）、判据 A 保留 token / A′ 非白名单通道（软）/ B1 单字符 run / B2 多字符周期 / C 空输出，重复类判据复用 `StreamRepetitionDetector`（零口径分叉）；结论 PASS/DEGRADED/BAD，BAD 经既有 sink 自动落盘。**仅手动触发，绝不加载后自动跑**（会话重建成本只由按钮支付）。 | 二段翻转（**自动档**）前提：① 真机验证判据不误报（1 个坏容器 Gemma-4 GPU + 2 个好容器 MiniCPM5 / Gemma-4 CPU）；② 裁定自动触发时机与是否在模型卡展示结论；③ 自动档需解决「加载后自动跑 = 无条件付 1 次会话重建」的成本（仅在上层确认可接受时才翻转） |
-| **NOT_FOUND 错误驱动模态降级链** ✅ **Wave 44 已实现** | **痛点（真机实锤）**：Gemma-4 E2B 启发式 `audio=true` 但容器无 audio section ⇒ 旧实现加载直接失败；`gemma-4-E2B-it-gpu` 容器 section 表只有 text decoder ⇒ GPU 加载亦失败。**Wave 44 已实现**：`LiteRtLmEngine.load()` 改为**动态事件驱动降级**（`EngineLoadDegrade` 纯逻辑 + `EngineAttempt`）—— 只认 `NOT_FOUND` 触发模态降级（先 AUDIO 后 VISION），GPU→CPU 二段正交叠加，上限 4、每模态降一次；降级事实经 `EngineSessionDiagnostics.degradedModality` 出口，`capabilities()` 随降级收窄能力位，对话页小字提示「已去 X 模态完成加载」。 | ① 真机验证降级链端到端（Gemma-4 E2B CPU 去 audio 加载成功 + UI 小字）；② 上游容器补全 section / litert-lm 支持该变体后，可移除此降级（`NOT_FOUND` 不再出现）；③ 本轮不推仓库、不跑 CI，验证在本地闸门 |
-| **Gemma-4 GPU 特化变体输出退化（上游错配）** 🆕 | `gemma-4-E2B-it-gpu.litertlm`（2.0GB）在 LiteRT-LM **0.17.1** 下输出退化：temp 0.4/20 → n-gram 死锁；temp 1.0/64（官方口径）→ 采样出保留未训练 token（logits 分布退化）；容器 section 表只有 `tf_lite_artisan_text_decoder`，CPU 后端 engine init 直接 `NOT_FOUND`。同转换线的 `gemma-4-E4B-it-gpu` 未验证（已标注谨慎）。CPU 变体（2.41GB）实测通过，是唯一推荐 | ① 等 LiteRT-LM 发布含该变体支持的新版本后 bump `litertlm` 并重测；或 ② 改用上游单文件双后端容器（README 实证 `gemma-4-E4B-it.litertlm --backend=gpu` 单文件跑 GPU）；或 ③ 上游确认该变体仅适配更高版本 runtime → 从预设下架。恢复前 preset 维持 `recommended=false` |
+| **模型加载后小样本自检（健康度门禁）** ✅ **Wave 44 已实现（手动档）** | **痛点（真机实锤）**：坏容器要等用户下完 2GB、发第一条消息才发现 —— `gemma-4-E2B-it-gpu.litertlm` 输出退化到采样出 `<unused1556>` 等**保留未训练 token**。<br>**Wave 44 已实现手动档**：诊断页「运行自检」按钮（`ModelHealthProbe` + `ModelHealthCriteria`）—— 两条固定短 prompt（`PROBE_MAX_TOKENS=96`）、独立探针会话（`conversationId="__health_probe__"` + 递增 `contextVersion`）、判据 A 保留 token / A′ 非白名单通道（软）/ B1 单字符 run / B2 多字符周期 / C 空输出，重复类判据复用 `StreamRepetitionDetector`（零口径分叉）；结论 PASS/DEGRADED/BAD，BAD 经既有 sink 自动落盘。**仅手动触发，绝不加载后自动跑**（会话重建成本只由按钮支付）。<br>**W44 真机实测**：好容器 PASS 稳定（`gemma-4-E2B-it` PASS ×2、`MiniCPM5-2B_int4` PASS）；坏容器 `gemma-4-E2B-it-gpu` 因容器同时缺 AUDIO/VISION 两个 section，先 3× 执行失败（`NOT_FOUND`）、后 2× **DEGRADED**（仅命中 `channel_marker[SOFT]`，**无 `<unusedNNNN>`**）⇒ 判据稳定，但「预期 BAD 实为 DEGRADED」；探针会话隔离生效（`cid=__health_probe__`，`estPrompt`≈14 tok，用户会话零污染），无激活模型时中性拒绝（`NO_ACTIVE_MODEL`）。 | 二段翻转（**自动档**）前提：① 真机验证判据不误报（1 个坏容器 Gemma-4 GPU + 2 个好容器 MiniCPM5 / Gemma-4 CPU）；② 裁定自动触发时机与是否在模型卡展示结论；③ 自动档需解决「加载后自动跑 = 无条件付 1 次会话重建」的成本（仅在上层确认可接受时才翻转） |
+| **NOT_FOUND 错误驱动模态降级链** ✅ **Wave 45 已根修（落点从 `load()` 迁到会话创建路径）** | **痛点（真机实锤）**：Gemma-4 E2B 启发式 `audio=true` 但容器无 audio section ⇒ 旧实现加载直接失败；`gemma-4-E2B-it-gpu` 容器 section 表只有 text decoder ⇒ GPU 加载亦失败。<br>**Wave 44 首次实现**：动态事件驱动降级（`EngineLoadDegrade` 纯逻辑 + `EngineAttempt`）—— 只认 `NOT_FOUND` 触发模态降级（先 AUDIO 后 VISION），GPU→CPU 二段正交叠加，上限 4、每模态降一次；降级事实经 `EngineSessionDiagnostics.degradedModality` 出口，`capabilities()` 随降级收窄能力位，对话页小字提示「已去 X 模态完成加载」。**但落点错误**：`NOT_FOUND` 实际由 `createConversation` 抛出（引擎已建成功、建**会话**时才绑定 audio 子图），而修复挂在 `load()` ⇒ **真实故障下从未触发**。<br>**Wave 45 已根修**：降级链迁到**会话创建路径**（触发点 = 发第一条消息，**不在**模型加载页）。**W45 真机三判据全命中**：`会话创建遇容器缺` 重建日志 ×8、编码器 `role=on` ×8、`role=legacy`=0；负向对照 `MiniCPM-V-4-int8` 零降级（见 §11.0.1 台账 #1）。 | ① ✅ 已真机验证降级链端到端（W45 三判据全命中，Gemma-4 E2B GPU 去 AUDIO/VISION 后加载成功 + UI 小字）；② 上游容器补全 section / litert-lm 支持该变体后，可移除此降级（`NOT_FOUND` 不再出现）；③ 本轮不推仓库、不跑 CI，验证在本地闸门 |
+| **Gemma-4 GPU 特化变体输出退化（上游错配）** 🆕 | `gemma-4-E2B-it-gpu.litertlm`（2.0GB）在 LiteRT-LM **0.17.1** 下输出退化：temp 0.4/20 → n-gram 死锁；temp 1.0/64（官方口径）→ 采样出保留未训练 token（logits 分布退化）；容器 section 表只有 `tf_lite_artisan_text_decoder`，CPU 后端 engine init 直接 `NOT_FOUND`。同转换线的 `gemma-4-E4B-it-gpu` 未验证（已标注谨慎）。CPU 变体（2.41GB）实测通过，是唯一推荐。<br>**W45 真机实测**：该 GPU 变体容器同时缺 AUDIO+VISION 两个 section ⇒ 加载即触发 **2 次引擎重建**（各降一次）；健康自检对同一容器给出 **DEGRADED**（仅 `channel_marker[SOFT]`，**无 `<unusedNNNN>`**）—— 与「采样保留未训练 token」的 BAD 判据不符。 | ① 等 LiteRT-LM 发布含该变体支持的新版本后 bump `litertlm` 并重测；或 ② 改用上游单文件双后端容器（README 实证 `gemma-4-E4B-it.litertlm --backend=gpu` 单文件跑 GPU）；或 ③ 上游确认该变体仅适配更高版本 runtime → 从预设下架。恢复前 preset 维持 `recommended=false` |
+| **N1：MiniCPM5 `<think>` 明文混进正文** ✅ **Wave 48 已根修（真机回归待做）** | **真机铁证**（`_w47_after/08bacd4c`）：MODEL 消息 `text` 以 `<think>\n` 开头、含完整 `</think>`，思维链与答案全在正文、`thinking` 字段恒空；连带 `tok/s` 被思考 token 污染、1-B「关闭思考仍有思考区」。<br>**根因（比报告更精确）**：不是「引擎未识别」，而是**配置的 `channels` 覆盖了容器元数据的 `<think>` 声明** —— 本仓无条件下发 Gemma 专用 `THOUGHT_CHANNEL_DEFS`，native 的 overwrite 语义（`conversation.cc:189-200`）整体丢弃元数据通道 ⇒ MiniCPM5 永不切分。**且不能简单 append 第二 def**：native thinking 预算只用 `channels.front()`（`conversation.cc:371-392`，含上游 TODO）⇒ append 会让 W47 预算对 MiniCPM5 静默失效。<br>**Wave 48 修法**：`THOUGHT_CHANNEL_DEFS` 常量 → 纯函数 `thoughtChannelDefsFor(model)`，**按模型身份选 channel def**（MiniCPM5 → `<think>`/`</think>`，其余 → `<|channel>thought`/`<channel|>`），保证 `front()` 恒为该模型自己的思考通道（切分与预算同时正确）；**1-B** 同源修：关思考时**显式下发 `enable_thinking=false`**（原为 absent，而 absent ≠ off）。 | ① **真机回归未做**：须逐模型验「关思考 → 无思考区 → 直答」（1-B 影响**所有** thinking 模型的关思考路径）；② 验 MiniCPM5 正文不含 `<think>`、思考进 `thinking` 字段、`tok/s` 回落；③ 回归 Gemma-4（CPU/GPU）思考仍正确进 `thinking`（不被 `<think>` 规则误伤） |
+| **能力位虚高（每次加载双重建）** ✅ **Wave 48 已修（真机效果待验）** | **真机实证**（`_w45_models.json`）：5 个模型能力位全虚高（Qwen2.5 `image/audio/thinking=true`、MiniCPM5 `image/audio=true`、gemma-4 `audio=true`）⇒ 每次加载都付两次引擎重建（AUDIO+VISION 降级），且给不支持 thinking 的模型开 thinking 通道。**根因**：`ModelHeuristics.mergeHeuristic` 用 `||` **并集只增不减**，历史误写 true 被永久锁死，用户手动关闭后又被抬回。<br>**Wave 48 修法（用户裁决「用户显式设置优先」）**：新增 `CapabilitySource { HEURISTIC, USER }` 标记（`ModelDescriptor.capabilitiesSource: CapabilitySource? = null`，`@Serializable` 向后兼容）；语义由「并集只增不减」改为**用户显式设置优先**（`resolveCapabilities`：`source == USER ? persisted : heuristic`，**替换**非并集）；`setCapabilities` 置 `USER`、`probe()` 尊重 `USER`；**旧数据（`null`）按启发式重算**（修好现有虚高，首次 `refresh()` 记一条迁移日志）。 | ① **真机效果待验**：模型页关某模型能力位 → 退出重进（触发 `refresh()`）→ 仍为关；关 audio 后重开会话不再付 AUDIO 降级重建；② 旧安装首刷虚高归 false（Qwen2.5 image/audio、MiniCPM-V-4 thinking/toolCalling） |
+| **`ChatViewModel` 职责堆积（1593 行 / 余量 7）** ✅ **Wave 48 已解** | `feature-chat/.../ChatViewModel.kt` 曾达 **1593 行**（arch-guard 第 18 项上限 1600、余量仅 7）。**Wave 48 真外提**：run 编排（`onSend`/`onRetry`/`onSendFrom`/`onRecover`/`onStop`/`handleEvent` 三终态/流式缓冲/落库决策/journal 恢复/热档位设施）整体外提到新类 **`ChatRunCoordinator`**（1152 行），VM 保留 UI 状态与输入事件 + 薄转发 ⇒ **1593 → 547 行**（余量 ≥1000）。三条硬不变量（`persistState`/`salvageText` 清零仅在 run 起点；`onStop` thinking 快照先于 `resetStreaming`）与两条**相反顺序**（`Finished`/`Cancelled` = commit 早于 reset；`onStop` = reset 早于 commit）经逐函数比对**原样保留**，`ChatScreen` 零改动。 | —（已落地；arch-guard 阈值维持 1600 **未改**，外提后远低于上限，无挂账） |
 
 ### 已裁定（不再是挂账）
 
