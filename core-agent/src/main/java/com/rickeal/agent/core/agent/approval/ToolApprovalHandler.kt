@@ -21,7 +21,7 @@ enum class ToolApprovalDecision {
  * `dangerous` / `requiresConfirmation` 的工具在真正 invoke 之前，
  * 主循环挂起等待宿主裁决。
  *
- * 实现约定（宿主侧，如 ChatViewModel）：
+ * 实现约定（宿主侧，如 ChatRunCoordinator）：
  *  - `onApprovalRequested` 在挂起点等待 UI 的用户决定（如
  *    `suspendCancellableCoroutine` + 确认弹窗），超时或弹窗被取消按 DENIED；
  *  - **绝不在这里做耗时 IO**：它挂在工具执行路径上，阻塞它等于阻塞整轮；

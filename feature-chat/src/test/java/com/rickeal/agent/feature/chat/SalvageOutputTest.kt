@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
  * [shouldSalvageOutput] 的纯逻辑测试（Wave 47 项2「熔断时保留已见输出」的回归锚）。
  *
  * 为什么能跑在 JVM 上：被测的是纯 Kotlin `internal` 顶层函数，**无任何 Android / Compose /
- * ViewModel 依赖**。生产路径 `ChatViewModel` 的 `AgentEvent.Failed` 分支真实调用它，故测试
+ * ViewModel 依赖**。生产路径 `ChatRunCoordinator` 的 `AgentEvent.Failed` 分支真实调用它，故测试
  * 覆盖的是**真实逻辑而非镜像**（与本仓既有范式一致）。
  *
  * 覆盖 9 个 `Failed` 发射点的语义分类：预算 / 外部型熔断（应保留）vs 内容型熔断（乱文 / 空，

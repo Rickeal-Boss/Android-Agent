@@ -107,7 +107,7 @@ class AppContainer(
 
     /**
      * Agent run journal 根目录（`<filesDir>/journal/<conversationId>/<runId>.jsonl`）。
-     * 每次 run 由 ChatViewModel 打开一个新文件；进程被杀后可从这里恢复已完成的
+     * 每次 run 由 ChatRunCoordinator 打开一个新文件；进程被杀后可从这里恢复已完成的
      * 推理轮与工具结果（core-agent/journal/AgentRunJournal）。
      */
     val journalRoot: File = File(context.filesDir, "journal")

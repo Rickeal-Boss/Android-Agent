@@ -331,7 +331,7 @@ internal class ChatRunCoordinator(
     /**
      * 热闸（Wave 30 §2.1 引入；Wave 43 计量更换）：拒新 run 判据与文案统一收口到
      * [ThermalGovernor.heatBlockReason] —— 电池温度熔断（主判据，≥44.9℃）与
-     * CRITICAL 档位各说各的事实，不再笼统报档位名。只挡 ChatViewModel 主入口
+     * CRITICAL 档位各说各的事实，不再笼统报档位名。只挡本类主入口
      * （onSend / onRetry→onSendFrom / onRecover），子 run 不挡 —— 在跑 run 由
      * 轮头 Abort 兜底，语义闭环（R7-2）。返回 null = 放行；非 null = 拒绝文案。
      */

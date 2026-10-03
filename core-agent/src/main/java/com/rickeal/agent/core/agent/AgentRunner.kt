@@ -423,7 +423,7 @@ class AgentRunner(
      * UI 侧的闸门只是纵深防御，根治必须在这一层。
      *
      * 注意 `Mutex` 不可重入：`run()` 内部不会再调 `run()`（已 grep 确认，全项目只有
-     * ChatViewModel 两处外部调用点），所以不会出现自锁。
+     * ChatRunCoordinator 两处外部调用点），所以不会出现自锁。
      */
     private val runMutex = Mutex()
 
@@ -500,7 +500,7 @@ class AgentRunner(
 
     private suspend fun FlowCollector<AgentEvent>.executeBodyUnchecked(request: AgentRequest) {
             val policy = request.policy
-            // agent 会话采样折衷（Wave 19 P1-1）：调用方（ChatViewModel）对 enableTools
+            // agent 会话采样折衷（Wave 19 P1-1）：调用方（ChatRunCoordinator）对 enableTools
             // 的主对话填 policy.agentSamplingOverride 时覆写采样参数。默认 null = 零
             // 行为变化。阈值可调，真机输出质量反馈后校准；采样变更触发 Conversation
             // 重建已由 LiteRtLmEngine.load/ensureConversation 处理，无需额外版本操作。
@@ -512,7 +512,7 @@ class AgentRunner(
             // 预算封顶。唯一生效点 = 本处（所有 run/子 run 都过这里）；UI 保存值
             // 不被改写。agent 覆写（chatAgentPolicy，Wave 43 起按档案派生）在覆写前已取档案
             // 推荐温度（R1 = 0.6），再经档案区间 [0.5,0.7] 钳制 ⇒ 0.6 进 0.6 出；
-            // 若覆写值低于区间下界（如无档案时的 0.4 折衷被档案命中），会被抬到区间下界 —— 有意为之。
+            // 理论上覆写值低于区间下界时会被抬到区间下界 —— 有意为之（当前各档案覆写值均 ≥ 区间下界，该分支暂不可达）。
             val config: InferenceConfig = ModelSamplingProfiles.appliedTo(
                 request.model?.fileName,
                 baseConfig,

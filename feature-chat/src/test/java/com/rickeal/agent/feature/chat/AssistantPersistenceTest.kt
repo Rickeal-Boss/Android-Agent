@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
  * [AssistantPersistenceState] 的纯逻辑测试（Wave 46「模型回复不落盘」根因修复的回归锚）。
  *
  * 为什么能跑在 JVM 上：被测的是纯 Kotlin `internal` 顶层函数 + data class，**无任何
- * Android / Compose / ViewModel 依赖**。生产路径 [ChatViewModel] 真实调用这些函数
+ * Android / Compose / ViewModel 依赖**。生产路径 [ChatRunCoordinator] 真实调用这些函数
  * （`MessageCommitted` / `commitAssistant` / run 起点），故测试覆盖的是**真实逻辑而非镜像**
  * —— 与本仓既有范式一致（`applyTerminalEvent` / `mergeProcessIntoVisible`）。
  *

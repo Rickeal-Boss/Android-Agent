@@ -18,7 +18,7 @@ enum class ThermalTier { NONE, LIGHT, MODERATE, SEVERE, CRITICAL }
  *
  * 放 core-data 的理由（方案 §2.1 方案 C）：PowerManager / ActivityManager 在
  * core-data 已有同款先例（ModelDownloader 用 DownloadManager、availableMemoryBytes
- * 用 ActivityManager）；消费者（ChatViewModel / AppContainer）也都在 core-data /
+ * 用 ActivityManager）；消费者（ChatRunCoordinator / AppContainer）也都在 core-data /
  * feature 侧；core-agent 只经 [RunThermalGate] 接口消费决策 —— arch-guard 第 10 条全绿。
  *
  * 线程模型（R7-1）：`addThermalStatusListener` 回调在主线程 —— [onThermalStatus]
@@ -195,7 +195,7 @@ class ThermalGovernor(
 
     /**
      * 拒新 run 的用户文案（Wave 43）：null = 放行；非 null = 拒绝理由（含实时事实）。
-     * ChatViewModel 的热闸文案统一从这里出 —— 电池熔断与档位熔断各说各的事实，
+     * ChatRunCoordinator 的热闸文案统一从这里出 —— 电池熔断与档位熔断各说各的事实，
      * 不再笼统报档位名（电池熔断时档位可能只是 NONE，报档位反而误导）。
      */
     fun heatBlockReason(): String? {
@@ -242,7 +242,7 @@ class ThermalGovernor(
      * MODERATE → Cooldown(2s)（首轮豁免）；LIGHT/NONE → Proceed。
      *
      * 未接线（null）= Wave 30 旧行为逐字节保留：SEVERE/CRITICAL → Abort（拒新 run
-     * 在 ChatViewModel，在跑 run 由这里兜底）；MODERATE → Cooldown(2s)，首轮除外。
+     * 在 ChatRunCoordinator，在跑 run 由这里兜底）；MODERATE → Cooldown(2s)，首轮除外。
      *
      * 首轮不冷却的理由：「轮间」冷却的定义是两轮之间 —— run 刚起来还没产生热量，
      * 白等 2s 只拖慢首字；而按 maxRounds 累计（8 轮 = 14s、20 轮 = 38s）是实打实

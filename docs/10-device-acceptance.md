@@ -522,7 +522,7 @@ Wave 33 起累计的验收项 ≈32 条；**W43 / W45 / W46 / W47 已回收 12 �
 ⇒ **Wave 39 已修**（本清单因此才可执行）：
 
 - **新增 logcat 出口**：TAG = **`LiquidAgentDiag`**，**全级别**（INFO/WARN/ERROR）转发，行格式 `[LEVEL] message`（`message` 已过脱敏 + 400 字符截断）。
-  - **抓取命令**：`adb logcat -s LiquidAgentDiag:V`（或 `adb logcat -s LiquidAgentDiag:V > d.log` 落文件）
+  - **抓取命令**：`adb logcat -s LiquidAgentDiag:V`（**长任务必须设备端 `-f` 落盘，见下**）
   - ⚠️ **PC 侧 `adb logcat` 环形缓冲仅 256 KiB** ⇒ 长任务 / 多轮工具 run 的日志会被**环形覆盖**，
     跨机取证**必须设备端 `-f` 落盘**：`adb shell nohup logcat -f /data/local/tmp/x.log &`，
     事后 `adb pull`。直接 `adb logcat -s LiquidAgentDiag:V > d.log` **会丢早期关键字**。
@@ -546,7 +546,7 @@ Wave 33 起累计的验收项 ≈32 条；**W43 / W45 / W46 / W47 已回收 12 �
 
 | # | 验收项 | 结论 | 证据锚点（cid / 行号 / 来源） |
 |---|---|---|---|
-| 1 | 引擎降级链（会话创建遇容器缺 section → 逐模态降级，编码器 `role=on`） | ✅ 回收 | `会话创建遇容器缺 … 编码器 section` ×8、`role=on` ×8、legacy=0；MiniCPM-V-4 负向零降级 —— W45 §3.2（日志行 L5/L8/L13/L23/L26/L103/L106/L120/L124） |
+| 1 | 引擎降级链（会话创建遇容器缺 section → 逐模态降级，编码器 `role=on`） | ✅ 回收 | W45 §3.2 汇总：`会话创建遇容器缺` 出现 8 次 / `role=on` 8 次 / **`role=legacy`=0**；另 2 条「已回退 legacy」均为 MiniCPM-V-4 负向对照（零降级） |
 | 2 | thinking 预算（思考 ≈10s 后出正文、有答案） | ✅ 回收 | cid `d8849ef0` / `08bacd4c` —— W47 用例 1 |
 | 3 | 熔断保留（电池熔断后 run 保留、非整段丢弃） | ✅ 回收 | `Failed + M=1`，2193 字符，cid `83b474ca`；对照 cid `c48b535d` 正常完成 —— W47 用例 2 |
 | 4 | 取消落盘（用户取消后已完成内容落盘） | ✅ 回收 | `Cancelled + M=1`，cid `d8849ef0` —— W47 用例 3 |

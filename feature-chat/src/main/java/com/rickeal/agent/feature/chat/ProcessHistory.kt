@@ -10,7 +10,7 @@ import java.io.File
 /**
  * 「可见历史 + journal 过程消息」合并的**纯核心**（Wave 40 C3 外提，供 JVM 单测）。
  *
- * 去重口径**逐行照抄** [ChatViewModel.onRecover] 的既有判据：
+ * 去重口径**逐行照抄** [ChatRunCoordinator.onRecover] 的既有判据：
  * 只剔「role == MODEL 且 `role.name + "|" + text` 已在可见历史」的消息 ——
  * journal 的最终 MODEL 答案会同时落在会话文件（commitAssistant 落库）与
  * journal（message 行）里，按 role+text 去重（id 在两侧各自生成、永远对不上）。
@@ -84,7 +84,7 @@ internal fun processTokenBudget(
  *
  * ## 为什么需要它（上下文丢失根因）
  *
- * 会话文件只存 USER + 最终 MODEL 答案（[ChatViewModel.commitAssistant]），TOOL /
+ * 会话文件只存 USER + 最终 MODEL 答案（[ChatRunCoordinator.commitAssistant]），TOOL /
  * 中间 toolCall 消息只进 journal。重开会话 / 进程重启后引擎重建，initialMessages
  * 只播问答对 —— 模型丢失全部工具执行上下文（当场续聊不丢：引擎不重建；
  * 重启 / 切会话后丢：重建播种缩水）。修复方向：发送时让引擎拿到过程历史。
@@ -119,7 +119,7 @@ internal fun processTokenBudget(
  *
  * journal 目录 = `<journalRoot>/<conversationId>/`（[AgentRunJournal.open] 的
  * runDir 约定），每个 run 一个文件，runId = `run_` + `System.currentTimeMillis()`
- * （ChatViewModel 两处 open 调用点的实参）。排序依据 = **文件名内的时间戳**：
+ * （ChatRunCoordinator 两处 open 调用点的实参）。排序依据 = **文件名内的时间戳**：
  * 同为 13 位毫秒前缀，字典序即时间序（同 run 内行序由 seq 保证，跨 run 由
  * 文件名保证）。
  *

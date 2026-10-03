@@ -52,7 +52,7 @@ data class PerfSample(
  * ## 采样线程生命周期（防泄漏的关键决断 —— 方案 B：引用计数）
  *
  * 采样窗口 = 「有观测者」的精确交集：诊断页打开（DisposableEffect）或 run 活跃
- * （ChatViewModel try/finally）。空闲零线程 —— 「物理断路器省电」的立意不允许
+ * （ChatRunCoordinator try/finally）。空闲零线程 —— 「物理断路器省电」的立意不允许
  * App 启动即常驻 1s 采样线程（方案 A 被否的理由）。
  *
  * - [acquire] 幂等（计数 0→1 时创建线程）；[release] 归零即停（interrupt + join(1000)，

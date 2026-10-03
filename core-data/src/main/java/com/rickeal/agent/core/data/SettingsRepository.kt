@@ -237,7 +237,7 @@ class SettingsRepository(private val context: Context) {
         .map { it[Keys.ACTIVE_MODEL_ID] }
 
     /**
-     * 同步读取（架构文档 §7.3 里 ChatViewModel.onSend 用得到）。
+     * 同步读取（架构文档 §7.3 里 ChatRunCoordinator.onSend 用得到）。
      * 必须在协程里调用 —— 故意做成 suspend 而不是阻塞 runBlocking。
      */
     suspend fun activeModelIdSync(): String? = activeModelId.first()

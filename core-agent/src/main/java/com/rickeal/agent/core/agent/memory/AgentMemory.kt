@@ -136,7 +136,7 @@ class AgentMemory(
     //   （连同其上方 KDoc）—— 把**全部**条目正文（截断 1200 字符）渲染进 system prompt。
     // 为什么可删：全仓零引用（含测试源集逐文件核验），从未被真实调用，仅存 KDoc 互引。
     //   它已被 [renderIndex] 取代 —— Wave 34 题 B 把记忆从「全量注入」改成「标题索引注入
-    //   + 按需检索」，实际注入走 feature-chat 的 ChatViewModel.renderMemoryIndex()。
+    //   + 按需检索」，实际注入走 feature-chat 的 ChatRunCoordinator.renderMemoryIndex()。
     //   留着一个「正文进 systemText」的渲染面，只会让这条**已被否决**的路径（正文变化会
     //   改变 systemText ⇒ 引擎会话重建判据每轮命中 ⇒ 4B 秒级 re-prefill）看起来仍可用。
     // 恢复路径：git 历史可回溯，不留死代码占位。

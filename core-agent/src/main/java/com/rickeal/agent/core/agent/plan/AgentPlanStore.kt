@@ -87,7 +87,7 @@ class AgentPlanStore(
     internal fun peek(key: String): TrackedPlan? = plans[key]
 
     /**
-     * 公开只读视图：宿主（ChatViewModel）打开/恢复会话时把既有计划回填进 UI 时间线。
+     * 公开只读视图：宿主（ChatViewModel / ChatRunCoordinator）打开 / 恢复会话时把既有计划回填进 UI 时间线。
      * 只读，不 touch 访问序（读 UI 不该影响 LRU 的淘汰判断）。
      *
      * Wave4 审查（C-P1-3）：内存未命中时**必须惰性回载** —— 此前直接返回 emptyList()，

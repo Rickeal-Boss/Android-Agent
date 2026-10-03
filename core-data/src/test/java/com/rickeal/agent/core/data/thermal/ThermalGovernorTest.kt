@@ -195,7 +195,7 @@ class ThermalGovernorTest {
         )
         // 拒新 run 同判据
         assertFalse(h.governor.canStartRun())
-        // 文案同源（ChatViewModel 热闸）
+        // 文案同源（ChatRunCoordinator 热闸）
         assertEquals(
             "电池温度 45.2℃ 已达 44.9℃ 保护线，请等待设备降温后再试",
             h.governor.heatBlockReason(),
