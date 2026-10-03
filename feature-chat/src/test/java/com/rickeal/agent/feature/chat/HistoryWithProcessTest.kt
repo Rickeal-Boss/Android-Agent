@@ -132,23 +132,32 @@ class HistoryWithProcessTest {
     // ------------------------------------------------ mergeProcessIntoVisible
 
     @Test fun `纯拼接 —— 可见在前过程在后且 TOOL 与中间消息全保留`() {
+        // ⚠️ flaky 根因与修法（**勿回改**）：`ChatMessage.createdAtMillis` 的默认值是
+        //    **构造时**的 `System.currentTimeMillis()`（ChatMessage.kt:17）。本用例若用
+        //    全字段 `assertEquals` 比对**分别构造**的两个列表，只要两次构造跨了毫秒边界，
+        //    时间戳就不同 ⇒ 随机红（Wave 41 起潜伏；因 fail-fast 在 core-data 就中止、
+        //    feature-chat 用例从未跑到，直到 W48 用 `--continue` 才现形）。
+        //    生产语义：`mergeProcessIntoVisible` 返回的是**入参同一批实例**（`visible + proc`，
+        //    不重建消息）⇒ 时间戳被原样保留、本可比。故修法 = 给入参与 expected **显式钉同一
+        //    固定时间戳**：断言仍覆盖 `createdAtMillis`（不是把它排除），且结果确定。
+        val ts = 1_700_000_000_000L
         val visible = listOf(
-            ChatMessage(id = "u1", role = Role.USER, text = "帮我查一下"),
-            ChatMessage(id = "m1", role = Role.MODEL, text = "最终答案甲"),
+            ChatMessage(id = "u1", role = Role.USER, text = "帮我查一下", createdAtMillis = ts),
+            ChatMessage(id = "m1", role = Role.MODEL, text = "最终答案甲", createdAtMillis = ts),
         )
         val process = listOf(
-            ChatMessage(id = "p1", role = Role.MODEL, text = "中间调用 current_time"),
-            ChatMessage(id = "p2", role = Role.TOOL, text = "工具执行结果甲"),
-            ChatMessage(id = "p3", role = Role.MODEL, text = "最终答案甲"),
+            ChatMessage(id = "p1", role = Role.MODEL, text = "中间调用 current_time", createdAtMillis = ts),
+            ChatMessage(id = "p2", role = Role.TOOL, text = "工具执行结果甲", createdAtMillis = ts),
+            ChatMessage(id = "p3", role = Role.MODEL, text = "最终答案甲", createdAtMillis = ts),
         )
         val merged = mergeProcessIntoVisible(visible, process)
         // 最终答案甲与可见历史重复 → 剔；TOOL 与中间消息 → 全保留；顺序：可见在前。
         assertEquals(
             listOf(
-                ChatMessage(id = "u1", role = Role.USER, text = "帮我查一下"),
-                ChatMessage(id = "m1", role = Role.MODEL, text = "最终答案甲"),
-                ChatMessage(id = "p1", role = Role.MODEL, text = "中间调用 current_time"),
-                ChatMessage(id = "p2", role = Role.TOOL, text = "工具执行结果甲"),
+                ChatMessage(id = "u1", role = Role.USER, text = "帮我查一下", createdAtMillis = ts),
+                ChatMessage(id = "m1", role = Role.MODEL, text = "最终答案甲", createdAtMillis = ts),
+                ChatMessage(id = "p1", role = Role.MODEL, text = "中间调用 current_time", createdAtMillis = ts),
+                ChatMessage(id = "p2", role = Role.TOOL, text = "工具执行结果甲", createdAtMillis = ts),
             ),
             merged,
         )
