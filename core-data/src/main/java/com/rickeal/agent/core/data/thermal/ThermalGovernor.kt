@@ -254,7 +254,13 @@ class ThermalGovernor(
             // 电池温度熔断（Wave 43）：主判据，优先于档位 —— 档位在部分 ROM 上跨设备
             // 不可比（SEVERE ≠ 可用性），电池温度是唯一可比口径。
             if (batteryTempTenths != null) {
-                if (batteryFuseTripped()) return ThermalDecision.Abort(batteryFuseEvidence())
+                // Wave 48 F2：本决策点**只读一次** batteryTempTenths，判据与 evidence 共用同一 tenths
+                // （与 heatBlockReason 同口径）—— 否则二次 invoke 在 44.9℃ 边界抖动时会产出
+                // 「tripped 但显示未达线」的自相矛盾文案。
+                val tenths = batteryTempTenths?.invoke() ?: Companion.BATTERY_FUSE_TENTHS
+                if (tenths >= Companion.BATTERY_FUSE_TENTHS) {
+                    return ThermalDecision.Abort(batteryFuseEvidence(tenths))
+                }
             }
             val current = tier.value
             return when {
