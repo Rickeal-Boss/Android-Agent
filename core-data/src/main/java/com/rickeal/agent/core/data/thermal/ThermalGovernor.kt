@@ -202,7 +202,7 @@ class ThermalGovernor(
         if (batteryTempTenths != null) {
             // Wave 48 F2：本决策点**只读一次** batteryTempTenths，判据与 evidence 共用同一 tenths
             // —— 否则同一决策点内两次 invoke 可能取到不同值，产出「tripped 但显示未达线」的矛盾文案。
-            val tenths = batteryTempTenths?.invoke() ?: Companion.BATTERY_FUSE_TENTHS
+            val tenths = batteryTempTenths.invoke()
             if (tenths >= Companion.BATTERY_FUSE_TENTHS) {
                 return "${batteryFuseEvidence(tenths)}，请等待设备降温后再试"
             }
@@ -257,7 +257,7 @@ class ThermalGovernor(
                 // Wave 48 F2：本决策点**只读一次** batteryTempTenths，判据与 evidence 共用同一 tenths
                 // （与 heatBlockReason 同口径）—— 否则二次 invoke 在 44.9℃ 边界抖动时会产出
                 // 「tripped 但显示未达线」的自相矛盾文案。
-                val tenths = batteryTempTenths?.invoke() ?: Companion.BATTERY_FUSE_TENTHS
+                val tenths = batteryTempTenths.invoke()
                 if (tenths >= Companion.BATTERY_FUSE_TENTHS) {
                     return ThermalDecision.Abort(batteryFuseEvidence(tenths))
                 }
