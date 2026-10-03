@@ -36,6 +36,10 @@ on:
       # harness-improve（Wave 21，2026-09-26）：用户建的分改善分支，
       # 与 harness 同规格产出「签名正式包 + debug 包」双产物。
       - harness-improve
+      # improve（Wave 48，2026-10-03）：harness 的分改善线，与 harness-improve 同规格
+      # 产出「签名正式包 + debug 包」双产物。注意本流水线带 paths 过滤：scripts/**、
+      # .github/workflows/** 等在内 ⇒ 脚本 / 工作流类改动会触发（纯文档改动不触发）。
+      - improve
     tags:
       - 'v*'
     # Wave4 审查（D-P1-5）：文档/杂项推送不触发完整 release 双轨（R8+AAB 代价高）。
@@ -183,6 +187,26 @@ jobs:
       # -------------------------------------------------------------------
       - name: Architecture guard
         run: bash scripts/arch-guard.sh
+
+      # -------------------------------------------------------------------
+      # 守卫自身也要被守卫（Wave 48）：arch-guard.sh 是纯 bash、无类型检查，历史上出过
+      # 两次「僵尸规则」事故 —— ① 第 7 条用 `grep -q`（无输出）失败退出 1，被 check()
+      # 判成 OK，把 INTERNET 权限整行删掉后守卫仍全绿；② 目录被改名后前置断言缺失，
+      # 空守卫永远绿。一条「永远绿」的守卫比没有守卫更糟 —— 它给人已被保护的错觉。
+      # arch-guard-selftest.sh 在临时目录里注入违规 fixture，断言每条守卫都能报红、
+      # 且干净树能过。发布轨此前只跑 arch-guard.sh、**漏了自测网**：arch-guard.sh 本身
+      # 若因重构静默失效，本轨会照样放行 —— 与上方 Wave4 D-P0-5「发布轨必须与门禁轨
+      # 同等地过守卫」同一精神，故补上，与 build.yml 的既有两步保持同规格。
+      # 位置取舍：串行放在 arch-guard 之后、Gradle 重活之前 —— 失败即让整个 release
+      # job 判红（与 arch-guard 同款门禁语义；若拆成不 gate 的并行 job，则自测网红了
+      # 仍可能照常 Publish Release，反而破坏门禁）。自测网不依赖 JDK/SDK，只是临时树
+      # 里的 bash + grep；本机 Git-Bash 实测约 7 分钟，CI（Ubuntu）预计明显更短，相对
+      # 本 job 45 分钟预算与 R8/AAB 关键路径属可接受增量。
+      # -------------------------------------------------------------------
+      - name: Architecture guard self-test
+        run: |
+          chmod +x scripts/arch-guard-selftest.sh
+          bash scripts/arch-guard-selftest.sh
 
       # -------------------------------------------------------------------
       # Wave4 审查（D-P0-1）：tag 推送 + 密钥缺失时，后续签名/发布步骤全部 skip
