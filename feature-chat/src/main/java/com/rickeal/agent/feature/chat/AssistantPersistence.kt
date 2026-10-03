@@ -6,7 +6,7 @@ import com.rickeal.agent.core.agent.breaker.BreakerKind
 
 /**
  * 「助手回答落库」的 **run 级纯状态**（Wave 46 外提，供 JVM 单测；生产路径
- * [ChatViewModel] 真实调用本文件，测试覆盖的是真实逻辑而非镜像）。
+ * [ChatRunCoordinator] 真实调用本文件，测试覆盖的是真实逻辑而非镜像）。
  *
  * ## 背景（为什么需要它）
  *
@@ -38,9 +38,9 @@ import com.rickeal.agent.core.agent.breaker.BreakerKind
  * 若不清零，`committedMessageId` / `lastCommittedText` 会跨 run 存活：run1 正常
  * （`committedMessageId = x1`），run2 若**无新 USER 消息**或 `_uiState` 被恢复路径改写，
  * `Finished` 的 `messages.lastOrNull()` 可能仍是 `x1` ⇒ 误跳 ⇒ **静默丢回答**。
- * 清零是硬不变量，靠 `ChatViewModel.collectRunWithPerfWindow`（三条 run 路径
+ * 清零是硬不变量，靠 `ChatRunCoordinator.collectRunWithPerfWindow`（三条 run 路径
  * `onSend` / `onSendFrom` / `onRecover` 的**唯一共享入口**，每 run 恰调一次）单点保证，
- * 外加 `onNewConversation`。
+ * 外加 `ChatViewModel.onNewConversation`（经 `ChatRunCoordinator.resetForNewConversation`）。
  *
  * **⛔ 严禁把清零放进 `resetStreaming` / `resetStreamingText`**：它们被 `Finished` /
  * `Cancelled` **在决策之后**调用，且是 10 处散点 —— 放这里既脆弱又语义错位。
@@ -67,7 +67,7 @@ internal fun AssistantPersistenceState.onMessageCommitted(messageId: String) =
 /**
  * `Finished` / `Cancelled` / `onStop` 落库前的决策：`true` = 应当落库。
  *
- * 判据与 `ChatViewModel.commitAssistant` **逐字同源**：
+ * 判据与 `ChatRunCoordinator.commitAssistant` **逐字同源**：
  *  `(1)` 本 run 已由 `MessageCommitted` 落库该条（富消息）→ 不重复落（防双气泡 / 双记录）；
  *  `(2)` 本 run 已落过同样文本（取消竞态，先到者生效）→ 不重复落。
  *
@@ -88,7 +88,7 @@ internal fun AssistantPersistenceState.onCommitted(text: String) = copy(lastComm
  * 熔断（`AgentEvent.Failed`）时 UI 会 `resetStreamingText()` 清掉流式缓冲；但**预算 / 外部型**
  * 熔断（墙钟 / 热 / 振荡 / 失败连击 / 生成超时）发生时，用户**已经看到**的正文不该跟着消失
  * （真机 r5：文本被 `StreamReset` 清掉，但用户已看到 ⇒ 数据丢失）。本判据决定「要不要把
- * UI 侧 run 级救援缓冲 `ChatViewModel.salvageText` 落库」。
+ * UI 侧 run 级救援缓冲 `ChatRunCoordinator.salvageText` 落库」。
  *
  * ## 判据（两级，全部用既有字段，不新造枚举）
  *
