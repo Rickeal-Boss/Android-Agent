@@ -510,7 +510,9 @@ class AgentRunner(
             // 按模型采样档案（Wave 20）：温度/topK 钳进官方安全区间、repPen 下限
             // （Qwen2.5 官方 1.1）、思考模型 maxTokens ≥2048、上下文按 litertlm KV
             // 预算封顶。唯一生效点 = 本处（所有 run/子 run 都过这里）；UI 保存值
-            // 不被改写。R1 类模型 agent 覆写的 0.4 会被抬回 0.5 —— 有意为之。
+            // 不被改写。agent 覆写（chatAgentPolicy，Wave 43 起按档案派生）在覆写前已取档案
+            // 推荐温度（R1 = 0.6），再经档案区间 [0.5,0.7] 钳制 ⇒ 0.6 进 0.6 出；
+            // 若覆写值低于区间下界（如无档案时的 0.4 折衷被档案命中），会被抬到区间下界 —— 有意为之。
             val config: InferenceConfig = ModelSamplingProfiles.appliedTo(
                 request.model?.fileName,
                 baseConfig,

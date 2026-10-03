@@ -170,11 +170,15 @@ class ThermalGovernor(
         return source() >= Companion.BATTERY_FUSE_TENTHS
     }
 
-    /** 电池熔断的 evidence 文案（给用户看的事实，含实时温度）。仅在 tripped 时调用。 */
-    private fun batteryFuseEvidence(): String {
-        val tenths = batteryTempTenths?.invoke() ?: Companion.BATTERY_FUSE_TENTHS
-        return "电池温度 ${tenths / 10.0}℃ 已达 ${Companion.BATTERY_FUSE_CELSIUS}℃ 保护线"
-    }
+    /**
+     * 电池熔断的 evidence 文案（给用户看的事实，含实时温度）。
+     *
+     * Wave 48 F2：`tenths` 由调用方**传入**（判据已读过一次），避免与判据在同一决策点内
+     * **二次读取** `batteryTempTenths()` —— 毫秒窗口内温度在 44.9℃ 边界抖动会让
+     * 「tripped=true 但 evidence 显示 <44.9℃」自相矛盾。
+     */
+    private fun batteryFuseEvidence(tenths: Int): String =
+        "电池温度 ${tenths / 10.0}℃ 已达 ${Companion.BATTERY_FUSE_CELSIUS}℃ 保护线"
 
     /**
      * 拒新 run 判据（Wave 43 重定义）：
@@ -196,8 +200,11 @@ class ThermalGovernor(
      */
     fun heatBlockReason(): String? {
         if (batteryTempTenths != null) {
-            if (batteryFuseTripped()) {
-                return "${batteryFuseEvidence()}，请等待设备降温后再试"
+            // Wave 48 F2：本决策点**只读一次** batteryTempTenths，判据与 evidence 共用同一 tenths
+            // —— 否则同一决策点内两次 invoke 可能取到不同值，产出「tripped 但显示未达线」的矛盾文案。
+            val tenths = batteryTempTenths?.invoke() ?: Companion.BATTERY_FUSE_TENTHS
+            if (tenths >= Companion.BATTERY_FUSE_TENTHS) {
+                return "${batteryFuseEvidence(tenths)}，请等待设备降温后再试"
             }
             if (tier.value >= ThermalTier.CRITICAL) {
                 return "设备热状态已达 ${tier.value.name} 档，请等待设备降温后再试"
