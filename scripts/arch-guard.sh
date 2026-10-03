@@ -390,9 +390,17 @@ check "ViewModel 直构造点全仓 ≤ 1（LiquidAgentApp.kt:378 白名单，�
 #     journal 回灌 + engineHistory 组装已高度趋同（见两处 Wave 41 P2-1 注释），
 #     评审通过后合并/拆分，再按实际行数下调本值（与第 14 条 lint baseline 同款
 #     「只许缩不许涨」精神，但触顶动作是评审而非 regen）。
+#
+#     Wave 48 加固（F1）：文件缺失分支原为 `echo "$f 不存在…"; exit 0`。**实测勘误**：
+#     check() 的契约是「stdout 非空 = 违规」，该 echo 已经让本分支判红（并非静默绿，
+#     「exit 0 ⇒ 假绿」的说法在现行 check() 下不成立）。但 `exit 0` 在语义上声明
+#     「成功」，与「守卫面失效必须判红」的铁律相悖，且一旦后人删掉/改写那句 echo
+#     （例如误把说明挪到 stderr）就会静默放行。故改为 `exit 1`，并给违规事实加上
+#     `::error::` 前缀（GitHub Actions 注解，违规原因本身仍完整可见）；由
+#     arch-guard-selftest.sh 的 case17 钉住「目标文件缺失 ⇒ 判红且违规事实可见」。
 check "ChatViewModel.kt 总行数 ≤ 1600（触顶 = 启动 onSend/onSendFrom 合并候选评审，非改阈值）" \
   bash -c 'f=feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt
-           if [ ! -f "$f" ]; then echo "$f 不存在（被改名/删除？守卫面已失效）"; exit 0; fi
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？守卫面已失效）"; exit 1; fi
            n=$(wc -l < "$f")
            [ "$n" -le 1600 ] || echo "ChatViewModel.kt 当前 $n 行，超 1600 行上限（触顶不是改数字，是启动「onSend/onSendFrom 合并」候选评审）"'
 

@@ -699,6 +699,40 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# case 17：第 18 条的目标文件 ChatViewModel.kt **缺失**（被改名/移动）⇒ 第 18 条必须
+#          判红，且输出里能看到「文件不存在」这一违规事实本身。
+#          动机（Wave 48 F1）：该分支原为 `echo …; exit 0`。现行 check() 的契约是
+#          「stdout 非空 = 违规」⇒ 那句 echo 已使它判红；但 case16 只钉了「超行数」面，
+#          **没有任何 case 钉住「文件缺失」面** —— 若后人删掉/改写那句 echo（例如把
+#          说明挪到 stderr），该分支会静默放行而自测网依旧全绿（自测网的盲区）。
+#          故本 case 补上：既钉「判红」，也钉「违规事实可见」（不只断言 rc≠0）。
+#          制造缺失用 **mv 改名**而非 rm，且只在 $TMP 脚手架树内操作 —— 绝不碰生产文件
+#          （与 case13 同一范式）。改名后的文件不以 .kt 结尾，不会被其它守卫扫到。
+# case17b：红必须来自**真命中**（输出含「ChatViewModel.kt 不存在（被改名/删除？守卫面
+#          已失效）」违规事实行），而不是「守卫命令自身执行失败」—— 后者那行也含守卫名，
+#          会让 assert_red 假绿（与 case12b / case13b / case14b / case15b / case16b 同一范式）。
+# ---------------------------------------------------------------------------
+d="$TMP/case17-chatvm-missing"
+scaffold "$d"
+mv "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt" \
+   "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/.ChatViewModel.kt.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case17 ChatViewModel.kt 缺失 (第 18 条守卫面失效)" "$rc" "$out" \
+  "ChatViewModel.kt 总行数 ≤ 1600（触顶 = 启动 onSend/onSendFrom 合并候选评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case17b] 第 18 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "ChatViewModel.kt 不存在（被改名/删除？守卫面已失效）"; then
+  echo "PASS [case17b] 红来自真命中（输出含「ChatViewModel.kt 不存在（被改名/删除？守卫面已失效）」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case17b] 输出里看不到「ChatViewModel.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
 echo "-----------------------------------------"
 echo "自测结果：PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -ne 0 ]; then
