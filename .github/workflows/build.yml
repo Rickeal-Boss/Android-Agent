@@ -450,6 +450,31 @@ jobs:
             "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
             test --continue
 
+      # -------------------------------------------------------------------
+      # 【Wave 50 可观测性 · 非门禁】汇总各模块真实用例数写 job summary。
+      # 动机：绿跑 CI 不打印任何用例数（gradle 的「N tests completed」只在失败时出现、
+      #       且只覆盖失败模块），而测试报告又只在失败时上传 ⇒ 从 CI 侧看不到
+      #       「哪些模块跑了、各跑了多少」。此步复用 scripts/fulltest.sh --summary-only
+      #       （只汇总现有 TEST-*.xml、不重跑、永远 exit 0）。
+      # 非阻断三件套：if: always()（红跑也要出 summary）+ continue-on-error: true
+      #       （本步自身出错也不改 job 结论）+ run 内 `|| true`（保持本步显示为绿）。
+      # 依赖：scripts/fulltest.sh 的 --summary-only 子命令由 arch-guard 第 22 条钉住
+      #       （缺失即守卫判红，防这个非阻断步骤静默失效）。
+      # -------------------------------------------------------------------
+      - name: Summarize unit test counts (non-blocking)
+        if: always()
+        continue-on-error: true
+        run: |
+          {
+            echo "### 单测用例数（逐模块 · 真实 XML 口径）"
+            echo ""
+            echo "> 非门禁步骤：仅汇总 \`**/build/test-results/**/TEST-*.xml\`，不改变 job 结论。"
+            echo ""
+            echo '```text'
+            bash scripts/fulltest.sh --summary-only 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload test reports on failure
         if: failure()
         uses: actions/upload-artifact@v4
