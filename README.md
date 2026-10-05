@@ -319,6 +319,7 @@ Android-Agent/
 >   - 真机回归（OPPO PDRM00 / Android 13）：**N1 通过**（MiniCPM5 正文无 `<think>`、思考进 `thinking`）／**1-B 部分通过**（通道关闭成立；直答不成立，但已定性为 **MiniCPM5-2B int4 固有能力限制、非 W48 引入**）／**能力位迁移 + 持久 + 门控模态后端请求**全部通过（关 audio 后 AUDIO 降级重建 **1 → 0**）
 >   - **R-A 通道 def 数据驱动化**：`channels` 改「**默认 `null` = 信任容器元数据**，仅 Gemma-4 显式」（`null` ≠ `emptyList()`——后者是**禁用通道**）；消除「else → Gemma def」这个 N1 机制本体，为**预设扩容**清路。真机复验 3 通过（MiniCPM5 / Qwen2.5 / gemma-4 回归）+ 1 不适用，**无回退**
 >   - **加固批**：D-1/D-4 措辞与解释器探测、**E1 探针判据分通道 + 采样对齐档案**（修正外部审查的因果描述）、**R-E salvage 内容级 HARD 闸门**（防退化输出进用户历史）、**R-B `scripts/fulltest.sh`**（把 `--continue` 纪律固化进仓库）、**R-C/R-D 守卫**（`ChatRunCoordinator` 行数 + 能力位 `USER` 章印唯一写入路径）⇒ **arch-guard 18 → 21 项、selftest 32 → 44**
+>   - **CI 双绿**（`79b00c3`）：**Build `37296661956`** ✅（含 `Lint (baseline gate)`，真实新问题 = 0）+ **Release `37296662094`** ✅（签名 APK / AAB / debug 三产物齐，R8 mapping 附）
 > - ⚠️ **真机验收积压：Wave 33 起累计 ≈32 条，已回收 18 条 / 剩 ≈14 条**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——这是当前最大风险敞口；**§11 顺位 1–8 全清单本波（W49）未执行，整项挂 W50**；验收清单与取证命令见 §11。
 
 ---

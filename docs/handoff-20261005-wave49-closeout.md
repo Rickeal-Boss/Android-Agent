@@ -25,7 +25,10 @@
 | 9 | `d306c5a` | **ci(scripts)：R-D** —— 冻结 `CapabilitySource.USER` 章印**唯一写入路径** |
 | 10 | `c795db7` | **fix(chat)：R-E 补** —— 诊断日志钉住熔断前提，措辞与事实一致 |
 
-> **CI run id 占位**：Build = `<待填>`、Release = `<待填>`（push 后回填；两条 workflow 因本波含非文档改动而**自动触发**，无需 `workflow_dispatch`）。
+> **CI run id（已回填）**：**Build `37296661956`** = ✅ success（`Assemble Debug` / `Unit tests` / `Lint (baseline gate)` 三 job 全绿；`Architecture guard` + `self-test` 均 success ⇒ CI 侧再次证实**守卫 21/21 + selftest PASS=44**）；**Release `37296662094`** = ✅ success（`Assemble release APK` / `AAB` / `Verify APK signature` / `Verify AAB signature` 全 success；`Publish GitHub Release` = skipped，分支推送非 tag，符合预期）。
+> **Release 产物 3 个**：① `liquidagent-release-apk-improve`（签名 release APK + release AAB 打在一起）② `liquidagent-debug-improve` ③ `liquidagent-release-mapping-improve`（R8 mapping）。
+> **lint gate 判真通过**：下 `lint-reports-79b00c3…`（artifact id `11339536574`）解析 ⇒ 报告内仅 1 条 `LintBaseline` Hint，基线吸收 "3 errors and 1 hint"（= 冻结 4 条）⇒ **真实新问题 = 0**。
+> **推送 payload** = 11 commit（10 代码 + 1 文档），fast-forward，`fe6044f..79b00c3`；两条 workflow 因本波含非文档改动而**自动触发**，无需 `workflow_dispatch`。
 
 **核心交付（三项）**：
 
