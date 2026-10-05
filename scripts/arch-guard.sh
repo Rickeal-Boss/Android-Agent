@@ -404,6 +404,27 @@ check "ChatViewModel.kt 总行数 ≤ 1600（触顶 = 启动 onSend/onSendFrom �
            n=$(wc -l < "$f")
            [ "$n" -le 1600 ] || echo "ChatViewModel.kt 当前 $n 行，超 1600 行上限（触顶不是改数字，是启动「onSend/onSendFrom 合并」候选评审）"'
 
+# 19) --continue 纪律的机械载体（Wave 49 R-B）：全量 JVM 单测必须固定带
+#     `--continue` —— Gradle 默认 fail-fast，第一个失败的模块会**中止后续模块**，
+#     gradle 只报「N tests completed」（**残缺口径**：没跑到的模块一个用例都不计入）。
+#     W48 实证：core-data 失败掩盖了 feature-chat 的长期 flaky —— 门禁看起来
+#     「只挂 1 个」，实际有模块根本没被跑到。该教训此前只落在 handoff 文档，而承载
+#     它的 `_ci-tools/localbuild.sh` 在**仓库外**（git 外）⇒ 下个接手者 / 换会话直接
+#     `gradle test`，残缺口径就会回来。故本波把纪律固化进仓库（`scripts/fulltest.sh`），
+#     并用本条守卫钉住「该文件存在且含 `--continue`」—— 防止纪律文件自己蒸发
+#     （本仓已有多次「描述不成立」的前科）。
+#     判红契约：`check()` 是「stdout 非空 = 违规」。「文件不存在」分支用
+#     `exit 1` + `::error::`（显式 echo 违规事实，绝不写成 fail-open 的空输出）。
+#     ⚠️ 判据用 `^[^#]*--continue`（**行内第一个 `#` 之前**出现该开关），而不是裸
+#     `grep -F --continue`：后者会被**注释里的提及**骗过（本波实测 —— case19 的
+#     fixture 注释写了「没有 --continue」，裸 grep 命中注释 ⇒ 假绿）。真实文件里
+#     `--continue` 既出现在 KDoc/注释、也出现在命令行的 `"$GRADLE_CMD" … --continue`，
+#     故必须只认「代码位」的那一处。
+check "fulltest.sh 存在且固定带 --continue（全量单测禁用 fail-fast 残缺口径）" \
+  bash -c 'f=scripts/fulltest.sh
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（--continue 纪律的机械载体蒸发 ⇒ 下个接手者会退回 gradle test 的残缺口径：fail-fast 只报「N tests completed」，漏跑模块无从察觉）"; exit 1; fi
+           grep -qE "^[^#]*--continue" "$f" || echo "$f 未包含 --continue（全量单测会被 fail-fast 截断，gradle 的「N tests completed」变残缺口径 —— W48 实证 core-data 失败掩盖了 feature-chat 的长期 flaky）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

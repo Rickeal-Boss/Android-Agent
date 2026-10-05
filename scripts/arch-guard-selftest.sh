@@ -134,6 +134,15 @@ KT
     </issue>
 </issues>
 XML
+  # 第 19 条（Wave 49 R-B）要求 scripts/fulltest.sh 存在且含 --continue ⇒ 骨架必须
+  # 提供它（否则干净树会被本条误红，正例失守）。给一个最小载体即可。
+  mkdir -p "$root/scripts"
+  cat > "$root/scripts/fulltest.sh" <<'SH'
+#!/usr/bin/env bash
+# scaffold 用的最小载体：只要含 --continue 即可让第 19 条守卫保持绿。
+set -uo pipefail
+./gradlew test --continue
+SH
 }
 
 run_guard() { ( cd "$1" && bash "$GUARD" 2>&1 ); }
@@ -739,6 +748,62 @@ elif printf '%s\n' "$out" | grep -qF "ChatViewModel.kt 不存在（被改名/删
   PASS=$((PASS + 1))
 else
   echo "FAIL [case17b] 输出里看不到「ChatViewModel.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 18 / case 19：第 19 条（fulltest.sh --continue 纪律，Wave 49 R-B）两面：
+#   case18 —— 临时把 scripts/fulltest.sh 改名（模拟「纪律文件被删/改名」）⇒ 判红，
+#             并断言红来自真命中（输出含「scripts/fulltest.sh 不存在」违规事实行），
+#             而非「守卫命令自身执行失败」。
+#   case19 —— fulltest.sh 存在但**代码位不含 --continue**（模拟纪律被悄悄改回 fail-fast）
+#             ⇒ 判红，断言输出含「未包含 --continue」违规事实行。
+#             ⚠️ fixture 故意在**注释里**写「--continue」：钉住守卫判据是
+#             `^[^#]*--continue`（只认行内第一个 `#` 之前的代码位），**注释里的提及
+#             不得**让守卫假绿（本波首版用裸 `grep -F --continue` 就栽在这里 —— 注释
+#             命中 ⇒ case19 假 FAIL）。
+#   两面都只在 $TMP 脚手架树内操作（mv / 覆写），绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case18-fulltest-missing"
+scaffold "$d"
+mv "$d/scripts/fulltest.sh" "$d/scripts/.fulltest.sh.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case18 fulltest.sh 缺失 (第 19 条守卫面失效)" "$rc" "$out" \
+  "fulltest.sh 存在且固定带 --continue（全量单测禁用 fail-fast 残缺口径）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case18b] 第 19 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "scripts/fulltest.sh 不存在"; then
+  echo "PASS [case18b] 红来自真命中（输出含「scripts/fulltest.sh 不存在」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case18b] 输出里看不到「scripts/fulltest.sh 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case19-fulltest-nocontinue"
+scaffold "$d"
+cat > "$d/scripts/fulltest.sh" <<'SH'
+#!/usr/bin/env bash
+# 纪律被改回 fail-fast：注释里提到 --continue 但命令里没有（守卫必须忽略注释位）
+set -uo pipefail
+./gradlew test
+SH
+out="$(run_guard "$d")"; rc=$?
+assert_red "case19 fulltest.sh 缺 --continue (第 19 条)" "$rc" "$out" \
+  "fulltest.sh 存在且固定带 --continue（全量单测禁用 fail-fast 残缺口径）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case19b] 第 19 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "未包含 --continue"; then
+  echo "PASS [case19b] 红来自真命中（输出含「未包含 --continue」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case19b] 输出里看不到「未包含 --continue」违规事实行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

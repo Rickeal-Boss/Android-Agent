@@ -26,6 +26,23 @@ java -version        # 应包含 21
 > 没有本地 JDK / SDK 也能参与：直接开 PR，GitHub Actions 的 **Build** 工作流会给出生死结论。
 > CI 设计参见 [`docs/02-ci.md`](docs/02-ci.md)。
 
+## 本地单测（全量）
+
+```bash
+# 跑全部模块的 JVM 单测（固定带 --continue，禁用 Gradle fail-fast 的残缺口径）
+scripts/fulltest.sh
+```
+
+> **为什么必须带 `--continue`**：Gradle 默认 fail-fast —— 第一个失败的模块会**中止后续
+> 模块**，于是 gradle 只报「N tests completed」，这是**残缺口径**（没跑到的模块一个用例都
+> 不计入）。W48 实证：`core-data` 失败掩盖了 `feature-chat` 的长期 flaky —— 看起来「只挂
+> 1 个」，实际有模块根本没被跑到。`scripts/fulltest.sh` 汇总各模块
+> `build/test-results/**/TEST-*.xml` 的**真实用例数**，并把这条纪律固化进仓库
+> （由 `scripts/arch-guard.sh` 守卫，防止纪律文件自己蒸发）。
+>
+> CI 上直接运行本脚本即可（走仓库 `./gradlew`）；本地无系统 JDK / SDK 时，先按你的方式
+> 注入 `JAVA_HOME` / `ANDROID_HOME` / `GRADLE_USER_HOME` 再运行。
+
 ## 工程约定（硬性）
 
 这几条来自 [`docs/00-recon-brief.md`](docs/00-recon-brief.md)，违反会导致 PR 被拒：
