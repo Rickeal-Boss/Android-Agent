@@ -425,6 +425,21 @@ check "fulltest.sh 存在且固定带 --continue（全量单测禁用 fail-fast 
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（--continue 纪律的机械载体蒸发 ⇒ 下个接手者会退回 gradle test 的残缺口径：fail-fast 只报「N tests completed」，漏跑模块无从察觉）"; exit 1; fi
            grep -qE "^[^#]*--continue" "$f" || echo "$f 未包含 --continue（全量单测会被 fail-fast 截断，gradle 的「N tests completed」变残缺口径 —— W48 实证 core-data 失败掩盖了 feature-chat 的长期 flaky）"'
 
+# 20) ChatRunCoordinator.kt 总行数上限（Wave 49 R-C）：与第 18 条共同构成
+#     **feature-chat 两文件行数表** —— #18 钉 ChatViewModel（≤1600），本条钉
+#     ChatRunCoordinator（≤1300）。W48 把 run 编排从 ChatViewModel 外提到
+#     ChatRunCoordinator 后它已 1152 行，且后续的复合熔断 rescue / journal 补 thinking /
+#     MaxRounds 兜底都落在它身上 —— 若不加守卫，一年后 1593 行会在这里长出来。
+#     ⚠️ **不改阈值、先减后增**：触顶动作 = 走 `_plans/wave48-design.md` 已列的
+#     「ChatRunCoordinator 第二拆分候选」评审（把纯函数 / 状态机再外提），**不是改数字**
+#     （与第 18 条、第 14 条 lint baseline 同款「只许缩不许涨」精神）。
+#     文件缺失分支同 #18：`exit 1` + `::error::`（守卫面失效必须判红，绝不静默放行）。
+check "ChatRunCoordinator.kt 总行数 ≤ 1300（feature-chat 两文件行数表，触顶 = 走 wave48-design 第二拆分候选，非改阈值）" \
+  bash -c 'f=feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 1300 ] || echo "ChatRunCoordinator.kt 当前 $n 行，超 1300 行上限（触顶不是改数字，是走 wave48-design 的第二拆分候选评审）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

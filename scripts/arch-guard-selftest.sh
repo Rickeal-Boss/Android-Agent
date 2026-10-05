@@ -111,6 +111,13 @@ class ChatViewModel(
     val container: com.rickeal.agent.core.data.AppContainer,
 )
 KT
+  # 第 20 条（Wave 49 R-C）在 ChatRunCoordinator.kt 缺失时判「守卫面失效」⇒ 骨架必须
+  # 提供它（否则干净树会被本条误红）。给一个只有类声明的最小文件，行数远低于 1300。
+  cat > "$root/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt" <<'KT'
+package com.rickeal.agent.feature.chat
+
+class ChatRunCoordinator
+KT
   # 第 14 条（Wave 32 起）要求 app/lint-baseline.xml 存在且条目数 <= 冻结值 4
   # （沿革 83 → Wave 37 后 35 → Wave 38 清障后 3）：骨架给 2 条 dummy 条目，
   # 2 <= 3 仍低于冻结值，干净树保持绿 —— 故 scaffold() 无需随冻结值下调而改动。
@@ -804,6 +811,57 @@ elif printf '%s\n' "$out" | grep -qF "未包含 --continue"; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case19b] 输出里看不到「未包含 --continue」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 20 / case 21：第 20 条（ChatRunCoordinator.kt ≤ 1300，Wave 49 R-C）两面：
+#   case20 —— 灌到超 1300 行 ⇒ 判红，断言红来自真命中（输出含「超 1300 行上限」计数行）。
+#   case21 —— 目标文件缺失（mv 改名）⇒ 判红，断言输出含「不存在（被改名/删除？守卫面
+#             已失效）」违规事实行。制造缺失用 mv 且只在 $TMP 内（与 case17 同范式）。
+# ---------------------------------------------------------------------------
+d="$TMP/case20-coordinator-oversize"
+scaffold "$d"
+{ echo 'package com.rickeal.agent.feature.chat'
+  echo ''
+  echo 'class ChatRunCoordinator {'
+  local_j=1
+  while [ "$local_j" -le 1305 ]; do echo "    val c$local_j: Int = $local_j"; local_j=$((local_j + 1)); done
+  echo '}'
+} > "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case20 ChatRunCoordinator.kt 超行数上限 (第 20 条)" "$rc" "$out" \
+  "ChatRunCoordinator.kt 总行数 ≤ 1300（feature-chat 两文件行数表，触顶 = 走 wave48-design 第二拆分候选，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case20b] 第 20 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "超 1300 行上限"; then
+  echo "PASS [case20b] 红来自真命中（输出含「超 1300 行上限」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case20b] 输出里看不到「超 1300 行上限」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case21-coordinator-missing"
+scaffold "$d"
+mv "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt" \
+   "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/.ChatRunCoordinator.kt.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case21 ChatRunCoordinator.kt 缺失 (第 20 条守卫面失效)" "$rc" "$out" \
+  "ChatRunCoordinator.kt 总行数 ≤ 1300（feature-chat 两文件行数表，触顶 = 走 wave48-design 第二拆分候选，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case21b] 第 20 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "ChatRunCoordinator.kt 不存在（被改名/删除？守卫面已失效）"; then
+  echo "PASS [case21b] 红来自真命中（输出含「ChatRunCoordinator.kt 不存在（被改名/删除？守卫面已失效）」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case21b] 输出里看不到「ChatRunCoordinator.kt 不存在」违规事实行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
