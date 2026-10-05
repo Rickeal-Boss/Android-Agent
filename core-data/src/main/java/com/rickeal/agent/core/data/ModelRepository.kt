@@ -224,6 +224,15 @@ class ModelRepository(
         }
     }
 
+    /**
+     * 持久化用户对某模型能力位的显式编辑。
+     *
+     * ⚠️ 本方法是**全仓唯一盖 `CapabilitySource.USER` 章的持久入口** —— 由
+     * `scripts/arch-guard.sh` 第 21 条守卫冻结（生产源码里
+     * `capabilitiesSource = CapabilitySource.USER` 的赋值面必须唯一收敛到本文件）。
+     * 新增能力写入路径（例如批量导入 / 云端同步 / 调试后门）必须走这里，否则
+     * 「用户显式编辑 ⇒ 启发式不再改写」的语义会被绕过。
+     */
     suspend fun setCapabilities(id: String, capabilities: ModelCapabilities) {
         val current = find(id) ?: return
         // Wave 48：用户显式编辑 ⇒ 置来源为 USER，此后启发式（applyTo / probe）不再改写能力位。

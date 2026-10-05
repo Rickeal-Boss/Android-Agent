@@ -118,6 +118,25 @@ package com.rickeal.agent.feature.chat
 
 class ChatRunCoordinator
 KT
+  # 第 21 条（Wave 49 R-D）要求生产源码里存在**唯一**的 USER 章印点 ⇒ 骨架必须提供它
+  # （否则干净树会被本条误红）。给一个含 `capabilitiesSource = CapabilitySource.USER`
+  # 的最小 ModelRepository.kt。
+  mkdir -p "$root/core-data/src/main/java/com/rickeal/agent/core/data"
+  cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/ModelRepository.kt" <<'KT'
+package com.rickeal.agent.core.data
+
+class ModelRepository {
+    fun setCapabilities(id: String, capabilities: ModelCapabilities) {
+        val current = find(id) ?: return
+        upsert(
+            current.copy(
+                capabilities = capabilities,
+                capabilitiesSource = CapabilitySource.USER,
+            ),
+        )
+    }
+}
+KT
   # 第 14 条（Wave 32 起）要求 app/lint-baseline.xml 存在且条目数 <= 冻结值 4
   # （沿革 83 → Wave 37 后 35 → Wave 38 清障后 3）：骨架给 2 条 dummy 条目，
   # 2 <= 3 仍低于冻结值，干净树保持绿 —— 故 scaffold() 无需随冻结值下调而改动。
@@ -862,6 +881,69 @@ elif printf '%s\n' "$out" | grep -qF "ChatRunCoordinator.kt 不存在（被改�
   PASS=$((PASS + 1))
 else
   echo "FAIL [case21b] 输出里看不到「ChatRunCoordinator.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 22 / case 23：第 21 条（CapabilitySource.USER 章印唯一写入路径，Wave 49 R-D）两面：
+#   case22 —— 在**另一个生产文件**里再盖一次 USER 章 ⇒ 判红，断言输出含「出现在
+#             ModelRepository.kt 之外」违规事实行（红来自真命中，非守卫命令自身失败）。
+#   case23 —— 把骨架的 ModelRepository.kt 换成**不含章印**的版本（章印点消失）⇒ 判红，
+#             断言输出含「找不到 … 章印点」违规事实行（守卫面失效必须判红，不静默绿）。
+#   测试源集（src/test/）里的 CapabilitySource.USER 不判红：本波骨架不含 src/test，
+#   且守卫显式 `grep -v "/src/test/"`；生产源码里的**读取/比较**（`== CapabilitySource.USER`）
+#   也不判红 —— 判据只认赋值形态（`capabilitiesSource = CapabilitySource.USER`）。
+# ---------------------------------------------------------------------------
+d="$TMP/case22-user-second-stamp"
+scaffold "$d"
+mkdir -p "$d/feature-models/src/main/java/com/rickeal/agent/feature/models"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/RogueCaps.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+fun rogueStamp(d: Any) = d.let {
+    it.copy(
+        capabilitiesSource = CapabilitySource.USER,
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case22 第二处 USER 章印 (第 21 条)" "$rc" "$out" \
+  "CapabilitySource.USER 章印唯一写入路径（仅 ModelRepository.setCapabilities，排除测试源集）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case22b] 第 21 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "出现在 ModelRepository.kt 之外"; then
+  echo "PASS [case22b] 红来自真命中（输出含「出现在 ModelRepository.kt 之外」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case22b] 输出里看不到「出现在 ModelRepository.kt 之外」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case23-user-stamp-missing"
+scaffold "$d"
+cat > "$d/core-data/src/main/java/com/rickeal/agent/core/data/ModelRepository.kt" <<'KT'
+package com.rickeal.agent.core.data
+
+class ModelRepository {
+    fun setCapabilities(id: String, capabilities: Any) = Unit
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case23 USER 章印点消失 (第 21 条守卫面失效)" "$rc" "$out" \
+  "CapabilitySource.USER 章印唯一写入路径（仅 ModelRepository.setCapabilities，排除测试源集）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case23b] 第 21 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "找不到 capabilitiesSource = CapabilitySource.USER 章印点"; then
+  echo "PASS [case23b] 红来自真命中（输出含「找不到 … 章印点」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case23b] 输出里看不到「找不到 … 章印点」违规事实行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

@@ -440,6 +440,27 @@ check "ChatRunCoordinator.kt 总行数 ≤ 1300（feature-chat 两文件行数�
            n=$(wc -l < "$f")
            [ "$n" -le 1300 ] || echo "ChatRunCoordinator.kt 当前 $n 行，超 1300 行上限（触顶不是改数字，是走 wave48-design 的第二拆分候选评审）"'
 
+# 21) CapabilitySource.USER 章印唯一写入路径（Wave 49 R-D）：`ModelRepository.setCapabilities`
+#     是全仓**唯一**盖 `CapabilitySource.USER` 章的持久入口 —— 它把「用户显式编辑 ⇒
+#     此后启发式（applyTo / probe）不再改写能力位」这一语义固定下来（见该方法 KDoc 与
+#     `ModelHeuristics.resolveCapabilities`）。若新增第二条盖 USER 章的写入路径（例如批量
+#     导入 / 云端同步 / 调试后门），该语义会被绕过且**难以察觉**，故用守卫冻结。
+#     判据用**赋值形态** `capabilitiesSource = CapabilitySource.USER`（即「盖章」动作本身），
+#     而不是裸 `CapabilitySource.USER` —— 后者会误伤生产源码里的**合法读取/比较**：
+#       · `ModelHeuristics.kt` 的 `if (source == CapabilitySource.USER)`（读，不是盖章）
+#       · `ModelDescriptor.kt` 的 KDoc `[CapabilitySource.USER]`
+#     ⚠️ 测试源集（`src/test/`）必须排除 —— `ModelHeuristicsTest.kt` 会用它构造用例，
+#     不该判红（本波实测：`ModelHeuristicsTest.kt:42/45/95` 均含 `CapabilitySource.USER`）。
+#     语义：生产源码里该赋值必须**恰好出现 1 次**，且文件必须是 ModelRepository.kt；
+#     出现面为零（章印点消失）或落到别的文件（新增盖章点）都判红。
+check "CapabilitySource.USER 章印唯一写入路径（仅 ModelRepository.setCapabilities，排除测试源集）" \
+  bash -c 'out=$(grep -rnE "capabilitiesSource[[:space:]]*=[[:space:]]*CapabilitySource\.USER" --include="*.kt" '"${EXCL[*]}"' . | grep -v "/src/test/" | grep -vE "'"$EXCLUDE_COMMENT"'")
+           if [ -z "$out" ]; then echo "::error::生产源码里找不到 capabilitiesSource = CapabilitySource.USER 章印点（ModelRepository.setCapabilities 的唯一写入路径消失，守卫面已失效）"; exit 1; fi
+           nonrepo=$(printf "%s\n" "$out" | cut -d: -f1 | grep -v "ModelRepository\.kt$" || true)
+           if [ -n "$nonrepo" ]; then echo "CapabilitySource.USER 章印点出现在 ModelRepository.kt 之外（应唯一收敛到 setCapabilities）："; printf "%s\n" "$nonrepo"; fi
+           n=$(printf "%s\n" "$out" | wc -l)
+           if [ "$n" -ne 1 ]; then echo "CapabilitySource.USER 章印点共 $n 处（应恰好 1 处 —— 新增能力写入路径必须走 ModelRepository.setCapabilities，见其 KDoc）："; printf "%s\n" "$out"; fi'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"
