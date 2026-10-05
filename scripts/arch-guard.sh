@@ -461,6 +461,23 @@ check "CapabilitySource.USER 章印唯一写入路径（仅 ModelRepository.setC
            n=$(printf "%s\n" "$out" | wc -l)
            if [ "$n" -ne 1 ]; then echo "CapabilitySource.USER 章印点共 $n 处（应恰好 1 处 —— 新增能力写入路径必须走 ModelRepository.setCapabilities，见其 KDoc）："; printf "%s\n" "$out"; fi'
 
+# 22) fulltest.sh 的 --summary-only 子命令必须存在（Wave 50）：build.yml 的 unit-tests job
+#     新增了一步「非阻断汇总用例数」步骤，它**依赖** `scripts/fulltest.sh --summary-only`
+#     存在（只汇总现有 TEST-*.xml、不重跑、永远 exit 0）。该步骤是
+#     `continue-on-error: true` + `if: always()` + `run` 内 `|| true`（刻意非阻断），
+#     ⇒ 若后人删掉该子命令，summary 步骤会**静默失效**（不报错、只是 summary 空了）
+#     —— 正是本仓「守卫网假绿陷阱」的形态：非阻断步骤的依赖被删，没有任何东西会响。
+#     故用守卫钉住该子命令的**分派臂**仍在。
+#     判据 `^[^#]*--summary-only[[:space:]]*\)`：只认**代码位**的 case 分派臂
+#     `--summary-only)`，行内第一个 `#` 之后的注释提及不算 —— 沿第 19 条（R-B）的教训：
+#     裸 grep 会被 fixture 注释里的字样骗成假绿。
+#     判红契约：`check()` 是「stdout 非空 = 违规」。「文件不存在」分支用
+#     `exit 1` + `::error::`（显式 echo 违规事实，绝不写成 fail-open 的空输出）。
+check "fulltest.sh 含 --summary-only 子命令（build.yml 非阻断汇总步骤的依赖，缺失即静默失效）" \
+  bash -c 'f=scripts/fulltest.sh
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（--summary-only 子命令的载体蒸发 ⇒ build.yml 的汇总步骤会静默失效）"; exit 1; fi
+           grep -qE "^[^#]*--summary-only[[:space:]]*\)" "$f" || echo "$f 未包含 --summary-only 子命令分派臂（build.yml 的 unit-tests summary 步骤依赖它；缺失 ⇒ 该非阻断步骤静默失效，summary 永远为空）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

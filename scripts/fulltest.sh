@@ -17,6 +17,12 @@
 #   scripts/fulltest.sh                 # 跑聚合 task `test`（覆盖全部 9 个模块）
 #   scripts/fulltest.sh --task test     # 显式指定聚合 task
 #   scripts/fulltest.sh <gradle-task>   # 透传任意 task
+#   scripts/fulltest.sh --summary-only  # 【Wave 50】只汇总现有 TEST-*.xml（不重跑、不判失败、
+#                                       # 永远 exit 0）—— 供 CI 的非阻断 job-summary 步骤复用
+#                                       # （见 .github/workflows/build.yml 的 unit-tests job）。
+#                                       # 为什么拆成子命令而不是让 CI 整脚本调用：默认模式会先
+#                                       # 清 test-results/ 再重跑全量测试、且失败时 exit 非零
+#                                       # —— 两者都不适合「跑完测试后只出一份报告」的场景。
 #
 # 运行环境（不依赖任何仓库外文件）：
 #   · CI（ubuntu runner）：仓库 wrapper 可用，脚本直接用 ./gradlew —— 与 build.yml 的
@@ -35,74 +41,105 @@
 set -uo pipefail
 
 TASK="test"
+SUMMARY_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --task)   TASK="${2:-test}"; shift 2 ;;
-    --task=*) TASK="${1#--task=}"; shift ;;
+    --task)         TASK="${2:-test}"; shift 2 ;;
+    --task=*)       TASK="${1#--task=}"; shift ;;
+    --summary-only) SUMMARY_ONLY=1; shift ;;
     -h|--help)
       sed -n '2,40p' "$0"
       exit 0 ;;
-    *)        TASK="$1"; shift ;;
+    *)              TASK="$1"; shift ;;
   esac
 done
 
-# ---- 解析 Gradle 启动器（仓库 wrapper 优先，其次 PATH 上的 gradle）----
-if [ -x ./gradlew ]; then
-  GRADLE_CMD="./gradlew"
-elif command -v gradle >/dev/null 2>&1; then
-  GRADLE_CMD="gradle"
+# ---- 跑测试（仅默认模式）----
+if [ "$SUMMARY_ONLY" -eq 0 ]; then
+  # 解析 Gradle 启动器（仓库 wrapper 优先，其次 PATH 上的 gradle）
+  if [ -x ./gradlew ]; then
+    GRADLE_CMD="./gradlew"
+  elif command -v gradle >/dev/null 2>&1; then
+    GRADLE_CMD="gradle"
+  else
+    echo "::error::既找不到 ./gradlew 也找不到 gradle —— 无法运行单测（CI 上应有 ./gradlew；本地请先注入环境）" >&2
+    exit 2
+  fi
+
+  echo "[fulltest] launcher=$GRADLE_CMD  task=$TASK  （固定带 --continue，禁用 fail-fast 残缺口径）"
+
+  # 清掉上一轮的测试结果，避免旧 TEST-*.xml 污染本轮汇总
+  find . -path ./.git -prune -o -type d -name 'test-results' -print 2>/dev/null | while IFS= read -r d; do
+    rm -rf "$d" 2>/dev/null || true
+  done
+
+  "$GRADLE_CMD" --no-daemon --stacktrace "$TASK" --continue
+  gradle_rc=$?
 else
-  echo "::error::既找不到 ./gradlew 也找不到 gradle —— 无法运行单测（CI 上应有 ./gradlew；本地请先注入环境）" >&2
-  exit 2
+  gradle_rc=0
+  echo "[fulltest] --summary-only：仅汇总现有 TEST-*.xml（不重跑测试、不判失败）"
 fi
-
-echo "[fulltest] launcher=$GRADLE_CMD  task=$TASK  （固定带 --continue，禁用 fail-fast 残缺口径）"
-
-# 清掉上一轮的测试结果，避免旧 TEST-*.xml 污染本轮汇总
-find . -path ./.git -prune -o -type d -name 'test-results' -print 2>/dev/null | while IFS= read -r d; do
-  rm -rf "$d" 2>/dev/null || true
-done
-
-"$GRADLE_CMD" --no-daemon --stacktrace "$TASK" --continue
-gradle_rc=$?
 
 # ---- 汇总 TEST-*.xml（真实用例数口径，非 gradle 的「N tests completed」）----
-total=0; failures=0; errors=0; skipped=0; files=0
-while IFS= read -r xml; do
-  [ -z "$xml" ] && continue
-  files=$((files + 1))
-  head_tag="$(grep -m1 -oE '<testsuite[^>]*>' "$xml" 2>/dev/null || true)"
-  t="$(printf '%s' "$head_tag" | grep -oE 'tests="[0-9]+"'    | head -1 | tr -cd '0-9')"
-  f="$(printf '%s' "$head_tag" | grep -oE 'failures="[0-9]+"' | head -1 | tr -cd '0-9')"
-  e="$(printf '%s' "$head_tag" | grep -oE 'errors="[0-9]+"'   | head -1 | tr -cd '0-9')"
-  s="$(printf '%s' "$head_tag" | grep -oE 'skipped="[0-9]+"'  | head -1 | tr -cd '0-9')"
-  total=$((total + ${t:-0}))
-  failures=$((failures + ${f:-0}))
-  errors=$((errors + ${e:-0}))
-  skipped=$((skipped + ${s:-0}))
-done < <(find . -path ./.git -prune -o -type f -name 'TEST-*.xml' -print 2>/dev/null)
+# 结果经全局变量回传：g_total / g_failures / g_errors / g_skipped / g_files
+# （抽成函数是为了让「默认模式」与「--summary-only 报告模式」共用同一段汇总逻辑，
+#   杜绝两份实现漂移 —— Wave 50 引入 --summary-only 时的核心取舍。）
+summarize_tests() {
+  g_total=0; g_failures=0; g_errors=0; g_skipped=0; g_files=0
+  local -A M_TOTAL=() M_FAIL=() M_ERR=()
+  local xml head_tag t f e s mod m
+  while IFS= read -r xml; do
+    [ -z "$xml" ] && continue
+    g_files=$((g_files + 1))
+    head_tag="$(grep -m1 -oE '<testsuite[^>]*>' "$xml" 2>/dev/null || true)"
+    t="$(printf '%s' "$head_tag" | grep -oE 'tests="[0-9]+"'    | head -1 | tr -cd '0-9')"
+    f="$(printf '%s' "$head_tag" | grep -oE 'failures="[0-9]+"' | head -1 | tr -cd '0-9')"
+    e="$(printf '%s' "$head_tag" | grep -oE 'errors="[0-9]+"'   | head -1 | tr -cd '0-9')"
+    s="$(printf '%s' "$head_tag" | grep -oE 'skipped="[0-9]+"'  | head -1 | tr -cd '0-9')"
+    g_total=$((g_total + ${t:-0}))
+    g_failures=$((g_failures + ${f:-0}))
+    g_errors=$((g_errors + ${e:-0}))
+    g_skipped=$((g_skipped + ${s:-0}))
+    mod="$(printf '%s' "$xml" | sed -E 's#^\./##; s#/.*##')"
+    M_TOTAL[$mod]=$(( ${M_TOTAL[$mod]:-0} + ${t:-0} ))
+    M_FAIL[$mod]=$((  ${M_FAIL[$mod]:-0}  + ${f:-0} ))
+    M_ERR[$mod]=$((   ${M_ERR[$mod]:-0}   + ${e:-0} ))
+  done < <(find . -path ./.git -prune -o -type f -name 'TEST-*.xml' -print 2>/dev/null)
 
-echo "-------------------------------------------------------------------"
-if [ "$files" -eq 0 ]; then
-  echo "[fulltest] 未找到任何 TEST-*.xml —— 用例数无法汇总（多为编译/配置失败，未产生测试结果）。"
-  echo "[fulltest] gradle 退出码 = $gradle_rc"
-else
-  echo "[fulltest] 汇总 $files 个 TEST-*.xml（真实用例数口径，非 gradle 的「N tests completed」）："
-  echo "[fulltest]   tests=$total  failures=$failures  errors=$errors  skipped=$skipped"
+  echo "-------------------------------------------------------------------"
+  if [ "$g_files" -eq 0 ]; then
+    echo "[fulltest] 未找到任何 TEST-*.xml —— 用例数无法汇总（多为编译/配置失败，未产生测试结果）。"
+    echo "[fulltest] gradle 退出码 = ${gradle_rc:-n/a}"
+  else
+    echo "[fulltest] 汇总 $g_files 个 TEST-*.xml（真实用例数口径，非 gradle 的「N tests completed」）："
+    echo "[fulltest]   tests=$g_total  failures=$g_failures  errors=$g_errors  skipped=$g_skipped"
+    if [ "${#M_TOTAL[@]}" -gt 0 ]; then
+      for m in $(printf '%s\n' "${!M_TOTAL[@]}" | LC_ALL=C sort); do
+        echo "[fulltest]   - ${m}: tests=${M_TOTAL[$m]} failures=${M_FAIL[$m]} errors=${M_ERR[$m]}"
+      done
+    fi
+  fi
+  echo "-------------------------------------------------------------------"
+}
+
+summarize_tests
+
+# --summary-only：纯报告模式，永远 exit 0（不 gate；供 CI 非阻断步骤复用）
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  exit 0
 fi
-echo "-------------------------------------------------------------------"
 
 if [ "$gradle_rc" -ne 0 ]; then
   echo "[fulltest] 失败：gradle 退出码 $gradle_rc（编译/配置/用例失败，详见上方输出）"
   exit "$gradle_rc"
 fi
-if [ "$failures" -gt 0 ] || [ "$errors" -gt 0 ]; then
-  echo "[fulltest] 失败：failures=$failures errors=$errors（真实用例失败数）"
+if [ "$g_failures" -gt 0 ] || [ "$g_errors" -gt 0 ]; then
+  echo "[fulltest] 失败：failures=$g_failures errors=$g_errors（真实用例失败数）"
   exit 1
 fi
-if [ "$files" -eq 0 ]; then
+if [ "$g_files" -eq 0 ]; then
   echo "[fulltest] 失败：gradle 成功但没有任何 TEST-*.xml（task '$TASK' 可能不含测试，或结果目录被改）"
   exit 1
 fi
-echo "[fulltest] 通过：全部用例绿（tests=$total failures=0 errors=0）。"
+echo "[fulltest] 通过：全部用例绿（tests=$g_total failures=0 errors=0）。"
 exit 0

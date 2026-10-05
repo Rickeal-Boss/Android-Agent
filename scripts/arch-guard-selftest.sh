@@ -160,13 +160,20 @@ KT
     </issue>
 </issues>
 XML
-  # 第 19 条（Wave 49 R-B）要求 scripts/fulltest.sh 存在且含 --continue ⇒ 骨架必须
-  # 提供它（否则干净树会被本条误红，正例失守）。给一个最小载体即可。
+  # 第 19 条（Wave 49 R-B）要求 scripts/fulltest.sh 存在且含 --continue；第 22 条
+  # （Wave 50）要求它含 --summary-only 分派臂 ⇒ 骨架必须**两者都提供**（否则干净树
+  # 会被这两条误红，正例失守）。
   mkdir -p "$root/scripts"
   cat > "$root/scripts/fulltest.sh" <<'SH'
 #!/usr/bin/env bash
-# scaffold 用的最小载体：只要含 --continue 即可让第 19 条守卫保持绿。
+# scaffold 用的最小载体：含 --continue（第 19 条）与 --summary-only 分派臂（第 22 条）。
 set -uo pipefail
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --summary-only) SUMMARY_ONLY=1; shift ;;
+    *) shift ;;
+  esac
+done
 ./gradlew test --continue
 SH
 }
@@ -944,6 +951,65 @@ elif printf '%s\n' "$out" | grep -qF "找不到 capabilitiesSource = CapabilityS
   PASS=$((PASS + 1))
 else
   echo "FAIL [case23b] 输出里看不到「找不到 … 章印点」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 24 / case 25：第 22 条（fulltest.sh 含 --summary-only 子命令，Wave 50）两面：
+#   case24 —— 把骨架的 fulltest.sh 覆写成**没有 --summary-only 分派臂**的版本 ⇒ 判红，
+#             断言红来自真命中（输出含「未包含 --summary-only 子命令分派臂」违规事实行），
+#             而非「守卫命令自身执行失败」。
+#             ⚠️ fixture **故意在注释里**写「--summary-only」：钉住守卫判据是
+#             `^[^#]*--summary-only[[:space:]]*\)`（只认代码位的 case 分派臂），
+#             **注释里的提及不得**让守卫假绿（与 case19 同一范式 —— R-B 的教训）。
+#   case25 —— fulltest.sh 含 --summary-only 分派臂 ⇒ 必须不红（绿面；否则第 22 条
+#             会成为永远红的僵尸规则）。
+#   两面都只在 $TMP 脚手架树内覆写，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case24-summaryonly-missing"
+scaffold "$d"
+cat > "$d/scripts/fulltest.sh" <<'SH'
+#!/usr/bin/env bash
+# 注释里提到 --summary-only 但 case 分派臂没有（守卫必须忽略注释位）
+set -uo pipefail
+./gradlew test --continue
+SH
+out="$(run_guard "$d")"; rc=$?
+assert_red "case24 fulltest.sh 缺 --summary-only 分派臂 (第 22 条)" "$rc" "$out" \
+  "fulltest.sh 含 --summary-only 子命令（build.yml 非阻断汇总步骤的依赖，缺失即静默失效）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case24b] 第 22 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "未包含 --summary-only 子命令分派臂"; then
+  echo "PASS [case24b] 红来自真命中（输出含「未包含 --summary-only 子命令分派臂」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case24b] 输出里看不到「未包含 --summary-only 子命令分派臂」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case25-summaryonly-present"
+scaffold "$d"
+cat > "$d/scripts/fulltest.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --summary-only) SUMMARY_ONLY=1; shift ;;
+    *) shift ;;
+  esac
+done
+./gradlew test --continue
+SH
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case25 fulltest.sh 含 --summary-only 分派臂 (第 22 条绿面)] 退出 0（未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case25] fulltest.sh 含 --summary-only 分派臂应不红，实际退出 $rc"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
