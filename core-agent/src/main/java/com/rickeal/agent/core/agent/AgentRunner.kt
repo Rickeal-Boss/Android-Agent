@@ -835,9 +835,10 @@ class AgentRunner(
                     return
                 }
                 if (accumulator.usage != null) state.lastUsage = accumulator.usage
-                // 引擎回报侧回写（Wave 30）：与发送侧估算（上方记账块后的
-                // onSendEstimated）口径分离 —— 这里只进引擎真实回报的
-                // prompt/completion；usage 为 null（引擎未回报）时实现方跳过。
+                // 用量回写（Wave 30）：与发送侧估算（上方记账块后的
+                // onSendEstimated）口径分离 —— 这里只进本仓自算的
+                // prompt/completion（LiteRtLmEngine 构造，引擎从不回报 usage）；
+                // usage 为 null（本次生成未产出）时实现方跳过。
                 request.tokenLedger?.onEngineUsage(accumulator.usage)
                 state.lastModelText = accumulator.text
 

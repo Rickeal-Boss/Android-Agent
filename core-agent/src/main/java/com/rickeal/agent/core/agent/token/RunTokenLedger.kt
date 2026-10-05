@@ -39,11 +39,13 @@ data class RunTokenSnapshot(
     val updatedAtWallClockMillis: Long = 0L,
 ) {
     /**
-     * 引擎回报侧的真实消耗（进+出），与估算口径的 [sentTokens] 并列呈现。
+     * **本仓自算**的 prompt + completion 累计（进+出），与估算口径的 [sentTokens] 并列呈现。
      *
-     * ⚠️ 它是 `cumulativeIn + cumulativeOut` 的**派生口径**，不是引擎自己报的总量：
-     * [TokenUsage.totalTokens] 由引擎自算，可能含 cached / reasoning 等不计入
-     * prompt+completion 的部分，二者**未必相等**。因此 UI 上不要把本值与
+     * ⚠️ 它是 `cumulativeIn + cumulativeOut` 的**派生口径**（= 各轮 `usage.totalTokens`
+     * 之和，本仓自算口径），不是引擎自己报的总量：[TokenUsage.totalTokens] 亦由本仓唯一
+     * 产出点 `LiteRtLmEngine` 构造（`= TokenEstimator.estimate(...) + 内容 chunk 帧计数`），
+     * **引擎从不回报 usage** ⇒ 它与「单轮」`usage.totalTokens` 只在单轮 run 下相等，
+     * 多轮累计下**未必相等**。因此 UI 上不要把本值与
      * `usage.totalTokens` 并列展示或相减对比 —— 那会制造第四种口径。要对比就
      * 固定用本派生口径（口径纯净优先于与引擎对齐）。
      */
@@ -81,8 +83,8 @@ interface RunTokenLedger {
     fun onSendEstimated(totalSentTokens: Long)
 
     /**
-     * 引擎回报回写。AgentRunner 生成完成分诊段（accumulator.usage 落 state.lastUsage
-     * 处）调用；[usage] 为 null（引擎未回报）时跳过，不产生任何写入。
+     * 用量回写（本仓自算口径）。AgentRunner 生成完成分诊段（accumulator.usage 落 state.lastUsage
+     * 处）调用；[usage] 为 null（本次生成未产出 [TokenUsage]）时跳过，不产生任何写入。
      */
     fun onEngineUsage(usage: TokenUsage?)
 }
@@ -91,7 +93,7 @@ interface RunTokenLedger {
  * [RunTokenLedger] 的进程内实现：[MutableStateFlow] + 两个写方法。
  *
  * 线程安全：[kotlinx.coroutines.flow.update] 的 CAS 循环保证两个回写入口并发时
- * 各自的增量不丢（发送侧回写与引擎回报回写可能来自不同协程）。
+ * 各自的增量不丢（发送侧回写与用量回写可能来自不同协程）。
  *
  * 时钟采样：[update] 的 lambda 在 CAS 重试下**会被求值多次**（其 KDoc 明示
  * "function may be evaluated multiple times"），因此 [clock] 一律在 [update] **之外**

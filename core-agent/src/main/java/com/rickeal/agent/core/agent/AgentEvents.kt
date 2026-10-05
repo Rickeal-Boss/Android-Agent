@@ -193,7 +193,7 @@ data class AgentRequest(
     /**
      * run 级 token 账本（Wave 30，可选）。非 null 时主循环在两处单点回写：
      * 发送侧记账块结束后 [RunTokenLedger.onSendEstimated]（全仓唯一的
-     * sentTokens → 账本回写点，KDoc 红线见记账块处注释）；引擎回报 usage 后
+     * sentTokens → 账本回写点，KDoc 红线见记账块处注释）；生成产出 [TokenUsage] 后
      * [RunTokenLedger.onEngineUsage]。账本是 [com.rickeal.agent.core.agent.RunState.sentTokens]
      * 的**读侧投影**，不替代不改动记账块本身（Wave 29 A1 刚终审的结构不动）。
      * null = 不记账（与历史行为一致）。子 run 应保持 null：子 run 独立短命，
