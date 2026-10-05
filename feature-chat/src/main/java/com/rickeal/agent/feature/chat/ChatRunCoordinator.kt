@@ -319,6 +319,15 @@ internal class ChatRunCoordinator(
                 archiveOtherUnsettled(dir, offer.runId)
             }.onFailure { throwable ->
                 if (throwable is CancellationException) throw throwable
+                // C6（Wave 50）：其余失败原先**静默吞掉** —— 恢复卡 UI 已清（调用方 VM 在
+                // 调本函数前已 `recovery = null`）但 journal 未 markDismissed ⇒ 下次进会话
+                // 恢复卡**复活**，用户完全无从得知。补一条诊断日志（与 R-E `熔断救援未落库`
+                // 同一出口 [AgentLogStore.info]，本文件既有约定），把「卡没了但还会回来」
+                // 变成可查事实。**仅观测**：失败仍不重试、不冒泡（调用方 fire-and-forget）。
+                AgentLogStore.info(
+                    "恢复卡归档失败（journal 未 markDismissed）：runId=${offer.runId} " +
+                        "cid=$cid —— ${throwable.message ?: throwable::class.simpleName}",
+                )
             }
         }
     }
