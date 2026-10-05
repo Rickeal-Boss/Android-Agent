@@ -64,6 +64,14 @@ internal class ChatRunCoordinator(
     private val container: AppContainer,
     private val scope: CoroutineScope,
     private val uiState: MutableStateFlow<ChatUiState>,
+    // C3（Wave 50）所有权声明：本字段**唯一写点 = 本 Coordinator** —— `ensureConversation`
+    // （首条消息建会话时写入）/ `resetForNewConversation`（新会话清空）；VM 侧**只读**
+    // （`ChatViewModel.onApprovalRememberForSession` / `onDiscardRecovery` 读 `run.conversationId`）。
+    // 全仓 grep 实测：`.conversationId =` 在 Coordinator 之外**零命中**（VM 的
+    // `ChatUiState.conversationId` 是另一个字段，写它 ≠ 写本字段）。构造签名与读点均不变。
+    // 未落 `private set`：**主构造参数不支持 setter 可见性修饰**（编译实证
+    // `Modifier 'private' is not applicable to 'value parameter'`），落它必须把字段挪进类体
+    // = 改构造签名 + 调用面，违反「零行为改动」前提 ⇒ 仅注释声明。
     internal var conversationId: String?,
 ) {
 
