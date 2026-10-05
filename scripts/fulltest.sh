@@ -108,8 +108,13 @@ summarize_tests() {
 
   echo "-------------------------------------------------------------------"
   if [ "$g_files" -eq 0 ]; then
-    echo "[fulltest] 未找到任何 TEST-*.xml —— 用例数无法汇总（多为编译/配置失败，未产生测试结果）。"
-    echo "[fulltest] gradle 退出码 = ${gradle_rc:-n/a}"
+    echo "[fulltest] 未找到任何 TEST-*.xml —— 用例数无法汇总。"
+    if [ "$SUMMARY_ONLY" -eq 1 ]; then
+      # 报告模式**没有跑 gradle** ⇒ 绝不能打印「gradle 退出码」（会让读者以为跑过且成功）。
+      echo "[fulltest] （--summary-only 模式未执行 gradle，仅汇总现有 XML；请先跑一次默认模式产生结果）"
+    else
+      echo "[fulltest] gradle 退出码 = ${gradle_rc:-n/a}（多为编译/配置失败，未产生测试结果）"
+    fi
   else
     echo "[fulltest] 汇总 $g_files 个 TEST-*.xml（真实用例数口径，非 gradle 的「N tests completed」）："
     echo "[fulltest]   tests=$g_total  failures=$g_failures  errors=$g_errors  skipped=$g_skipped"
