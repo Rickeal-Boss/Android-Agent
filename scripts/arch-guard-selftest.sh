@@ -31,6 +31,17 @@ if [ ! -f "$GUARD" ]; then
   exit 1
 fi
 
+# D4（Wave 49）：解释器探测 —— 优先 python3、回退 python。
+# 下方 case11 / case11b 用 heredoc 生成 lint-baseline.xml fixture，此前写的是裸
+# `python`：CI（ubuntu）与本机 Git-Bash 都带 `python` 别名，故一直没暴露；但**裸
+# Linux（仅 python3）会让这两条 case 假 FAIL**（外部审查已实测复现）。改探测式后
+# 两种环境都稳；两个都找不到则显式判红，不静默放行。
+PY="$(command -v python3 || command -v python)"
+if [ -z "$PY" ]; then
+  echo "::error::找不到 python3 / python —— 自测网 case11/case11b 依赖它生成 fixture"
+  exit 1
+fi
+
 TMP="$(mktemp -d)"
 # 清理失败不影响判定（某些环境里 rm 被包装/受限）：吞掉错误，绝不改退出码。
 trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
@@ -392,7 +403,7 @@ fi
 # ---------------------------------------------------------------------------
 d="$TMP/case11-baseline-overage"
 scaffold "$d"
-python - "$d/app/lint-baseline.xml" <<'PYGEN'
+"$PY" - "$d/app/lint-baseline.xml" <<'PYGEN'
 import sys
 p = sys.argv[1]
 one_issue = (
@@ -426,7 +437,7 @@ fi
 
 d="$TMP/case11b-baseline-shrunk"
 scaffold "$d"
-python - "$d/app/lint-baseline.xml" <<'PYGEN'
+"$PY" - "$d/app/lint-baseline.xml" <<'PYGEN'
 import sys, re
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
