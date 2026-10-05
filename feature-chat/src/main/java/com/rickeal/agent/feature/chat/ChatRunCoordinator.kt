@@ -67,8 +67,9 @@ internal class ChatRunCoordinator(
     // C3（Wave 50）所有权声明：本字段**唯一写点 = 本 Coordinator** —— `ensureConversation`
     // （首条消息建会话时写入）/ `resetForNewConversation`（新会话清空）；VM 侧**只读**
     // （`ChatViewModel.onApprovalRememberForSession` / `onDiscardRecovery` 读 `run.conversationId`）。
-    // 全仓 grep 实测：`.conversationId =` 在 Coordinator 之外**零命中**（VM 的
-    // `ChatUiState.conversationId` 是另一个字段，写它 ≠ 写本字段）。构造签名与读点均不变。
+    // 全仓 grep 实测：`.conversationId =` 在 Coordinator 之外**零命中**（曾并存的
+    // `ChatUiState.conversationId` 只写不读、属死字段，已在 Wave 50 Step 0 删除）。
+    // 构造签名与读点均不变。
     // 未落 `private set`：**主构造参数不支持 setter 可见性修饰**（编译实证
     // `Modifier 'private' is not applicable to 'value parameter'`），落它必须把字段挪进类体
     // = 改构造签名 + 调用面，违反「零行为改动」前提 ⇒ 仅注释声明。
@@ -1170,7 +1171,7 @@ internal class ChatRunCoordinator(
         val title = firstUserText.trim().take(24).ifBlank { "新对话" }
         val created = container.conversationRepository.create(title = title)
         conversationId = created.id
-        uiState.update { it.copy(conversationId = created.id, title = created.title) }
+        uiState.update { it.copy(title = created.title) }
         return created.id
     }
 

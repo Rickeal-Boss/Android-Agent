@@ -94,7 +94,6 @@ internal const val STREAM_FLUSH_INTERVAL_MS = 120L
 
 @Immutable
 data class ChatUiState(
-    val conversationId: String? = null,
     val title: String = "新对话",
     /** 已完成的消息，稳定不变；流式中的那条在 [StreamingState]（独立低频流）。 */
     val messages: List<ChatMessage> = emptyList(),
@@ -301,7 +300,6 @@ class ChatViewModel(
                         ?.promptTokens
                     _uiState.update {
                         it.copy(
-                            conversationId = conversation.id,
                             title = conversation.title,
                             messages = conversation.messages,
                             config = conversation.config,
