@@ -510,7 +510,7 @@ CI 和静态审查都发现不了，只有真机能复现。
 
 ### 11.0 先读：这份清单的取证前提（Wave 39 新增）
 
-Wave 33 起累计的验收项 ≈32 条；**W43 / W45 / W46 / W47 已回收 12 条（逐条见 §11.0.1 台账，均附证据 cid / 日志行号），剩 ≈20 条待验**。此前无法回收的**真实原因是取证通道是断的**：
+Wave 33 起累计的验收项 ≈32 条；**W43 / W45 / W46 / W47 已回收 12 条 + W49 新增回收 6 条（逐条见 §11.0.1 台账，均附证据 cid / 日志行号），剩 ≈14 条待验**（**其中 §11 顺位 1–8 全清单本波未执行，整项挂 W50**）。此前无法回收的**真实原因是取证通道是断的**：
 
 | 事实 | 后果 |
 |---|---|
@@ -534,19 +534,27 @@ Wave 33 起累计的验收项 ≈32 条；**W43 / W45 / W46 / W47 已回收 12 �
 - **落盘文件**（`last_errors.log`）**只收 ERROR**，用途是崩溃幸存 —— 不要指望在里面找到 INFO/WARN 关键字。
 - ⚠️ **6 组关键字里有 4 组是 WARN 级**，抓取时**不要只过滤 INFO**（下表已逐条标注级别）。
 
+⇒ **Wave 49 补五条取证判据**（均为真机实证，跨波复用）：
+
+1. 🔴 **`-s <TAG>` 会过滤掉 native 日志**：本仓习惯用 `logcat -s LiquidAgentDiag:V`，但**native（litertlm / LiteRT）用自己的 tag** ⇒ 若某决定性判据是 native 日志（例：`Ignoring thinking budget constraint`，`tasks.cc:661-664`），带 `-s` 会**整个过滤掉**、从而得出**错误的「正常」结论**。⇒ 涉及 native 判据的取证**必须落一份不过滤的全量档**：`nohup logcat -v time -f /data/local/tmp/x.log &`（不加 `-s`），事后 `adb pull`；**并先验该档确含 native 行**（如 `W/native …`）才可说「0 命中」有意义。
+2. 🔴 **判定 run 实际配置不能读会话 JSON**：`files/conversations/<cid>.json` 的 `config.thinking` **恒为创建时的默认值（AUTO）**，**不反映该 run 实际使用的思考模式** ⇒ 必须读 **settings pb**（`files/datastore/liquid_agent_settings.preferences_pb` 的 `inference_config`）或 logcat。（W49 实证：据此才发现一次「关闭思考」点击未生效。）
+3. 🔴 **N1 / thinking 相关判定绝不能看 UI**：`feature-chat/.../ChatMessageList.kt` 的 `splitThinkAndClean` 是**展示层**函数（KDoc 明写「仅作用于显示，不碰持久化」），会把 `<think>…</think>` 从正文**拆进思考折叠区** ⇒ **引擎未切分时 UI 也「有思考区、正文干净」**。⇒ 一律读 **journal / 会话 JSON** 的 `text` 与 `thinking` 字段。
+4. 🟡 **模型卡按钮需「卡内」滑动**：`ModelCard` 根 `Column` 是 `heightIn(max=420.dp) + verticalScroll`（有意设计：避免网格行高超过视口）⇒ 内容超高时**卡片自身滚动**，加载/探测/删除按钮被**卡内视口**裁掉、**既不进无障碍树也不可见**。⇒ 必须在**卡片内部**滑 3~5 次（前几次被卡片消费、滚到底后后续才传给页面）；`uiautomator dump` 找不到按钮 **≠ 按钮不存在**。
+5. 🟡 **中文输入不可用**：`adb shell input text` 对非 ASCII 在**设备侧**抛 NPE（`InputShellCommand.sendText`，KeyCharacterMap 返回 null）；设备无 `cmd clipboard`、App 无 `ACTION_SEND` 接收器。⇒ 用 **ASCII 推理题** + **同题 ON/OFF A/B 对照**（思考通道是**模板驱动**，与 prompt 语种无关）。
+
 > **本清单的性质**：条目来自各波 handoff 的验收段（已逐条注明来源波次），**尚未真机执行**。
 > 与真机不符时**以真机为准**，并当作 bug 报回来。
 
 ---
 
-### 11.0.1 已回收台账（Wave 48 新增，逐条附证据）
+### 11.0.1 已回收台账（Wave 49 更新，逐条附证据）
 
-下表逐条列出**已真机验过**的验收项（W43 / W45 / W46 / W47），每条附**证据锚点**（`cid` = 会话/日志 cid，或报告内的日志行号）。
-**判定口径**：`✅ 回收` = 有落盘日志 / 报告证据支撑「预期行为成立」；下表**未列出**的条目一律视为**未回收**（保持不标），不得据此推断已验。
+下表逐条列出**已真机验过**的验收项（W43 / W45 / W46 / W47 / **W49**），每条附**证据锚点**（`cid` = 会话/日志 cid，或报告内的日志行号）。
+**判定口径**：`✅ 回收` = 有落盘日志 / 报告证据支撑「预期行为成立」；`⚠️ 部分` = 判据只满足一部分（逐条注明哪半成立，**不得整体记 ✅**）；`⛔ 不适用` = 该组合下无观测面（**不是通过**）。下表**未列出**的条目一律视为**未回收**（保持不标），不得据此推断已验。
 
 | # | 验收项 | 结论 | 证据锚点（cid / 行号 / 来源） |
 |---|---|---|---|
-| 1 | 引擎降级链（会话创建遇容器缺 section → 逐模态降级，编码器 `role=on`） | ✅ 回收 | W45 §3.2 汇总：`会话创建遇容器缺` 出现 8 次 / `role=on` 8 次 / **`role=legacy`=0**；另 2 条「已回退 legacy」均为 MiniCPM-V-4 负向对照（零降级） |
+| 1 | 引擎降级链（会话创建遇容器缺 section → 逐模态降级，编码器 `role=on`） | ✅ 回收 | W45 §3.2 汇总：`会话创建遇容器缺` 出现 8 次 / `role=on` 8 次 / **`role=legacy`=0**。<br>⚠️ **W49 订正**：原记「另 2 条『已回退 legacy』均为 MiniCPM-V-4 负向对照（零降级）」**措辞不准** —— 回读 `_ci-tools/_w45_device_diag_full.log:120-125` 确认该容器当时**也未建成会话**（`INVALID_ARGUMENT: Unsupported model type`，角色通道播种与 legacy 回退**双双失败**）⇒「零降级」是**未触及**而非**验证通过**（第 19 处「描述不成立」） |
 | 2 | thinking 预算（思考 ≈10s 后出正文、有答案） | ✅ 回收 | cid `d8849ef0` / `08bacd4c` —— W47 用例 1 |
 | 3 | 熔断保留（电池熔断后 run 保留、非整段丢弃） | ✅ 回收 | `Failed + M=1`，2193 字符，cid `83b474ca`；对照 cid `c48b535d` 正常完成 —— W47 用例 2 |
 | 4 | 取消落盘（用户取消后已完成内容落盘） | ✅ 回收 | `Cancelled + M=1`，cid `d8849ef0` —— W47 用例 3 |
@@ -559,8 +567,25 @@ Wave 33 起累计的验收项 ≈32 条；**W43 / W45 / W46 / W47 已回收 12 �
 | 11 | MiniCPM5-2B 温度档案（档案派生温度覆盖） | ✅ 回收 | temp `0.4→0.5`（档案派生）—— W43 |
 | 12 | Qwen2.5-1.5B 正常结束 | ✅ 回收 | 正常结束、无异常降级 —— W43 |
 
+> **Wave 49 新增**（N1 / 1-B / 能力位 的真机回归 + R-A 复验；设备 OPPO PDRM00 / Android 13，debug 包）：
+
+| # | 验收项 | 结论 | 证据锚点（cid / 行号 / 来源） |
+|---|---|---|---|
+| 13 | **N1：MiniCPM5 `<think>` 切分**（W48 `b7cb1c5` 根修的真机回归） | ✅ 回收 | cid `ac99077c`（交叉印证 `033d652e`）：`text` **无 `<think>`**、`thinking` **非空(472)**、logcat「thought 通道解析声明已随会话下发（正文剥离 `<think>`…`</think>`）」；对照 W47 `08bacd4c`（正文含 `<think>` 开头） |
+| 14 | **1-B：关思考 → `thinking` 字段为空** | ⚠️ **部分**（通道成立 / 直答不成立，**非 W48 引入**） | cid `cdf615ee`：`thinking` 空、`text` 无 `<think>`、tok/s **7.26**（对照 ON 态 0.29~0.92）—— **① 通道关闭 ✅ 成立**；**② 直答 ❌ 不成立**：`text[0:70]` 为推理腔/元规划文本（无标记推理泄漏）。归属：**MiniCPM5-2B int4 固有能力限制**（W47 `bbd8db82` 同款 OFF 态已无直答，text len=2067、结尾止于「我应该尝试推理过程」）⇒ 1-B 对 MiniCPM5 的可宣称收益**仅限**「通道层面 thinking 不再混入正文」+「开关层面 OFF 态 `thinking` 为空」，**不得宣称「OFF 态直答」** |
+| 15 | **能力位来源迁移**（旧安装首刷虚高归 false + 幂等） | ✅ 回收 | 迁移行**只出一次**（`10-03 23:04:56 … 旧条目能力位来源未知，已按启发式重算：5 条`）+ 迁移后 5 条全 `HEURISTIC` 且与启发式矩阵**逐格吻合** + 重启后不再出迁移行。⚠️ before 列取自 `_ci-tools/_w45_models.json`（W45 快照），**近似基线、不作判定依据**（精确快照因冒烟启动早于备份约束而丢失） |
+| 16 | **能力位用户显式设置持久**（关能力位 → 重启仍关） | ✅ 回收 | Qwen2.5 `image/audio` 改 `USER` → `am force-stop` → 重启 → 仍 `source=USER` 且值保持 |
+| 17 | **能力位门控模态后端请求**（关 audio 后不再付 AUDIO 降级重建） | ✅ 回收 | `gemma-4-E2B-it-gpu` @ GPU 后端 A/B：基线（`img/aud=true`）`会话创建遇容器缺 AUDIO` **×1** / `VISION` **×1**；关闭后（`source=USER`）**0 命中**、会话**一次建成**（PID 过滤档 `_ci-tools/_w49_nodeg_off_pid22812.log`） |
+| 18 | **R-A：思考通道 def 数据驱动化**（`null` = 信任容器元数据） | ✅ 回收 | cid `2b70da35`（MiniCPM5）：`settled=ModelStopped`、`thinkLen=472`、`text` 无 `<think>`、logcat **无** `Ignoring thinking budget constraint`；旁证「**未下发（信任容器元数据）**」×3（MiniCPM5×2 + Qwen×1）；**负向对照** `What is 2+2` 亦 `ModelStopped`（⇒ 难度无法解释熔断）；**gemma-4 回归逐项不变**（cid `8e489e3f` vs W49 基线 `622333f2`）；**Qwen2.5 零影响**（cid `88f7c07e`，泄漏 grep 0 命中）。⚠️ MiniCPM-V-4 仍 ⛔ 不适用（`Unsupported model type`，失败早于 channels 下发） |
+
+> **⚠️ 上游 / 已知限制（非回归，勿记为通过）**：
+> - `gemma-4-E2B-it-gpu`：**GPU 后端可加载但输出乱码**（`text='<|channel>giftsitouoper[17, 23]'`、`thinking` 空）；**CPU 后端 engine init 即 `NOT_FOUND: TF_LITE_PREFILL_DECODE not found in the model`**。两者均与 `ModelPresets` 警示 + W44 台账一致 ⇒ 上游错配，preset 维持 `recommended=false`。
+> - `MiniCPM-V-4-int8`：`createConversation` 即 `INVALID_ARGUMENT: Unsupported model type`（角色通道播种与 legacy 回退**双双失败**）⇒ 本 App chat 路径下**无法建会话**。W45 已存在同款失败（`_w45_device_diag_full.log:120-125` 逐字相同）。
+> - **无 W44→W49 的引擎 init / 后端选择路径改动**（`git log` 核验）⇒ 上述两项均**非本波回归**。
+
 > **仍**未回收（保持不标，勿据此判定已验）：§11.10 R1 三层判据、§11.2 记忆磁盘满 / 只读、§11.3 沙箱符号链接、
 > §11.5 W37 UI 手感、§11.6 lint gate、§11.7 W38 行为变更、§11.8 历史挂账、§11.9 W40 验收面。
+> ⚠️ **§11 全清单（顺位 1–8）本波（W49）未执行** —— 单设备窗口时间全部用于把 N1 / 1-B / 能力位 / R-A 四组核心用例做扎实，**整项挂 W50**。
 
 ---
 
