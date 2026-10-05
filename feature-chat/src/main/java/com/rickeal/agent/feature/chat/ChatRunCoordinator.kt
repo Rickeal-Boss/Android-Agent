@@ -2,6 +2,7 @@ package com.rickeal.agent.feature.chat
 
 import com.rickeal.agent.core.agent.AgentEvent
 import com.rickeal.agent.core.agent.AgentRequest
+import com.rickeal.agent.core.agent.TerminationReason
 import com.rickeal.agent.core.agent.approval.ToolApprovalDecision
 import com.rickeal.agent.core.agent.approval.ToolApprovalHandler
 import com.rickeal.agent.core.agent.journal.AgentRunJournal
@@ -997,11 +998,16 @@ internal class ChatRunCoordinator(
                 // 复用 commitAssistant 唯一入口 —— 熔断路径无 MessageCommitted ⇒ id 判据不参与，不会误跳。
                 if (shouldSalvageOutput(event.terminatedBy, event.report, salvageText)) {
                     commitAssistant(salvageText, _streaming.value.thinking.ifBlank { null }, null, conversationId)
-                } else {
+                } else if (event.terminatedBy == TerminationReason.BreakerTripped) {
                     // R-E（Wave 49）：熔断类型可救援、但正文命中 ModelHealthCriteria 的 HARD 判据
                     // （保留 token / 单字符退化 run / 周期复读 / 空 / detector 循环）⇒ **放弃落库**
                     // （判据与理由见 shouldSalvageOutput KDoc）。留一条诊断日志，避免静默丢弃
                     // 用户已见正文。仅 HARD 拦截；SOFT（如非白名单通道标记）不拦。
+                    //
+                    // ⚠️ Wave 49 末件订正：本分支必须**先钉 `terminatedBy == BreakerTripped`**。
+                    // 原来的裸 `else` 也覆盖「非熔断的真失败路径」（shouldSalvageOutput 首条即短路，
+                    // 该路径根本没有「熔断救援」这回事）⇒ 会对着「引擎真失败 + 半截退化正文」打
+                    // 「熔断救援未落库」，措辞超出事实。钉上后日志恒有真熔断，措辞与事实一致。
                     salvageDegradationHits(salvageText).takeIf { it.isNotEmpty() }?.let { hits ->
                         AgentLogStore.info(
                             "熔断救援未落库：正文命中模型健康 HARD 判据 " +
