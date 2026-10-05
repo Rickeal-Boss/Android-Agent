@@ -147,4 +147,52 @@ class SalvageOutputTest {
             ),
         )
     }
+
+    /**
+     * R-E（Wave 49）：可救援熔断（墙钟）**但正文命中 HARD 判据** ⇒ **放弃落库**。
+     *
+     * 三种 HARD 形态各一例：保留 token（判据 A）、单字符退化 run（判据 B1）、周期复读（判据 B2）。
+     */
+    @Test
+    fun 可救援熔断但正文hard退化不保留() {
+        val hardTexts = listOf(
+            "这是回答 <unused1556> 残留",
+            "退化 " + "a".repeat(30),
+            "周期 " + "ab".repeat(30),
+        )
+        for (text in hardTexts) {
+            assertFalse(
+                shouldSalvageOutput(
+                    terminatedBy = TerminationReason.BreakerTripped,
+                    report = reportOf(BreakerKind.WallClockBudget),
+                    salvageText = text,
+                ),
+                "正文 HARD 退化应放弃落库：${text.take(20)}",
+            )
+        }
+    }
+
+    /** R-E：正文只命中 **SOFT** 判据（非白名单通道标记）不拦 ⇒ 仍保留（闸门只看 HARD）。 */
+    @Test
+    fun 正文仅软判据命中仍保留() {
+        assertTrue(
+            shouldSalvageOutput(
+                terminatedBy = TerminationReason.BreakerTripped,
+                report = reportOf(BreakerKind.WallClockBudget),
+                salvageText = "回答开始 <|channel>giftsitouoper 后续",
+            ),
+        )
+    }
+
+    /** R-E：正常正文不受内容闸门误伤（对照既有「应保留」用例）。 */
+    @Test
+    fun 正常正文不受内容闸门误伤() {
+        assertTrue(
+            shouldSalvageOutput(
+                terminatedBy = TerminationReason.BreakerTripped,
+                report = reportOf(BreakerKind.GenerationTimeout),
+                salvageText = "这是一段正常的中文回答，含标点、英文 words 与数字 12345。",
+            ),
+        )
+    }
 }

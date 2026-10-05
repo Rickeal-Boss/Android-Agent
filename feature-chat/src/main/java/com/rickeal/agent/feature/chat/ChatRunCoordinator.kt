@@ -997,6 +997,17 @@ internal class ChatRunCoordinator(
                 // 复用 commitAssistant 唯一入口 —— 熔断路径无 MessageCommitted ⇒ id 判据不参与，不会误跳。
                 if (shouldSalvageOutput(event.terminatedBy, event.report, salvageText)) {
                     commitAssistant(salvageText, _streaming.value.thinking.ifBlank { null }, null, conversationId)
+                } else {
+                    // R-E（Wave 49）：熔断类型可救援、但正文命中 ModelHealthCriteria 的 HARD 判据
+                    // （保留 token / 单字符退化 run / 周期复读 / 空 / detector 循环）⇒ **放弃落库**
+                    // （判据与理由见 shouldSalvageOutput KDoc）。留一条诊断日志，避免静默丢弃
+                    // 用户已见正文。仅 HARD 拦截；SOFT（如非白名单通道标记）不拦。
+                    salvageDegradationHits(salvageText).takeIf { it.isNotEmpty() }?.let { hits ->
+                        AgentLogStore.info(
+                            "熔断救援未落库：正文命中模型健康 HARD 判据 " +
+                                hits.joinToString(",") { it.id } + "（疑似退化输出，不写入历史）",
+                        )
+                    }
                 }
                 // ⚠️ 刻意不 flushNow()（Wave 48 D1）：本分支读的 `salvageText` 由 `flushNow()` 单点产出，
                 // 其语义精确等于「已 flush 进 _streaming = 已上屏 = 用户已见」。而此刻未 flush 的

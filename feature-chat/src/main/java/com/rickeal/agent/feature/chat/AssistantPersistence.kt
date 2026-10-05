@@ -3,6 +3,9 @@ package com.rickeal.agent.feature.chat
 import com.rickeal.agent.core.agent.TerminationReason
 import com.rickeal.agent.core.agent.breaker.BottleneckReport
 import com.rickeal.agent.core.agent.breaker.BreakerKind
+import com.rickeal.agent.core.model.CriterionHit
+import com.rickeal.agent.core.model.CriterionSeverity
+import com.rickeal.agent.core.model.ModelHealthCriteria
 
 /**
  * 「助手回答落库」的 **run 级纯状态**（Wave 46 外提，供 JVM 单测；生产路径
@@ -90,12 +93,13 @@ internal fun AssistantPersistenceState.onCommitted(text: String) = copy(lastComm
  * （真机 r5：文本被 `StreamReset` 清掉，但用户已看到 ⇒ 数据丢失）。本判据决定「要不要把
  * UI 侧 run 级救援缓冲 `ChatRunCoordinator.salvageText` 落库」。
  *
- * ## 判据（两级，全部用既有字段，不新造枚举）
+ * ## 判据（三级，全部用既有字段，不新造枚举）
  *
  * `应保留 = terminatedBy == BreakerTripped`
  *         ∧ 终止者 kind ∈ {WallClockBudget, ThermalThrottle, ToolCallOscillation,
  *                          ToolFailureStreak, GenerationTimeout}
  *         ∧ 待保留文本非空
+ *         ∧ **正文未命中 [ModelHealthCriteria] 的 HARD 判据**（Wave 49 R-E）
  *
  * - 排除 `StreamLoop` / `EmptyOutput` 是**语义正确**的：它们的输出是「被判定的乱文 / 空」，
  *   `resetStreamingText()` 清掉是设计意图（见 `AgentEvent.StreamReset` KDoc）。
@@ -103,6 +107,27 @@ internal fun AssistantPersistenceState.onCommitted(text: String) = copy(lastComm
  *   路径没有「用户已见的有效输出」语义。
  * - 终止者取 `report.tripped` 里**最后一个 HARD** —— `WallClockBudget` 首次 SOFT trip 只进
  *   ledger 不中断，HARD 再 trip 一次才终止（见 `BreakerKind.WallClockBudget` KDoc）。
+ *
+ * ## R-E（Wave 49）：为什么还要一道**内容级**闸门
+ *
+ * 「熔断类型是外部型」**不等于**「正文干净」。回显垃圾 / 保留 token / 循环退化可能**未达**
+ * 内容型熔断阈值（`StreamLoop` / `EmptyOutput`），却被外部型熔断（超时 / 墙钟 / 热）收口
+ * ⇒ 旧判据会把**已被 `StreamReset` 清掉的垃圾**落进用户历史。
+ *
+ * 故落库前对正文跑 [ModelHealthCriteria] 的 **HARD** 判据（[salvageDegradationHits]），
+ * 命中即**放弃落库**。**选「放弃」而非「标注」**：
+ *  1. 现象是「垃圾进历史」，标注只是给垃圾贴标签、垃圾仍在，放弃才消除现象；
+ *  2. 标注要动 `ChatMessage` 持久化 schema 或污染 `text` 前缀（= 展示行为变更），与
+ *     「UI 可见标签改动挂 W50」的纪律冲突；放弃零 schema / 零 text 改动；
+ *  3. 与既有语义同源：内容型熔断被排除的官方理由是「输出是被判定的乱文，清掉是设计意图」
+ *     —— 本闸门只是把同一原则从「熔断类型」下沉到「正文内容」；
+ *  4. 代价可控：HARD 判据是**确定性证据**（保留 token / 24+ 单字符 run / 周期复读 / 空 /
+ *     detector 循环），正常散文与代码误报面小；即便误报，退化为「用户已见半截输出不进历史」
+ *     = Wave 47 之前的既有行为，且调用点**留诊断日志**可回溯（不静默丢弃）。
+ *
+ * ⚠️ 只看 **HARD**：SOFT（如非白名单通道标记）不拦 —— 软判据「可疑但非决定性」，拿它丢
+ * 用户已见正文会放大误报成本（与 [com.rickeal.agent.core.model.ModelHealthVerdict.DEGRADED]
+ * 只降级不判死同源）。
  *
  * @param terminatedBy `AgentEvent.Failed.terminatedBy`（既有真失败路径恒 null）。
  * @param report `AgentEvent.Failed.report` 诊断卡（含 tripped 清单）；null = 无归因数据。
@@ -116,10 +141,23 @@ internal fun shouldSalvageOutput(
     if (terminatedBy != TerminationReason.BreakerTripped) return false
     if (salvageText.isBlank()) return false
     val terminator = report?.tripped?.lastOrNull { it.kind.severity == BreakerKind.Severity.HARD }?.kind
-    return terminator in SALVAGEABLE_BREAKER_KINDS
+    if (terminator !in SALVAGEABLE_BREAKER_KINDS) return false
+    // R-E（Wave 49）：内容级闸门 —— 熔断类型可救援不代表正文干净（见上方 KDoc）。
+    if (salvageDegradationHits(salvageText).isNotEmpty()) return false
+    return true
 }
 
-/** 应保留已见输出的熔断判据（预算 / 外部型；**不含**内容型 `StreamLoop` / `EmptyOutput`）。 */
+/**
+ * R-E（Wave 49）：熔断救援正文的**退化命中**（只取 [CriterionSeverity.HARD]；空 = 未退化）。
+ *
+ * 与 [shouldSalvageOutput] 的闸门**同源**，另供调用点记诊断（`ChatRunCoordinator` 的
+ * `AgentEvent.Failed` 分支）—— 避免「放弃落库」静默丢弃用户已见正文。
+ */
+internal fun salvageDegradationHits(text: String): List<CriterionHit> =
+    ModelHealthCriteria.evaluate(text).filter { it.severity == CriterionSeverity.HARD }
+
+/** 应保留已见输出的熔断判据（预算 / 外部型；**不含**内容型 `StreamLoop` / `EmptyOutput`；
+ *  另有 R-E 内容级闸门见 [shouldSalvageOutput]）。 */
 private val SALVAGEABLE_BREAKER_KINDS = setOf(
     BreakerKind.WallClockBudget,
     BreakerKind.ThermalThrottle,
