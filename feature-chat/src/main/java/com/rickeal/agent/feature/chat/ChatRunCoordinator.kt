@@ -1071,6 +1071,26 @@ internal class ChatRunCoordinator(
         }
     }
 
+    /**
+     * 落库一条消息：先**同步**更新 UI 列表，再**异步**追加进会话文件。
+     *
+     * ## ⚠️ 销毁竞态（已知极窄窗口，Wave 50 C1 **显式声明** —— 非 W48/W49 回归）
+     *
+     * [scope] = `viewModelScope`。VM 的 `onCleared` 只做 `run.cancel()` + 撤通知，
+     * **不等待**本函数 `launch` 出去的 `appendMessage` 完成 ⇒ 若该协程在 VM 销毁前
+     * 尚未被调度，这条消息就**只上了 UI、没落盘**（Wave 46「模型回复从未落盘」的
+     * 窄窗口版）。这是 **Wave 48 外提时原样搬移保真的既有行为**：外提前 `ChatViewModel`
+     * 里同样是 `viewModelScope.launch { appendMessage }`，竞态窗口逐字相同 ⇒ **不是本波引入**。
+     *
+     * **恢复权威是 journal**（[AgentRunJournal]；本类 journal 恢复三函数即据其重建上下文）：
+     * 会话文件少这一条只影响「重开会话」的可见历史，不丢上下文。故此处**不修逻辑、只声明**。
+     *
+     * 两个**未采纳**的修法（评审已否决，勿「顺手」补上）：
+     * 1. `NonCancellable` 包裹 `appendMessage` —— 会让写盘在 VM 已销毁、会话甚至已被用户
+     *    删除之后仍继续，写出孤儿记录 / 复活已删会话；
+     * 2. `onCleared` 阻塞等待本协程 —— 在**主线程** join 一次 IO 写，卡住销毁路径（ANR 风险）
+     *    —— 用一个偶发窄窗口换一个更差的问题。
+     */
     private fun commit(message: ChatMessage, conversationId: String) {
         uiState.update { state -> state.copy(messages = state.messages + message) }
         scope.launch {
