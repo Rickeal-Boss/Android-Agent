@@ -81,7 +81,7 @@ class RunTokenLedgerTest {
         assertEquals(120L, l.snapshot.value.sentTokens)
     }
 
-    // ── 引擎回报侧（null 跳过 + 累加） ───────────────────────────────────────
+    // ── 生成回报侧（null 跳过 + 累加；Wave 50：本仓 TokenEstimator 自算，非引擎实测） ──
 
     @Test
     fun `onEngineUsage 传 null 时完全跳过`() {
@@ -104,7 +104,7 @@ class RunTokenLedgerTest {
     // ── 双口径互不干扰 ───────────────────────────────────────────────────────
 
     @Test
-    fun `发送侧估算与引擎回报两个口径互不覆盖`() {
+    fun `发送侧估算与生成回报两个口径互不覆盖`() {
         val l = ledger()
         l.onSendEstimated(1000L)
         l.onEngineUsage(TokenUsage(promptTokens = 900, completionTokens = 100))

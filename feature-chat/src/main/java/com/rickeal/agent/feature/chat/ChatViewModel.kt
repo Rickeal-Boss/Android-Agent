@@ -158,10 +158,15 @@ data class ChatUiState(
     /**
      * 本次 run 的**发送侧估算**上下文规模（`RunTokenLedger.sentTokens`，Wave 31 流2 生产接线）。
      *
-     * 与 [contextTokens]（引擎回报实测）是**并列的第二口径**，两者**不做换算也不做对账**
+     * 与 [contextTokens]（生成回报口径）是**并列的第二口径**，两者**不做换算也不做对账**
      * （[com.rickeal.agent.core.agent.token.RunTokenLedger] KDoc 红线）。它由 AgentRunner
      * 发送侧记账块经 `AgentRequest.tokenLedger` 回写，故在**发送前/首轮**即可给出预估 ——
-     * 这是 [contextTokens]（要等引擎回报）给不出的信息。
+     * 这是 [contextTokens]（要等生成回报）给不出的信息。
+     *
+     * ⚠️ **Wave 50 订正**：[contextTokens] 并非「引擎实测」——
+     * `TokenUsage.promptTokens` 全仓只有 `LiteRtLmEngine.kt:1593` 一个构造点，其值就是
+     * `TokenEstimator.estimate(request.messages)`（`:1594`），与本字段**同源同算法**；
+     * 真机实测两数完全相等。本字段的**真正差异**只剩「发送前就能给」这一点。
      *
      * `null` / `<= 0` = 还没有可用估算（账本未接 / 新 run 尚未首轮回写），此时 UI 不显示
      * 估算口径。⚠️ 账本按会话池化、跨 run 存活，而 sentTokens 是 run 级（新 run 首轮回写即

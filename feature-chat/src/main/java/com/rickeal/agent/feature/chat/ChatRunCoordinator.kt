@@ -466,7 +466,9 @@ internal class ChatRunCoordinator(
             val request = AgentRequest(
                 conversationId = cid,
                 // run 级 token 账本（Wave 31 流2 生产接线）：按会话池化的实例，发送侧
-                // 估算 / 引擎回报由 AgentRunner 单点回写。子 run（AskSubagentTool）不传
+                // 估算 / 生成回报由 AgentRunner 单点回写（Wave 50 订正：后者是本仓
+                // `TokenEstimator` 自算，不是引擎 tokenize 实测，见 ChatContextMeter KDoc）。
+                // 子 run（AskSubagentTool）不传
                 // （by design：子 run 独立短命，不进父账本）。
                 tokenLedger = container.tokenLedger(cid),
                 history = history,
@@ -646,7 +648,9 @@ internal class ChatRunCoordinator(
             val request = AgentRequest(
                 conversationId = cid,
                 // run 级 token 账本（Wave 31 流2 生产接线）：按会话池化的实例，发送侧
-                // 估算 / 引擎回报由 AgentRunner 单点回写。子 run（AskSubagentTool）不传
+                // 估算 / 生成回报由 AgentRunner 单点回写（Wave 50 订正：后者是本仓
+                // `TokenEstimator` 自算，不是引擎 tokenize 实测，见 ChatContextMeter KDoc）。
+                // 子 run（AskSubagentTool）不传
                 // （by design：子 run 独立短命，不进父账本）。
                 tokenLedger = container.tokenLedger(cid),
                 history = engineHistory,
@@ -787,7 +791,9 @@ internal class ChatRunCoordinator(
             val request = AgentRequest(
                 conversationId = cid,
                 // run 级 token 账本（Wave 31 流2 生产接线）：按会话池化的实例，发送侧
-                // 估算 / 引擎回报由 AgentRunner 单点回写。子 run（AskSubagentTool）不传
+                // 估算 / 生成回报由 AgentRunner 单点回写（Wave 50 订正：后者是本仓
+                // `TokenEstimator` 自算，不是引擎 tokenize 实测，见 ChatContextMeter KDoc）。
+                // 子 run（AskSubagentTool）不传
                 // （by design：子 run 独立短命，不进父账本）。
                 tokenLedger = container.tokenLedger(cid),
                 history = engineHistory,
