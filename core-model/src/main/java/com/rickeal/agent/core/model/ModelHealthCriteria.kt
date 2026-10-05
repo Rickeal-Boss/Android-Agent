@@ -213,7 +213,9 @@ object ModelHealthCriteria {
     fun isEffectivelyEmpty(text: String): Boolean = text.none { it.isLetterOrDigit() }
 
     /**
-     * 对一段输出跑**全部**判据，返回命中列表。
+     * 对一段输出跑**全部**判据，返回命中列表（**单通道入口**）。
+     *
+     * 等价于 [evaluateSplit]`(text, "")` —— 保留既有语义、零行为变化。
      *
      * 重复类判据走新建的 [StreamRepetitionDetector]`(systemPrompt = null)` 实例
      * （判定①②④⑤⑦⑧），其余走本 object 的纯函数。
@@ -222,18 +224,43 @@ object ModelHealthCriteria {
      * [ID_CHAR_RUN]（B1）与 [ID_DETECTOR_LOOP]（detector 标记 = `char_run`）——这是刻意的：
      * B1 提供稳定自述 id、detector 提供标记，便于归因；不影响档位（都是 HARD）。
      */
-    fun evaluate(text: String): List<CriterionHit> {
+    fun evaluate(text: String): List<CriterionHit> = evaluateSplit(text, thinking = "")
+
+    /**
+     * 对**双通道**输出（正文 + 思考）跑判据，返回命中列表（Wave 49 E1，探针专用）。
+     *
+     * ## 为什么不能把两通道拼成一段文本再跑
+     *
+     * 判据的**通道适用性并不一致**（逐条回源码确认）：
+     *  - **保留 token（A）与空输出（C）判「两通道合并」**：A 是 logits 塌的确定性证据，
+     *    思考通道同样会吐 `<unusedNNNN>` ⇒ 只判正文会**漏检**；C 的原意是「模型完全没交出
+     *    任何字母/数字」，若只判正文，**思考型模型在短预算下**（思维链烧光 token、正文尚未
+     *    开始）会被 C **误判 BAD** —— 这正是本波要修的误判。
+     *  - **通道标记（A′）与重复类（B1 / B2 / detector）只判正文**：marker 是正文流的通道边界
+     *    现象；思考里的结构化重复（列点 / 编号 / 复述）是**正常思维形态**，喂进重复判据会
+     *    误报 BAD（Wave 49 外部审查 P2 的误判方向）。
+     *
+     * ⚠️ A 对两通道**分别匹配再合并**（不是先拼接再匹配）—— 避免「正文尾 + 思考头」拼接出
+     * 跨通道的伪 `<unusedNNNN>`。
+     *
+     * @param text 正文（用户可见输出）。
+     * @param thinking 思考通道输出；无思考通道的模型传 `""`（此时本函数与 [evaluate] 等价）。
+     */
+    fun evaluateSplit(text: String, thinking: String): List<CriterionHit> {
         val hits = mutableListOf<CriterionHit>()
 
-        // 判据 A：保留 token（硬，逐命中一条）。
+        // 判据 A：保留 token（硬，逐命中一条；**两通道分别匹配后合并**，见上方 ⚠️）。
         reservedTokenHits(text).forEach { token ->
             hits += CriterionHit(ID_RESERVED_TOKEN, CriterionSeverity.HARD, evidenceOf(token))
         }
-        // 判据 A′：非白名单通道标记（软，逐命中一条）。
+        reservedTokenHits(thinking).forEach { token ->
+            hits += CriterionHit(ID_RESERVED_TOKEN, CriterionSeverity.HARD, evidenceOf(token))
+        }
+        // 判据 A′：非白名单通道标记（软，逐命中一条；**只判正文**）。
         nonWhitelistChannelHits(text).forEach { channel ->
             hits += CriterionHit(ID_CHANNEL_MARKER, CriterionSeverity.SOFT, evidenceOf(channel))
         }
-        // 判据 B1：单字符 run（硬）。
+        // 判据 B1：单字符 run（硬；**只判正文**）。
         if (singleCharRunHit(text)) {
             hits += CriterionHit(
                 ID_CHAR_RUN,
@@ -241,15 +268,15 @@ object ModelHealthCriteria {
                 "非空白字符连续 run ≥ ${StreamRepetitionDetector.CHAR_RUN_LOOP}",
             )
         }
-        // 判据 B2：多字符周期（硬）。
+        // 判据 B2：多字符周期（硬；**只判正文**）。
         charPeriodicRepeat(text)?.let { period ->
             hits += CriterionHit(ID_CHAR_PERIOD, CriterionSeverity.HARD, "尾部周期复读 p=$period")
         }
-        // 判据 C：空输出（硬）。
-        if (isEffectivelyEmpty(text)) {
+        // 判据 C：空输出（硬；**两通道合并** —— 两通道都没有字母/数字才算「完全没输出」）。
+        if (isEffectivelyEmpty(text) && isEffectivelyEmpty(thinking)) {
             hits += CriterionHit(ID_EMPTY_OUTPUT, CriterionSeverity.HARD, "输出无任何字母/数字字符")
         }
-        // detector：句级/字符级循环（判定①②④⑤⑦⑧）—— 复用实例，零复制阈值。
+        // detector：句级/字符级循环（判定①②④⑤⑦⑧；**只判正文**）—— 复用实例，零复制阈值。
         val verdict = StreamRepetitionDetector(systemPrompt = null).observeText(text)
         if (verdict is StreamRepetitionDetector.Verdict.LoopDetected) {
             hits += CriterionHit(

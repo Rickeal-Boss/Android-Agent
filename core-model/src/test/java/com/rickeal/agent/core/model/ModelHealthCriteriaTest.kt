@@ -190,4 +190,64 @@ class ModelHealthCriteriaTest {
         val hits = ModelHealthCriteria.evaluate("今天天气很好，我们去公园散步。")
         assertEquals(ModelHealthVerdict.PASS, ModelHealthCriteria.verdictOf(hits))
     }
+
+    // ──────────────────── 分通道（evaluateSplit，Wave 49 E1）────────────────────
+
+    @Test
+    fun `回归evaluate等价于空思考的分通道`() {
+        val text = "今天天气很好，我们去公园散步。"
+        assertEquals(ModelHealthCriteria.evaluate(text), ModelHealthCriteria.evaluateSplit(text, ""))
+    }
+
+    @Test
+    fun `分通道思考的周期复读不判坏`() {
+        val thinking = "ab".repeat(30)
+        // 分通道：思考里的周期复读不进重复类判据（只判正文）⇒ 无 HARD。
+        assertFalse(
+            ModelHealthCriteria.evaluateSplit("这是一段正常的回答。", thinking)
+                .any { it.severity == CriterionSeverity.HARD },
+        )
+        // 对照（旧口径）：两通道拼起来跑 evaluate ⇒ 思考的周期复读被误判 HARD（本波修的误报）。
+        assertTrue(
+            ModelHealthCriteria.evaluate("这是一段正常的回答。" + thinking)
+                .any { it.severity == CriterionSeverity.HARD },
+        )
+    }
+
+    @Test
+    fun `分通道思考非空不判空输出`() {
+        // 思考烧光预算、正文为空 —— 但模型确实产出了内容 ⇒ C（两通道合并）不命中。
+        assertFalse(
+            ModelHealthCriteria.evaluateSplit("", "让我想想这个问题的答案")
+                .any { it.id == ModelHealthCriteria.ID_EMPTY_OUTPUT },
+        )
+        // 对照：单通道口径下正文为空 ⇒ C 命中（旧口径对思考型模型的误判来源）。
+        assertTrue(
+            ModelHealthCriteria.evaluate("")
+                .any { it.id == ModelHealthCriteria.ID_EMPTY_OUTPUT },
+        )
+    }
+
+    @Test
+    fun `分通道思考通道的保留token仍命中`() {
+        // 保留 token 是 logits 塌的确定性证据，思考通道同样有效 ⇒ 不能只判正文而漏检。
+        assertTrue(
+            ModelHealthCriteria.evaluateSplit("正常回答", "<unused1556>")
+                .any { it.id == ModelHealthCriteria.ID_RESERVED_TOKEN },
+        )
+    }
+
+    @Test
+    fun `分通道通道标记只判正文`() {
+        // 思考通道里的通道标记文本不进 A′（marker 是正文流的通道边界现象）。
+        assertFalse(
+            ModelHealthCriteria.evaluateSplit("正常回答", "<|channel>garbage")
+                .any { it.id == ModelHealthCriteria.ID_CHANNEL_MARKER },
+        )
+        // 正文里的则命中（软判据）。
+        assertTrue(
+            ModelHealthCriteria.evaluateSplit("<|channel>garbage", "正常思考")
+                .any { it.id == ModelHealthCriteria.ID_CHANNEL_MARKER },
+        )
+    }
 }

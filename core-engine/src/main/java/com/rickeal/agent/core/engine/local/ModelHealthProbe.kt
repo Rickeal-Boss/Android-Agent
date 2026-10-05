@@ -9,6 +9,7 @@ import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelHealthCriteria
 import com.rickeal.agent.core.model.ModelHealthVerdict
+import com.rickeal.agent.core.model.ModelSamplingProfiles
 import com.rickeal.agent.core.model.Role
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -25,6 +26,13 @@ import kotlinx.coroutines.withTimeout
  * 坏容器要等用户下完 2GB、发第一条消息才发现（Wave 43 真机：`gemma-4-E2B-it-gpu` 输出退化
  * 到采样出 `<unused1556>` 保留 token）。本探针在**用户手动点击**时，用两条固定短 prompt
  * 跑一次推理，对输出做机器判据（见 [ModelHealthCriteria]），给出 PASS / DEGRADED / BAD 结论。
+ *
+ * ## 判据输入：分通道（Wave 49 E1）
+ *
+ * 采样按**正文 / 思考**两个通道分别收集，判据按通道适用性分流
+ * （[ModelHealthCriteria.evaluateSplit]）：重复类与通道标记**只判正文**（思考里的结构化重复是
+ * 正常思维形态，混装会误判 BAD）；保留 token 与空输出判**两通道合并**（退化可在任一通道暴露，
+ * 「完全没输出」才是空）。探针采样另**对齐模型档案**（见 [probeRequest]）。
  *
  * ## 为什么放 `:core-engine`
  *
@@ -71,6 +79,14 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
         data class Completed(
             val verdict: ModelHealthVerdict,
             val hits: List<CriterionHit>,
+            /**
+             * **正文**采样（Wave 49 E1 分通道后 = 只含正文，不含思考通道）。
+             *
+             * 判据的通道适用范围见 [ModelHealthCriteria.evaluateSplit]；本字段只作 UI 预览，
+             * 与判据输入（正文 + 思考）**不完全等同**（思考通道不进本字段）。
+             * ⚠️ 思考型模型在 [PROBE_MAX_TOKENS] 短预算下正文可能为空 ⇒ 预览显「（空）」，
+             * 但 verdict 可为 PASS（空输出判据 C 判的是**两通道合并**，见 evaluateSplit）。
+             */
             val sample: String,
             val elapsedMs: Long,
         ) : ProbeOutcome
@@ -100,7 +116,9 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
      * 跑一次自检。
      *
      * @param model 当前激活模型（null ⇒ [NotRunReason.NO_ACTIVE_MODEL]）
-     * @param config 当前推理配置（探针只覆盖 `maxTokens`，其余沿用用户设置）
+     * @param config 当前推理配置。探针先过**模型档案**（[ModelSamplingProfiles.appliedTo]，与
+     *   AgentRunner 同一汇聚点）把采样钳进该模型安全区间，再钉 `maxTokens` 并复归 —— 见
+     *   [probeSamplingConfig]。
      */
     suspend fun run(model: ModelDescriptor?, config: InferenceConfig): ProbeOutcome {
         if (model == null) return ProbeOutcome.NotRun(NotRunReason.NO_ACTIVE_MODEL)
@@ -113,19 +131,23 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
 
             val startNs = System.nanoTime()
             val epoch = probeEpoch.incrementAndGet()
-            val sample = StringBuilder()
+            // Wave 49 E1：**分通道**采样 —— 正文与思考各一个缓冲，判据按通道适用性分流
+            // （见 ModelHealthCriteria.evaluateSplit）。此前二者混装一个 StringBuilder，
+            // 会让思考的结构化重复污染重复类判据（误判 BAD）。
+            val textSample = StringBuilder()
+            val thinkingSample = StringBuilder()
             try {
                 withTimeout(PROBE_TOTAL_TIMEOUT_MS) {
                     for (prompt in PROBE_PROMPTS) {
                         withTimeout(PROBE_TURN_TIMEOUT_MS) {
                             engine.generateStream(probeRequest(prompt, config, model, epoch))
                                 .collect { chunk ->
-                                    if (chunk.textDelta.isNotEmpty()) appendBounded(sample, chunk.textDelta)
-                                    if (chunk.thinkingDelta.isNotEmpty()) appendBounded(sample, chunk.thinkingDelta)
+                                    if (chunk.textDelta.isNotEmpty()) appendBounded(textSample, chunk.textDelta)
+                                    if (chunk.thinkingDelta.isNotEmpty()) appendBounded(thinkingSample, chunk.thinkingDelta)
                                 }
                         }
                         // 早停：第 1 条已出 HARD ⇒ 跳过后续（坏容器第 1 条就会暴露，省时间）。
-                        val soFar = ModelHealthCriteria.evaluate(sample.toString())
+                        val soFar = ModelHealthCriteria.evaluateSplit(textSample.toString(), thinkingSample.toString())
                         if (ModelHealthCriteria.verdictOf(soFar) == ModelHealthVerdict.BAD) break
                     }
                 }
@@ -137,11 +159,11 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
                 )
             }
 
-            val hits = ModelHealthCriteria.evaluate(sample.toString())
+            val hits = ModelHealthCriteria.evaluateSplit(textSample.toString(), thinkingSample.toString())
             return ProbeOutcome.Completed(
                 verdict = ModelHealthCriteria.verdictOf(hits),
                 hits = hits,
-                sample = sample.toString(),
+                sample = textSample.toString(),
                 elapsedMs = (System.nanoTime() - startNs) / 1_000_000,
             )
         } catch (t: CancellationException) {
@@ -157,6 +179,8 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
     /**
      * 构造探针请求：`tools = emptyList()` 绕过 AgentRunner（不注册任何工具）；
      * `conversationId` 固定探针 id + `contextVersion` 每次运行递增（会话隔离，见类 KDoc）。
+     *
+     * 采样配置见 [probeSamplingConfig]（Wave 49 E1）。
      */
     private fun probeRequest(
         prompt: String,
@@ -165,14 +189,14 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
         epoch: Long,
     ): GenerationRequest = GenerationRequest(
         messages = listOf(ChatMessage(role = Role.USER, text = prompt)),
-        config = config.copy(maxTokens = PROBE_MAX_TOKENS),
+        config = probeSamplingConfig(model.fileName, config),
         model = model,
         tools = emptyList(),
         conversationId = PROBE_CONVERSATION_ID,
         contextVersion = epoch,
     )
 
-    /** 采样文本有界追加（防御性上限；96 token 输出远达不到）。 */
+    /** 采样文本有界追加（防御性上限；96 token 输出远达不到）。按通道各自独立计数。 */
     private fun appendBounded(target: StringBuilder, delta: String) {
         if (target.length >= MAX_SAMPLE_CHARS) return
         val room = MAX_SAMPLE_CHARS - target.length
@@ -209,3 +233,27 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
         const val MAX_SAMPLE_CHARS = 4096
     }
 }
+
+/**
+ * 探针采样配置（Wave 49 E1）——三步，顺序不可换：
+ *
+ * 1. **过模型档案**（[ModelSamplingProfiles.appliedTo]，与 AgentRunner 组装 `InferenceConfig`
+ *    后同一汇聚点）：温度 / topK / topP / repPen 钳进该模型安全区间、`contextLength` 按 KV
+ *    预算封顶。否则探针沿用用户当前滑条（如温度 0.1 近贪心）⇒ 健康模型也可能因采样过冷而
+ *    退化，**自检误报 BAD**（Wave 49 外部审查 P2）。
+ * 2. **钉 `maxTokens` = [ModelHealthProbe.PROBE_MAX_TOKENS]**：探针的 96 token **成本上界**
+ *    优先于档案的 `minMaxTokens`（档案的 2048 是为「思考型模型交出答案」设的；探针不需要
+ *    完整答案，且放大到 2048 会撑爆 [ModelHealthProbe.PROBE_TURN_TIMEOUT_MS] /
+ *    [ModelHealthProbe.PROBE_TOTAL_TIMEOUT_MS]）。
+ * 3. **`.coerce()` 重新归一**：`InferenceConfig` 的不变量是 `thinkingTokenBudget < maxTokens`
+ *    （见其 KDoc 与 `coerce`）。第 2 步把 `maxTokens` 改小后若不复归，用户设的
+ *    `thinkingTokenBudget`（如 2048）会 **> maxTokens**，引擎侧 `resolveThinkingBudget` 只能钳到
+ *    `maxTokens-1` ⇒ **思考吃光 96 token、正文为空**（这正是「思考型模型被误判」的机制之一；
+ *    另一层由判据 C 的**两通道合并**口径兜住，见 [ModelHealthCriteria.evaluateSplit]）。
+ *
+ * 独立成 `internal` 顶层函数以便 JVM 单测（探针本体依赖引擎，不能 JVM 跑）。
+ */
+internal fun probeSamplingConfig(fileName: String?, config: InferenceConfig): InferenceConfig =
+    ModelSamplingProfiles.appliedTo(fileName, config)
+        .copy(maxTokens = ModelHealthProbe.PROBE_MAX_TOKENS)
+        .coerce()
