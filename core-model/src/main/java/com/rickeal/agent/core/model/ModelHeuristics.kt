@@ -14,6 +14,8 @@ data class HeuristicResult(
     val quantization: Quantization = Quantization.UNKNOWN,
     val capabilities: ModelCapabilities = ModelCapabilities(),
     val contextLength: Int = 4096,
+    /** 思考通道字面量语法（Wave 49 R-A）；`null` = 信任容器元数据。见 [ChannelSyntax]。 */
+    val thoughtChannelSyntax: ChannelSyntax? = null,
 )
 
 object ModelHeuristics {
@@ -26,6 +28,7 @@ object ModelHeuristics {
         val quantization = inferQuantization(lower)
         val capabilities = inferCapabilities(family, lower)
         val contextLength = inferContextLength(family, lower, sizeBytes)
+        val thoughtChannelSyntax = inferChannelSyntax(family, lower)
 
         return HeuristicResult(
             displayName = name,
@@ -33,6 +36,7 @@ object ModelHeuristics {
             quantization = quantization,
             capabilities = capabilities,
             contextLength = contextLength,
+            thoughtChannelSyntax = thoughtChannelSyntax,
         )
     }
 
@@ -60,6 +64,9 @@ object ModelHeuristics {
             ),
             // 旧 null（Wave 48 之前的存量数据）首次重算即迁移为 HEURISTIC。
             capabilitiesSource = descriptor.capabilitiesSource ?: CapabilitySource.HEURISTIC,
+            // Wave 49 R-A：思考通道语法是**模型事实**（描述容器真实的通道语法），不可用户编辑，
+            // 故每次 refresh 无条件重算 —— 不采信持久化值（否则一次误写会永久覆盖正确元数据）。
+            thoughtChannelSyntax = result.thoughtChannelSyntax,
         )
     }
 
@@ -165,6 +172,28 @@ object ModelHeuristics {
             thinking = false,
             preferredBackends = setOf(InferenceBackend.CPU),
         )
+    }
+
+    /**
+     * 思考通道语法归类（Wave 49 R-A）。**默认 `null`（信任容器元数据）** —— 只有一手证据证明
+     * 「容器元数据**不含**该通道」的家族才给显式字面量。
+     *
+     * - **Gemma-4 → [ChannelSyntax.GEMMA]**：W43 `3e08b8f` 真机实锤 —— 不下发时
+     *   `<|channel>thought…<channel|>` 原样混进正文 ⇒ 元数据不含该通道 ⇒ 必须显式下发。
+     * - **其余全部 `null`**：含 MiniCPM5（`RM_MiniCPM5-2B.md:106/163`：容器元数据**自带**
+     *   `thought` 通道 `<think>`/`</think>`）、未知模型、非思考模型。
+     *   ⚠️ **不得为「看起来完整」给 Gemma 字面量** —— 那正是 N1 本体（错误覆盖正确元数据）。
+     *
+     * ⚠️ 已知误分类（顺带登记，本波不改）：`DeepSeek-R1-Distill-Qwen-1.5B` 文件名含 `qwen` 但不含
+     * `qwen3` ⇒ [inferFamily] 落 `OTHER`。本设计下它归 `null`（信任元数据），比现状（给 Gemma
+     * 字面量覆盖）**反而更正确**；其元数据是否声明思考通道仍需真机验。
+     *
+     * ⚠️ `lower` 当前未参与判定，**刻意保留**：它是 R-A 回退档的一行落点
+     * （`family == MINICPM && lower.contains("minicpm5") -> ChannelSyntax.THINK`，见设计 §3.2）。
+     */
+    private fun inferChannelSyntax(family: ModelFamily, lower: String): ChannelSyntax? = when {
+        family == ModelFamily.GEMMA_4 -> ChannelSyntax.GEMMA
+        else -> null
     }
 
     /**

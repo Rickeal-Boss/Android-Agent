@@ -17,6 +17,36 @@ enum class ModelFamily {
     OTHER,
 }
 
+/**
+ * 思考通道的**字面量语法**（模型事实，非用户偏好；Wave 49 R-A）。
+ *
+ * `ModelDescriptor.thoughtChannelSyntax == null` ⇒ **不下发 `channels`，信任容器元数据**
+ * （`ConversationConfig.channels = null`；0.17.1 KDoc 逐字：`null` = 用 `LlmMetadata` 的默认
+ * 通道配置，`empty` = 禁用通道）。非 null ⇒ 下发**单元素** def **覆盖**元数据。
+ *
+ * ## 为何 null 优先于「猜一个字面量」
+ *
+ * native `channels` 是 **overwrite 语义**（litert-lm `conversation.cc:189-200`）：一旦非空即
+ * **整体丢弃**容器元数据通道。若对「元数据已自声明思考通道」的模型下发**错误字面量**，会把正确
+ * 通道覆盖成错的 ⇒ 模型按自己的标记输出、运行时按错误标记切分 ⇒ **思维链泄漏进正文 + 思考预算
+ * 静默失效 + 零报错**（W48 N1 真机 `bbd8db82` / W43 真机实锤同款）。
+ * ⇒ **能信任元数据就信任，不猜字面量。**
+ */
+@Serializable
+enum class ChannelSyntax(val start: String, val end: String) {
+    /**
+     * Gemma 系：`<|channel>thought` / `<channel|>`（litert-lm `channel_util.h` 示例 +
+     * W43 `3e08b8f` 真机泄漏文本逐字节一致）。
+     */
+    GEMMA("<|channel>thought", "<channel|>"),
+
+    /**
+     * MiniCPM5 系：`<think>` / `</think>`（`RM_MiniCPM5-2B.md:163`）。
+     * **保留作显式回退档** —— 若真机证明其容器元数据通道未被 native 采纳，一行切回。
+     */
+    THINK("<think>", "</think>"),
+}
+
 @Serializable
 enum class Quantization {
     NONE,
@@ -83,6 +113,14 @@ data class ModelDescriptor(
     val sourceUrl: String? = null,
     val addedAtMillis: Long = System.currentTimeMillis(),
     val isBuiltIn: Boolean = false,
+    /**
+     * 思考通道字面量语法（Wave 49 R-A）。`null` = **信任容器元数据**（不下发 `channels`）。
+     *
+     * 默认 `null` —— **未登记的未知模型必须是 null**，否则等于没修（见 [ChannelSyntax] KDoc）。
+     * 新增带默认值字段对旧 JSON **向后兼容**（缺失 → `null`）；`ModelHeuristics.applyTo` 每次
+     * refresh 都**重算**本字段（它是模型事实、不可用户编辑，故不采信持久化值）。
+     */
+    val thoughtChannelSyntax: ChannelSyntax? = null,
     val notes: String? = null,
 ) {
     fun exists(): Boolean = path.isNotBlank() && java.io.File(path).exists()

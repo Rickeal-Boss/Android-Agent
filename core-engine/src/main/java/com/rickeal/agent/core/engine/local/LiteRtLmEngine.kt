@@ -31,7 +31,6 @@ import com.rickeal.agent.core.model.FinishReason
 import com.rickeal.agent.core.model.GenerationChunk
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.ModelDescriptor
-import com.rickeal.agent.core.model.ModelFamily
 import com.rickeal.agent.core.model.ModelModality
 import com.rickeal.agent.core.model.newId
 import com.rickeal.agent.core.model.Role
@@ -62,7 +61,7 @@ import java.util.Locale
 internal const val THOUGHT_CHANNEL = "thought"
 
 /**
- * thought 通道的**输出解析声明**（Wave 43 真机实锤后新增；Wave 48 起**按模型选择**）。
+ * thought 通道的**输出解析声明**（Wave 43 真机实锤后新增；Wave 48 起按模型选择；**Wave 49 R-A 起数据驱动 + 默认可不下发**）。
  *
  * ## 背景（Gemma 侧）
  *
@@ -72,7 +71,7 @@ internal const val THOUGHT_CHANNEL = "thought"
  * 切分——未声明时标记连同思维链全部混进正文（OPPO PDRM00 真机 journal 实锤：
  * `<|channel>thought` 原样泄漏 + 思维链噪声触发轮内重复检测三连 → run 终止）。
  *
- * ## 为什么必须「按模型选择」而不是无条件下发 Gemma 标记（Wave 48 N1 根因）
+ * ## 为什么「按模型选择」而不是无条件下发 Gemma 标记（Wave 48 N1 根因）
  *
  * MiniCPM5 的 `.litertlm` 元数据**本就声明了** `<think>` / `</think>` 通道，但 native 的
  * 通道配置是 **overwrite 语义**（litert-lm `conversation.cc:189-200`：只要配置非空，元数据
@@ -80,18 +79,26 @@ internal const val THOUGHT_CHANNEL = "thought"
  * `<|channel>thought`（MiniCPM5 永不输出）⇒ 不切分 ⇒ `<think>…</think>` 明文混进正文、
  * `message.channels["thought"]` 恒空（真机铁证 `_ci-tools/_w47_after/08bacd4c-…json`）。
  *
+ * ## Wave 49 R-A：把「按模型选择」进一步收敛为**数据驱动 + 默认信任元数据**
+ *
+ * 返回 `null` ⇒ **不下发 `channels`** ⇒ native `nullopt` ⇒ 用**容器元数据**的通道配置
+ * （0.17.1 KDoc：`null` = 用 `LlmMetadata` 默认；`empty` = 禁用通道 —— 后者**绝不能用**）。
+ * 字面量来源 = [ModelDescriptor.thoughtChannelSyntax]（数据驱动，见 [ChannelSyntax] KDoc），
+ * 未知模型默认 `null`。**能信任元数据就信任，不猜字面量** ⇒ 从机制上消除 N1 本体。
+ *
  * ## 为什么**不能**简单 append 第二个 def（方案 A 被否决）
  *
  * native `ThinkingBudgetConstraint` 只用 `channels.front()` 的 start/end token ids
  * （`conversation.cc:371-392`，含上游 TODO b/521921341）⇒ 多通道下只有 **front()** 生效。
  * 若把 `<think>` 追加到末尾，W47 的 thinking 预算对 MiniCPM5 **静默失效**；放 front 则
- * Gemma 失效。**按模型选 def 保证 front() 恒为该模型自己的思考通道** ⇒ 切分与预算同时正确。
+ * Gemma 失效。**单元素返回（唯一非空分支 = [ChannelSyntax]）保证 `front()` 恒为该模型自己的
+ * 思考通道** ⇒ 切分与预算同时正确。
  *
  * ## 判定口径 = 模型身份（**不**读 `capabilities.thinking`）
  *
  * channel def 描述的是**容器真实的通道语法**（模型事实），不是用户偏好；若随用户开关变化，
  * 会出现「用户关思考但模型仍自决输出 `<think>` ⇒ 再次泄漏」。故取
- * `family == MINICPM && 文件名含 "minicpm5"`（MiniCPM-V 视觉系无 thinking，不命中）。
+ * [ModelDescriptor.thoughtChannelSyntax]（由 `ModelHeuristics.inferChannelSyntax` 按 family 归类）。
  *
  * ## 声明后的行为与字面量出处
  *
@@ -100,31 +107,28 @@ internal const val THOUGHT_CHANNEL = "thought"
  * - Gemma 侧标记 = litert-lm 源码 `channel_util.h` kThoughtChannelName 注释
  *   「e.g. "<|channel>thought"」+ `io_types.h` 同款示例，与真机泄漏文本逐字节一致；
  * - MiniCPM5 侧标记 = `_research/models/RM_MiniCPM5-2B.md:163`「the `thought` channel as
- *   `<think>\n` / `</think>`」。
+ *   `<think>\n` / `</think>`」（**回退档**；默认可不下发，信任元数据）。
  *
- * ⚠️ 类型注意：`ConversationConfig.channels` 的形参是 **List<Channel>**（通道定义
- * 列表，运行时按 channelName 归档），不是 Map —— 0.17.1 class 常量池里的 getChannels
- * 取出的就是 List，首版误判为 Map 编译期被拦。
+ * ⚠️ 类型注意：`ConversationConfig.channels` 的形参是 **List<Channel>?**（可空，默认 null；
+ * 0.17.1 `Config.kt:235`），不是 Map —— 0.17.1 class 常量池里的 getChannels 取出的就是 List，
+ * 首版误判为 Map 编译期被拦。
  * ⚠️ 引用必须**全限定**：本文件已 import kotlinx.coroutines.channels.Channel，
  * 短名 `Channel(...)` 会被解析到协程工厂函数而非 litertlm 构造器（首版实测两个编译错）。
  * ⚠️ 构造必须**位置实参**（channelName, start, end）：AAR 编译未带 -java-parameters，
  * 参数名不保留，具名实参编译期被拦（首版实测）。
  *
- * 纯函数（文件级 internal，可被单测直接调）：未登记的新模型回退 Gemma 标记（泄漏依旧，
- * 但不比现状差）。**断言 `front()` 的 start 与 family 一致**是把「预算 front() 正确性」
- * 钉进测试的关键（方案 B 相对方案 A 的唯一优势）。
+ * 纯函数（文件级 internal，可被单测直接调）：`null`（含未知模型 / `thoughtChannelSyntax == null`）
+ * ⇒ 不下发 channels、信任容器元数据。**不变量**：返回非空时必为**单元素**且 `front()` 即该模型
+ * 自己的思考通道 —— 这是把「预算 front() 正确性」钉进测试的关键。
  */
-internal fun thoughtChannelDefsFor(model: ModelDescriptor?): List<com.google.ai.edge.litertlm.Channel> {
-    // 文件名口径与 ModelHeuristics.applyTo 同源：fileName 空则回退 path 末段。
-    val name = model?.let { m -> m.fileName.ifBlank { m.path.substringAfterLast('/') } }.orEmpty()
-    val isMiniCpm5 = model?.family == ModelFamily.MINICPM &&
-        name.lowercase(Locale.ROOT).contains("minicpm5")
-    return if (isMiniCpm5) {
-        // Channel(channelName, start, end)
-        listOf(com.google.ai.edge.litertlm.Channel(THOUGHT_CHANNEL, "<think>", "</think>"))
-    } else {
-        listOf(com.google.ai.edge.litertlm.Channel(THOUGHT_CHANNEL, "<|channel>thought", "<channel|>"))
-    }
+internal fun thoughtChannelDefsFor(
+    model: ModelDescriptor?,
+): List<com.google.ai.edge.litertlm.Channel>? {
+    // null（含未登记未知模型）⇒ 不下发 channels，信任容器元数据。R-A 核心：
+    // 元数据已声明思考通道的模型（MiniCPM5 等）不再被错误字面量覆盖 ⇒ 机制上消除 N1。
+    val syntax = model?.thoughtChannelSyntax ?: return null
+    // Channel(channelName, start, end)；不变量：非空返回恒单元素 ⇒ front() 即该模型自己的思考通道。
+    return listOf(com.google.ai.edge.litertlm.Channel(THOUGHT_CHANNEL, syntax.start, syntax.end))
 }
 
 /**
@@ -1133,9 +1137,10 @@ class LiteRtLmEngine(
             )
         }
 
-        // thought 通道输出解析声明（Wave 48：按模型选 def，见 [thoughtChannelDefsFor] KDoc）。
+        // thought 通道输出解析声明（Wave 48 按模型选 def → Wave 49 R-A 数据驱动，见
+        // [thoughtChannelDefsFor] KDoc）。**可空**：null = 不下发 channels、信任容器元数据。
         // 本会话内 4 个构造点（roleConfig / 第三态重建 / 不带工具重试 / legacy 回退）共用同一份，
-        // 保证 front() 恒为该模型自己的思考通道（W47 thinking 预算只认 front()）。
+        // 保证非空时 front() 恒为该模型自己的思考通道（W47 thinking 预算只认 front()）。
         val thoughtDefs = thoughtChannelDefsFor(request.model)
         val roleConfig = ConversationConfig(
             samplerConfig = samplerConfig,
@@ -1163,11 +1168,21 @@ class LiteRtLmEngine(
             // （元数据/模板差异），生效与否以生成期正文无泄漏为准。
             // ⚠️ 文案**动态打印实际下发的 start/end**（Wave 48）：否则 MiniCPM5 场景日志
             // 恒说「剥离 <|channel>thought」，与真实下发（<think>）自相矛盾、误导排查。
-            AgentLogStore.info(
-                "thought 通道解析声明已随会话下发（正文剥离 " +
-                    "${thoughtDefs.first().start}…${thoughtDefs.first().end}，" +
-                    "思维链入 channels[$THOUGHT_CHANNEL]）"
-            )
+            // ⚠️ Wave 49 R-A：`thoughtDefs` 可空 ⇒ **两态**（`null` = 不下发、信任容器元数据）。
+            // 这条日志是**验收关键字**（出现「未下发（信任容器元数据）」即证明走 null 分支），
+            // 保留可观测性；改了文案要同步验收脚本。可空后不可直接 `.first()`（会 NPE）。
+            if (thoughtDefs != null) {
+                AgentLogStore.info(
+                    "thought 通道解析声明已随会话下发（正文剥离 " +
+                        "${thoughtDefs.first().start}…${thoughtDefs.first().end}，" +
+                        "思维链入 channels[$THOUGHT_CHANNEL]）"
+                )
+            } else {
+                AgentLogStore.info(
+                    "thought 通道解析声明未下发（信任容器元数据；模型=" +
+                        "${request.model?.fileName.orEmpty()}）"
+                )
+            }
             var thirdState = false
             // preface 渲染诊断（Wave 28，@OptIn ExperimentalApi）：preface = systemInstruction +
             // initialMessages 在 native chat template 下的**实际渲染结果**。若某转换件对

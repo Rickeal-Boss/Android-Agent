@@ -68,9 +68,49 @@ class ModelHeuristicsTest {
 
     @Test
     fun `applyTo 幂等`() {
+        // 覆盖两态：null（Qwen/OTHER）与 非 null（Gemma-4）。thoughtChannelSyntax 每次无条件重算，
+        // 重算结果与输入无关 ⇒ 两次 applyTo 必须相等（幂等）。
         val once = ModelHeuristics.applyTo(descriptor("Qwen2.5-1.5B-Instruct_q8_ekv4096.litertlm"))
-        val twice = ModelHeuristics.applyTo(once)
-        assertEquals(once, twice)
+        assertEquals(once, ModelHeuristics.applyTo(once))
+
+        val gemmaOnce = ModelHeuristics.applyTo(descriptor("gemma-4-E2B-it.litertlm"))
+        assertEquals(ChannelSyntax.GEMMA, gemmaOnce.thoughtChannelSyntax)
+        assertEquals(gemmaOnce, ModelHeuristics.applyTo(gemmaOnce))
+    }
+
+    @Test
+    fun `思考通道语法归类 仅Gemma4给字面量`() {
+        // R-A 本体：只有 Gemma-4 有一手泄漏证据（元数据不含该通道）⇒ 显式下发；其余一律 null
+        //（信任容器元数据）。见 ChannelSyntax / inferChannelSyntax KDoc。
+        assertEquals(
+            ChannelSyntax.GEMMA,
+            ModelHeuristics.infer("gemma-4-E2B-it.litertlm").thoughtChannelSyntax,
+        )
+        assertEquals(
+            ChannelSyntax.GEMMA,
+            ModelHeuristics.infer("gemma-4-E4B-it-gpu.litertlm").thoughtChannelSyntax,
+        )
+        // MiniCPM5：元数据自带 <think>/</think> ⇒ null（不下发，避免覆盖正确元数据 = N1 本体）。
+        assertNull(ModelHeuristics.infer("MiniCPM5-2B_int4.litertlm").thoughtChannelSyntax)
+        // MiniCPM-V 视觉系、未知模型、老 Gemma 3n/3、Qwen、Phi：全部 null。
+        assertNull(ModelHeuristics.infer("MiniCPM-V-4-int8.litertlm").thoughtChannelSyntax)
+        assertNull(ModelHeuristics.infer("some-unknown-model.litertlm").thoughtChannelSyntax)
+        assertNull(ModelHeuristics.infer("gemma-3n-E2B-it.litertlm").thoughtChannelSyntax)
+        assertNull(ModelHeuristics.infer("gemma-3-4b-it.litertlm").thoughtChannelSyntax)
+        assertNull(ModelHeuristics.infer("Qwen2.5-1.5B-Instruct_q8_ekv4096.litertlm").thoughtChannelSyntax)
+        assertNull(ModelHeuristics.infer("Phi-4-mini-instruct_q8.litertlm").thoughtChannelSyntax)
+    }
+
+    @Test
+    fun `思考通道语法不采信持久化值每次重算`() {
+        // 误写过的存量值（给 MiniCPM5 错填 GEMMA）在 refresh 时必须被重算回 null，
+        // 否则一次误写会永久覆盖正确元数据（applyTo KDoc 明示）。
+        val wrong = ModelDescriptor(
+            fileName = "MiniCPM5-2B_int4.litertlm",
+            path = "/x/MiniCPM5-2B_int4.litertlm",
+            thoughtChannelSyntax = ChannelSyntax.GEMMA,
+        )
+        assertNull(ModelHeuristics.applyTo(wrong).thoughtChannelSyntax)
     }
 
     @Test
