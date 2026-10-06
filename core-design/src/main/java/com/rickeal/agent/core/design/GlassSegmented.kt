@@ -36,6 +36,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.liquid.EmptyBackdrop
@@ -373,6 +374,11 @@ private fun SegmentedIndicator(
                         // 颜色会被整层 tint 覆盖，但必须不透明（录制依赖不透明内容）。
                         color = Color.White,
                         maxLines = 1,
+                        // Wave 51 F2：补 Ellipsis（默认 Clip 在中文下是「切半个字」，见
+                        // LiquidBottomTabs.kt:1086）。真机证据：模型卡「计算后端」显示成
+                        // 「CP」「GP」「NP」（第三字符被裁、无省略号）。⚠️ 补后**仍会截断**
+                        // （变「CP…」），只是不再切半个字 —— 不是「三段全显」。
+                        overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center,
                     )
                 }
@@ -547,6 +553,9 @@ private fun SegmentItem(
             style = MaterialTheme.typography.labelLarge,
             color = textColor,
             maxLines = 1,
+            // Wave 51 F2：补 Ellipsis（默认 Clip 在中文下是「切半个字」，见 LiquidBottomTabs.kt:1086）；
+            // 补后仍会截断（变「CP…」），只是不再切半个字。
+            overflow = TextOverflow.Ellipsis,
             // 选中/取消的弹簧缩放挂在 **Text**（链最内层）而不是 Box 外层：
             // graphicsLayer 缩放的是其后的绘制，若挂外层会把 48dp 命中区也缩掉
             //（0.94 → 实际命中 45dp，违反触摸目标标准）；挂内层只缩视觉不缩命中。

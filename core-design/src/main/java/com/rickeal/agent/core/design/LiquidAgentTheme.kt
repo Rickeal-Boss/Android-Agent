@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.design
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -57,6 +58,55 @@ val LiquidTypography = Typography(
 )
 
 /**
+ * 把玻璃配色**投影**到 Material3 [ColorScheme]（单一事实源）。
+ *
+ * ## 为什么需要它（Wave 51 F3）
+ *
+ * 此前 `darkColorScheme(...)` / `lightColorScheme(...)` 两分支**各只映射 5 个色角色**
+ * （primary / onPrimary / surface / background / onBackground），其余角色走 Material3 默认。
+ * 其中 **`inverseSurface` 未映射** ⇒ 深色主题下取 M3 默认 `#E6E0E9`（浅色）⇒ Snackbar
+ * （`SnackbarHost`，全仓唯一，未传自定义 `snackbar`）在深色主题里渲染成**浅色块**。
+ * 两个分支除函数名外逐字相同（复制粘贴形状），本函数抽出后共用一份映射，消除该重复。
+ *
+ * ## 权威与投影（取值原则）
+ *
+ * **玻璃色是权威、Material 是投影**：Material 角色只是把玻璃语义映射到 M3 组件消费的槽位，
+ * 不是第二套独立配色。逐项：
+ *  - `inverseSurface = glassTintElevated` —— 玻璃系统的「抬升面」色（深色 #22242E / 浅色
+ *    #F2F3F8）。Snackbar 底色取它 ⇒ 深色下不再是浅色块，且观感与玻璃 elevated 面一致。
+ *  - `inverseOnSurface = onGlass` —— 玻璃上的主文本色，保证在 `glassTintElevated` 上可读。
+ *  - `onSurface = onGlass` / `onSurfaceVariant = onGlassMuted` —— 主/次文本映射。
+ *  - `surfaceVariant = glassTintElevated` —— 次级容器面。
+ *  - `error = danger` / `onError = onAccent` —— 玻璃系统无独立 onDanger，取 onAccent
+ *    （饱和色上的可读色，深色近黑 / 浅色白）作投影。
+ *  - `outline = glassBorderBottom` —— 玻璃系统的描边色（底部暗内描边）。
+ *
+ * ⚠️ 已知取舍（申报）：浅色主题下 `inverseSurface = glassTintElevated`(#F2F3F8) 与米白壁纸
+ * （wallpaperTop #FAF6ED）对比度低 ⇒ 浅色 Snackbar 的**块边界**弱于 M3 默认（深色块），
+ * 靠 `inverseOnSurface = onGlass` 保证文字可读。这是「与玻璃设计系统一致」换来的取舍。
+ *
+ * ⚠️ `surface = Color.Transparent` 沿用原值：玻璃底本就透出壁纸，Material surface 不另铺色。
+ */
+private fun bridgeGlassToMaterial(glassColors: GlassColorScheme, dark: Boolean): ColorScheme {
+    val base = if (dark) darkColorScheme() else lightColorScheme()
+    return base.copy(
+        primary = glassColors.accent,
+        onPrimary = glassColors.onAccent,
+        surface = Color.Transparent,
+        background = glassColors.wallpaperTop,
+        onBackground = glassColors.onGlass,
+        onSurface = glassColors.onGlass,
+        onSurfaceVariant = glassColors.onGlassMuted,
+        surfaceVariant = glassColors.glassTintElevated,
+        inverseSurface = glassColors.glassTintElevated,
+        inverseOnSurface = glassColors.onGlass,
+        error = glassColors.danger,
+        onError = glassColors.onAccent,
+        outline = glassColors.glassBorderBottom,
+    )
+}
+
+/**
  * 应用主题。
  *
  * ## 关于 Material 3 Expressive（重要结论，已实测）
@@ -94,23 +144,7 @@ fun LiquidAgentTheme(
     content: @Composable () -> Unit,
 ) {
     val glassColors = if (darkTheme) darkGlassColorScheme() else lightGlassColorScheme()
-    val materialColors = if (darkTheme) {
-        darkColorScheme(
-            primary = glassColors.accent,
-            onPrimary = glassColors.onAccent,
-            surface = Color.Transparent,
-            background = glassColors.wallpaperTop,
-            onBackground = glassColors.onGlass,
-        )
-    } else {
-        lightColorScheme(
-            primary = glassColors.accent,
-            onPrimary = glassColors.onAccent,
-            surface = Color.Transparent,
-            background = glassColors.wallpaperTop,
-            onBackground = glassColors.onGlass,
-        )
-    }
+    val materialColors = bridgeGlassToMaterial(glassColors, darkTheme)
     CompositionLocalProvider(
         LocalGlassColors provides glassColors,
         LocalGlassConfig provides glassConfig,
