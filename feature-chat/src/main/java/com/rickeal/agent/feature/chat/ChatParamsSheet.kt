@@ -10,9 +10,11 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -24,10 +26,14 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassIconButton
 import com.rickeal.agent.core.design.GlassMaterial
@@ -55,6 +61,16 @@ fun ChatParamsSheet(
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
+    // Wave 51 F1：键盘弹出时底部导航栏已被键盘完全遮住 ⇒ 不再需要 overlay 占位（否则
+    // sheet 被 imePadding 顶到键盘上方后又多垫一份）。derivedStateOf 收敛重组（直接读
+    // WindowInsets.ime 会随键盘动画逐帧重组）。
+    // ⚠️ `WindowInsets.ime` 是 @Composable @ReadOnlyComposable 取值 ⇒ 必须在组合作用域内
+    // 先取出实例，再在 derivedStateOf 的普通 lambda 里读 getBottom。
+    val density = LocalDensity.current
+    val imeInsets = WindowInsets.ime
+    val imeVisible by remember(imeInsets, density) {
+        derivedStateOf { imeInsets.getBottom(density) > 0 }
+    }
     AnimatedVisibility(
         visible = visible,
         enter = slideInVertically { fullHeight -> fullHeight } + fadeIn(),
@@ -76,7 +92,7 @@ fun ChatParamsSheet(
                     // 再 padding(overlay)，顺序与 GlassScaffold 对 FAB 的处理同构 ——
                     // 先吃系统导航栏，再垫悬浮页签占位，两层互不吞并。
                     .navigationBarsPadding()
-                    .padding(bottom = LocalBottomBarOverlay.current)
+                    .padding(bottom = if (imeVisible) 0.dp else LocalBottomBarOverlay.current)
                     .fillMaxWidth()
                     .fillMaxHeight(0.78f)
                     .clip(RoundedCornerShape(topStart = tokens.radiusXl, topEnd = tokens.radiusXl))

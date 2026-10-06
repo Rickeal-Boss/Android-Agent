@@ -13,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.design.LocalGlassColors
@@ -93,6 +94,11 @@ fun ChatContextMeter(
                 text = contextLabel(estimate, measured, limitTokens),
                 style = MaterialTheme.typography.labelSmall,
                 color = if (nearFull) colors.warning else colors.onGlassMuted,
+                // 截断纪律（Wave 51 E3）：该行可用宽边际仅 ~24%，而 limitText 上界可达
+                // "131.1K" ⇒ 三口径并列时可能溢出。补 maxLines/overflow（与
+                // LiquidBottomTabs.kt:1086-1088 同纪律：默认 Clip 在中文下是「切半个字」）。
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }

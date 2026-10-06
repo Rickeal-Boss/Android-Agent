@@ -10,6 +10,8 @@ import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.InferenceConfig
+import com.rickeal.agent.core.model.ModelDescriptor
+import com.rickeal.agent.core.model.ModelSamplingProfiles
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.TokenUsage
@@ -294,8 +296,18 @@ internal class ChatRunCoordinator(
                     AgentRunJournal.open(runDir, name.removeSuffix(".jsonl")).readLines()
                 }.getOrDefault(emptyList())
                 if (lines.isEmpty() || lines.last().kind == AgentRunJournal.KIND_SETTLED) continue
-                runCatching {
+                // renameTo 失败**返回 false 而不抛异常** ⇒ 只包 runCatching 抓不到 ⇒ 归档静默失败
+                // （该 run 的恢复卡下次进会话仍会复活）。必须显式判返回值；仍保留 runCatching 兜
+                // renameTo 可能抛的 SecurityException（同族正确形态见 SegmentedHistoryStore /
+                // AgentRunJournal / FileTools）。
+                val archived = runCatching {
                     file.renameTo(File(file.parentFile, file.nameWithoutExtension + ".dismissed.jsonl"))
+                }.getOrDefault(false)
+                if (!archived) {
+                    AgentLogStore.warn(
+                        "恢复卡归档失败：renameTo 返回 false（file=${file.name}）" +
+                            "—— 该 run 的恢复卡下次进会话仍会复活",
+                    )
                 }
             }
         }.getOrDefault(Unit)
@@ -361,17 +373,59 @@ internal class ChatRunCoordinator(
     private fun thermalRejection(): String? = container.thermalGovernor.heatBlockReason()
 
     /**
-     * LIGHT 降档：新 run 启动时刻的 maxTokens 上限（对 1024 基准减半，保底 256）。
-     * 只影响本次启动的取值，在跑 run 不动（方案 §2.1 四档策略表）。降档生效必留日志。
+     * LIGHT 降档：新 run 启动时刻的降档手段。只影响本次启动的取值，在跑 run 不动
+     * （方案 §2.1 四档策略表）。降档生效必留日志。
+     *
+     * ## Wave 51 C：手段从 maxTokens 改到 maxAgentRounds（轮次）
+     *
+     * 原实现只压 `maxTokens`，但 `ModelSamplingProfiles.appliedTo()`（引擎加载前唯一汇聚点）
+     * 会 `maxTokens = maxOf(config.maxTokens, profile.minMaxTokens)` —— 思考模型
+     * （MiniCPM5 / R1）的 `minMaxTokens = 2048` 会把压到 512 的值顶回 2048
+     * ⇒ **降档 100% 失效 + 日志说谎**（真机 W43 实测 SoC 83℃）。而 `appliedTo` **只碰**
+     * sampling / maxTokens / contextLength，**完全不碰轮次** ⇒ 轮次是热档期**唯一不会被顶回**
+     * 的降档手段。故：
+     *  - **恒压轮次**（[ThermalGovernor.maxRoundsCap]）；
+     *  - **maxTokens 只在「压得动」时才压**：模型档案 `minMaxTokens > 0`（思考模型）时不压
+     *    —— 压了必被 `appliedTo` 顶回，只会产生说谎的日志。
+     *
+     * @param model 当前激活模型（取采样档案的 minMaxTokens）；null = 无档案可查 ⇒ 视作
+     *   非思考模型，可压 maxTokens。
      */
-    private fun thermallyCappedConfig(base: InferenceConfig): InferenceConfig {
-        val capped = container.thermalGovernor.maxTokensCap(base.maxTokens)
-        if (capped == base.maxTokens) return base
-        AgentLogStore.info(
-            "热降档：新 run maxTokens ${base.maxTokens} → $capped" +
-                "（${container.thermalGovernor.tier.value.name} 档）",
-        )
-        return base.copy(maxTokens = capped)
+    private fun thermallyCappedConfig(base: InferenceConfig, model: ModelDescriptor?): InferenceConfig {
+        val governor = container.thermalGovernor
+        val cappedRounds = governor.maxRoundsCap(base.maxAgentRounds)
+        // 思考模型（档案 minMaxTokens > 0）不压 maxTokens：appliedTo 必把它顶回下限。
+        val tokenFloor = model?.fileName?.let { ModelSamplingProfiles.forFileName(it)?.minMaxTokens } ?: 0
+        val cappedTokens = if (tokenFloor > 0) base.maxTokens else governor.maxTokensCap(base.maxTokens)
+        val roundsChanged = cappedRounds != base.maxAgentRounds
+        val tokensChanged = cappedTokens != base.maxTokens
+        // 无变化即静默（保持既有语义），判据同时看两项。
+        if (!roundsChanged && !tokensChanged) return base
+        val tier = governor.tier.value.name
+        when {
+            roundsChanged && tokensChanged -> AgentLogStore.info(
+                "热降档：新 run maxTokens ${base.maxTokens} → $cappedTokens，" +
+                    "轮次 ${base.maxAgentRounds} → $cappedRounds（$tier 档）",
+            )
+
+            roundsChanged -> {
+                val reason = if (tokenFloor > 0) {
+                    "模型档案 minMaxTokens=$tokenFloor 下限，压了也会被顶回"
+                } else {
+                    "基准 ${base.maxTokens} ≤ 保底 256，已无可压空间"
+                }
+                AgentLogStore.info(
+                    "热降档：新 run 轮次 ${base.maxAgentRounds} → $cappedRounds（$tier 档）；" +
+                        "maxTokens 未压（$reason）",
+                )
+            }
+
+            else -> AgentLogStore.info(
+                "热降档：新 run maxTokens ${base.maxTokens} → $cappedTokens（$tier 档）；" +
+                    "轮次未变（基准 ${base.maxAgentRounds} 已触底）",
+            )
+        }
+        return base.copy(maxTokens = cappedTokens, maxAgentRounds = cappedRounds)
     }
 
     /**
@@ -466,7 +520,7 @@ internal class ChatRunCoordinator(
             if (savedInput == null) {
                 container.conversationRepository.appendMessage(cid, userMessage)
             }
-            val config = thermallyCappedConfig(uiState.value.config)
+            val config = thermallyCappedConfig(uiState.value.config, uiState.value.activeModel)
             val request = AgentRequest(
                 conversationId = cid,
                 // run 级 token 账本（Wave 31 流2 生产接线）：按会话池化的实例，发送侧
@@ -611,7 +665,7 @@ internal class ChatRunCoordinator(
         runJob = scope.launch {
             val cid = ensureConversation(firstUserText(history))
             container.conversationRepository.appendMessage(cid, userMessage)
-            val config = thermallyCappedConfig(uiState.value.config)
+            val config = thermallyCappedConfig(uiState.value.config, uiState.value.activeModel)
             // 每次 run 一个 journal 文件：进程被杀后可从「已完成轮次」继续
             // （core-agent/journal；写入 best-effort，失败不影响 run 本身）。
             val journal = AgentRunJournal.open(
@@ -762,7 +816,7 @@ internal class ChatRunCoordinator(
         runStartedAtMillis = System.currentTimeMillis()
         runJob = scope.launch {
             val cid = ensureConversation(firstUserText(history))
-            val config = thermallyCappedConfig(uiState.value.config)
+            val config = thermallyCappedConfig(uiState.value.config, uiState.value.activeModel)
             // 每次 run 一个 journal 文件：进程被杀后可从「已完成轮次」继续
             // （core-agent/journal；写入 best-effort，失败不影响 run 本身）。
             val journal = AgentRunJournal.open(
@@ -1037,6 +1091,9 @@ internal class ChatRunCoordinator(
                     // 该路径根本没有「熔断救援」这回事）⇒ 会对着「引擎真失败 + 半截退化正文」打
                     // 「熔断救援未落库」，措辞超出事实。钉上后日志恒有真熔断，措辞与事实一致。
                     salvageDegradationHits(salvageText).takeIf { it.isNotEmpty() }?.let { hits ->
+                        // ⚠️ 与 C6（dismissRecovery 的 `warn`）不对称是**有意**：C6 是「数据不一致」=
+                        // 故障；本处是「按 ModelHealthCriteria HARD 判据**有意**放弃落库」= 一个正确的
+                        // 取舍决策，不是失败。提级会把正常分支混进故障流、削弱 warn 信噪比。
                         AgentLogStore.info(
                             "熔断救援未落库：正文命中模型健康 HARD 判据 " +
                                 hits.joinToString(",") { it.id } + "（疑似退化输出，不写入历史）",

@@ -6,9 +6,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -32,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +43,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.agent.breaker.render
 import com.rickeal.agent.core.agent.TerminationReason
@@ -243,9 +247,20 @@ fun ChatScreen(
             // 自己身上，键盘弹出时这一行会一起被顶到键盘上方。
             // + 悬浮页签占位（2026-09-26）：输入区整体抬到玻璃页签之上 —— 消息列表
             // 已经被 bottomBar 挡在页签上方，这里若不抬，输入框会整个压进页签区。
+            // Wave 51 F1：键盘弹出时底部导航栏已被键盘完全遮住 ⇒ 不再需要 overlay 占位；
+            // 否则输入框被 ChatInputBar 的 imePadding 顶到键盘上方后又多垫一份 84dp
+            // （真机实测空隙 ≈94dp，density 3.0）。derivedStateOf 包一层：直接读
+            // WindowInsets.ime 会随键盘动画逐帧重组，包后收敛到 2 次。
+            // ⚠️ `WindowInsets.ime` 是 @Composable @ReadOnlyComposable 取值 ⇒ 必须在
+            // 组合作用域内先取出实例，再在 derivedStateOf 的普通 lambda 里读 getBottom。
+            val density = LocalDensity.current
+            val imeInsets = WindowInsets.ime
+            val imeVisible by remember(imeInsets, density) {
+                derivedStateOf { imeInsets.getBottom(density) > 0 }
+            }
             Column(modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = LocalBottomBarOverlay.current)
+                .padding(bottom = if (imeVisible) 0.dp else LocalBottomBarOverlay.current)
             ) {
                 // 生成中的实时速度状态行（Wave 47 项4）：自收集独立 composable，不订阅顶层
                 // streaming（避免每 120ms 全屏重组，见 ChatSpeedIndicator 的 R5 红线）。
@@ -254,7 +269,7 @@ fun ChatScreen(
                 ChatContextMeter(
                     usedTokens = state.contextTokens,
                     limitTokens = state.config.contextLength,
-                    // 发送侧估算（Wave 31 流2）：与引擎实测并列，UI 用「估算≈/实测」区分。
+                    // 发送侧估算（Wave 31 流2）：与引擎回报并列，UI 用「发送前≈ / 引擎回报≈」区分。
                     sentTokensEstimate = state.sentTokensEstimate,
                 )
                 ChatInputBar(
