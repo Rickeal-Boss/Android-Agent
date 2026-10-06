@@ -315,12 +315,18 @@ Android-Agent/
 > - **治理**：W32 lint 门禁翻转 → W35 外部报告批处理 → W36/W37/W38 挂账清零 + **lint baseline 83 → 35 → 4** + 记忆存储契约 + 守卫网 15 项 / selftest 21 例
 > - **验收（W39–W47）**：W39 验收取证通道（诊断日志并入 logcat 出口 TAG `LiquidAgentDiag` + 诊断页「复制全部」+ 跨波清单合并到 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11）→ W43/W45/W46/W47 逐波真机验收
 > - **W44–W48**：W44 模型健康度门禁（小样本自检）+ NOT_FOUND 模态降级链 → W45 降级链迁到**会话创建路径**（真机三判据全命中）→ W46 修「模型回复从未落盘」（P0）→ W47 thinking 独立预算 + 熔断保留输出 + 取消带 thinking + 速度显示 → W48 N1（MiniCPM5 `<think>` 明文混正文）根修 + `ChatRunCoordinator` 外提（`ChatViewModel` 1593 → 547 行）+ 能力位来源标记（用户显式设置优先）
-> - **W49（当前，2026-10-05）**：**W48 核心修法的真机回归 + 加固批**
+> - **W49（2026-10-05）**：**W48 核心修法的真机回归 + 加固批**
 >   - 真机回归（OPPO PDRM00 / Android 13）：**N1 通过**（MiniCPM5 正文无 `<think>`、思考进 `thinking`）／**1-B 部分通过**（通道关闭成立；直答不成立，但已定性为 **MiniCPM5-2B int4 固有能力限制、非 W48 引入**）／**能力位迁移 + 持久 + 门控模态后端请求**全部通过（关 audio 后 AUDIO 降级重建 **1 → 0**）
 >   - **R-A 通道 def 数据驱动化**：`channels` 改「**默认 `null` = 信任容器元数据**，仅 Gemma-4 显式」（`null` ≠ `emptyList()`——后者是**禁用通道**）；消除「else → Gemma def」这个 N1 机制本体，为**预设扩容**清路。真机复验 3 通过（MiniCPM5 / Qwen2.5 / gemma-4 回归）+ 1 不适用，**无回退**
 >   - **加固批**：D-1/D-4 措辞与解释器探测、**E1 探针判据分通道 + 采样对齐档案**（修正外部审查的因果描述）、**R-E salvage 内容级 HARD 闸门**（防退化输出进用户历史）、**R-B `scripts/fulltest.sh`**（把 `--continue` 纪律固化进仓库）、**R-C/R-D 守卫**（`ChatRunCoordinator` 行数 + 能力位 `USER` 章印唯一写入路径）⇒ **arch-guard 18 → 21 项、selftest 32 → 44**
 >   - **CI 双绿**（`79b00c3`）：**Build `37296661956`** ✅（含 `Lint (baseline gate)`，真实新问题 = 0）+ **Release `37296662094`** ✅（签名 APK / AAB / debug 三产物齐，R8 mapping 附）
-> - ⚠️ **真机验收积压：Wave 33 起累计 ≈32 条，已回收 18 条 / 剩 ≈14 条**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——这是当前最大风险敞口；**§11 顺位 1–8 全清单本波（W49）未执行，整项挂 W50**；验收清单与取证命令见 §11。
+> - **W50（当前，2026-10-05）**：**§11 顺位 1–8 真机回收 + 三件外部报告 P3 收口 + CI 可观测性**
+>   - **§11 真机回收 9 ✅ / 4 ⛔**：R1 层1 探测通过／层2 `tool_call` 下发／**层3 审批卡红线实证**（须用 `file_write`——只读工具不弹卡是正确行为）／沙箱子目录下钻 + 符号链接剔除／记忆 >2000 字符／通知档A／返回键两段式／回显四关键字（Qwen 档）。⛔：层4「≥3 轮长任务」被 P1 中断／**通知档B 在 A13 上不可构造**／Gemma 两档／层5 的「压缩触发重建」子路径（源码自陈口径未接入）
+>   - 🔴 **P1 定案（本仓输入侧）**：Qwen2.5 在工具结果回灌那一轮的**生成期**模板渲染失败（`string + sequence`）。真机 **A/B 证明「关掉原生工具通道、走文本协议同样炸」⇒ 排除上游**；决定性取证 = `Contents.toJson()` 返回 `JsonArray`（数组非 string）+ `prompt_template.cc:112-120` 未展平 ⇒ **模板侧期望 string、实际收到数组**。修法 = 合并多元素为单个 `Content.Text`（离线可改）
+>   - **代码侧 9 commit 全为零行为改动**：C1/C3 KDoc + C6 失败出口日志 + **删死字段 `ChatUiState.conversationId`**（全仓零读点）+ `fulltest.sh --summary-only` + **守卫 #22** + `build.yml` 非阻断用例数汇总（job summary，绿跑也带逐模块用例数）+ 上下文口径标签 B（清掉「引擎回报」错误措辞）+ C6 日志提级 `info → warn` ⇒ **arch-guard 21 → 22 项、selftest 44 → 47**
+>   - **外部报告对账**：复审 11 / deepdive 审的是 W48，开放项仅剩 C1/C3/C6 三条 P3，**W50 全部收口**；另挖出**第 20–26 处「描述不成立」**（含第 26 处这条方法论级的：**「未触发的论断」冒充「已验证的排除」，强度等同假绿**）
+>   - **UI 排版/配色真机审查**（用户点名「覆盖层覆盖范围 + 文字颜色混淆」）：**覆盖层机制经穷尽核查全部正确、无需改**（10 个 `LocalBottomBarOverlay` 消费点位置全对 / 14 处对话框全走玻璃）；「颜色混淆」的病灶**不是对比度**（全部达标，最紧 4.66:1）而是**「同角色不同色」6 处**。确证 **3 条 P2 挂 W51**：① 键盘态输入框离键盘多 **84dp**（`ChatScreen.kt:248` 的 overlay 无条件生效 + `imePadding()` 叠加）② **`GlassSegmented` 文字缺 `overflow`** ⇒ 真机「CPU/GPU/NPU」显示为 **CP/GP/NP** ③ **Snackbar 深色下渲染浅色块**（`LiquidAgentTheme.kt:98` 未映射 `inverseSurface`）。⚠️ 方法论：**`uiautomator dump` 的 bounds 对 Compose 不可靠**（导航栏 `Text` 报 8px、实际 ≈38px）⇒ UI 取证必须截图目视；本波据此**纠正 6 处假阳性**（含 2 处曾误报为「问题」）
+> - ⚠️ **真机验收积压：Wave 33 起累计 ≈32 条，台账已记 31 条（其中 27 条 `✅回收` / 4 条 `⛔或⚠️部分`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口；**W50 未覆盖项整项挂 W51**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面）；验收清单与取证命令见 §11。
 
 ---
 

@@ -583,9 +583,36 @@ Wave 33 起累计的验收项 ≈32 条；**W43 / W45 / W46 / W47 已回收 12 �
 > - `MiniCPM-V-4-int8`：`createConversation` 即 `INVALID_ARGUMENT: Unsupported model type`（角色通道播种与 legacy 回退**双双失败**）⇒ 本 App chat 路径下**无法建会话**。W45 已存在同款失败（`_w45_device_diag_full.log:120-125` 逐字相同）。
 > - **无 W44→W49 的引擎 init / 后端选择路径改动**（`git log` 核验）⇒ 上述两项均**非本波回归**。
 
-> **仍**未回收（保持不标，勿据此判定已验）：§11.10 R1 三层判据、§11.2 记忆磁盘满 / 只读、§11.3 沙箱符号链接、
-> §11.5 W37 UI 手感、§11.6 lint gate、§11.7 W38 行为变更、§11.8 历史挂账、§11.9 W40 验收面。
-> ⚠️ **§11 全清单（顺位 1–8）本波（W49）未执行** —— 单设备窗口时间全部用于把 N1 / 1-B / 能力位 / R-A 四组核心用例做扎实，**整项挂 W50**。
+> **Wave 50 新增**（§11 顺位 1–8 真机回收；设备 OPPO PDRM00 / Android 13，debug 包 tip `0f6506e`）：
+> 报告全文见 `_plans/wave50-device-verification.md`（仓库外）与 `docs/handoff-20261005-wave50-closeout.md` §一。
+
+| # | 验收项 | 结论 | 证据锚点（cid / 行号 / 来源） |
+|---|---|---|---|
+| 19 | **§11.10 R1 层1 原生工具通道探测通过** | ✅ 回收 | `原生工具通道：探针通过（模型/转换件接受原生工具注册）` ×3 + `已注册 13 个工具`（首个 schema = `ask_actor` 完整 JSON） |
+| 20 | **§11.10 R1 层2 模型下发 tool_call** | ✅ 回收 | `原生工具通道：模型下发 1 个 tool_call` ×4（`current_time` / `file_write`） |
+| 21 | **§11.10 R1 层3 审批卡弹出（红线）** | ✅ 回收 | 截图 `_ci-tools/_w50_shot_approval2.png` 可见工具条 `file_write` / `等待用户授权…` + 授权卡「工具「file_write」请求授权」`{"path":"w50probe.txt","content":"hello"}`。⚠️ **红线须用 `file_write`**（`FileTools.kt:367-368` `dangerous=true` + `requiresConfirmation=true`）；**`current_time` 不弹卡是正确行为**（`DateTimeTool.kt:16` 只读 ⇒ `needsApproval=false`，`AgentRunner.kt:1693-1697`）。⚠️ **独立 UI 实证**：日志 `审批\|授权\|pendingApproval` 0 命中、截图 20:10 早于日志所记 run（20:15–20:17）⇒ **非同一 run 的日志+截图双证据** |
+| 22 | **§11.10 R1 层4 ≥3 轮长任务** | ⛔ 无法验证 | 被 P1 模板失败中断（`AgentRunner.kt:804` 的 `?: return` 使层5 判据**未被求值**）。详见 #25 |
+| 23 | **§11.10 R1 层5 会话重建后一致性** | ⚠️ **部分覆盖** | ✅ 已覆盖「工具集变化」子路径（`_w50_order1_log.txt:34` 重建原因=原生工具集变化 + 重新注册 13 工具 ⇒ `nativeToolChannel` 仍真 ⇒ **不触发 WARN 是正确行为，非漏报**）；⛔ **未覆盖**「压缩/门控触发」——`AgentRunner.kt:790-791` 自陈该口径**尚未接入压缩门控** |
+| 24 | **§11.5 分段控件 CPU/GPU/NPU** | ⚠️ **部分通过** | CPU/NPU 两段本波实证；GPU 段用 `gemma-4-E2B-it`（GPU 已禁用）验证 ⇒ **只证明「禁用态点击有反馈文案」，不证明「GPU 段真能切换后端」**。⚠️ **不可由 W49 证据补齐**（三条：W49 该容器 GPU 成功链**未留档**、`_w49rA_diag.log` 里 `-gpu` 模型 0 命中、`_w49_diag.log` 的 GPU 字样全来自 CPU 失败链）；且该容器**输出乱码**，不能用于验证此功能以外的事 |
+| 25 | 🔴 **P1 模板渲染失败（生成期 `string + sequence`）** | ⛔ **新发现，已定案** | 见下方专段 |
+| 26 | **§11.3 沙箱子目录下钻 + 面包屑 + 系统返回键上溯** | ✅ 回收 | `run-as` 造 `w50sub` 子目录 → 下钻成功、面包屑逐级更新、`BACK` 逐级上溯到沙箱根 |
+| 27 | **§11.3 符号链接指向沙箱外 ⇒ 不出现在列表** | ✅ 回收 | 造 `ln -s` 指向沙箱外 → 列表剔除，扫描器行为符合预期 |
+| 28 | **§11.2 记忆 >2000 字符：对话框保持打开、输入不丢** | ✅ 回收 | 写入 >2000 字符记忆 → 编辑框保持打开、已输入文本未丢 |
+| 29 | **§11.4 通知档A 缺权限 ⇒ 出现 WARN** | ✅ 回收 | `pm revoke POST_NOTIFICATIONS` → 跑生成 → 命中权限缺失 WARN |
+| 30 | **§11.7 返回键两段式**（对话页 / 设置页 / 子页；连按 5 次） | ✅ 回收 | 逐页 `input keyevent 4` + `dumpsys … ResumedActivity` 逐步核对；连按 5 次**不出现**「按 N 次才退」 |
+| 31 | **§11.1 回显四组关键字（Qwen 小模型档）** | ⚠️ **部分通过** | Qwen2.5 档：`preface 渲染诊断` 命中 4 次、`会话重建原因` 多次；`preface 校验失败` 与 `角色通道播种失败` **各 0 命中**、回显本体不复现。⛔ **Gemma CPU/GPU 两档未跑**（挂 W51） |
+
+> **🔴 P1 · 模板渲染失败已定案（本仓输入侧，W51 首项）**：
+> - **现象**：Qwen2.5-1.5B（`multi-prefill-seq_q8_ekv4096`）在**工具结果回灌那一轮**的 `nativeSendMessageAsync` 失败：`Failed to apply template: invalid operation: tried to use + operator on unsupported types string and sequence (in template:27 / :23)`。`createConversation` **从不失败**。
+> - **真机 A/B（四组对照）**：`原生通道 + Message.tool 1 条` → 0 次；`原生通道` → 2 次；**`文本协议 + Message.user 3 条压成 1 条` → 2 次（重试也炸）⇒ `Failed rounds=1`**；**`文本协议 + Message.user 1 条 ×6` → 1 次（重试救回）⇒ `ModelStopped rounds=6`**。
+> - 🔴 **归因 = 本仓输入侧**（**不是上游**）：A/B 证明文本协议下同样炸 ⇒ 上游 `tool_calls` 假设被排除。**决定性取证**：`Contents.toJson()` 返回 `com.google.gson.JsonArray`（数组，非 string）＋ `prompt_template.cc:112-120` 的 `minijinja_inputs["messages"] = input.messages` **未展平** ⇒ **模板侧期望 string、实际收到数组** ⇒ `string + sequence`。
+> - ✅ **修法（离线可改）**：合并多元素为单个 `Content.Text`，两处下发点 `LiteRtLmEngine.kt:1958`（文本协议 TOOL 回灌）/ `:1834·:1839`（`buildContents` 逐块累加）。
+> - ⚠️ **次因（本仓自愈缺口，P2）**：生成期 `onError`（`:1607-1621`）不置 `nativeToolsRejected` ⇒ 每遇必走引擎重建、重试再炸就整轮放弃（组A 即此形态）。**需 +1 真机窗口**。
+> - ⚠️ **「上一轮失败污染下一轮」**：组B 炸前有 `引擎重建：LOCAL 加载失败（…上一次生成仍在继续…）` ⇒ 那次「单结果也炸」是**残留 + 历史体积**叠加，**不是**「单元素也能炸」。
+
+> **⛔ 本波未覆盖（挂 W51）**：§11.4 通知档B（应用级总开关）｜§11.1 Gemma CPU/GPU 两档｜层5 的「压缩触发重建」子路径（源码自陈口径未接入）｜§11.2 记忆磁盘满/只读｜§11.5 W37 UI 手感｜§11.6 lint gate｜§11.7 W38 行为变更｜§11.8 历史挂账｜§11.9 W40 验收面。
+
+> **仍**未回收（保持不标，勿据此判定已验）：上面「⛔ 本波未覆盖」清单 + §11.5 W37 UI 手感 + §11.6 lint gate。
 
 ---
 
