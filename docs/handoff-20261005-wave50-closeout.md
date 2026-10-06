@@ -234,6 +234,17 @@ LiteRtLmEngine.kt:1834   out.add(Content.Text(payload))   :1839   ← buildConte
 
 ---
 
-## 六、CI run id 占位
+## 六、CI run id
 
-Build = `<待填>`、Release = `<待填>`（推送后回填）。
+推送 `12a0a3f..07576eb`（**10 commit**，fast-forward）后**两条 workflow 自动触发**（本波含 `scripts/**` / `.github/workflows/**` / `core-agent/**` / `feature-chat/**` 等非文档改动，无需 `workflow_dispatch`）：
+
+| workflow | run id | 结论 | 关键 job |
+|---|---|---|---|
+| **Build** | **`37499664308`** | ✅ **success** | `Assemble Debug (JDK 21)` / `Unit tests` / `Lint (baseline gate)` **三 job 全绿** |
+| **Release** | **`37499664339`** | ✅ **success** | `Build & (optionally) sign release` 全步骤 success；`Publish GitHub Release` = skipped（分支推送非 tag，符合预期） |
+
+**Release 产物 3 个**：`liquidagent-release-apk-improve`（73,691,893 B，签名 release APK + AAB 打包）｜`liquidagent-debug-improve`（41,303,807 B）｜`liquidagent-release-mapping-improve`（4,576,968 B，R8 mapping）。
+
+**lint gate 真实通过**（下 `lint-reports-07576eb…` artifact 解析，**不是只看 job 结论**）：issue 总数 = **1**，唯一一条为 `LintBaseline`（Hint，lint 指向 baseline 文件自身的标准提示）⇒ **真实新问题 = 0**，冻结 4 条全被 baseline 吸收（与 W49 一致）。
+
+> 判据留档：`uiautomator`/`logcat` 之外，**lint 门禁也必须下 artifact 复核** —— job 结论绿只说明「不超 baseline」，不等于「零问题」。
