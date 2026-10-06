@@ -407,6 +407,80 @@ private const val SYSTEM_MERGE_OPEN = "[系统设定]"
 /** [SYSTEM_MERGE_OPEN] 的成对闭定界符（存在理由与取舍见其 KDoc）。 */
 private const val SYSTEM_MERGE_CLOSE = "[/系统设定]"
 
+/** 上游 `Failed to apply template` 文案**随 litertlm 版本漂移**（耦合 litertlm 0.17.1），集中在此。 */
+internal const val TEMPLATE_FAILURE_MARKER: String = "Failed to apply template"
+
+/**
+ * 判据：本次生成失败是否为**模板渲染失败**（chat template 拼接 content 失败）。
+ *
+ * 真机文案（Wave 51 P1 取证）：`INTERNAL: Failed to apply template: invalid operation:
+ * tried to use + operator on unsupported types string and sequence (in template:23)` ——
+ * 模板 `:23` / `:27` 用 `'…' + message.content + '…'` 拼接 content，而 content 为 JSON
+ * 数组时 minijinja 的 `+` 不支持（string + sequence）。大小写不敏感，防上游改大小写。
+ *
+ * 纯函数（文件级 internal，可被同模块 JVM 单测直接调）：不构造引擎、不触 native。
+ */
+internal fun isTemplateRenderFailure(raw: String): Boolean =
+    raw.contains(TEMPLATE_FAILURE_MARKER, ignoreCase = true)
+
+/**
+ * 折叠 [contents] 中**相邻连续的 [Content.Text]** 为单个 `Content.Text`（`"\n\n"` 连接）；
+ * 非 `Text` 的**一切子类**（`ImageBytes` / `ImageFile` / `AudioBytes` / `AudioFile` /
+ * `ToolResponse`）**原样保留、相对顺序不变**。
+ *
+ * 动机（Wave 51 P1）：Qwen2.5 容器的 chat_template 用 `'…' + message.content + '…'` 拼接
+ * content（模板 `:23` / `:27`）。content 为 **JSON 数组** 时 minijinja 报
+ * `Failed to apply template: … tried to use + operator on unsupported types string and sequence`。
+ * 推断（**H-A 工作假设，未离线证实**）：native 侧很可能只在 content 恰好 1 个元素时收敛为
+ * string ⇒ 折成单段文本即可下发为 string。旁证：① 真实模板 + minijinja 实测「content 为
+ * 数组必炸」；② Java 侧 `Message.toJson()` 恒下发数组；③ 真机 W50 数据显示「单结果回灌
+ * 多数不炸 / 3 结果回灌确定性炸」。**决定性实证需真机 A/B（W51 §1.4）**。
+ *
+ * 🔴 反例纪律：**不得**把整个 List 压成文本 —— 那会把 ImageBytes/AudioBytes 一并变成字符串，
+ * **打碎多模态**。只折叠**相邻 Text**，非 Text 是硬边界（遇到即 flush）。
+ *
+ * 分隔符 `"\n\n"` 与 ContextCompressor 合批口径对齐，防工具输出粘连破坏模型解析。
+ *
+ * ⚠️ 行为边界（如实申报，生产不可达）：空 `Text` 参与折叠时会照常写入分隔符 ⇒
+ * `[Text("a"), Text("")]` → `[Text("a\n\n")]`（**尾随**空行）、`[Text("a"), Text(""),
+ * Text("b")]` → `[Text("a\n\n\n\nb")]`（**双**分隔符）。本函数只保证**无前导**空行
+ * （缓冲为空时不加分隔符）。生产路径不可达：`buildContents` / `toNativeMessage` 的附件与
+ * 正文均经 `isNotBlank()` 过滤，空 `Text` 不会进入；若将来上游放开，需在此显式处理。
+ *
+ * ⚠️ 不覆盖范围（诚实申报）：只要消息含 `ImageBytes`/`AudioBytes` 就必然 ≥2 个元素 ⇒ 仍可能
+ * 触发同一模板错误。Qwen2.5-1.5B 是纯文本模型，app 侧按 `supportsImages`/`supportsAudio` 本就
+ * 不向它下发多模态，故该场景不在本波覆盖内。
+ *
+ * 纯函数（文件级 internal，可被同模块 JVM 单测直接调）：不构造引擎、不触 native。
+ */
+internal fun foldAdjacentText(contents: List<Content>): List<Content> {
+    // 零分配短路：单元素 / 空列表原样返回**入参同一个实例** ⇒ 默认路径逐字节不变。
+    if (contents.size < 2) return contents
+    val out = ArrayList<Content>(contents.size)
+    val buffer = StringBuilder()
+    // 本段是否**出现过** Text（哪怕内容为空）—— 用来区分「从未有 Text」与「有 Text 但都是空串」。
+    // 🔴 只要出现过，flush 时即使 buffer 为空也要产出 `Content.Text("")`
+    //（否则 `[Text(""), Text("")]` 会折成空列表 ⇒ `Contents` 为空 ⇒ `Message.toJson` 不加
+    //  `content` 键 ⇒ 语义漂移）。
+    var sawText = false
+    for (content in contents) {
+        if (content is Content.Text) {
+            // 缓冲区为空时不加分隔符（避免 `Text("")` 打头产生前导空行）。
+            if (sawText && buffer.isNotEmpty()) buffer.append("\n\n")
+            buffer.append(content.text)
+            sawText = true
+        } else {
+            // 非 Text 是硬边界：先把本段相邻 Text flush 出去，再原样加入本元素。
+            if (sawText) out.add(Content.Text(buffer.toString()))
+            buffer.setLength(0)
+            sawText = false
+            out.add(content)
+        }
+    }
+    if (sawText) out.add(Content.Text(buffer.toString()))
+    return out
+}
+
 /**
  * LiteRT-LM 本地引擎。
  *
@@ -1350,10 +1424,13 @@ class LiteRtLmEngine(
         // `model(tool_calls) → user(文本)` —— 正是 `toNativeMessage()` 注释里判定「多数
         // chat template 判非法」的半套配对，而它命中的恰好是那条注释想救的
         // 「长工具会话 + 压缩/重建后全量重放」场景。
-        // 更糟的是这条路径**不会自愈**：失败点在 `sendMessageAsync` 而不是
-        // `createConversation`，`nativeToolsRejected` 不会被置位 ⇒ 每遇一次炸一次，
-        // 不降级也不留修复机会。所以闸门要按**播种历史**（最后一条播种是不是带
-        // tool_calls 的 MODEL）初始化，而不是按「会话是新的」假设重置。
+        // 更糟的是这条路径在 **Wave 51 之前不会自愈**：失败点在 `sendMessageAsync` 而不是
+        // `createConversation`，彼时 `nativeToolsRejected` 不会被置位 ⇒ 每遇一次炸一次。
+        // ⚠️ Wave 51 起该失败面已**部分**兜底：若失败表现为 `Failed to apply template`，
+        // `onError` 会置 `conversationDirty` 并在原生工具通道下证伪本通道（见其注释）；
+        // **非模板类**的 `sendMessageAsync` 失败仍不被该自愈覆盖。故闸门仍要按
+        // **播种历史**（最后一条播种是不是带 tool_calls 的 MODEL）初始化，而不是按
+        // 「会话是新的」假设重置。
         awaitingNativeToolResponse = nativeTools.isNotEmpty() &&
             seed.lastOrNull()?.let { it.role == Role.MODEL && it.toolCalls.isNotEmpty() } == true
         // 记录**实际注册进去**的工具集：legacy 回退（roleChannelActive=false）与「证伪重试」
@@ -1608,14 +1685,37 @@ class LiteRtLmEngine(
                 val raw = throwable.message.orEmpty()
                 // 超容硬报错的可行动化映射（Wave 28）：litertlm 对「输入超 KV 容量」报
                 // "Input token ids are too long"（或 kMaxNumTokensReached 提前收尾），
-                // 裸透传用户读不懂。映射成可操作指引；命中后 conversationDirty 已由
-                // finally 置位，下一轮自动重建会话。
+                // 裸透传用户读不懂。映射成可操作指引；conversationDirty 由 finally 兜底
+                // （下方 `!finished ⇒ conversationDirty = true`），本处显式补置为冗余声明（Wave 51）。
                 val tooLong = raw.contains("too long", ignoreCase = true) ||
                     (raw.contains("max", ignoreCase = true) && raw.contains("token", ignoreCase = true))
                 val hint = if (tooLong) {
                     " —— 上下文超出模型容量。请清空/精简当前会话，或调小「上下文长度」设置后重试"
                 } else {
                     ""
+                }
+                // 生成期模板渲染失败的自愈（Wave 51 P1）：Qwen2.5 容器模板用
+                // `'…' + message.content + '…'` 拼接 content，content 为 JSON 数组时必炸
+                //（详见 [foldAdjacentText] 的 KDoc）。出口收口后仍可能命中（多模态 / 其它模型），
+                // 故这里补一道自愈：置会话重建；仅在**原生工具通道激活**时证伪本通道。
+                if (isTemplateRenderFailure(raw)) {
+                    // 与 finally（下方 `!finished ⇒ conversationDirty = true`）**冗余**：
+                    // 显式补置是为了让「模板失败 ⇒ 重建会话」这个意图在错误路径上可见，**勿删 finally 那条**。
+                    conversationDirty = true
+                    // 为什么只在 nativeToolChannelActive() 为真时证伪通道：失败根因是 content
+                    // 数组化、**与通道无关**（文本协议下同样炸，W50 组A 实证）；对纯文本协议用户
+                    // 证伪通道只会带来无意义的「工具清单写回提示词」副作用。native 通道用户被降级
+                    // 后，native 路径特有的 `assistant + tool_calls` 的 `:27` 失败面也随之消失。
+                    // 防循环：nativeToolsRejected 置位后 nativeToolChannelActive() 恒 false ⇒ 不会
+                    // 反复证伪；重建只在 dirty 置位后下一 run 发生一次。
+                    if (nativeToolChannelActive()) {
+                        nativeToolsRejected = true
+                        AgentLogStore.warn(
+                            "原生工具通道：生成期模板渲染失败（$raw），已证伪本通道；下一 run 回退文本协议",
+                        )
+                    } else {
+                        AgentLogStore.warn("生成期模板渲染失败（$raw），已置会话重建")
+                    }
                 }
                 channel.close(EngineException("LiteRT-LM: 生成失败 (${raw})$hint", throwable))
             }
@@ -1661,7 +1761,9 @@ class LiteRtLmEngine(
             // 为真，授权后面某一轮贸然发 `role=tool`（典型：legacy 会话 + 通道仍激活），
             // 届时 native 侧无前置 tool_call ⇒ chat template 判非法。
             awaitingNativeToolResponse = false
-            Message.user(Contents.of(buildContents(fresh)))
+            // 出口收口（Wave 51 P1）：把相邻 Text 折成单段，使 content 恰好 1 个元素 ⇒ 下发为
+            // string，规避 Qwen2.5 模板 `'…' + content + '…'` 对 JSON 数组的 `+` 报错。
+            Message.user(Contents.of(foldAdjacentText(buildContents(fresh))))
         }
         // 重复惩罚（Wave 20，litertlm 0.17.1 起真实生效）：此前 SamplerConfig 无此参数、
         // SamplingParams.repetitionPenalty 只是「上层模拟或忽略」的死字段，0.17.1 把
@@ -1902,7 +2004,8 @@ class LiteRtLmEngine(
                 }
             }
             if (text.isNotBlank()) contents.add(Content.Text(text))
-            if (contents.isEmpty()) null else Message.user(Contents.of(contents))
+            // 出口收口（Wave 51 P1）：附件文本与正文相邻时折成单段（非 Text 附件仍是硬边界）。
+            if (contents.isEmpty()) null else Message.user(Contents.of(foldAdjacentText(contents)))
         }
 
         // 只发可见正文，不带 thinking（与 buildContents 的 MODEL 分支同口径）：
@@ -1943,7 +2046,8 @@ class LiteRtLmEngine(
             //
             // 取舍申报（已知风险边界）：若某个转换件不接受 `Message.tool` 形态，
             // createConversation 会失败 —— 这条错误路径已被覆盖：先证伪本通道并不带工具
-            // 重试，再失败才 legacy 兜底（含失败原因日志）。半套配对是必炸的，而炸了能自愈。
+            // 重试，再失败才 legacy 兜底（含失败原因日志）。半套配对是必炸的；生成期失败的自愈
+            // 见 onError（Wave 51 起），**在此之前不会自愈**。
             if (nativeToolChannelActive()) {
                 toNativeToolMessage()
             } else {
@@ -1955,7 +2059,8 @@ class LiteRtLmEngine(
                     (result.output.takeIf { it.isNotBlank() } ?: result.errorMessage ?: "")
                         .takeIf { it.isNotBlank() }
                 }
-                if (texts.isEmpty()) null else Message.user(Contents.of(texts.map { Content.Text(it) }))
+                // 出口收口（Wave 51 P1）：多结果文本本会成 JSON 数组（多元素）⇒ 折成单段。
+                if (texts.isEmpty()) null else Message.user(Contents.of(foldAdjacentText(texts.map { Content.Text(it) })))
             }
         }
     }
@@ -1978,7 +2083,10 @@ class LiteRtLmEngine(
         for (message in messages) {
             val last = out.lastOrNull()
             if (last != null && last.role == NativeRole.USER && message.role == NativeRole.USER) {
-                out[out.size - 1] = Message.user(Contents.of(last.contents.contents + message.contents.contents))
+                // 出口收口（Wave 51 P1）：拼接后的 USER 内容里相邻 Text 折成单段（多元素数组会炸模板）。
+                out[out.size - 1] = Message.user(
+                    Contents.of(foldAdjacentText(last.contents.contents + message.contents.contents))
+                )
             } else {
                 out.add(message)
             }
