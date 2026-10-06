@@ -109,6 +109,10 @@ summarize_tests() {
   echo "-------------------------------------------------------------------"
   if [ "$g_files" -eq 0 ]; then
     echo "[fulltest] 未找到任何 TEST-*.xml —— 用例数无法汇总。"
+    # GitHub 注解：CI 上会以**黄色 warning** 显示在 PR 页面 / Annotations 面板，
+    # 人眼可见 —— 比 arch-guard 第 23 条（只防脚本自身退出码、防不住 files==0 静默）
+    # 更快堵住「测试根本没跑、用例数汇总为空却无人察觉」的场景。二者互补。
+    echo "::warning::未找到任何 TEST-*.xml —— 用例数无法汇总（可能是测试根本没跑）"
     if [ "$SUMMARY_ONLY" -eq 1 ]; then
       # 报告模式**没有跑 gradle** ⇒ 绝不能打印「gradle 退出码」（会让读者以为跑过且成功）。
       echo "[fulltest] （--summary-only 模式未执行 gradle，仅汇总现有 XML；请先跑一次默认模式产生结果）"

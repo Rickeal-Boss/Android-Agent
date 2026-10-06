@@ -458,21 +458,45 @@ jobs:
       #       （只汇总现有 TEST-*.xml、不重跑、永远 exit 0）。
       # 非阻断三件套：if: always()（红跑也要出 summary）+ continue-on-error: true
       #       （本步自身出错也不改 job 结论）+ run 内 `|| true`（保持本步显示为绿）。
-      # 依赖：scripts/fulltest.sh 的 --summary-only 子命令由 arch-guard 第 22 条钉住
+      # 依赖：scripts/fulltest.sh 的 --summary-only 子命令由 arch-guard 第 22 条钉住、
+      #       其「恒 exit 0 / 不经 exit 2」的退出码契约由第 23 条钉住
       #       （缺失即守卫判红，防这个非阻断步骤静默失效）。
+      # 【Wave 51 增补 · 低于基线 soft-check】汇总后把用例总数与基线 tests=598 比对，
+      #       低于基线时往 job summary 打 ⚠️（**不改 job 结论**，保持非阻断设计）。
+      #       动机：arch-guard 第 23 条防的是「脚本自身退出码」，防不住「某模块用例被删/
+      #       未跑/结果目录缺失」这类**静默缩面**；本 soft-check 让人眼在 summary 里看到
+      #       「用例数掉了」。唯一既有失败 = SandboxFileScannerTest.kt:184（Windows 符号
+      #       链接，非本仓代码问题）—— 故基线取 598 而非 599。
       # -------------------------------------------------------------------
       - name: Summarize unit test counts (non-blocking)
         if: always()
         continue-on-error: true
         run: |
+          out="$(bash scripts/fulltest.sh --summary-only 2>&1 || true)"
+          # 【Wave 51 修复】fulltest.sh 的 ::warning:: 被上面的 $(…) 捕获后**不会**成为
+          # 黄色注解（只会以字面文本进 Summary）—— 此处把它回显到 **stdout**，让 runner
+          # 重新识别为真正的 workflow command 注解。`|| true` 保证 grep 无命中（rc=1）时
+          # 本步仍绿；同时覆盖 ::error::（同类被捕获的 workflow command），一并回显。
+          # 注：注解只是信息面，**不改变 job 结论**（本步 continue-on-error: true）。
+          printf '%s\n' "$out" | grep -E '^::(warning|error)::' || true
           {
             echo "### 单测用例数（逐模块 · 真实 XML 口径）"
             echo ""
             echo "> 非门禁步骤：仅汇总 \`**/build/test-results/**/TEST-*.xml\`，不改变 job 结论。"
             echo ""
             echo '```text'
-            bash scripts/fulltest.sh --summary-only 2>&1 || true
+            echo "$out"
             echo '```'
+            # 低于基线 soft-check（非阻断）：基线 tests=598。低于即打 ⚠️，绝不让 job 变红。
+            baseline=598
+            total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
+            total="${total:-0}"
+            if [ "$total" -lt "$baseline" ]; then
+              echo ""
+              echo "> ⚠️ **用例数低于基线**：本次 \`tests=$total\` < 基线 \`tests=$baseline\`。"
+              echo "> 可能是某模块用例被删 / 未跑 / 结果目录缺失（唯一既有失败 = \`SandboxFileScannerTest.kt:184\` Windows 符号链接，属已知）。"
+              echo "> 本步为非门禁（\`continue-on-error\`），不会让 job 变红 —— 请人工确认用例数下降是否预期。"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test reports on failure

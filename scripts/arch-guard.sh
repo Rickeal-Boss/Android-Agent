@@ -478,6 +478,38 @@ check "fulltest.sh 含 --summary-only 子命令（build.yml 非阻断汇总步�
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（--summary-only 子命令的载体蒸发 ⇒ build.yml 的汇总步骤会静默失效）"; exit 1; fi
            grep -qE "^[^#]*--summary-only[[:space:]]*\)" "$f" || echo "$f 未包含 --summary-only 子命令分派臂（build.yml 的 unit-tests summary 步骤依赖它；缺失 ⇒ 该非阻断步骤静默失效，summary 永远为空）"'
 
+# 23) fulltest.sh 的 --summary-only 退出码契约（Wave 51）：与第 22 条**互补** ——
+#     #22 钉「分派臂存在」，本条钉「该分支的退出码恒为 0」。契约（build.yml 的
+#     unit-tests summary 步骤依赖它）：
+#       · `--summary-only` 分支必须**恒 `exit 0`** —— 它是 `continue-on-error: true` 的
+#         非阻断步骤，一旦变成非零退出，「永远 exit 0」的口径即被破坏（虽然不红 job）；
+#       · 且**不得**因「找不到 gradle」走 `exit 2` 路径 —— 即 gradle 解析块（含 `exit 2`）
+#         必须被 `SUMMARY_ONLY == 0` 分支包住。`0f6506e` 修掉的「误印 gradle 退出码」若回归，
+#         summary-only 在无 gradle 环境会以 exit 2 结束（而非恒 exit 0）。
+#     ⚠️ 本条防的是「脚本自身退出码」，**防不住 `files==0` 的静默场景**（脚本仍 exit 0、
+#     但汇总为空）—— 后者由 fulltest.sh 内的 `::warning::` 注解 + build.yml 的「低于基线」
+#     soft-check 负责。三者互补、不重复。
+#     实现：用 awk 追踪 if/elif/fi 嵌套（沿用第 12 条的结构化判据范式），在**代码位**上校验：
+#       ① 存在一个 `SUMMARY_ONLY == 1` 的 if 分支，其**首语句**为 `exit 0`（恒 exit 0 的早退载体）；
+#       ② 每个 `exit 2` 都处在「含 SUMMARY_ONLY 且判 0」的 if 块内。
+#     判据只认代码位（行首 `#` 注释行由 awk 跳过），不会被注释里的 `--summary-only` /
+#     `exit 0` 字样骗过（沿第 19/22 条 R-B 的教训 —— 裸 grep 会被 fixture 注释骗成假绿）。
+#     判红契约同 #19/#22：文件不存在用 `exit 1` + `::error::`（显式 echo 违规事实，绝不
+#     写成 fail-open 的空输出）。
+check "fulltest.sh 的 --summary-only 分支恒 exit 0 且不经 exit 2（非阻断汇总步骤的退出码契约）" \
+  bash -c 'f=scripts/fulltest.sh
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（--summary-only 退出码契约的载体蒸发 ⇒ build.yml 非阻断汇总步骤的退出码不再受保护）"; exit 1; fi
+           awk "
+             BEGIN { d=0; pending=0; sum1ok=0; bad=0 }
+             /^[[:space:]]*(#|\$)/ { next }
+             /^[[:space:]]*if([[:space:]]|\$)/ { d++; cond[d]=\$0; pending=(\$0 ~ /SUMMARY_ONLY/ && \$0 ~ /(-eq|==)[[:space:]]*1/)?1:0; next }
+             /^[[:space:]]*elif([[:space:]]|\$)/ { cond[d]=\$0; pending=(\$0 ~ /SUMMARY_ONLY/ && \$0 ~ /(-eq|==)[[:space:]]*1/)?1:0; next }
+             /^[[:space:]]*fi([[:space:]]*;|[[:space:]]*\$)/ { pending=0; if(d>0)d--; next }
+             { if(pending){ if(\$0 ~ /^[[:space:]]*exit[[:space:]]+0([[:space:]]*;|[[:space:]]*\$)/) sum1ok=1; pending=0 }
+               if(\$0 ~ /^[[:space:]]*exit[[:space:]]+2([[:space:]]*;|[[:space:]]*\$)/){ enc=0; for(i=1;i<=d;i++) if(cond[i] ~ /SUMMARY_ONLY/ && cond[i] ~ /(-eq|==)[[:space:]]*0/) enc=1; if(!enc){ print FILENAME \":\" NR \": exit 2 未被 SUMMARY_ONLY==0 分支包住（--summary-only 在无 gradle 环境会走 exit 2 而非恒 exit 0）\"; bad=1 } } }
+             END { if(!sum1ok){ print FILENAME \": --summary-only 恒 exit 0 的早退载体缺失（SUMMARY_ONLY==1 的 if 分支首语句必须是 exit 0；删掉它 summary-only 会落到默认模式的失败退出码）\"; bad=1 } exit bad }
+           " "$f"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

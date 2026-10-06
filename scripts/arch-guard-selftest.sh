@@ -161,20 +161,37 @@ KT
 </issues>
 XML
   # 第 19 条（Wave 49 R-B）要求 scripts/fulltest.sh 存在且含 --continue；第 22 条
-  # （Wave 50）要求它含 --summary-only 分派臂 ⇒ 骨架必须**两者都提供**（否则干净树
-  # 会被这两条误红，正例失守）。
+  # （Wave 50）要求它含 --summary-only 分派臂；第 23 条（Wave 51）要求其 --summary-only
+  # 分支恒 exit 0 且 gradle 解析块（含 exit 2）被 SUMMARY_ONLY==0 包住 ⇒ 骨架必须
+  # **三条都满足**（否则干净树会被这几条误红，正例失守）。
   mkdir -p "$root/scripts"
   cat > "$root/scripts/fulltest.sh" <<'SH'
 #!/usr/bin/env bash
-# scaffold 用的最小载体：含 --continue（第 19 条）与 --summary-only 分派臂（第 22 条）。
+# scaffold 用的最小载体：含 --continue（第 19 条）、--summary-only 分派臂（第 22 条）、
+# 以及 --summary-only 恒 exit 0 的早退载体 + 被 SUMMARY_ONLY==0 包住的 exit 2（第 23 条）。
 set -uo pipefail
+SUMMARY_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --summary-only) SUMMARY_ONLY=1; shift ;;
     *) shift ;;
   esac
 done
-./gradlew test --continue
+if [ "$SUMMARY_ONLY" -eq 0 ]; then
+  if [ -x ./gradlew ]; then
+    GRADLE_CMD=./gradlew
+  elif command -v gradle >/dev/null 2>&1; then
+    GRADLE_CMD=gradle
+  else
+    echo "::error::找不到 gradle" >&2
+    exit 2
+  fi
+  "$GRADLE_CMD" test --continue
+fi
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  exit 0
+fi
+exit 0
 SH
 }
 
@@ -996,13 +1013,19 @@ scaffold "$d"
 cat > "$d/scripts/fulltest.sh" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
+SUMMARY_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --summary-only) SUMMARY_ONLY=1; shift ;;
     *) shift ;;
   esac
 done
-./gradlew test --continue
+if [ "$SUMMARY_ONLY" -eq 0 ]; then
+  "$GRADLE_CMD" test --continue
+fi
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  exit 0
+fi
 SH
 out="$(run_guard "$d")"; rc=$?
 if [ "$rc" -eq 0 ]; then
@@ -1010,6 +1033,130 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case25] fulltest.sh 含 --summary-only 分派臂应不红，实际退出 $rc"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 26 / case 27 / case 28：第 23 条（fulltest.sh 的 --summary-only 退出码契约，
+# Wave 51）三面 —— 与第 22 条**互补**：#22 钉「分派臂存在」，本条钉「该分支恒 exit 0
+# 且不经 exit 2」：
+#   case26 —— gradle 解析块（含 `exit 2`）被移出 `SUMMARY_ONLY==0` 分支 ⇒ 判红，断言红
+#             来自真命中（输出含「exit 2 未被 SUMMARY_ONLY==0 分支包住」违规事实行）。
+#   case27 —— `SUMMARY_ONLY==1` 的早退载体（首语句 `exit 0`）被删 ⇒ 判红，断言输出含
+#             「恒 exit 0 的早退载体缺失」违规事实行。
+#   case28 —— 合规载体（exit 2 被 SUMMARY_ONLY==0 包住 + 早退 exit 0）⇒ 必须不红（绿面；
+#             否则第 23 条会成为永远红的僵尸规则）。
+#   ⚠️ case26 / case27 的 fixture **故意保留**注释里对 --summary-only / exit 0 的提及 ——
+#   钉住判据只认代码位（与 case19 / case24 同一范式：裸 grep 会被注释骗成假绿）。
+#   三面都只在 $TMP 脚手架树内覆写，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case26-exit2-unguarded"
+scaffold "$d"
+cat > "$d/scripts/fulltest.sh" <<'SH'
+#!/usr/bin/env bash
+# 注释里提到 --summary-only 的 exit 0 早退，但 exit 2 被移出了 SUMMARY_ONLY==0 分支（守卫必须判红）
+set -uo pipefail
+if [ -x ./gradlew ]; then
+  GRADLE_CMD=./gradlew
+elif command -v gradle >/dev/null 2>&1; then
+  GRADLE_CMD=gradle
+else
+  echo "::error::找不到 gradle" >&2
+  exit 2
+fi
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  exit 0
+fi
+SH
+out="$(run_guard "$d")"; rc=$?
+assert_red "case26 exit 2 未被 SUMMARY_ONLY==0 包住 (第 23 条)" "$rc" "$out" \
+  "fulltest.sh 的 --summary-only 分支恒 exit 0 且不经 exit 2（非阻断汇总步骤的退出码契约）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case26b] 第 23 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "exit 2 未被 SUMMARY_ONLY==0 分支包住"; then
+  echo "PASS [case26b] 红来自真命中（输出含「exit 2 未被 SUMMARY_ONLY==0 分支包住」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case26b] 输出里看不到「exit 2 未被 … 包住」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case27-early-return-missing"
+scaffold "$d"
+cat > "$d/scripts/fulltest.sh" <<'SH'
+#!/usr/bin/env bash
+# 注释里提到 --summary-only 的 exit 0 早退，但代码里没有（守卫必须判红）
+set -uo pipefail
+SUMMARY_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --summary-only) SUMMARY_ONLY=1; shift ;;
+    *) shift ;;
+  esac
+done
+if [ "$SUMMARY_ONLY" -eq 0 ]; then
+  if [ -x ./gradlew ]; then
+    GRADLE_CMD=./gradlew
+  else
+    echo "::error::找不到 gradle" >&2
+    exit 2
+  fi
+  "$GRADLE_CMD" test --continue
+fi
+exit 0
+SH
+out="$(run_guard "$d")"; rc=$?
+assert_red "case27 --summary-only 早退载体缺失 (第 23 条)" "$rc" "$out" \
+  "fulltest.sh 的 --summary-only 分支恒 exit 0 且不经 exit 2（非阻断汇总步骤的退出码契约）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case27b] 第 23 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "恒 exit 0 的早退载体缺失"; then
+  echo "PASS [case27b] 红来自真命中（输出含「恒 exit 0 的早退载体缺失」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case27b] 输出里看不到「恒 exit 0 的早退载体缺失」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case28-summary-only-contract-ok"
+scaffold "$d"
+cat > "$d/scripts/fulltest.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+SUMMARY_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --summary-only) SUMMARY_ONLY=1; shift ;;
+    *) shift ;;
+  esac
+done
+if [ "$SUMMARY_ONLY" -eq 0 ]; then
+  if [ -x ./gradlew ]; then
+    GRADLE_CMD=./gradlew
+  else
+    echo "::error::找不到 gradle" >&2
+    exit 2
+  fi
+  "$GRADLE_CMD" test --continue
+fi
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  exit 0
+fi
+exit 0
+SH
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case28 合规 --summary-only 契约 (第 23 条绿面)] 退出 0（未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case28] 合规载体应不红，实际退出 $rc"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
