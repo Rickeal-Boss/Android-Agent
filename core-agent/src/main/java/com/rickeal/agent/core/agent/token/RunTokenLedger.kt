@@ -123,7 +123,7 @@ interface RunTokenLedger {
  * `feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt`
  * 的 `observeTokenLedger`）**只消费 `sentTokens` 这一个 run 级口径**，从不消费
  * cumulativeIn / cumulativeOut；双口径在 UI 上只是**并列展示、不换算不对账**
- * （`ChatContextMeter` 的「估算≈ / 实测」）。错配因此**没有暴露面**。
+ * （`ChatContextMeter` 的「发送前≈ / 引擎回报≈」）。错配因此**没有暴露面**。
  * 至于 StateFlow 订阅立即重放上一轮残留值的问题，消费方也是用账本自己的时间戳做基线
  * 滤掉的（`snap.updatedAtWallClockMillis > baseline`，baseline 取订阅前的
  * `ledger.snapshot.value.updatedAtWallClockMillis`），同样**没有**给账本加 reset API。
