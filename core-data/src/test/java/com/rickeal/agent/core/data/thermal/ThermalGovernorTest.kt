@@ -146,6 +146,45 @@ class ThermalGovernorTest {
         assertEquals(128, h.governor.maxTokensCap(128))
     }
 
+    // ── LIGHT 降 maxAgentRounds（Wave 51 C：热档期唯一压得动的降档手段）─────────
+    // 轮次不受 ModelSamplingProfiles.appliedTo 影响（它只碰 sampling / maxTokens /
+    // contextLength），故 maxTokensCap 被档案下限顶回时，轮次仍能真正降下来。
+
+    @Test
+    fun `LIGHT 降档轮次减半`() {
+        val h = Harness()
+        assertEquals(8, h.governor.maxRoundsCap(8)) // NONE：不动
+        h.on(STATUS_LIGHT)
+        assertEquals(4, h.governor.maxRoundsCap(8))
+        assertEquals(10, h.governor.maxRoundsCap(20))
+    }
+
+    @Test
+    fun `轮次保底 2：基准小于 4 时减半不再往下压`() {
+        val h = Harness()
+        h.on(STATUS_LIGHT)
+        assertEquals(2, h.governor.maxRoundsCap(4))
+        assertEquals(2, h.governor.maxRoundsCap(3))
+    }
+
+    @Test
+    fun `轮次降档只往小压：基准低于保底 2 时不得反超`() {
+        val h = Harness()
+        h.on(STATUS_LIGHT)
+        // 配置下限 1：减半 0 → 保底 2 → 若不夹上界，热档期反而把轮次翻倍
+        assertEquals(1, h.governor.maxRoundsCap(1))
+        assertEquals(2, h.governor.maxRoundsCap(2))
+    }
+
+    @Test
+    fun `MODERATE 及以上同样降轮次（LIGHT 是降档起点）`() {
+        val h = Harness()
+        h.on(STATUS_MODERATE)
+        assertEquals(4, h.governor.maxRoundsCap(8))
+        h.on(STATUS_CRITICAL)
+        assertEquals(4, h.governor.maxRoundsCap(8))
+    }
+
     // ── 轮头决策门 ───────────────────────────────────────────────────────────
 
     @Test

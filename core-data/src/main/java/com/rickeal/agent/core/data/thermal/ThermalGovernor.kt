@@ -236,6 +236,29 @@ class ThermalGovernor(
         }
 
     /**
+     * LIGHT 降档：新 run 的**最大轮次**上限（对基准减半，保底 2）。
+     * 只影响 run 启动时刻的取值 —— 在跑 run 不动（方案 §2.1 四档策略表）。
+     *
+     * ## 为什么轮次是热档期唯一「压得动」的降档手段（Wave 51 C）
+     *
+     * [maxTokensCap] 压出来的 maxTokens 会在引擎加载前被 `ModelSamplingProfiles.appliedTo`
+     * 的 `maxTokens = maxOf(config.maxTokens, profile.minMaxTokens)` **顶回** —— 思考模型
+     * （MiniCPM5 / R1）的 `minMaxTokens = 2048` 会把压到 512 的值抬回 2048 ⇒ 降档 100%
+     * 失效（真机 W43 实测 SoC 83℃）。而 `appliedTo` **只碰** sampling / maxTokens /
+     * contextLength，**完全不碰轮次** ⇒ 压轮次不会被任何下游改写。轮次越少 = 单 run 的
+     * 生成/工具调用总轮数越少 = 总发热越低，是热档期最可靠的降温手段。
+     *
+     * `coerceAtMost(base)`：降档只允许往小压（理由同 [maxTokensCap]）—— `base=1` 时
+     * 「减半再保底 2」会反超基准（1 → 0 → 2），热档期反而把轮次翻倍，故必须夹上界。
+     */
+    fun maxRoundsCap(base: Int): Int =
+        if (tier.value >= ThermalTier.LIGHT) {
+            (base / 2).coerceAtLeast(2).coerceAtMost(base)
+        } else {
+            base
+        }
+
+    /**
      * AgentRunner 轮头消费的门视图。Wave 43 映射（接线 [batteryTempTenths] 时）：
      * 电池温度 ≥ 44.9℃ → Abort（主判据，优先于档位）；CRITICAL+ → Abort（OS 紧急
      * 兜底）；SEVERE → Cooldown(10s)（**首轮豁免**，与 MODERATE 同理由 —— 见下）；
