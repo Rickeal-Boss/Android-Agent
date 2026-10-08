@@ -1307,6 +1307,10 @@ class LiteRtLmEngine(
         var toolCallsEmitted = false
         // H-A 定案观测（Wave 53）：模板渲染失败时记录「本次下发消息的 role」，供真机 A/B 判别
         // 炸点属于 user/tool 哪条路径（离线 minijinja 复现与真机行为存在分歧，见 docs）。
+        // ⚠️ 语义澄清（Wave53 深审 F-2）：此处的 "role" 是**内容来源语义**——`toolResponses`
+        // 非空 → "tool"、否则 "user"——**非** native 侧 role；文本协议下 TOOL 回灌也走 `Message.user`
+        // 而标 "tool" 为内容语义。两组对照（W50 3 元素炸 / W51-W52 折后 1 元素不炸）role 同为 user，
+        // 真正能区分的维度是**元素数**（V-2 的 `summarizeContentTypes` 已记录），本观测仅作辅助。
         var outboundRoleForDiag = "unknown"
         val callback = object : MessageCallback {
             override fun onMessage(message: Message) {
@@ -1463,8 +1467,13 @@ class LiteRtLmEngine(
             // 恒返回 JSON 数组（`Contents.of(String)` 亦然；真机 litertlm 代码实测
             // `Contents.of("x").toJson()` = `[{"type":"text","text":"x"}]`），native 侧
             // `NormalizeContent` 亦原样保留数组。故本折叠**不能**断言已规避 Qwen2.5 模板
-            // `'…' + content + '…'` 的 `+` 报错（H-A「native 只在恰 1 元素时收敛为 string」
-            // 已证伪）。折叠本身只做「相邻 Text 合并」这一件事。
+            // `'…' + content + '…'` 的 `+` 报错。**不得**据此反向断言 H-A「native 只在恰 1 元素时
+            // 收敛为 string」**已证伪**：三层源码（Kotlin/JNI/C++）**均未找到** collapse 实现，且
+            // C++/JNI 读的是仓库 tip 源码（非真机 0.17.1 prebuilt）、JNI 桥接层不在快照内 ⇒ 证据链
+            // 不完整，「未找到」≠「不存在」。**真机证据相反**：W50 组A（3 元素）炸 vs W51/W52（折后
+            // 1 元素）不炸，该对照只能用「1 元素被 collapse」解释 ⇒ H-A 作为经验规律**仍成立**；折叠是
+            // 经真机复验的有效修复，**不得删除**（删则回归 W50 必炸）。冲突取舍：离线复现 vs 真机实证
+            // 冲突时**以真机为准**。折叠本身只做「相邻 Text 合并」这一件事。
             val preFoldContents = buildContents(fresh)
             val foldedContents = foldAdjacentText(preFoldContents)
             // H-A 观测面（Wave 52 V-2；Wave 53 补元素类型摘要）：只报「折叠前 ≥2 元素」的实例

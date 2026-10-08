@@ -543,8 +543,8 @@ check "LiteRtLmEngine.kt fold 收口不变式（Message.user 下发点数 == fol
 
 # 25) LiteRtLmEngine.kt 总行数上限（Wave 52）：与 #18（ChatViewModel ≤1600）/
 #     #20（ChatRunCoordinator ≤1300）共同构成「god-file 行数表」。LiteRtLmEngine.kt
-#     是已知 god-file（Wave 52 注释写「实测 2340 行」系**过时**；Wave 53 复核 `wc -l`
-#     实测 **2354** 行 —— 同一文件、同口径 `wc -l`，原数字滞后 14 行，属「描述不成立」），
+#     是已知 god-file（Wave 52 注释写「实测 2340 行」系**过时**；Wave 53 Stage-1 拆分后
+#     `wc -l` 实测 **2054** 行，余量 346；此前 2354 为拆分前滞后数字，属「描述不成立」），
 #     此前**无文件级守卫** ⇒ 加本条。
 #     阈值取 2400（≈+2.5% 余量、≈60 行）：① W52 的 KDoc 订正净增 ≤15 行 ⇒ 2400 不阻塞
 #     本波；② 余量 ≤60 行 ⇒ W53 再涨即触顶，强制启动 god-file 拆分评审。

@@ -65,6 +65,7 @@
 - **新假设 = role 相关性**：`Qwen2.5` 模板 `:23` 的 user/system/assistant 分支含 `+` 拼接 ⇒ 炸；`:45` 的 tool 分支 `{{- message.content }}` 无 `+` ⇒ 不炸。真机报错行号**恒 :23** ⇒ 炸的都是 user 角色。
 - **本波定性**：「未找到 collapse 实现 + role 相关性可测假设」。**不写「已证伪」**（W52 真机 1 元素不炸仍待解释）。版本边界如实标注：Kotlin 侧 = 真机 0.17.1 实测；C++/JNI 侧 = 仓库 tip 源码。
 - **role 观测面（主理人补，为定案提供真机决定性证据）**：`LiteRtLmEngine.kt` 3 处 Edit —— 声明 `var outboundRoleForDiag = "unknown"`；在 `Message.user(Contents.of(foldedContents))` 处赋值 `if (toolResponses.isNotEmpty()) "tool" else "user"`；onError 自愈两份 `AgentLogStore.warn` 末尾带 `（下发 role=${outboundRoleForDiag}）`。真机 A/B 可直接看到炸的是 user/tool 哪种 role。
+- **F-2 角色维度不足以定案（审查补注）**：W50 组A（炸）与 W51/W52（不炸）**唯一差别是元素数 3 vs 1**，角色同为 user（W50 组A 也是纯 user 文本），故「role 相关性」**不能解释**两组对照差异——若角色是根因，W51/W52 同为 user 也应炸。真正区分维度是**元素数**（V-2 的 `summarizeContentTypes` 已逐条记录），role 观测面仅作辅助判据。定案须走「毒化测试：关 fold 多发结果必炸 / 开 fold 不炸」直接钉元素数维度（见 §五 优先条 3）。
 
 ### 2.5 B1 判据侧接线外提（纯重构，无行为变更）
 - `AgentRunner.kt:296-320` 抽 `wallClockRemainingMillis(hardDeadlineNanos, pausedNanos, nowNanos)` 纯函数；`gateRoundHead` 的 `remaining` 改调；`:1925-1935` 子 run 注释补「当前不可达」（子 run 无审批通道）。
@@ -89,7 +90,7 @@
 
 ### 3.1 ⛔ 未行使 / vacuous（如实申报，不记通过）
 - **B1「长审批停表」真机效应**：同 W52，未构造长等待剧本 ⇒ 代码路径已行使、算术已单测覆盖，但真机未构造长审批 ⇒ **仍 vacuous**。
-- **多模态 L3 真机 A/B + 毒化**：L2 已实证 `Qwen2.5-1.5B` 不安全，但端到端真机图片输入复验**未做**（依赖设备可发图 UI 路径）。
+- **多模态 L3 真机 A/B + 毒化**：L2 已实证 `Qwen2.5-1.5B` 不安全（数组必炸）；可执行复验改为**毒化测试**（关 fold 多发结果 ⇒ 必炸 / 开 fold ⇒ 不炸，直接定 H-A，无需发图、无需新容器），视觉容器 L3 待 L2 triage 命中不安全者再排窗口（详见 §五 优先条 3）。
 - **`WallClockEvidenceTest` 新增 2 例**仅覆盖纯函数接线（无挂起 / 挂 60s），**不覆盖真机时序**。
 
 ---
@@ -119,10 +120,11 @@ W52 末 `build.yml` 基线仍 619，但当时实数已 621（W52 开发席 +2 �
 
 ### 🔴 优先（W54 首批）
 
-1. **B1 真机长审批剧本**：构造审批挂起 ≥5min10s，验证不被 HARD 熔断（四判据：审批弹出 / run 继续 / WallClockBudget 熔断 = 0 / pausedNanos 正确计入）。自动授权脚本需改为「不自动批」或手动按住。
-2. **多模态 L3 真机 A/B + 毒化**：在 `Qwen2.5-1.5B` 上发图复验模板炸（L2 已证不安全），日志带 `下发 role=` 直接定 role 相关性；毒化测试（故意多元素 content）确认自愈循环不反复炸。
-3. **#25 注释非写死化**：守卫注释引用实时行数或移除具体数字，杜绝「注释 2354 / 实际 2054」脱节。
-4. **引擎 Stage-2/3 拆分预案**：当前 2054 行余量 346，若有新功能落此文件触顶（≤2400）即启动；拆分须保守卫 #24 不变式。
+1. **H-A 定案三路径（第四审 §3.2 · Wave53 深审 F-1 同源）**：离线、小时级、可能直接消解 W51 以来悬置的核心矛盾——① checkout `v0.17.1` tag 对 `prompt_template.cc`/`parser_utils.cc`/`conversation.cc`/**JNI 桥接目录**做 tag↔tip diff 专找「单元素数组 → 标量」的 unwrap/collapse；② 把 PyPI minijinja 钉到 litertlm 0.17.1 vendored 同款版本重跑单元素复现；③ JVM 上用 0.17.1 AAR 调 `Contents.of("x").toJson()` 实证喂给模板的 JSON 形状。**这是 litertlm bump 的硬前置（见 item 13）**。
+2. **B1 真机长审批剧本**：构造审批挂起 ≥5min10s，验证不被 HARD 熔断（四判据：审批弹出 / run 继续 / WallClockBudget 熔断 = 0 / pausedNanos 正确计入）。自动授权脚本需改为「不自动批」或手动按住；负向对照（无审批的真长任务）确认 HARD 熔断仍按有效时长触发。
+3. **多模态 L3 + 毒化 剧本改写（原「Qwen2.5-1.5B 发图」不可构造——纯文本模型 UI 不开放图片入口）**：① **毒化测试（优先，零容器/零真机窗口外成本）**：在 `Qwen2.5-1.5B` 上**关闭 fold** 一次回灌 ≥3 工具结果 ⇒ 应必炸（`Failed to apply template`）；再开 fold ⇒ 应不炸（折后 1 元素）——**直接定 H-A 悬案**，无需发图、无需新容器；② 视觉容器 L3 A/B：先经应用内市场取得 5 个未取证容器（`Qwen2-VL-2B` 风险最高，Qwen 系同源）→ `adb dd` + `minijinja` L2 定案 → 仅对模板不安全者排真机发图 A/B + `下发 role=` 读数。**Qwen2.5 上的 role 复验移除**（不可构造，离线 minijinja 已提供决定性证据）。
+4. **#25 注释非写死化**：注释数字已订正为 2054（Stage-1 拆分后实测），「注释/实际」脱节已消除；彻底非写死化（注释引用实时行数或移除具体数字）顺延至 god-file 拆分评审或并入自动化。
+5. **引擎 Stage-2/3 拆分预案**：当前 2054 行余量 346，若有新功能落此文件触顶（≤2400）即启动；拆分须保守卫 #24 不变式。
 
 ### 🟡 常规（W51–W52 挂账顺延，未动项）
 
@@ -135,6 +137,7 @@ W52 末 `build.yml` 基线仍 619，但当时实数已 621（W52 开发席 +2 �
 11. **法务** `TODO(legal)`×4 / `termsVersion`（**必须先于任何法务文本替换落地**）。
 12. **上游/已知限制**：`gemma-4-E2B-it-gpu`（GPU 输出乱码；CPU init `NOT_FOUND`）｜`MiniCPM-V-4-int8`（`Unsupported model type`）｜MiniCPM5 OFF 态规划外溢（2B int4 固有，**别动 `thoughtChannelDefsFor`**）。
 13. **`main` 分支快照声明过时**（实际 improve 领先 main 数百 commit）｜**litertlm bump 评估立项**｜**打 tag**（顺序：法务清零 → tag）。
+    ⚠️ **bump 硬前置（第四审 §3.3 · H-A 耦合）**：P1 fold 修法的有效性依赖「native 把单元素数组当 string 处理」这一未经源码证实的行为（fold 的全部意义就是做单元素）。**bump 前必须完成**：① H-A 定案（v0.17.1 tag diff / minijinja 版本钉 / Java 侧 `Contents.of("x").toJson()` 实证，三选一或组合）；② 新版本上重跑 TextFoldTest 全套；③ 一次真机 fold 复验（折叠前 3 → 折叠后 1）。缺任一则 bump 可能**静默重开**已定案 P1（#24 只钉 fold 调用点存在性，拦不住行为级漂移）。**bump 不得先于上述前置合入。**
 14. **`ChatRunCoordinator.kt` 余量**（1278/1300，W52 无功能回灌 ⇒ 未拆分；W54 若有功能落此文件须先拆分后回灌）。
 
 ---
