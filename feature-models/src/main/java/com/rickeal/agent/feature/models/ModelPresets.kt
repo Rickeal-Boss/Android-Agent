@@ -292,7 +292,7 @@ object ModelPresets {
             note = "能看懂图片：用来体验拍照问答，体积最小",
             sizeBytes = 563549568,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证",
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）",
             mirrors = domesticMirrors("LFM2.5-VL-450M", "LFM2.5-VL-450M_int8.litertlm"),
         ),
         // ── 视觉多模态批（2026-09-24 增补）：端侧 VL 帕累托前沿，500M/2B/1.6B/3B/8B 五档。
@@ -307,7 +307,7 @@ object ModelPresets {
             note = "能看图的最小模型：老手机也能体验拍照问答",
             sizeBytes = 360822960,
             recommended = false,
-            backendBasis = "官方在 Galaxy S26（litert-lm 0.15）验证 Android GPU 可生成；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证。⚠️ 文本对话能力弱（360M 解码器，为图像输入设计）：纯文本对话建议 Qwen2.5-1.5B 或 DeepSeek-R1",
+            backendBasis = "官方在 Galaxy S26（litert-lm 0.15）验证 Android GPU 可生成；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证。⚠️ 文本对话能力弱（360M 解码器，为图像输入设计）：纯文本对话建议 Qwen2.5-1.5B 或 DeepSeek-R1；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）",
             mirrors = domesticMirrors("SmolVLM2-500M", "SmolVLM2-500M.litertlm"),
         ),
         ModelPreset(
@@ -320,7 +320,7 @@ object ModelPresets {
             note = "阿里通义视觉模型：中文看图、截图问答与 OCR 强",
             sizeBytes = 1783424544,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（视觉 GPU + 解码 CPU）与 Galaxy S26（0.15）验证；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证",
+            backendBasis = "官方在 Pixel 8a（视觉 GPU + 解码 CPU）与 Galaxy S26（0.15）验证；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）",
             mirrors = domesticMirrors("Qwen2-VL-2B", "Qwen2-VL-2B.litertlm"),
         ),
         ModelPreset(
@@ -335,7 +335,7 @@ object ModelPresets {
             note = "同体积看图能力最强之一：多语言视觉与 OCR 均衡（含视觉修复）",
             sizeBytes = 1298139472,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证",
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）",
             mirrors = domesticMirrors("LFM2.5-VL-1.6B", "LFM2.5-VL-1.6B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -349,7 +349,7 @@ object ModelPresets {
             note = "小体积视觉旗舰：精细图像理解与文档 OCR，8GB 内存机型舒适运行（含视觉修复）",
             sizeBytes = 2352023888,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证",
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）",
             mirrors = domesticMirrors("LFM2.5-VL-3B", "LFM2.5-VL-3B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -362,7 +362,7 @@ object ModelPresets {
             note = "视觉能力天花板：8B 级多模态，仅建议 8GB 以上内存机型",
             sizeBytes = 4214021104,
             recommended = false,
-            backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU",
+            backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）",
             mirrors = domesticMirrors("MiniCPM-V-4", "MiniCPM-V-4-int8.litertlm"),
         ),
     )
