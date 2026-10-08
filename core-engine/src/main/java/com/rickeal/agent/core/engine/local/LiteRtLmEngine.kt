@@ -55,81 +55,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.util.Locale
-
-/** 简报 §3.1：思考文本走 channels["thought"]。 */
-internal const val THOUGHT_CHANNEL = "thought"
-
-/**
- * thought 通道的**输出解析声明**（Wave 43 真机实锤后新增；Wave 48 起按模型选择；**Wave 49 R-A 起数据驱动 + 默认可不下发**）。
- *
- * ## 背景（Gemma 侧）
- *
- * Gemma-4 的 chat template（litert-lm `google-gemma-4-multi-prefill.jinja`）在带 tools /
- * system 角色时，模型会以 `<|channel>thought ... <channel|>` 自发输出思维链；而 0.17.1
- * 运行时只有在容器元数据或 [ConversationConfig.channels] **声明**了该通道时才会做流式
- * 切分——未声明时标记连同思维链全部混进正文（OPPO PDRM00 真机 journal 实锤：
- * `<|channel>thought` 原样泄漏 + 思维链噪声触发轮内重复检测三连 → run 终止）。
- *
- * ## 为什么「按模型选择」而不是无条件下发 Gemma 标记（Wave 48 N1 根因）
- *
- * MiniCPM5 的 `.litertlm` 元数据**本就声明了** `<think>` / `</think>` 通道，但 native 的
- * 通道配置是 **overwrite 语义**（litert-lm `conversation.cc:189-200`：只要配置非空，元数据
- * 通道被整体丢弃）⇒ 无条件下发 Gemma 标记会**覆盖**元数据声明 ⇒ native 只找
- * `<|channel>thought`（MiniCPM5 永不输出）⇒ 不切分 ⇒ `<think>…</think>` 明文混进正文、
- * `message.channels["thought"]` 恒空（真机铁证 `_ci-tools/_w47_after/08bacd4c-…json`）。
- *
- * ## Wave 49 R-A：把「按模型选择」进一步收敛为**数据驱动 + 默认信任元数据**
- *
- * 返回 `null` ⇒ **不下发 `channels`** ⇒ native `nullopt` ⇒ 用**容器元数据**的通道配置
- * （0.17.1 KDoc：`null` = 用 `LlmMetadata` 默认；`empty` = 禁用通道 —— 后者**绝不能用**）。
- * 字面量来源 = [ModelDescriptor.thoughtChannelSyntax]（数据驱动，见 [ChannelSyntax] KDoc），
- * 未知模型默认 `null`。**能信任元数据就信任，不猜字面量** ⇒ 从机制上消除 N1 本体。
- *
- * ## 为什么**不能**简单 append 第二个 def（方案 A 被否决）
- *
- * native `ThinkingBudgetConstraint` 只用 `channels.front()` 的 start/end token ids
- * （`conversation.cc:371-392`，含上游 TODO b/521921341）⇒ 多通道下只有 **front()** 生效。
- * 若把 `<think>` 追加到末尾，W47 的 thinking 预算对 MiniCPM5 **静默失效**；放 front 则
- * Gemma 失效。**单元素返回（唯一非空分支 = [ChannelSyntax]）保证 `front()` 恒为该模型自己的
- * 思考通道** ⇒ 切分与预算同时正确。
- *
- * ## 判定口径 = 模型身份（**不**读 `capabilities.thinking`）
- *
- * channel def 描述的是**容器真实的通道语法**（模型事实），不是用户偏好；若随用户开关变化，
- * 会出现「用户关思考但模型仍自决输出 `<think>` ⇒ 再次泄漏」。故取
- * [ModelDescriptor.thoughtChannelSyntax]（由 `ModelHeuristics.inferChannelSyntax` 按 family 归类）。
- *
- * ## 声明后的行为与字面量出处
- *
- * 运行时把 start/end 标记之间的增量送进 `message.channels["thought"]`（引擎回调侧
- * [THOUGHT_CHANNEL] 消费路径已有），正文不再含思维链与标记。
- * - Gemma 侧标记 = litert-lm 源码 `channel_util.h` kThoughtChannelName 注释
- *   「e.g. "<|channel>thought"」+ `io_types.h` 同款示例，与真机泄漏文本逐字节一致；
- * - MiniCPM5 侧标记 = `_research/models/RM_MiniCPM5-2B.md:163`「the `thought` channel as
- *   `<think>\n` / `</think>`」（**回退档**；默认可不下发，信任元数据）。
- *
- * ⚠️ 类型注意：`ConversationConfig.channels` 的形参是 **List<Channel>?**（可空，默认 null；
- * 0.17.1 `Config.kt:235`），不是 Map —— 0.17.1 class 常量池里的 getChannels 取出的就是 List，
- * 首版误判为 Map 编译期被拦。
- * ⚠️ 引用必须**全限定**：本文件已 import kotlinx.coroutines.channels.Channel，
- * 短名 `Channel(...)` 会被解析到协程工厂函数而非 litertlm 构造器（首版实测两个编译错）。
- * ⚠️ 构造必须**位置实参**（channelName, start, end）：AAR 编译未带 -java-parameters，
- * 参数名不保留，具名实参编译期被拦（首版实测）。
- *
- * 纯函数（文件级 internal，可被单测直接调）：`null`（含未知模型 / `thoughtChannelSyntax == null`）
- * ⇒ 不下发 channels、信任容器元数据。**不变量**：返回非空时必为**单元素**且 `front()` 即该模型
- * 自己的思考通道 —— 这是把「预算 front() 正确性」钉进测试的关键。
- */
-internal fun thoughtChannelDefsFor(
-    model: ModelDescriptor?,
-): List<com.google.ai.edge.litertlm.Channel>? {
-    // null（含未登记未知模型）⇒ 不下发 channels，信任容器元数据。R-A 核心：
-    // 元数据已声明思考通道的模型（MiniCPM5 等）不再被错误字面量覆盖 ⇒ 机制上消除 N1。
-    val syntax = model?.thoughtChannelSyntax ?: return null
-    // Channel(channelName, start, end)；不变量：非空返回恒单元素 ⇒ front() 即该模型自己的思考通道。
-    return listOf(com.google.ai.edge.litertlm.Channel(THOUGHT_CHANNEL, syntax.start, syntax.end))
-}
 
 /**
  * 模型文件预检的体积下限（64MB）。
@@ -139,254 +64,6 @@ internal fun thoughtChannelDefsFor(
  * （几 KB~几十 KB）。取 64MB 既不会误伤任何真实模型，也能拦住绝大多数残片。
  */
 private const val MODEL_MIN_BYTES: Long = 64L * 1024L * 1024L
-
-/**
- * preface 校验用的**窗口长度**（Wave 33）：systemText 归一化后取前 64 个字符做子串匹配。
- *
- * 取 64 的理由：系统提示词开头是固定的角色/行为约束段，64 个归一化字符足以区分
- * 「渲染进去了」与「渲染丢了」，又不至于要求整段提示词逐字出现在 preface 里
- * （native 模板可能在提示词前后插入自己的标记）。
- */
-private const val PREFACE_CHECK_WINDOW = 64
-
-/**
- * [prefaceContainsSystem] 用的归一化（Wave 33）：lowercase(Locale.ROOT) 后仅保留
- * 字母与数字字符。
- *
- * 纯函数（文件级 internal，可被单测直接调）。与 Wave 24 判定⑨回显指纹的归一化
- * 同一口径 —— 模板插入的换行/标点/空白噪声必须被吃掉，否则校验会因格式差异误报。
- */
-internal fun normalizeForPrefaceCheck(s: String): String =
-    s.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
-
-/**
- * preface（systemInstruction + initialMessages 在 native chat template 下的实际渲染
- * 结果）是否包含系统提示词正文（Wave 33）。
- *
- * 判定语义：取 [systemText] 归一化后的**前 [PREFACE_CHECK_WINDOW] 个字符**作为窗口，
- * 判断它是否为 [preface] 归一化串的子串。窗口语义两侧必须同读：
- *  - systemText 归一化后不足 64 字符 → 窗口退化为**全串**匹配；
- *  - 负例的正确形态是「preface 只含有窗口前缀的一部分」（如仅前 40 个归一化字符
- *    被渲染进来）—— 此时窗口（64 字符）不可能是 preface 的子串，判 false；
- *  - systemText 归一化为空（无系统提示词）→ 无事可校验，恒 true。
- *
- * 纯函数（文件级 internal，可被单测直接调）。返回 false = 「角色通道第三态」
- * （createConversation 成功但模板渲染丢失 system），调用方据此做中档回退。
- */
-internal fun prefaceContainsSystem(preface: String, systemText: String): Boolean {
-    val normalizedSystem = normalizeForPrefaceCheck(systemText)
-    if (normalizedSystem.isEmpty()) return true
-    val window = normalizedSystem.take(PREFACE_CHECK_WINDOW)
-    return normalizeForPrefaceCheck(preface).contains(window)
-}
-
-/**
- * 一次 `load()` / 会话期重建尝试的完整状态（Wave 44 P0-2 降级链；Wave 45 会话创建期复用）。
- *
- * 为什么必须从 `Pair<Backend, Backend?>` 升级：旧结构只表达「主后端 → 视觉后端」，且
- * audio 后端在元组外（`audioBackend = resolvedAudioBackend?.let { … }` 恒取原值 —— ⚠️ 这是
- * **Wave 44 之前**的旧结构描述，**已不适用**），因此无法表达「去 audio 重建」；也无法记录
- * 「相对用户请求已去掉哪些模态」这一累积事实。
- *
- * ⚠️ **当前事实（Wave 44 起，回源见 `loadLocked`）**：audio / vision 后端**均在元组内**
- * （见下方 `audioBackend` 字段）；`EngineConfig` 读 `current.visionBackend` /
- * `current.audioBackend`（**不是** `resolved*`）。`resolved*` 仅用于 `sameEngine` 判据、
- * `initial(...)` 入参、`loaded*Backend` 赋值（恒记用户请求值）。Wave 45 起 `initial(...)`
- * 按 `seedDegrade` 把对应模态后端置 null。
- *
- * [degraded] 是**累积**的（跨尝试保留），最终写入诊断出口
- * [EngineSessionDiagnostics.degradedModality]。
- *
- * @param backend 本次尝试的主后端
- * @param visionBackend 本次尝试的视觉后端（null = 不用视觉 / 已去视觉模态）
- * @param audioBackend 本次尝试的音频后端（null = 不用音频 / 已去音频模态）
- * @param degraded 相对用户请求，本尝试**已去掉**的模态（空集 = 原样请求）
- */
-internal data class EngineAttempt(
-    val backend: InferenceBackend,
-    val visionBackend: InferenceBackend?,
-    val audioBackend: InferenceBackend?,
-    val degraded: Set<ModelModality> = emptySet(),
-)
-
-/**
- * NOT_FOUND 错误驱动的模态降级链**纯决策逻辑**（Wave 44 P0-2）。
- *
- * 抽成纯函数（无 native、无状态）以便 JVM 单测覆盖全部决策分支；`loadLocked()`（`load()` 与
- * 会话期降级重建 `reloadForDegrade` 共用）只做「建引擎 → 失败 → 问 [next] → 建下一个」的
- * 驱动循环；会话创建期的失败另经 [modalityToDegradeOnSessionError] 判定（Wave 45）。
- *
- * ## 核心纪律：只认 NOT_FOUND
- *
- *  - `NOT_FOUND`（容器缺 `VISION_ENCODER` / `AUDIO_ENCODER_HW` 子图）⇒ **触发模态降级**；
- *  - `INTERNAL`（GPU 委托 dlopen / CompiledModel）⇒ **不触发模态降级**，属既有 GPU
- *    二段降级辖区（见 [next] 的第 2 步）；
- *  - 超时 / SIGSEGV / 其它 ⇒ 不触发（SIGSEGV 不是 `Throwable`，进程直接被内核杀，本函数
- *    根本收不到）；
- *  - **text 级 NOT_FOUND 不触发**：若当前尝试既无 vision 又无 audio（模态已降无可降），
- *    NOT_FOUND 只能是 text decoder 缺失 ⇒ [dropOneModality] 返回 null ⇒ [next] 返回 null
- *    ⇒ 调用方直接抛（与「无 GPU 可退」同理）。
- */
-internal object EngineLoadDegrade {
-
-    /**
-     * 一次 `loadLocked` 的最大尝试次数（防循环）。
-     *
-     * 上界推导：原样 → 去 audio → 去 vision → GPU 回退，任意组合 ≤ 4。配合 `visited` 集合
-     * 去重（任何重复状态不再入队），循环必终止。
-     */
-    const val MAX_LOAD_ATTEMPTS = 4
-
-    /**
-     * 一次**会话期**模态降级重建的最大次数（Wave 45）：每模态最多降一次 ⇒ 上界 = 模态数（2）。
-     *
-     * 与 [MAX_LOAD_ATTEMPTS] 正交：本常量兜 `ensureConversationWithDegrade` 的重试循环
-     * （即便 [EngineAttempt.degraded] 幂等失效，也最多重建 2 次）；[MAX_LOAD_ATTEMPTS]
-     * 兜 `loadLocked` 内「重建 → 再失败 → 再重建」的驱动循环。
-     */
-    const val MAX_SESSION_DEGRADE_ATTEMPTS = 2
-
-    /**
-     * 确定性「缺子图」错误：litert-lm 请求 `AUDIO_ENCODER_HW` / `VISION_ENCODER` 子图，
-     * 但容器 section 表里没有 ⇒ 抛含 `NOT_FOUND` 的错误（Wave 43 真机根因实证）。
-     */
-    fun isDeterministicMissingSection(t: Throwable): Boolean =
-        t.message.orEmpty().contains("NOT_FOUND", ignoreCase = true)
-
-    /**
-     * 从用户请求（解析后的值）构造首个尝试。
-     *
-     * [degraded] 默认空集 ⇒ 既有调用（load 路径）逐字不变；会话期降级重建
-     * （[LiteRtLmEngine.loadLocked] 的 `seedDegrade`）用它**预置**「已去模态」。
-     */
-    fun initial(
-        backend: InferenceBackend,
-        visionBackend: InferenceBackend?,
-        audioBackend: InferenceBackend?,
-        degraded: Set<ModelModality> = emptySet(),
-    ): EngineAttempt = EngineAttempt(backend, visionBackend, audioBackend, degraded)
-
-    /**
-     * 从错误消息解析**缺失的模态**（Wave 45，会话创建路径）。
-     *
-     * 与 load 路径的 [dropOneModality] 盲降不同：真机会话创建失败消息含 section 名
-     * （`TF_LITE_AUDIO_ENCODER_HW` / `VISION_ENCODER`）⇒ 可精确解析（Wave 45 §1.3 纠偏）。
-     *
-     * @return 命中的模态；null = 非确定性缺 section / 消息不含可识别 section 名
-     *   （交由 [modalityToDegradeOnSessionError] 走盲降兜底）。
-     */
-    fun missingModality(error: Throwable): ModelModality? {
-        if (!isDeterministicMissingSection(error)) return null
-        val message = error.message.orEmpty()
-        return when {
-            message.contains("AUDIO_ENCODER", ignoreCase = true) -> ModelModality.AUDIO
-            message.contains("VISION_ENCODER", ignoreCase = true) -> ModelModality.VISION
-            else -> null
-        }
-    }
-
-    /**
-     * **会话创建**失败 → 是否需去模态重建；null = 不触发（落既有「工具重试 / legacy 回退」路径）。
-     *
-     * 三道闸（Wave 45 §4-4「text 级 NOT_FOUND 不触发」纪律）：
-     *  1. 非确定性缺 section（[isDeterministicMissingSection] 为 false）⇒ null；
-     *  2. `available = currentModalities - degradedModality` 为空（已降无可降 / text 级
-     *     NOT_FOUND）⇒ null；
-     *  3. 命名模态 `∉ available`（如已降过）⇒ null。
-     *
-     * 解析优先：命中 [missingModality] 时按 section 名精确去；解析不出时按 [dropOneModality]
-     * 的盲降优先级兜底（**先 AUDIO 后 VISION** —— 复用同一优先级，不另起一套）。
-     */
-    fun modalityToDegradeOnSessionError(
-        error: Throwable,
-        currentModalities: Set<ModelModality>,
-        degradedModality: Set<ModelModality>,
-    ): ModelModality? {
-        if (!isDeterministicMissingSection(error)) return null
-        val available = currentModalities - degradedModality
-        if (available.isEmpty()) return null
-        val named = missingModality(error)
-        if (named != null) return if (named in available) named else null
-        return if (ModelModality.AUDIO in available) ModelModality.AUDIO else ModelModality.VISION
-    }
-
-    /**
-     * 用户请求是否涉及 GPU（主后端或视觉后端为 GPU）—— GPU 文案门控与二段降级的共同判据，
-     * 等价于旧 `attempts.size > 1`（用户请求 CPU 且视觉非 GPU 时为 false，不得拼 GPU 文案）。
-     */
-    fun gpuInvolved(backend: InferenceBackend, visionBackend: InferenceBackend?): Boolean =
-        backend == InferenceBackend.GPU || visionBackend == InferenceBackend.GPU
-
-    /**
-     * 去掉一个模态（保持主后端）：**先 AUDIO 后 VISION**。
-     *
-     * 优先级理由：audio 最不常用、误判面最小（Wave 43 真机根因正是 audio）；vision 是多模态
-     * 主力，尽量后降。返回 null = 已无可降模态（两个模态后端都为 null）。
-     *
-     * 「每模态最多降一次」由结构保证：去模态即把对应后端置 null，null 不再入选；
-     * [EngineAttempt.degraded] 只用于累积记录（写入诊断出口）。
-     *
-     * ⚠️ **盲降（留档，Wave 44 审查 P3-5）**：[isDeterministicMissingSection] 只判 `NOT_FOUND`
-     * 字符串，**无法从 message 可靠解析缺的是哪个 section**（上游文案不保证含 section 名）⇒
-     * 只能按固定优先级盲降。若容器**只缺 VISION**（audio 正常），首个尝试会白白去掉 audio 再
-     * 重试，多付 1 次失败的引擎构建；有界（[MAX_LOAD_ATTEMPTS]=4 兜底），仅性能/日志噪声。
-     */
-    fun dropOneModality(current: EngineAttempt): EngineAttempt? {
-        if (current.audioBackend != null) {
-            return current.copy(
-                audioBackend = null,
-                degraded = current.degraded + ModelModality.AUDIO,
-            )
-        }
-        if (current.visionBackend != null) {
-            return current.copy(
-                visionBackend = null,
-                degraded = current.degraded + ModelModality.VISION,
-            )
-        }
-        return null
-    }
-
-    /**
-     * GPU→CPU 二段降级（既有语义，保持模态）：主后端落 CPU，**视觉后端跟随主后端**落 CPU
-     * （与旧 `add(CPU to if (wantsVision) CPU else null)` 逐字等价）；audio 后端与主后端正交，
-     * 保持不变。
-     */
-    fun toCpu(current: EngineAttempt): EngineAttempt = current.copy(
-        backend = InferenceBackend.CPU,
-        visionBackend = current.visionBackend?.let { InferenceBackend.CPU },
-    )
-
-    /**
-     * 根据失败原因决定下一个尝试；返回 null = 终态失败（调用方抛 [error]）。
-     *
-     * @param gpuInvolved 用户请求是否涉及 GPU（主后端或视觉后端为 GPU）。等价于旧
-     *   `attempts.size > 1`（既有 GPU 二段降级门控，用于 [next] 第 2 步与 GPU 文案门控）。
-     */
-    fun next(current: EngineAttempt, error: Throwable, gpuInvolved: Boolean): EngineAttempt? {
-        // 1) 确定性缺 section：保持后端，只去一个模态（先 AUDIO 后 VISION）。
-        if (isDeterministicMissingSection(error)) {
-            return dropOneModality(current)
-        }
-        // 2) 既有 GPU→CPU 二段降级：保持模态，只换后端。GPU 仍参与（主后端或视觉后端）且
-        //    尚未落 CPU 时才可退；toCpu 后 backend==CPU 且 vision∈{CPU,null} ⇒ 自动不可再退。
-        if (gpuInvolved &&
-            (current.backend == InferenceBackend.GPU || current.visionBackend == InferenceBackend.GPU)
-        ) {
-            return toCpu(current)
-        }
-        // 3) 终态失败。
-        return null
-    }
-}
-
-/** GPU 失败的特征串（Wave 33，大小写不敏感）：命中即可断定是 GPU 委托层的问题。 */
-private val GPU_FAILURE_FEATURES = listOf("dlopen", "OpenCL", "INTERNAL", "CompiledModel", "ClGl")
-
-/** GPU 两段尝试都失败时的可操作文案（Wave 33：裸异常用户读不懂）。 */
-private const val GPU_FAILURE_HINT =
-    " —— GPU 委托不可用（驱动/OpenCL 库缺失或机型不支持），已回退 CPU 仍失败；" +
-        "请改用 CPU 后端重试或反馈机型信息"
 
 /**
  * 中档回退（第三态）把系统提示词并进首条 USER 时，提示词块用的**开定界符**（复审 A4）。
@@ -406,22 +83,6 @@ private const val GPU_FAILURE_HINT =
 private const val SYSTEM_MERGE_OPEN = "[系统设定]"
 /** [SYSTEM_MERGE_OPEN] 的成对闭定界符（存在理由与取舍见其 KDoc）。 */
 private const val SYSTEM_MERGE_CLOSE = "[/系统设定]"
-
-/** 上游 `Failed to apply template` 文案**随 litertlm 版本漂移**（耦合 litertlm 0.17.1），集中在此。 */
-internal const val TEMPLATE_FAILURE_MARKER: String = "Failed to apply template"
-
-/**
- * 判据：本次生成失败是否为**模板渲染失败**（chat template 拼接 content 失败）。
- *
- * 真机文案（Wave 51 P1 取证）：`INTERNAL: Failed to apply template: invalid operation:
- * tried to use + operator on unsupported types string and sequence (in template:23)` ——
- * 模板 `:23` / `:27` 用 `'…' + message.content + '…'` 拼接 content，而 content 为 JSON
- * 数组时 minijinja 的 `+` 不支持（string + sequence）。大小写不敏感，防上游改大小写。
- *
- * 纯函数（文件级 internal，可被同模块 JVM 单测直接调）：不构造引擎、不触 native。
- */
-internal fun isTemplateRenderFailure(raw: String): Boolean =
-    raw.contains(TEMPLATE_FAILURE_MARKER, ignoreCase = true)
 
 /**
  * 折叠 [contents] 中**相邻连续的 [Content.Text]** 为单个 `Content.Text`（`"\n\n"` 连接）；
@@ -482,6 +143,36 @@ internal fun foldAdjacentText(contents: List<Content>): List<Content> {
     }
     if (sawText) out.add(Content.Text(buffer.toString()))
     return out
+}
+
+/**
+ * 折叠前 content 的**元素类型摘要**（Wave 53 V-2）：按 [Content] 具体子类计数，供
+ * 「多元素 content 下发」日志判断该批次能否被 [foldAdjacentText] 收口。
+ *
+ * 为什么需要它：单看「折叠前 N → 折叠后 M」无法区分两种形态 —— ① `M == 1`（纯 `Text`，
+ * 已折成单段）；② `M == N ≥ 2`（含 `ImageBytes`/`AudioBytes`/`ToolResponse` 等
+ * [foldAdjacentText] 的硬边界，未收口）。附上计数后二者在日志侧一眼可分。
+ *
+ * ⚠️ 只做**观测**、**不参与**折叠决策（边界语义见 [foldAdjacentText]）；且「折成 1 个 `Text`」
+ * **不等于**下发为 string（`Contents.toJson()` 恒数组，Wave 53 L1/L2 定案，详见调用点注释）。
+ *
+ * 纯函数（文件级 internal，可被同模块 JVM 单测直接调）：不构造引擎、不触 native。
+ */
+internal fun summarizeContentTypes(contents: List<Content>): String {
+    var text = 0
+    var image = 0
+    var audio = 0
+    var tool = 0
+    for (content in contents) {
+        // `Content` 是 sealed（子类恰 6 个）⇒ 本 when 穷尽，无需 else（编译器亦提示 else 冗余）。
+        when (content) {
+            is Content.Text -> text++
+            is Content.ImageBytes, is Content.ImageFile -> image++
+            is Content.AudioBytes, is Content.AudioFile -> audio++
+            is Content.ToolResponse -> tool++
+        }
+    }
+    return "Text=$text/Image=$image/Audio=$audio/ToolResponse=$tool"
 }
 
 /**
@@ -1614,6 +1305,9 @@ class LiteRtLmEngine(
         // 原生工具通道的**单次闩锁**：native 可能把同一批 tool_calls 分多帧下发，
         // 重复下发会让上层把一次调用执行两遍（工具是写操作时会真的做两遍）。
         var toolCallsEmitted = false
+        // H-A 定案观测（Wave 53）：模板渲染失败时记录「本次下发消息的 role」，供真机 A/B 判别
+        // 炸点属于 user/tool 哪条路径（离线 minijinja 复现与真机行为存在分歧，见 docs）。
+        var outboundRoleForDiag = "unknown"
         val callback = object : MessageCallback {
             override fun onMessage(message: Message) {
                 if (firstTokenNs == 0L) firstTokenNs = System.nanoTime()
@@ -1714,10 +1408,10 @@ class LiteRtLmEngine(
                     if (nativeToolChannelActive()) {
                         nativeToolsRejected = true
                         AgentLogStore.warn(
-                            "原生工具通道：生成期模板渲染失败（$raw），已证伪本通道；下一 run 回退文本协议",
+                            "原生工具通道：生成期模板渲染失败（$raw），已证伪本通道；下一 run 回退文本协议（下发 role=${outboundRoleForDiag}）",
                         )
                     } else {
-                        AgentLogStore.warn("生成期模板渲染失败（$raw），已置会话重建")
+                        AgentLogStore.warn("生成期模板渲染失败（$raw），已置会话重建（下发 role=${outboundRoleForDiag}）")
                     }
                 }
                 channel.close(EngineException("LiteRT-LM: 生成失败 (${raw})$hint", throwable))
@@ -1764,21 +1458,27 @@ class LiteRtLmEngine(
             // 为真，授权后面某一轮贸然发 `role=tool`（典型：legacy 会话 + 通道仍激活），
             // 届时 native 侧无前置 tool_call ⇒ chat template 判非法。
             awaitingNativeToolResponse = false
-            // 出口收口（Wave 51 P1）：把相邻 Text 折成单段，使 content 恰好 1 个元素 ⇒ 下发为
-            // string，规避 Qwen2.5 模板 `'…' + content + '…'` 对 JSON 数组的 `+` 报错。
+            // 出口收口（Wave 51 P1）：把相邻 Text 折成单段。⚠️ **订正（Wave 53 L1/L2）**：
+            // 折叠**不会**使 content「下发为 string」—— litertlm 0.17.1 的 `Contents.toJson()`
+            // 恒返回 JSON 数组（`Contents.of(String)` 亦然；真机 litertlm 代码实测
+            // `Contents.of("x").toJson()` = `[{"type":"text","text":"x"}]`），native 侧
+            // `NormalizeContent` 亦原样保留数组。故本折叠**不能**断言已规避 Qwen2.5 模板
+            // `'…' + content + '…'` 的 `+` 报错（H-A「native 只在恰 1 元素时收敛为 string」
+            // 已证伪）。折叠本身只做「相邻 Text 合并」这一件事。
             val preFoldContents = buildContents(fresh)
             val foldedContents = foldAdjacentText(preFoldContents)
-            // H-A 观测面（Wave 52 V-2）：只报「折叠前 ≥2 元素」的实例（单元素是绝大多数正常轮，
-            // 不落日志以免刷屏）。折叠后仍 ≥2 ⇒ 含 ImageBytes/AudioBytes 等非 Text 元素 ⇒ 仍可能
-            // 触发模板 `+` 错（P1 未覆盖场景）；折叠后 =1 ⇒ 已收口。供日志侧统计「多元素 content
-            // 下发」实例，补齐 H-A（native 是否只在恰 1 元素时收敛为 string）的观测面。纯观测，不改行为。
+            // H-A 观测面（Wave 52 V-2；Wave 53 补元素类型摘要）：只报「折叠前 ≥2 元素」的实例
+            // （单元素是绝大多数正常轮，不落日志以免刷屏）。附上元素类型计数，使「折叠后 =1（纯 Text）」
+            // 与「折叠后仍 ≥2（含 ImageBytes/AudioBytes 等非 Text 硬边界）」在日志侧一眼可分。纯观测，不改行为。
             if (preFoldContents.size >= 2) {
                 AgentLogStore.info(
-                    "多元素 content 下发：折叠前 ${preFoldContents.size} → 折叠后 ${foldedContents.size}"
+                    "多元素 content 下发：折叠前 ${preFoldContents.size} → 折叠后 ${foldedContents.size}；" +
+                        "元素类型 ${summarizeContentTypes(preFoldContents)}"
                 )
             }
             Message.user(Contents.of(foldedContents))
         }
+        outboundRoleForDiag = if (toolResponses.isNotEmpty()) "tool" else "user"
         // 重复惩罚（Wave 20，litertlm 0.17.1 起真实生效）：此前 SamplerConfig 无此参数、
         // SamplingParams.repetitionPenalty 只是「上层模拟或忽略」的死字段，0.17.1 把
         // RepetitionPenaltyConfig 开放为 sendMessage* 的逐消息参数 —— 这里是它在整条

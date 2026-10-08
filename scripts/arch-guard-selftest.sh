@@ -208,6 +208,81 @@ internal fun foldAdjacentText(contents: List<Content>): List<Content> = contents
 fun downlink(fresh: List<Content>): Message =
     Message.user(Contents.of(foldAdjacentText(fresh)))
 KT
+  # 第 26 条（Wave 53，测试基线双向同步）要求 build.yml 声明 `baseline=N` 且与全仓
+  # `@Test` 代码位实数**相等** ⇒ 骨架必须提供**一份含匹配 baseline 的 build.yml** +
+  # **恰好 N 条 @Test 载体**（否则干净树会被本条误红，正例失守）。
+  # N 取 3：够小（脚手架轻）且够大（能分别造「滞后」「删例」两个方向）。
+  # 载体放 core-model/src/test/ ⇒ 顺带被第 15 条（void / 反引号非法字符）扫描，
+  # 故必须是合法的 block-body void 方法（与真实测试同款）。
+  mkdir -p "$root/.github/workflows" "$root/core-model/src/test/java/com/x"
+  cat > "$root/.github/workflows/build.yml" <<'YML'
+name: Build
+# scaffold 用最小 build.yml：第 26 条守卫仅需其中一行 `baseline=N`（提取面）。
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          baseline=3
+YML
+  cat > "$root/core-model/src/test/java/com/x/BaselineTest.kt" <<'KT'
+package com.x
+
+import kotlin.test.Test
+import kotlin.test.assertTrue
+
+class BaselineTest {
+    @Test
+    fun caseOne() {
+        assertTrue(true)
+    }
+
+    @Test
+    fun caseTwo() {
+        assertTrue(true)
+    }
+
+    @Test
+    fun caseThree() {
+        assertTrue(true)
+    }
+}
+KT
+  # 第 27 条（Wave 53，A5 台账聚合句守卫）要求 README 与 docs 的聚合句与
+  # docs §11.0.1 逐条台账**结论列三态实数**一致 ⇒ 骨架必须提供**一份 §11.0.1 台账 +
+  # 两份口径一致的聚合句**（否则干净树会被本条误红）。台账取 3 条 = 1 ✅ / 1 ⚠️ / 1 ⛔；
+  # 两处聚合句均写「累计 3 条（其中 1 条 ✅回收 / 1 条 ⚠️部分 / 1 条 ⛔不适用）」。
+  mkdir -p "$root/docs"
+  cat > "$root/docs/10-device-acceptance.md" <<'MD'
+# 设备验收
+
+## 11. 跨波次积压
+
+### 11.0 取证前提
+
+Wave 33 起累计的验收项 **3 条**（逐条见 §11.0.1 台账）—— 其中 **1 条 ✅回收 / 1 条 ⚠️部分 / 1 条 ⛔不适用**；剩余项见台账末。
+
+### 11.0.1 已回收台账
+
+| # | 验收项 | 结论 | 证据锚点 |
+|---|---|---|---|
+| 1 | 项A | ✅ 回收 | cid a |
+| 2 | 项B | ⚠️ 部分 | cid b |
+| 3 | 项C | ⛔ 不适用 | cid c |
+
+### 11.1 回显与引擎
+
+（略）
+MD
+  cat > "$root/README.md" <<'MD'
+# 项目
+
+## 挂账台账（🟡 已实现未接线）
+
+（暂无）
+
+> - ⚠️ **真机验收台账：Wave 33 起累计 3 条（其中 1 条 `✅回收` / 1 条 `⚠️部分` / 1 条 `⛔不适用`）**（逐条台账见 `docs/10-device-acceptance.md` §11.0.1）。
+MD
 }
 
 run_guard() { ( cd "$1" && bash "$GUARD" 2>&1 ); }
@@ -422,6 +497,8 @@ cat > "$d/README.md" <<'MD'
 ## 挂账台账（🟡 已实现未接线）
 
 - 完整 i18n：strings.xml 只有 1 条串
+
+> - ⚠️ **真机验收台账：Wave 33 起累计 3 条（其中 1 条 `✅回收` / 1 条 `⚠️部分` / 1 条 `⛔不适用`）**（逐条台账见 `docs/10-device-acceptance.md` §11.0.1）。
 MD
 out="$(run_guard "$d")"; rc=$?
 assert_red "case9 pending 理由未挂账 (第 13 条③)" "$rc" "$out" \
@@ -455,6 +532,8 @@ cat > "$d/README.md" <<'MD'
 ## 挂账台账（🟡 已实现未接线）
 
 - 示例未接线理由：已挂账，待接线
+
+> - ⚠️ **真机验收台账：Wave 33 起累计 3 条（其中 1 条 `✅回收` / 1 条 `⚠️部分` / 1 条 `⛔不适用`）**（逐条台账见 `docs/10-device-acceptance.md` §11.0.1）。
 MD
 out="$(run_guard "$d")"; rc=$?
 if [ "$rc" -eq 0 ]; then
@@ -1278,6 +1357,96 @@ elif printf '%s\n' "$out" | grep -qF "LiteRtLmEngine.kt 不存在（被改名/�
   PASS=$((PASS + 1))
 else
   echo "FAIL [case32b] 输出里看不到「LiteRtLmEngine.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 33 / case 34：第 26 条（测试基线双向同步，Wave 53）两面：
+#   case33 —— 把 build.yml 的 baseline 改小（3 → 2）⇒ 实数(3) > 基线(2) ⇒「滞后」判红，
+#             断言红来自真命中（输出含「滞后 1 例」违规事实行），而非「守卫命令自身执行失败」。
+#   case34 —— 删掉一条 @Test 载体（3 → 2）⇒ 实数(2) < 基线(3) ⇒「删例」判红，
+#             断言输出含「少 1 例」违规事实行。
+#   两面都只在 $TMP 脚手架树内改（sed / 覆写），绝不碰生产文件。
+#   骨架默认 build.yml `baseline=3` 且恰有 3 条 @Test ⇒ 相等（绿），由 positive case 兜住。
+# ---------------------------------------------------------------------------
+d="$TMP/case33-baseline-lag"
+scaffold "$d"
+sed -i 's/baseline=3/baseline=2/' "$d/.github/workflows/build.yml"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case33 build.yml 基线滞后 (第 26 条)" "$rc" "$out" \
+  "测试基线双向同步（build.yml baseline == 全仓 @Test 代码位机械实数）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case33b] 第 26 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "滞后 1 例"; then
+  echo "PASS [case33b] 红来自真命中（输出含「滞后 1 例」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case33b] 输出里看不到「滞后 1 例」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case34-test-deleted"
+scaffold "$d"
+cat > "$d/core-model/src/test/java/com/x/BaselineTest.kt" <<'KT'
+package com.x
+
+import kotlin.test.Test
+import kotlin.test.assertTrue
+
+class BaselineTest {
+    @Test
+    fun caseOne() {
+        assertTrue(true)
+    }
+
+    @Test
+    fun caseTwo() {
+        assertTrue(true)
+    }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case34 删一条 @Test 未同步基线 (第 26 条)" "$rc" "$out" \
+  "测试基线双向同步（build.yml baseline == 全仓 @Test 代码位机械实数）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case34b] 第 26 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "少 1 例"; then
+  echo "PASS [case34b] 红来自真命中（输出含「少 1 例」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case34b] 输出里看不到「少 1 例」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 35：第 27 条（A5 台账聚合句守卫，Wave 53）红面 —— 把 README 聚合句的总数
+#         从「累计 3 条」改成「累计 4 条」⇒ 与 §11.0.1 逐条台账（3 条）不等 ⇒ 判红，
+#         断言红来自真命中（输出含「聚合句与 §11.0.1 逐条台账不一致」违规事实行）。
+#         骨架默认两份聚合句均与台账（1 ✅ / 1 ⚠️ / 1 ⛔）一致 ⇒ 绿（由 positive case 兜住）。
+#         只在 $TMP 脚手架树内 sed，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case35-ledger-aggregate-drift"
+scaffold "$d"
+sed -i 's/累计 3 条/累计 4 条/' "$d/README.md"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case35 README 聚合句与台账不一致 (第 27 条)" "$rc" "$out" \
+  "A5 台账聚合句与 §11.0.1 逐条三态一致（README / docs 聚合句 == 台账实数）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case35b] 第 27 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "聚合句与 §11.0.1 逐条台账不一致"; then
+  echo "PASS [case35b] 红来自真命中（输出含「聚合句与 §11.0.1 逐条台账不一致」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case35b] 输出里看不到「聚合句与 §11.0.1 逐条台账不一致」违规事实行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

@@ -461,7 +461,7 @@ jobs:
       # 依赖：scripts/fulltest.sh 的 --summary-only 子命令由 arch-guard 第 22 条钉住、
       #       其「恒 exit 0 / 不经 exit 2」的退出码契约由第 23 条钉住
       #       （缺失即守卫判红，防这个非阻断步骤静默失效）。
-      # 【Wave 51 增补 / W52 校准 · 低于基线 soft-check】汇总后把用例总数与基线 tests=619
+      # 【Wave 51 增补 / W53 校准 · 低于基线 soft-check】汇总后把用例总数与基线 tests=623
       #       比对，低于基线时往 job summary 打 ⚠️（**不改 job 结论**，保持非阻断设计）。
       #       动机：arch-guard 第 23 条防的是「脚本自身退出码」，防不住「某模块用例被删/
       #       未跑/结果目录缺失」这类**静默缩面**；本 soft-check 让人眼在 summary 里看到
@@ -469,6 +469,10 @@ jobs:
       #       链接，非本仓代码问题）。W52 校准：W51 新增 21 例（TextFoldTest 17 +
       #       ThermalGovernorTest 新增 4）后全量实测 tests=619 ⇒ 基线由 598 上调为 619
       #       （W50 tip 锚定 `@Test` 实测 598，本波锚定实测 619，差 21 与之吻合）。
+      #       W53 校准：全仓 `^[[:space:]]*@Test` 代码位实测 **623**（W52 末 619 滞后于
+      #       当时实数 621，属复审15「三连犯第三击」；W53 开发席 B1 判据接线再 +2 ⇒ 623）
+      #       ⇒ 基线 619 上调为 **623**；并由 arch-guard 第 26 条**双向同步**
+      #       （baseline 与代码位实数不等即判红，堵第四击）。
       # -------------------------------------------------------------------
       - name: Summarize unit test counts (non-blocking)
         if: always()
@@ -489,8 +493,8 @@ jobs:
             echo '```text'
             echo "$out"
             echo '```'
-            # 低于基线 soft-check（非阻断）：基线 tests=619（W52 校准，W51 全量实测）。低于即打 ⚠️，绝不让 job 变红。
-            baseline=619
+            # 低于基线 soft-check（非阻断）：基线 tests=623（W53 校准：全仓 @Test 代码位实测 623，由 619 上调）。低于即打 ⚠️，绝不让 job 变红。
+            baseline=623
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

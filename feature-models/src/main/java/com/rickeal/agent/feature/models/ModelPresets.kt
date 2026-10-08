@@ -214,7 +214,7 @@ object ModelPresets {
             note = "更大的模型：回答更好，需要 8GB 以上内存的手机（GPU 特化变体，未真机验证）",
             sizeBytes = 2969059328,
             recommended = false,
-            backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）——⚠️ 同源变体 E2B GPU 实测退化，未验证前谨慎",
+            backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）——⚠️ 同源变体 E2B GPU 实测退化，未验证前谨慎；⚠️ 视觉能力系 gemma-4 家族外推（同族 E2B-it 已逐容器取证带视觉编码器，E4B 未单独取证）",
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -362,7 +362,7 @@ object ModelPresets {
             note = "视觉能力天花板：8B 级多模态，仅建议 8GB 以上内存机型",
             sizeBytes = 4214021104,
             recommended = false,
-            backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）",
+            backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU；⚠️ 模板已离线取证数组安全（Wave 53 L2：容器模板对多元素 content 走 is-string 分支并循环吐 <image_soft_token>，非 Qwen2.5 的「+」拼接形态），端到端图片输入仍待真机验证",
             mirrors = domesticMirrors("MiniCPM-V-4", "MiniCPM-V-4-int8.litertlm"),
         ),
     )

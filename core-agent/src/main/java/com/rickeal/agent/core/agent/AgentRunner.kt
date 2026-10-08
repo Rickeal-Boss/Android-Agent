@@ -295,6 +295,27 @@ internal fun effectiveElapsedMillis(elapsedMillis: Long, pausedNanos: Long): Lon
     (elapsedMillis - pausedNanos / 1_000_000L).coerceAtLeast(0L)
 
 /**
+ * 墙钟**判据**的剩余量（毫秒）= (硬截止 + 审批挂起累计 − now) / 1e6（Wave 52 B1 接线，Wave 53 外提）。
+ *
+ * 与 [effectiveElapsedMillis] 的**分工**（勿混）：[effectiveElapsedMillis] 是 evidence / 日志文案
+ * 报的「已运行多久」（墙钟 − 挂起）；本函数是**判据侧**的「距硬截止还剩多少」。二者是同一停表
+ * 算术的两种等价表达（`remaining ≈ 硬预算 − 有效时长`），但代码上是**两条独立表达式** ——
+ * 这正是 Wave 53 要补的接线观测面：既有 [WallClockEvidenceTest] 只钉住 evidence 用的那一条，
+ * 判据侧的 `+ pausedNanos` 一旦被误删，`remaining` 会退回纯墙钟口径（长授权后下一轮**立即** HARD
+ * 熔断的 W51 现象复发），而 evidence 那条测试**照样绿**。故把判据表达式外提为纯函数直接钉住。
+ *
+ * @param hardDeadlineNanos 硬截止绝对时刻（[RunState.hardDeadlineNanos]，nanoTime 刻度）。
+ * @param pausedNanos 审批挂起累计（[RunState.pausedNanos]）；加回硬截止 = 把审批等待从预算里剔除。
+ * @param nowNanos 当前时刻（`System.nanoTime()`）；显式传入以便 JVM 单测用可控时间源。
+ * @return 距硬截止的剩余毫秒（可能为负 ⇒ 已越界，上游按 `<= 0` 判 HARD 熔断）。
+ */
+internal fun wallClockRemainingMillis(
+    hardDeadlineNanos: Long,
+    pausedNanos: Long,
+    nowNanos: Long,
+): Long = (hardDeadlineNanos + pausedNanos - nowNanos) / 1_000_000L
+
+/**
  * 跨轮重复签名的处置结论（Wave 40 B1）：由签名在两个账本（seen / reminded）里的
  * 归属推导，**纯函数**、零协程依赖，JVM 直测（见 RepeatSignatureVerdictTest）。
  */
@@ -1090,8 +1111,13 @@ class AgentRunner(
         // Wave 52 B1：审批挂起停表 —— remaining 把「审批等待累计」（state.pausedNanos）加回
         // 硬截止，即判据衡量的是**有效执行时长**（墙钟时长扣掉审批挂起）而非墙钟时长。
         // 取舍见 [RunState.pausedNanos]：只排除审批挂起，不排除模型生成 / 工具执行。
-        val remaining =
-            (state.hardDeadlineNanos + state.pausedNanos - System.nanoTime()) / 1_000_000L
+        // 表达式外提为文件级纯函数 [wallClockRemainingMillis]（Wave 53）—— 让「判据侧含
+        // pausedNanos」这层接线可被 JVM 单测直接钉住（evidence 那条测不到判据表达式）。
+        val remaining = wallClockRemainingMillis(
+            hardDeadlineNanos = state.hardDeadlineNanos,
+            pausedNanos = state.pausedNanos,
+            nowNanos = System.nanoTime(),
+        )
         // 有效执行时长（扣审批挂起）—— evidence 的「已运行」与日志文案都报这个数，与判据同源。
         val effectiveElapsed = state.effectiveElapsedMillis()
         // 子 run（硬截止继承自父 run）：evidence 改报「自父 run 锚点起的总运行」——
@@ -1899,6 +1925,14 @@ class AgentRunner(
             // 父 run 停表后，子 run 若仍拿未延长的绝对墙，就会「父 run 停过表、子 run
             // 却按原墙判」而提前熔断。父 run 的 pausedNanos 在子 run 构造时是已发生审批
             // 的累计值；子 run 自己的审批挂起由子 run 自己的 pausedNanos 继续累加。
+            //
+            // ⚠️ 可达性申报（Wave 53）：上句「子 run 自己的审批挂起由子 run 自己的
+            // pausedNanos 继续累加」当前**不可达** —— 当前子 run 无审批通道
+            //（`AskSubagentTool` 构造子 run 的 `AgentRequest` 时未传 `approvalHandler`），
+            // 子 run 的审批闸门恒走 `handler == null` 的 fail-closed 分支（见本文件
+            // `request.approvalHandler` 判空处），子 run 自己的 `pausedNanos` 恒为 0，
+            // 此分支暂不可达。保留该表述是为**语义正确**（将来若给子 run 接审批通道，
+            // 这行即生效），**不是**断言当前存在该路径。
             deadlineNanos = state.hardDeadlineNanos + state.pausedNanos,
         )
         val result = withContext(SubagentRunContext(parentContext)) {

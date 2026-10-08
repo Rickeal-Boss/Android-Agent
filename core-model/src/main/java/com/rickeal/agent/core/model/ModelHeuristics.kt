@@ -118,6 +118,9 @@ object ModelHeuristics {
         // - image / audio：litert-community 模型卡写明「the Vision and Audio models are loaded
         //   on demand / as needed」；Google Gemma 4 模型卡写明「handling text and image input
         //   (with audio supported on E2B, E4B, and 12B models)」。
+        // - ⚠️ Wave 53 容器取证（L1/L2）：image=true 已对 **gemma-4-E2B-it** 容器逐容器证实
+        //   （确带 VISION_ENCODER 子图，非仅凭模型卡）；**E4B 容器未取得** ⇒ 该位对 E4B 属
+        //   **家族外推**（模型卡依据 + 同族 E2B 实证），非逐容器实测 —— 勿据本行断言 E4B 已验。
         // - toolCalling：Google Gemma 4 模型卡「Function Calling – Native support for structured
         //   tool use, enabling agentic workflows」。
         // - thinking：未在 LiteRT-LM 侧查到「思考通道」的可靠依据，按「查不到就不设」保守关闭。

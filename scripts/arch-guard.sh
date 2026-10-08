@@ -543,7 +543,9 @@ check "LiteRtLmEngine.kt fold 收口不变式（Message.user 下发点数 == fol
 
 # 25) LiteRtLmEngine.kt 总行数上限（Wave 52）：与 #18（ChatViewModel ≤1600）/
 #     #20（ChatRunCoordinator ≤1300）共同构成「god-file 行数表」。LiteRtLmEngine.kt
-#     是已知 god-file（Wave 52 实测 2340 行），此前**无文件级守卫** ⇒ 加本条。
+#     是已知 god-file（Wave 52 注释写「实测 2340 行」系**过时**；Wave 53 复核 `wc -l`
+#     实测 **2354** 行 —— 同一文件、同口径 `wc -l`，原数字滞后 14 行，属「描述不成立」），
+#     此前**无文件级守卫** ⇒ 加本条。
 #     阈值取 2400（≈+2.5% 余量、≈60 行）：① W52 的 KDoc 订正净增 ≤15 行 ⇒ 2400 不阻塞
 #     本波；② 余量 ≤60 行 ⇒ W53 再涨即触顶，强制启动 god-file 拆分评审。
 #     ⚠️ **触顶不是改数字，是启动拆分评审**（与 #18/#20、#14 lint baseline 同款
@@ -554,6 +556,92 @@ check "LiteRtLmEngine.kt 总行数 ≤ 2400（core-engine god-file 行数表，�
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？守卫面已失效）"; exit 1; fi
            n=$(wc -l < "$f")
            [ "$n" -le 2400 ] || echo "LiteRtLmEngine.kt 当前 $n 行，超 2400 行上限（触顶不是改数字，是启动 god-file 拆分评审）"'
+
+# 26) 测试基线双向同步（Wave 53）：`build.yml` 声明的用例数基线必须与全仓 `@Test`
+#     代码位机械实数**双向一致**。任一方向漂移都会让 `build.yml` 的「低于基线
+#     soft-check」（unit-tests job 的非阻断汇总步骤）失真：
+#       · 实数 > 基线 = 有人加测试忘同步（**滞后**）⇒ soft-check 阈值偏低、永不告警；
+#       · 实数 < 基线 = 有人删测试未同步（**删例**）⇒ soft-check 天天误报、告警钝化。
+#     W52 已发生一次（`build.yml` 基线 619 滞后于实测 621 —— 复审15「三连犯第三击」）。
+#
+#     ⚠️ **口径声明（必须显式）**：本守卫的**规范口径 = 全仓 `^[[:space:]]*@Test`
+#     代码位计数**（`grep -rnE "^[[:space:]]*@Test" --include=*.kt` 再排除**行首**
+#     注释 / KDoc 行，命令见下）。而 `build.yml` 的 `baseline=N` 在 CI 里是 **Gradle
+#     汇总的 XML `tests=` 计数**（`fulltest.sh --summary-only` 累加 `TEST-*.xml`）。
+#     两口径**当前巧合相等**（Wave 53 实测均 = 623）。一旦分叉即会误报，最典型：
+#       · 引入 `@Ignore` / `@Disabled` —— 代码位仍在、XML 不计（实数 > XML）；
+#       · 参数化 / 动态测试 —— XML 计 N、代码位只 1（XML > 实数）。
+#     ⇒ 届时须把 build.yml 的 soft-check 也改为同口径（数代码位），或在本守卫内
+#     扣除 `@Ignore` 用例 —— **不要默默把 baseline 调成 XML 数**（那会让本守卫恒红）。
+#
+#     ⚠️ **扫描面边界声明**：扫描面 = **单根 `.` 全仓** `--include="*.kt"`
+#     （排除 .git/build/.gradle/.kotlin，见顶部 EXCL）。**只数 .kt 里的 `@Test`
+#     代码位** —— 不覆盖：非 .kt 载体（如 Java 测试）、被 `@Ignore` 注解的用例
+#     （代码位仍计入）、以及 CI XML 口径与代码位的天然差（见上）。新增模块只要落
+#     `.kt` 即被覆盖，无需改本守卫；「口径分叉」需人工介入（见上）。
+#
+#     判红契约（`check()` = stdout 非空即违规）：断言「**相等**」的守卫必须**自己
+#     echo** 违规行（见脚本顶部纪律「必须存在的断言必须自己 echo」）。相等时零输出 ⇒ OK。
+#     build.yml 缺失 / 提不出 baseline ⇒ `exit 1` + `::error::`（守卫面失效必须判红）。
+check "测试基线双向同步（build.yml baseline == 全仓 @Test 代码位机械实数）" \
+  bash -c 'B=.github/workflows/build.yml
+           if [ ! -f "$B" ]; then echo "::error::$B 不存在（测试基线自动同步守卫面失效）"; exit 1; fi
+           decl=$(grep -oE "baseline=[0-9]+" "$B" | head -n 1 | cut -d= -f2)
+           if [ -z "$decl" ]; then echo "::error::$B 未声明 baseline=N（测试基线自动同步守卫面失效）"; exit 1; fi
+           real=$(grep -rnE "^[[:space:]]*@Test" --include="*.kt" '"${EXCL[*]}"' . | grep -vE "^[^:]+:[0-9]+:[[:space:]]*[/*]" | wc -l)
+           if [ "$real" -gt "$decl" ]; then echo "全仓 @Test 代码位实数($real) > build.yml baseline($decl)：新增测试未同步基线（滞后 $((real - decl)) 例）⇒ soft-check 阈值偏低永不告警。请把 $B 的 baseline 改为 $real"; fi
+           if [ "$real" -lt "$decl" ]; then echo "全仓 @Test 代码位实数($real) < build.yml baseline($decl)：删例未同步基线（少 $((decl - real)) 例）⇒ soft-check 天天误报。若确为删例，请把 $B 的 baseline 改为 $real"; fi'
+
+# 27) A5 台账聚合句守卫（Wave 53）：README 与 `docs/10-device-acceptance.md` 的
+#     「真机验收台账」聚合句，必须与 §11.0.1 逐条台账的**结论列三态实数**一致。
+#     动机：W52 已发生一次「聚合句与逐条台账各说各话」（聚合句写「31 条 / 27 ✅ / 4」，
+#     逐条实数却是「35 = 28 ✅ / 5 ⚠️ / 2 ⛔」，**三项全错**）。纯文档改动不触发 CI
+#     （`paths-ignore` 忽略 `*.md`）⇒ 这类漂移**只能靠守卫在 push 代码时顺带拦下**
+#     （本守卫在 assemble-debug job 内，push 非 docs-only 即跑）。
+#
+#     ⚠️ **口径声明**：三态只认**结论列**（`awk -F'|'` 的第 4 字段），**不数整行** ——
+#     证据列里合法地含 ✅/⛔（例：第 23 行证据列同现「✅ 已覆盖…⛔ 未覆盖」）⇒
+#     整行计数会**误计**。归类：结论列含 ✅ = 回收 / ⚠ = 部分 / ⛔ = 不适用
+#     （含无法验证 / vacuous）。**非精确表述（「≈N 条」等）无法解析 ⇒ 请先统一为精确数字**。
+#
+#     ⚠️ **扫描面边界声明**：台账范围 = `### 11.0.1` 节内 `| <数字> | … |` 形态的行；
+#     聚合句范围 = 各文件含锚点短语的行（README「真机验收台账」/ docs「起累计的验收项」）。
+#     **不覆盖**：§11 其它小节里的同类计数句、以及 W50 段等**子区间聚合**（如
+#     README:324 的 W50 段计数 —— 该处按逐条台账手工订正，不由本守卫机械核验）。
+#     锚点行缺失 / §11.0.1 解析不出任何行 ⇒ 判红（守卫面失效）。
+#
+#     判红契约：断言「相等」的守卫必须**自己 echo** 违规行（见脚本顶部纪律）。
+check "A5 台账聚合句与 §11.0.1 逐条三态一致（README / docs 聚合句 == 台账实数）" \
+  bash -c 'D=docs/10-device-acceptance.md; R=README.md
+           for f in "$D" "$R"; do [ -f "$f" ] || { echo "::error::$f 不存在（A5 台账聚合守卫面失效）"; exit 1; }; done
+           read -r n ok warn no < <(awk -F"|" "
+             /^### 11\.0\.1/ { on=1; next }
+             on && /^### / { on=0 }
+             on && \$2 ~ /^[[:space:]]*[0-9]+[[:space:]]*\$/ {
+               n++; c=\$4
+               if (c ~ /✅/) ok++
+               if (c ~ /⚠/) warn++
+               if (c ~ /⛔/) no++
+             }
+             END { print n+0, ok+0, warn+0, no+0 }" "$D")
+           if [ "${n:-0}" -eq 0 ]; then echo "::error::$D §11.0.1 未解析到台账行（格式漂移 / 改成了非精确表述？A5 台账聚合守卫面失效）"; exit 1; fi
+           bad=0
+           for spec in "$R|真机验收台账" "$D|起累计的验收项"; do
+             f=${spec%%|*}; anc=${spec#*|}
+             line=$(grep -F "$anc" "$f" | grep -F "✅" | grep -F "⚠" | grep -F "⛔" | head -n 1)
+             if [ -z "$line" ]; then echo "::error::$f 未找到含「$anc」的三态聚合句（守卫面失效）"; bad=1; continue; fi
+             ft=$(printf "%s" "$line" | grep -oE "累计[^0-9]*[0-9]+" | grep -oE "[0-9]+")
+             fok=$(printf "%s" "$line" | grep -oE "[0-9]+[[:space:]]*条[^0-9]*✅" | grep -oE "^[0-9]+")
+             fwarn=$(printf "%s" "$line" | grep -oE "[0-9]+[[:space:]]*条[^0-9]*⚠" | grep -oE "^[0-9]+")
+             fno=$(printf "%s" "$line" | grep -oE "[0-9]+[[:space:]]*条[^0-9]*⛔" | grep -oE "^[0-9]+")
+             if [ "${ft:-x}" != "$n" ] || [ "${fok:-x}" != "$ok" ] || [ "${fwarn:-x}" != "$warn" ] || [ "${fno:-x}" != "$no" ]; then
+               echo "$f 聚合句与 §11.0.1 逐条台账不一致："
+               echo "  台账实数：总 $n / ✅ $ok / ⚠️ $warn / ⛔ $no"
+               echo "  $f 聚合句：总 ${ft:-?} / ✅ ${fok:-?} / ⚠️ ${fwarn:-?} / ⛔ ${fno:-?}"
+               bad=1
+             fi
+           done
+           [ "$bad" -eq 0 ] || echo "修法：把聚合句改成与台账实数一致（改一个数字必须全仓 grep 该数字的所有形态再改）"'
 
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
