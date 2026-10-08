@@ -17,7 +17,12 @@ import kotlin.test.assertTrue
  *  ② **子 run 报「run 总运行 N 秒（本子 run M 秒）」**，且 N 与判据同源
  *     （= 硬预算 − 剩余），故「总运行 300 秒 ⇒ 达到 300 秒硬预算」自洽。
  *
- * 纯 JVM：`wallClock*Evidence` 是顶层纯函数（零 Android / 零引擎依赖）。
+ * Wave 52 B1 追加：本类同时锁定**停表算术** `effectiveElapsedMillis(elapsed, paused)`
+ * （文件级纯函数）。只测 evidence 文案模板（入参为字面量）覆盖不到「墙钟 − 审批挂起」
+ * 这一步 —— B1 的新口径会变成 vacuous 未覆盖。故在此直接钉边界：paused=0 / 正常扣减 / 钳到 0。
+ *
+ * 纯 JVM：`wallClock*Evidence` 与 `effectiveElapsedMillis` 都是顶层纯函数
+ * （零 Android / 零引擎依赖）。
  */
 class WallClockEvidenceTest {
 
@@ -65,5 +70,25 @@ class WallClockEvidenceTest {
         val text = wallClockHardEvidence(inheritedDeadline = true, ownElapsedMillis = 2_000L, totalElapsedMillis)
         assertTrue(text.startsWith("run 总运行 300 秒"), "总运行必须与判据同源：$text")
         assertTrue(text.endsWith("达到 300 秒硬预算"), "两个数字必须自洽：$text")
+    }
+
+    @Test
+    fun `有效执行时长 = 墙钟 − 审批挂起（B1 停表算术）`() {
+        // paused = 0 ⇒ 与墙钟同值（无审批的 run 逐字等价，零回归）。
+        assertEquals(180_000L, effectiveElapsedMillis(elapsedMillis = 180_000L, pausedNanos = 0L))
+        // 正常扣减：挂起 60 秒 ⇒ 有效 = 墙钟 − 60 秒。
+        assertEquals(
+            240_000L,
+            effectiveElapsedMillis(elapsedMillis = 300_000L, pausedNanos = 60_000L * 1_000_000L),
+        )
+        // 亚毫秒挂起被整数截断（≤1ms 误差，不向上取整）。
+        assertEquals(1_000L, effectiveElapsedMillis(elapsedMillis = 1_000L, pausedNanos = 500_000L))
+    }
+
+    @Test
+    fun `有效执行时长钳到 0 —— 挂起大于墙钟不得为负`() {
+        // 越界输入（挂起 > 墙钟）钳到 0：负耗时会同时污染「已运行 -N 秒」文案与判据。
+        assertEquals(0L, effectiveElapsedMillis(elapsedMillis = 1_000L, pausedNanos = 5_000L * 1_000_000L))
+        assertEquals(0L, effectiveElapsedMillis(elapsedMillis = 0L, pausedNanos = 1L))
     }
 }

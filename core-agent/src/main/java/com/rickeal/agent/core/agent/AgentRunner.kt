@@ -233,10 +233,15 @@ private const val WALL_CLOCK_HARD_MILLIS = 300_000L
  * 「总运行 300 秒 ⇒ 达到 300 秒硬预算」自洽；M 保留子 run 自己的表，让用户看得出
  * 「这 300 秒是被上层烧掉的，不是这一小段」。父 run / 独立 run 文案**逐字不变**。
  *
+ * ⚠️ Wave 52 B1：N 与 M 均为**有效执行时长**（扣审批挂起），非纯墙钟 —— 停表后
+ * 「硬预算 − 剩余」与「本 run 自己的表」都已在各自口径上扣掉审批等待（见 [RunState.pausedNanos]）。
+ *
  * @param inherited 本 run 的硬截止是否继承自父 run（即本 run 是子 run）。
- * @param ownElapsedMillis 本 run 自己的墙钟（RunState.elapsedMillis）。
- * @param totalElapsedMillis 自**父 run 锚点**起的总墙钟（继承场景 = 硬预算 − 剩余；
- *   非继承场景与 [ownElapsedMillis] 同值，取哪个都一样）。
+ * @param ownElapsedMillis 本 run 自己的**有效执行时长**（`RunState.effectiveElapsedMillis`
+ *   = 墙钟时长扣掉审批挂起，Wave 52 B1）。停表只排除审批挂起，不排除模型生成 / 工具执行。
+ * @param totalElapsedMillis 自**父 run 锚点**起的**有效**总时长（扣审批挂起）—— 继承场景
+ *   = 硬预算 − 剩余（B1 后「剩余」已含 pausedNanos，故得的是有效时长而非纯墙钟）；
+ *   非继承场景与 [ownElapsedMillis] 同值，取哪个都一样。
  */
 private fun wallClockElapsedPhrase(
     inherited: Boolean,
@@ -272,6 +277,22 @@ internal fun wallClockHardEvidence(
     totalElapsedMillis: Long,
 ): String = wallClockElapsedPhrase(inheritedDeadline, ownElapsedMillis, totalElapsedMillis) +
     "，达到 ${WALL_CLOCK_HARD_MILLIS / 1000} 秒硬预算"
+
+/**
+ * 有效执行时长（毫秒）= run 相对墙钟时长 − 审批挂起时长（Wave 52 B1 停表算术）。
+ *
+ * 抽成**文件级 `internal` 纯函数**（同 [wallClockSoftEvidence] 的口径）：停表算术必须能被
+ * JVM 单测直接钉住 —— [WallClockEvidenceTest] 只断言 evidence 的**文案模板**（入参为字面量），
+ * 覆盖不到「elapsed 与 paused 怎么合成」这一步；把算术外提才补得上这个观测面。
+ *
+ * @param elapsedMillis run 相对墙钟时长（[RunState.elapsedMillis]）。
+ * @param pausedNanos 审批挂起累计（[RunState.pausedNanos]，纳秒）。
+ * @return 有效执行时长（毫秒），**钳到 ≥ 0**。防御性钳制：审批挂起理论上 ≤ 墙钟（挂起发生在
+ *   run 内），但纯函数不依赖该不变量 —— 越界输入一律返回 0 而非负值（负耗时会让上游
+ *   「已运行 -N 秒」的文案与判据同时失真）。
+ */
+internal fun effectiveElapsedMillis(elapsedMillis: Long, pausedNanos: Long): Long =
+    (elapsedMillis - pausedNanos / 1_000_000L).coerceAtLeast(0L)
 
 /**
  * 跨轮重复签名的处置结论（Wave 40 B1）：由签名在两个账本（seen / reminded）里的
@@ -693,6 +714,9 @@ class AgentRunner(
             // 引擎侧证伪（nativeToolsRejected 置位）后本 run 的剩余轮次都会持续不一致，
             // 逐轮报同一条会把诊断日志刷满、把真正需要看的信息淹掉。
             var nativeToolsMismatchReported = false
+            // 层3 正向留痕闸门（Wave 52 B2）：每 run 也**只报一次** useNativeTools / 引擎
+            // 通道的**正向**事实，与上面的「漂移才 warn」互补（见下方每轮校验处）。
+            var nativeToolsLogged = false
 
             while (state.round < policy.maxRounds) {
                 emit(AgentEvent.RoundStarted(state.round, policy.maxRounds))
@@ -806,6 +830,20 @@ class AgentRunner(
                 val intraStreamLoop = generation.intraStreamLoop
 
                 // ── 原生工具通道判据的**每轮校验**（Wave 34 复审 P0-2）──────────────
+                // 层3 正向留痕（Wave 52 B2）：在「漂移才 warn」之外，**每 run 落一条 info**，
+                // 显式报本 run 的 useNativeTools 与引擎会话诊断的 nativeToolChannel。
+                // 动机：W51 只有漂移 warn，而 sessionDiagnostics 未产出时 [nativeToolsDrifted]
+                // 恒 false ⇒ 无正向日志 ⇒ 离线永远判不了「引擎侧原生工具通道是否真失效」，
+                // 层3 判据恒 ⛔。诊断未产出时 nativeToolChannel 报 **null**（`?.` 保持 null，
+                // **不得**默认成 false 冒充「与 useNativeTools 一致」）。放在本轮生成之后，
+                // 此刻会话多已建成、快照已发布，读到的才是真实结论。
+                if (!nativeToolsLogged) {
+                    nativeToolsLogged = true
+                    AgentLogStore.info(
+                        "原生工具通道判据：useNativeTools=$useNativeTools，" +
+                            "引擎 nativeToolChannel=${engine.sessionDiagnostics.value?.nativeToolChannel}"
+                    )
+                }
                 // 只落一条 warn（判据与「为什么不做同 run 内恢复」见 [nativeToolsDrifted]
                 // 与 [buildSystemSections] 的排查指引，不在此处重复）。
                 if (!nativeToolsMismatchReported && nativeToolsDrifted(engine, useNativeTools)) {
@@ -1048,8 +1086,14 @@ class AgentRunner(
         // WALL_CLOCK_HARD_MILLIS」等价（两者均为毫秒取整，与原判据边界差 ≤1s）。
         // 用剩余量表达是为了让子 run 继承父 run 的 **绝对**硬截止后同一判据直接生效
         // （不再各起算一份预算，修上界放大）。
-        val remaining = (state.hardDeadlineNanos - System.nanoTime()) / 1_000_000L
-        val wallClockElapsed = state.elapsedMillis()
+        //
+        // Wave 52 B1：审批挂起停表 —— remaining 把「审批等待累计」（state.pausedNanos）加回
+        // 硬截止，即判据衡量的是**有效执行时长**（墙钟时长扣掉审批挂起）而非墙钟时长。
+        // 取舍见 [RunState.pausedNanos]：只排除审批挂起，不排除模型生成 / 工具执行。
+        val remaining =
+            (state.hardDeadlineNanos + state.pausedNanos - System.nanoTime()) / 1_000_000L
+        // 有效执行时长（扣审批挂起）—— evidence 的「已运行」与日志文案都报这个数，与判据同源。
+        val effectiveElapsed = state.effectiveElapsedMillis()
         // 子 run（硬截止继承自父 run）：evidence 改报「自父 run 锚点起的总运行」——
         // 由继承来的绝对墙反推（硬预算 − 剩余），与判据同源，故「总运行 300 秒 ⇒
         // 达到 300 秒硬预算」自洽。判据侧的口径切换理由见 [wallClockElapsedPhrase]，
@@ -1057,8 +1101,12 @@ class AgentRunner(
         val totalElapsed = if (state.inheritedDeadline) {
             WALL_CLOCK_HARD_MILLIS - remaining
         } else {
-            wallClockElapsed
+            effectiveElapsed
         }
+        // ⚠️ 口径分工（Wave 52 P2-3，勿混）：`atElapsedMillis` 是断路器时间线的**墙钟**
+        // 标记位（[BreakerKind.Trip] 的口径，未渲染进诊断卡），一律取 `state.elapsedMillis()`
+        // 保持跨 kind 一致；而 evidence / 日志文案（用户可见）报的是**有效执行时长**。
+        // 二者刻意不同源：墙钟是「这一轮在时间轴上落在哪」，有效时长是「机器实际干了多久」。
         // 用户可见文案的口径由上面两个函数固定（「逐字不动」的对象是**父 run 那一档**，
         // 用户可见的证据是**事实陈述**，子 run 档报 run 相对时长会自相矛盾 —— Wave 35 B2）。
         if (state.breaker.trips.none { it.kind == BreakerKind.WallClockBudget } &&
@@ -1069,11 +1117,11 @@ class AgentRunner(
             state.breaker.trip(
                 BreakerKind.WallClockBudget,
                 state.round,
-                atElapsedMillis = wallClockElapsed,
-                evidence = wallClockSoftEvidence(state.inheritedDeadline, wallClockElapsed, totalElapsed),
+                atElapsedMillis = state.elapsedMillis(),
+                evidence = wallClockSoftEvidence(state.inheritedDeadline, effectiveElapsed, totalElapsed),
             )
             AgentLogStore.warn(
-                "墙钟软预算：${wallClockElapsedPhrase(state.inheritedDeadline, wallClockElapsed, totalElapsed)}" +
+                "墙钟软预算：${wallClockElapsedPhrase(state.inheritedDeadline, effectiveElapsed, totalElapsed)}" +
                     "（HARD 上限 ${WALL_CLOCK_HARD_MILLIS / 1000}s）"
             )
         }
@@ -1081,11 +1129,11 @@ class AgentRunner(
             state.breaker.trip(
                 BreakerKind.WallClockBudget,
                 state.round,
-                atElapsedMillis = wallClockElapsed,
-                evidence = wallClockHardEvidence(state.inheritedDeadline, wallClockElapsed, totalElapsed),
+                atElapsedMillis = state.elapsedMillis(),
+                evidence = wallClockHardEvidence(state.inheritedDeadline, effectiveElapsed, totalElapsed),
             )
             AgentLogStore.error(
-                "墙钟硬预算：${wallClockElapsedPhrase(state.inheritedDeadline, wallClockElapsed, totalElapsed)}，熔断收尾"
+                "墙钟硬预算：${wallClockElapsedPhrase(state.inheritedDeadline, effectiveElapsed, totalElapsed)}，熔断收尾"
             )
             emitBreakerFailed(state, journal, registeredToolNames)
             return RoundHeadStep.Terminal
@@ -1287,8 +1335,36 @@ class AgentRunner(
          */
         val inheritedDeadline: Boolean = hardDeadlineOverrideNanos != null
 
-        /** run 相对时长（毫秒）。墙钟预算检查与诊断卡耗时共用这一个换算口径。 */
+        /**
+         * run 相对**墙钟**时长（毫秒，含审批挂起）。
+         *
+         * ⚠️ Wave 52 B1 后**墙钟预算判据不再走本函数** —— `gateRoundHead` 的 remaining 与
+         * evidence / 日志文案、以及诊断卡「耗时」都改走 [effectiveElapsedMillis]（= 本函数
+         * − 审批挂起）。本函数现存的消费点：① 各断路器 trip 的 `atElapsedMillis` 时间线
+         * 标记位（[BreakerKind.Trip] 口径 = 墙钟）；② [effectiveElapsedMillis] 的被减数。
+         */
         fun elapsedMillis(): Long = elapsedMillisSince(startedElapsedNanos)
+
+        /**
+         * 审批挂起累计时长（纳秒，Wave 52 B1）：`handler.onApprovalRequested` 的人机等待
+         * 时长。墙钟硬预算只该约束「机器在干活」的时间，不该把用户犹豫也算进去 ——
+         * 否则一次长授权对话框（W51 实测挂起 ~5min）就能让批准后的下一轮轮头**立即**
+         * HARD 熔断（W51 有一个污染 run 正是此现象）。
+         *
+         * 取舍（如实申报）：停表**只**排除审批挂起时长；模型生成与工具执行时长**照常
+         * 计入**（它们才是端侧预算真正要约束的对象）。累计用加法（多次审批累加），
+         * 由 `gateRoundHead` 的 remaining 与 evidence 口径共同消费。
+         */
+        var pausedNanos: Long = 0L
+
+        /**
+         * 有效执行时长（毫秒）：run 相对时长扣掉审批挂起（[pausedNanos]）。
+         * 墙钟 evidence 的「已运行」文案与诊断卡「耗时」报的都是这个数（有效执行时长，非墙钟）。
+         *
+         * 算术委托文件级纯函数 [effectiveElapsedMillis]（含「钳到 ≥0」），本处只喂入本 run 的
+         * 两个量 —— 这样停表算术可被 JVM 单测直接覆盖（见 [WallClockEvidenceTest]）。
+         */
+        fun effectiveElapsedMillis(): Long = effectiveElapsedMillis(elapsedMillis(), pausedNanos)
     }
 
     /**
@@ -1753,6 +1829,11 @@ class AgentRunner(
                     return ToolCallStep.NextCall
                 }
                 emit(AgentEvent.ApprovalRequested(call, tool.spec))
+                // Wave 52 B1：审批挂起停表 —— 把人在回路的等待时长（可能分钟级）从墙钟
+                // 硬预算里剔除。用 try/finally 保证异常路径（含 CancellationException）
+                // 也照常累计：审批通道抛错本身也占了用户可见的等待。只停这一处审批，
+                // 模型生成 / 工具执行时长照常计入（见 [RunState.pausedNanos] 取舍）。
+                val approvalStartedNanos = System.nanoTime()
                 val decision = try {
                     handler.onApprovalRequested(call, tool.spec)
                 } catch (t: CancellationException) {
@@ -1761,6 +1842,8 @@ class AgentRunner(
                     // 审批通道自身异常 = 拒绝（fail-closed），并把原因留给日志
                     AgentLogStore.warn("审批通道异常，按拒绝处理：${t.javaClass.simpleName}")
                     null
+                } finally {
+                    state.pausedNanos += System.nanoTime() - approvalStartedNanos
                 }
                 if (decision != ToolApprovalDecision.APPROVED) {
                     state.toolDenialCounts.merge(call.name, 1, Int::plus)
@@ -1811,7 +1894,12 @@ class AgentRunner(
             // 绝对硬截止（Wave 31）：子 run 继承父 run 的同一堵墙（传绝对时刻，
             // 不是剩余时长），修「父 run 进入本轮后墙钟不再约束本轮、子 run 又
             // 自带一份全新 5 分钟预算」导致的上界放大。
-            deadlineNanos = state.hardDeadlineNanos,
+            //
+            // Wave 52 B1：继承的墙必须**同步加上父 run 的审批挂起累计**（pausedNanos）——
+            // 父 run 停表后，子 run 若仍拿未延长的绝对墙，就会「父 run 停过表、子 run
+            // 却按原墙判」而提前熔断。父 run 的 pausedNanos 在子 run 构造时是已发生审批
+            // 的累计值；子 run 自己的审批挂起由子 run 自己的 pausedNanos 继续累加。
+            deadlineNanos = state.hardDeadlineNanos + state.pausedNanos,
         )
         val result = withContext(SubagentRunContext(parentContext)) {
             executeWithGuard(call, tool, policy)
@@ -2311,7 +2399,11 @@ class AgentRunner(
             task = journal?.readUserInputSync()?.text
                 ?: state.finalText.ifBlank { "（任务原文不可用）" },
             rounds = state.round,
-            elapsedMillis = state.elapsedMillis(),
+            // 诊断卡「耗时：N 秒」用**有效执行时长**（扣审批挂起，Wave 52 P2-3）：同一张卡上
+            // WallClockBudget 的 evidence 报「已运行 N 秒」也是这个口径，两者必须同源 ——
+            // 否则一次含长审批的 run 会在同卡出现两个时间基准（如「耗时 600 秒」vs「已运行 300 秒」），
+            // 用户只能读成自相矛盾。墙钟时长（含审批挂起）不在此卡暴露。
+            elapsedMillis = state.effectiveElapsedMillis(),
             ledger = state.breaker,
             registeredToolNames = registeredToolNames,
             engineCause = engineCause,
