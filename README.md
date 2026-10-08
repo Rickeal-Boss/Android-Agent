@@ -57,7 +57,7 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 | ✨ **Liquid Glass UI** | Compose 液态玻璃设计系统（基于 Kyant0/AndroidLiquidGlass 移植改造，见 [NOTICE](NOTICE)）：背景模糊、折射高光、内描边、噪声微纹理、弹性动效 | ✅ 已落地 | 底层可降级（API 31~32 / 无 RuntimeShader） |
 | 🔌 **模型市场** | 模型清单管理、下载状态、能力探测（speculative decoding 等） | ✅ 已落地 | 13+ 官方预设 + 双镜像；直链下载依赖系统 DownloadManager |
 | 🛑 **物理断路器** | run 级物理量熔断与诊断卡（Wave 30）：墙钟预算（3min 提醒 / 5min 终止）、工具失败连击、调用振荡检测、Token 软预算、热保护四档（降参数 / 轮间冷却 / 拒新 run / 释放引擎）、熔断诊断卡（尝试清单 / 卡点 / 固定建议） | ✅ 已落地 | 纯函数判据 JVM 单测过；**热档位 / 墙钟 / 振荡真机未实测** |
-| 📒 **Token 账本** | run 级 token 账本（Wave 30/31）：发送侧估算（`sentTokens`）与**本仓自算口径**（`cumulativeIn` / `cumulativeOut`）双口径**并列、不换算不对账**；上下文占用条并列显示「估算≈ / 实测」 | ✅ 已落地 | 发送侧预估口径已接 UI（`ChatContextMeter`，Wave 31 流2）；**双口径一致性真机未实测**。⚠️ `cumulativeIn`/`cumulativeOut` 是**本仓自算**（prompt 用 `TokenEstimator` 估算 + completion 为**内容 chunk 帧计数**，非 token）——**引擎从不回报 usage** ⇒ 该对照观测力弱于「估算 vs 真实」 |
+| 📒 **Token 账本** | run 级 token 账本（Wave 30/31）：发送侧估算（`sentTokens`）与**本仓自算口径**（`cumulativeIn` / `cumulativeOut`）双口径**并列、不换算不对账**；上下文占用条并列显示「发送前≈ / 引擎回报≈」 | ✅ 已落地 | 发送侧预估口径已接 UI（`ChatContextMeter`，Wave 31 流2）；**双口径一致性真机未实测**。⚠️ `cumulativeIn`/`cumulativeOut` 是**本仓自算**（prompt 用 `TokenEstimator` 估算 + completion 为**内容 chunk 帧计数**，非 token）——**引擎从不回报 usage** ⇒ 该对照观测力弱于「估算 vs 真实」 |
 
 > 状态说明：**「代码状态」= 代码实际状态；「验证状态」= 真机验证程度，未标注项表示尚无真机数据**。代码状态分四态：
 > `✅ 已落地`（代码与单测完备，且生产路径上有构造点与消费方，运行时会执行）、
@@ -109,7 +109,7 @@ UI 上没有沿用 Material 的默认观感，而是采用 iOS 27 / iPadOS 27 �
 
 - ❌ 注解处理器：KSP / Kapt / Room / Hilt / Dagger / Koin
 - ❌ 图片加载库（Coil 等）—— 用 `BitmapFactory` + Compose `ImageBitmap`
-- ❌ 网络栈（Retrofit / OkHttp / SSE 等）—— 云端 API 已整体删除，现为**纯端侧零网络依赖**
+- ❌ 网络栈（Retrofit / OkHttp / SSE 等）—— 云端 API 已整体删除。**精确口径 = 「推理纯端侧」**：无云端 API、无自有网络栈、推理零数据外发；模型**下载**经系统 `DownloadManager`（其 `enqueue()` 要求调用方持有 `INTERNET`，见 `AndroidManifest.xml` 注释），故 manifest 声明 `INTERNET`，**用途仅限下载、下载源全部 https**（由 arch-guard #5/#6 继续强制「无网络栈 / 无进程执行」）
 - ❌ JitPack 第三方 UI 库 —— Liquid Glass 设计系统随源码内置（引擎原语移植自 Kyant0/AndroidLiquidGlass 并保留其版权头，见 [NOTICE](NOTICE)）
 
 持久化用 **DataStore Preferences + kotlinx.serialization 写 JSON**，DI 用 **纯 Kotlin 手写容器**。
@@ -322,11 +322,19 @@ Android-Agent/
 >   - **CI 双绿**（`79b00c3`）：**Build `37296661956`** ✅（含 `Lint (baseline gate)`，真实新问题 = 0）+ **Release `37296662094`** ✅（签名 APK / AAB / debug 三产物齐，R8 mapping 附）
 > - **W50（当前，2026-10-05）**：**§11 顺位 1–8 真机回收 + 三件外部报告 P3 收口 + CI 可观测性**
 >   - **§11 真机回收 9 ✅ / 4 ⛔**：R1 层1 探测通过／层2 `tool_call` 下发／**层3 审批卡红线实证**（须用 `file_write`——只读工具不弹卡是正确行为）／沙箱子目录下钻 + 符号链接剔除／记忆 >2000 字符／通知档A／返回键两段式／回显四关键字（Qwen 档）。⛔：层4「≥3 轮长任务」被 P1 中断／**通知档B 在 A13 上不可构造**／Gemma 两档／层5 的「压缩触发重建」子路径（源码自陈口径未接入）
->   - 🔴 **P1 定案（本仓输入侧）**：Qwen2.5 在工具结果回灌那一轮的**生成期**模板渲染失败（`string + sequence`）。真机 **A/B 证明「关掉原生工具通道、走文本协议同样炸」⇒ 排除上游**；决定性取证 = `Contents.toJson()` 返回 `JsonArray`（数组非 string）+ `prompt_template.cc:112-120` 未展平 ⇒ **模板侧期望 string、实际收到数组**。修法 = 合并多元素为单个 `Content.Text`（离线可改）
+>   - 🔴 **P1 定案（本仓输入侧）**：Qwen2.5 在工具结果回灌那一轮的**生成期**模板渲染失败（`string + sequence`）。真机 **A/B 证明「关掉原生工具通道、走文本协议同样炸」⇒ 排除上游**；决定性取证 = `Contents.toJson()` 返回 `JsonArray`（数组非 string）+ `prompt_template.cc:112-120` 未展平 ⇒ **模板侧期望 string、实际收到数组**。修法 = 合并多元素为单个 `Content.Text`（离线可改）⇒ **W51 已实施并通过真机复验**，见下
 >   - **代码侧 9 commit 全为零行为改动**：C1/C3 KDoc + C6 失败出口日志 + **删死字段 `ChatUiState.conversationId`**（全仓零读点）+ `fulltest.sh --summary-only` + **守卫 #22** + `build.yml` 非阻断用例数汇总（job summary，绿跑也带逐模块用例数）+ 上下文口径标签 B（清掉「引擎回报」错误措辞）+ C6 日志提级 `info → warn` ⇒ **arch-guard 21 → 22 项、selftest 44 → 47**
 >   - **外部报告对账**：复审 11 / deepdive 审的是 W48，开放项仅剩 C1/C3/C6 三条 P3，**W50 全部收口**；另挖出**第 20–26 处「描述不成立」**（含第 26 处这条方法论级的：**「未触发的论断」冒充「已验证的排除」，强度等同假绿**）
 >   - **UI 排版/配色真机审查**（用户点名「覆盖层覆盖范围 + 文字颜色混淆」）：**覆盖层机制经穷尽核查全部正确、无需改**（10 个 `LocalBottomBarOverlay` 消费点位置全对 / 14 处对话框全走玻璃）；「颜色混淆」的病灶**不是对比度**（全部达标，最紧 4.66:1）而是**「同角色不同色」6 处**。确证 **3 条 P2 挂 W51**：① 键盘态输入框离键盘多 **84dp**（`ChatScreen.kt:248` 的 overlay 无条件生效 + `imePadding()` 叠加）② **`GlassSegmented` 文字缺 `overflow`** ⇒ 真机「CPU/GPU/NPU」显示为 **CP/GP/NP** ③ **Snackbar 深色下渲染浅色块**（`LiquidAgentTheme.kt:98` 未映射 `inverseSurface`）。⚠️ 方法论：**`uiautomator dump` 的 bounds 对 Compose 不可靠**（导航栏 `Text` 报 8px、实际 ≈38px）⇒ UI 取证必须截图目视；本波据此**纠正 6 处假阳性**（含 2 处曾误报为「问题」）
-> - ⚠️ **真机验收积压：Wave 33 起累计 ≈32 条，台账已记 31 条（其中 27 条 `✅回收` / 4 条 `⛔或⚠️部分`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口；**W50 未覆盖项整项挂 W51**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面）；验收清单与取证命令见 §11。
+> - **W51（2026-10-07）**：**P1 修法落地 + 生成期自愈 + 热降档换手段 + UI 批三条 P2 + CI 守卫 #23**
+>   - 🔴 **P1「模板渲染失败」从归因到修法全部落地**（本仓唯一真代码 P1）：本波**抽出设备容器内嵌的真实 chat_template**（偏移 16423）并用**真实 `minijinja` 离线复现** ⇒ `content` 为 JSON 数组**必炸（1 个元素也炸）**、为字符串才正常，报错文案与行号与真机**逐字一致**；`javap` 反编译证实 `Contents.toJson()` **恒返回 `JsonArray`**（**推翻 W50「单元素时为字符串」的说法**，第 27 处「描述不成立」）。修法 = **`foldAdjacentText` 只折叠相邻连续 `Content.Text`**（非 Text 子类原样透传，防打碎多模态）+ **4 处下发点收口** + **`onError` 生成期自愈**（仅原生通道激活时证伪，根因与通道无关）。⚠️ **明确不覆盖**：消息含 Image/Audio 时必然 ≥2 元素，仍可能触发同一模板错误（Qwen2.5 纯文本模型本就不下发多模态）
+>   - **真机复验（OPPO PDRM00 / A13）**：用 W50 造成**确定性崩溃**的原始题面复跑 —— **文本协议组 `Failed to apply template` 0 命中**、`settled=ModelStopped`、**3 条工具结果同批回灌**（模型 round 0 一次发 3 个 tool_call ⇒ **非 vacuous**）、工具真执行（`file_write` ok、沙箱文件内容 `hello`）；native ON 对照组 0 命中（但该组「多结果单批」子场景 **vacuous/未行使**，不记通过）；单文本基线 `17×23=391` ✅
+>   - 🔴 **热降档改走轮次**（外部复审点名的「唯一活的代码缺陷」）：原 `thermallyCappedConfig` 把 maxTokens 2048→1024，却被 `ModelSamplingProfiles.appliedTo` 的 `maxOf(…, minMaxTokens=2048)` 顶回 ⇒ **降档 100% 失效 + 日志说谎**（真机 W43 实测 SoC 83℃）。改为**恒压 `maxAgentRounds`**（轮次不受采样档案影响）+ maxTokens 只在档案 `minMaxTokens==0` 时压 + 日志逐项写明**实际生效值**
+>   - **UI 批三条 P2 全部落地并真机目视**：① 键盘态输入框离键盘多 84dp（overlay 无条件生效 + `imePadding()` 叠加）⇒ 条件化后空隙 **≈25–36dp**（旧 ≈94dp）、收起态不压底栏 ② `GlassSegmented` **两处** Text 补 `overflow` ⇒ 真机由「CP/GP/NP」半字截断变为 **`C…`（1 全字 + 省略号）** ③ Snackbar 深色浅色块 ⇒ 抽 `bridgeGlassToMaterial` 单一事实源 + 补 13 个色角色，深色块色实测 **`(34,36,46)`**
+>   - **其他**：`renameTo` 返回值检查（全仓同族 4 处都查了、就这一处漏）；上下文条补 `maxLines`+`Ellipsis`；订正 `RunTokenLedger` 残留作废口径（全仓 `估算≈` **3 处全清**）；**守卫 #23**（`--summary-only` 退出码契约）+ `fulltest.sh` `files==0` 的 `::warning::`（**并修复它被 `$(…)` 捕获后不成为注解的缺口**）+ `build.yml` 用例数低于基线的非阻断 soft-check ⇒ **arch-guard 22 → 23 项、selftest 47 → 52**；全量单测 **598 → 619**
+>   - **外部报告对账**：复审 13 的「P1 涉及面 2 → **4 处**」与「先主因后自愈」顺序纪律均已采纳；每日简报（审 `e003509`）的两大建议**正是本波内容**，其「引擎 0.11.0 过时」在仓内不成立
+> - ⚠️ **真机验收积压：Wave 33 起累计 ≈32 条，台账已记 31 条（其中 27 条 `✅回收` / 4 条 `⛔或⚠️部分`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／层3 `useNativeTools` 日志／F4 文字 token 统一）；验收清单与取证命令见 §11。
+
 
 ---
 
