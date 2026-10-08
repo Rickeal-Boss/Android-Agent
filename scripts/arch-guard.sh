@@ -510,6 +510,51 @@ check "fulltest.sh 的 --summary-only 分支恒 exit 0 且不经 exit 2（非阻
              END { if(!sum1ok){ print FILENAME \": --summary-only 恒 exit 0 的早退载体缺失（SUMMARY_ONLY==1 的 if 分支首语句必须是 exit 0；删掉它 summary-only 会落到默认模式的失败退出码）\"; bad=1 } exit bad }
            " "$f"'
 
+# 24) LiteRtLmEngine.kt 「fold 收口不变式」（Wave 52）：P1（Qwen2.5 容器模板渲染失败）
+#     的修法是让下发 content **恰好剩 1 个元素** —— 在 4 处 `Message.user(...)` 下发点
+#     **全部**包一层 `foldAdjacentText(...)`（折叠相邻连续 `Content.Text`；非 Text 原样
+#     透传）。这是一条**靠枚举维护的不变式**：将来任何新增 `Message.user(...)` 下发点若
+#     忘包 fold，就会**静默重新打开 P1**（触发条件 = 单轮内出现 ≥2 相邻 Text，开发期
+#     单轮根本测不出）。故用守卫把「下发点数 == fold 调用数」冻结下来。
+#     ⚠️ 判据必须排除「非调用位」：naive `grep -c` 得 5==5 是**巧合**（fold 多 1 个 def 行
+#     `:456`；Message.user 多 1 个 KDoc 行 `:499`）。排除 def 行（`fun foldAdjacentText`）
+#     与注释/KDoc 位（行首 `*` 或 `//`）后得 4==4（Wave 52 本会话实测）。
+#     ⚠️ 多行调用：`:2087`(Message.user) 与 `:2088`(fold) 跨行 ⇒ 必须用**计数法**，
+#     不能用「同行配对」判据（后者会漏掉这一对，从而漏报）。
+#     语义：fold_n == msg_n。新增无 fold 的 Message.user ⇒ msg_n+1 ⇒ 判红（P1 静默重开）；
+#     新增 fold 调用（无对应 user）⇒ fold_n+1 ⇒ 判红（fail-closed 假阳性，可接受）。
+#     计数**动态**（读文件行数），不硬编码 4（否则队友新增/调整 fold 点会误红）。
+#     文件缺失分支用 `exit 1` + `::error::`（守卫面失效必须判红，绝不静默放行）。
+#     ⚠️ **扫描面边界（P2-6，Wave 52 审查）**：本守卫的扫描面 = `core-engine/src/main/
+#     java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt` **单文件**（当前全仓
+#     `Message.user(` 仅此文件出现 ⇒ 判据成立）。**本守卫不覆盖跨文件形态** —— 若 W53+
+#     在别的文件（例如新引擎 / 新模块）新增 `Message.user(...)`，本守卫**静默漏报**。
+#     届时必须**扩面或改为跨文件扫描**（把 E 换成全仓 `grep -rn` 并按文件分组配对），
+#     不能只靠本条。这里显式声明边界，避免「通用不变式」的错觉。
+#     ⚠️ **已知局限（P3-1 备忘，Wave 52 审查）**：行尾注释形如 `foo() // Message.user(`
+#     不被 `^[0-9]+:[[:space:]]*[*/]` 排除（该正则只认**行首** `*`/`//`）⇒ 会计入 msg_n
+#     ⇒ **fail-closed 假阳性**（判红偏严，绝不漏报）。属本守卫设计已认可的取舍，不修。
+check "LiteRtLmEngine.kt fold 收口不变式（Message.user 下发点数 == foldAdjacentText 调用数，新增下发点必须包 fold）" \
+  bash -c 'E=core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt
+           if [ ! -f "$E" ]; then echo "::error::$E 不存在（被改名/删除？第 24 条守卫面已失效）"; exit 1; fi
+           fold_n=$(grep -nE "foldAdjacentText\(" "$E" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | grep -v "fun foldAdjacentText" | wc -l)
+           msg_n=$(grep -nE "Message\.user\(" "$E" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | wc -l)
+           [ "$fold_n" -eq "$msg_n" ] || echo "$E 的 foldAdjacentText 调用数($fold_n) != Message.user 下发点数($msg_n)：新增 Message.user 下发点必须包 foldAdjacentText 收口（否则单轮内 ≥2 相邻 Text 会静默重开 P1 模板渲染失败）"'
+
+# 25) LiteRtLmEngine.kt 总行数上限（Wave 52）：与 #18（ChatViewModel ≤1600）/
+#     #20（ChatRunCoordinator ≤1300）共同构成「god-file 行数表」。LiteRtLmEngine.kt
+#     是已知 god-file（Wave 52 实测 2340 行），此前**无文件级守卫** ⇒ 加本条。
+#     阈值取 2400（≈+2.5% 余量、≈60 行）：① W52 的 KDoc 订正净增 ≤15 行 ⇒ 2400 不阻塞
+#     本波；② 余量 ≤60 行 ⇒ W53 再涨即触顶，强制启动 god-file 拆分评审。
+#     ⚠️ **触顶不是改数字，是启动拆分评审**（与 #18/#20、#14 lint baseline 同款
+#     「只许缩不许涨」精神）。
+#     文件缺失分支用 `exit 1` + `::error::`（守卫面失效必须判红，绝不静默放行）。
+check "LiteRtLmEngine.kt 总行数 ≤ 2400（core-engine god-file 行数表，触顶 = 启动拆分评审，非改阈值）" \
+  bash -c 'f=core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 2400 ] || echo "LiteRtLmEngine.kt 当前 $n 行，超 2400 行上限（触顶不是改数字，是启动 god-file 拆分评审）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

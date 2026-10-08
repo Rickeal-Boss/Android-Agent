@@ -193,6 +193,21 @@ if [ "$SUMMARY_ONLY" -eq 1 ]; then
 fi
 exit 0
 SH
+  # 第 24 条（Wave 52，fold 收口不变式）要求 LiteRtLmEngine.kt 存在且满足
+  # 「Message.user 下发点数 == foldAdjacentText 调用数」；第 25 条（Wave 52）要求其
+  # 行数 ≤ 2400 ⇒ 骨架必须提供它（否则干净树会被这两条误红，正例失守）。
+  # fixture 给 1 处 Message.user 下发点 + 1 处 foldAdjacentText 调用（1 == 1，绿），
+  # 且行数远低于 2400。def 行（`internal fun foldAdjacentText`）会被守卫的
+  # `grep -v "fun foldAdjacentText"` 排除，不计入 fold_n —— 与真实文件同款。
+  mkdir -p "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local"
+  cat > "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
+package com.rickeal.agent.core.engine.local
+
+internal fun foldAdjacentText(contents: List<Content>): List<Content> = contents
+
+fun downlink(fresh: List<Content>): Message =
+    Message.user(Contents.of(foldAdjacentText(fresh)))
+KT
 }
 
 run_guard() { ( cd "$1" && bash "$GUARD" 2>&1 ); }
@@ -1157,6 +1172,112 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case28] 合规载体应不红，实际退出 $rc"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 29 / case 30：第 24 条（LiteRtLmEngine.kt fold 收口不变式，Wave 52）两面：
+#   case29 —— 追加第 2 处 **未包 fold** 的 `Message.user(Contents.of(x))` ⇒
+#             msg_n=2 != fold_n=1 ⇒ 判红，断言红来自真命中（输出含「!= Message.user 下发点数」
+#             违规事实行），而非「守卫命令自身执行失败」。
+#             骨架 fixture 默认 1 处 user + 1 处 fold（1==1 绿）；本 case 造出不等 ⇒ 红。
+#   case30 —— 只在 **KDoc/注释** 里提 `Message.user(contents)` ⇒ 必须**仍绿**（防被注释骗，
+#             沿 #19/#22 教训）：注释位被 `^[0-9]+:[[:space:]]*[*/]` 排除 ⇒ msg_n 不变。
+#   两面都只在 $TMP 脚手架树内追加，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case29-fold-unbalanced"
+scaffold "$d"
+cat >> "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
+
+fun downlinkUnfolded(x: List<Content>): Message =
+    Message.user(Contents.of(x))
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case29 第 2 处 Message.user 未包 fold (第 24 条)" "$rc" "$out" \
+  "LiteRtLmEngine.kt fold 收口不变式（Message.user 下发点数 == foldAdjacentText 调用数，新增下发点必须包 fold）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case29b] 第 24 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "!= Message.user 下发点数"; then
+  echo "PASS [case29b] 红来自真命中（输出含「!= Message.user 下发点数」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case29b] 输出里看不到「!= Message.user 下发点数」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case30-fold-kdoc-green"
+scaffold "$d"
+cat >> "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
+
+/**
+ * 说明：历史上曾用 `Message.user(contents)` 直接下发（未包 fold），W51 已收口。
+ * 注意 `Message.user(` 出现在 KDoc 里，不得被守卫计入下发点数。
+ */
+val kdocOnlyNote = 1
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case30 KDoc 提及 Message.user( (第 24 条绿面)] 退出 0（注释位被排除，未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case30] KDoc 里的 Message.user( 被误计入下发点数（第 24 条判据未排除注释位 ⇒ 会被注释骗）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 31 / case 32：第 25 条（LiteRtLmEngine.kt ≤ 2400，Wave 52）两面：
+#   case31 —— 灌到超 2400 行 ⇒ 判红，断言红来自真命中（输出含「超 2400 行上限」计数行）。
+#   case32 —— 目标文件缺失（mv 改名）⇒ 判红，断言输出含「不存在（被改名/删除？守卫面
+#             已失效）」违规事实行。制造缺失用 mv 且只在 $TMP 内（与 case17/case21 同范式）。
+# ---------------------------------------------------------------------------
+d="$TMP/case31-engine-oversize"
+scaffold "$d"
+{ echo 'package com.rickeal.agent.core.engine.local'
+  echo ''
+  echo 'internal fun foldAdjacentText(contents: List<Content>): List<Content> = contents'
+  echo ''
+  echo 'fun downlink(fresh: List<Content>): Message ='
+  echo '    Message.user(Contents.of(foldAdjacentText(fresh)))'
+  local_k=1
+  while [ "$local_k" -le 2400 ]; do echo "val v$local_k = $local_k"; local_k=$((local_k + 1)); done
+} > "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case31 LiteRtLmEngine.kt 超行数上限 (第 25 条)" "$rc" "$out" \
+  "LiteRtLmEngine.kt 总行数 ≤ 2400（core-engine god-file 行数表，触顶 = 启动拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case31b] 第 25 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "超 2400 行上限"; then
+  echo "PASS [case31b] 红来自真命中（输出含「超 2400 行上限」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case31b] 输出里看不到「超 2400 行上限」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case32-engine-missing"
+scaffold "$d"
+mv "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" \
+   "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/.LiteRtLmEngine.kt.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case32 LiteRtLmEngine.kt 缺失 (第 25 条守卫面失效)" "$rc" "$out" \
+  "LiteRtLmEngine.kt 总行数 ≤ 2400（core-engine god-file 行数表，触顶 = 启动拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case32b] 第 25 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "LiteRtLmEngine.kt 不存在（被改名/删除？守卫面已失效）"; then
+  echo "PASS [case32b] 红来自真命中（输出含「LiteRtLmEngine.kt 不存在（被改名/删除？守卫面已失效）」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case32b] 输出里看不到「LiteRtLmEngine.kt 不存在」违规事实行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

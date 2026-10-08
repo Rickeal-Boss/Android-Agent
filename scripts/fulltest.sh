@@ -55,6 +55,8 @@ while [ $# -gt 0 ]; do
 done
 
 # ---- 跑测试（仅默认模式）----
+# ① rm 失败目录收集（Wave 52）：仅默认模式填充（rm 段在其中）；汇总段据此前置 ::warning::。
+rm_failed=()
 if [ "$SUMMARY_ONLY" -eq 0 ]; then
   # 解析 Gradle 启动器（仓库 wrapper 优先，其次 PATH 上的 gradle）
   if [ -x ./gradlew ]; then
@@ -68,10 +70,17 @@ if [ "$SUMMARY_ONLY" -eq 0 ]; then
 
   echo "[fulltest] launcher=$GRADLE_CMD  task=$TASK  （固定带 --continue，禁用 fail-fast 残缺口径）"
 
-  # 清掉上一轮的测试结果，避免旧 TEST-*.xml 污染本轮汇总
-  find . -path ./.git -prune -o -type d -name 'test-results' -print 2>/dev/null | while IFS= read -r d; do
-    rm -rf "$d" 2>/dev/null || true
-  done
+  # 清掉上一轮的测试结果，避免旧 TEST-*.xml 污染本轮汇总。
+  # ① rm 失败**可见化**（Wave 52）：不再用 `2>/dev/null || true` 静默吞删除失败 ——
+  #    Windows 文件锁 / 只读 / 权限会让 rm 失败，此时若 gradle 也失败，汇总段会拿
+  #    **陈旧 XML** 当权威（g_files>0 ⇒ 不打印 warning）⇒ 这是「假全量」唯一真实的
+  #    fail-open 面（报告说的「gradle 未跑仍汇总残留」在现行脚本下不复现：本段自脚本
+  #    创建起就在 gradle 之前）。收集失败目录，汇总段（**仅默认模式**）前置 ::warning::。
+  #    ⚠️ 必须用进程替换 `< <(find …)` 而非管道 `| while`：管道的 while 跑在子壳里，
+  #    rm_failed 的累积**不会回传父壳**（Wave 52 实测）。
+  while IFS= read -r d; do
+    rm -rf "$d" 2>/dev/null || rm_failed+=("$d")
+  done < <(find . -path ./.git -prune -o -type d -name 'test-results' -print 2>/dev/null)
 
   "$GRADLE_CMD" --no-daemon --stacktrace "$TASK" --continue
   gradle_rc=$?
@@ -84,13 +93,25 @@ fi
 # 结果经全局变量回传：g_total / g_failures / g_errors / g_skipped / g_files
 # （抽成函数是为了让「默认模式」与「--summary-only 报告模式」共用同一段汇总逻辑，
 #   杜绝两份实现漂移 —— Wave 50 引入 --summary-only 时的核心取舍。）
+# 时间戳格式化（Wave 52）：GNU date 与 BSD date 双兼容（CI=ubuntu GNU；本地 Git-Bash GNU）。
+# $1 = epoch 秒；两种 date 都失败时回退打印 epoch（绝不因格式化失败而中断汇总）。
+fmt_ts() {
+  date -d "@$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+    || date -r "$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+    || echo "epoch $1"
+}
+
 summarize_tests() {
   g_total=0; g_failures=0; g_errors=0; g_skipped=0; g_files=0
   local -A M_TOTAL=() M_FAIL=() M_ERR=()
-  local xml head_tag t f e s mod m
+  local -a MTIMES=()
+  local xml head_tag t f e s mod m nmod mt
   while IFS= read -r xml; do
     [ -z "$xml" ] && continue
     g_files=$((g_files + 1))
+    # ② 收集每个 TEST-*.xml 的 mtime（Wave 52）：供人眼判「这些 XML 是否本轮产出」。
+    mt="$(stat -c %Y "$xml" 2>/dev/null || stat -f %m "$xml" 2>/dev/null || true)"
+    [ -n "$mt" ] && MTIMES+=("$mt")
     head_tag="$(grep -m1 -oE '<testsuite[^>]*>' "$xml" 2>/dev/null || true)"
     t="$(printf '%s' "$head_tag" | grep -oE 'tests="[0-9]+"'    | head -1 | tr -cd '0-9')"
     f="$(printf '%s' "$head_tag" | grep -oE 'failures="[0-9]+"' | head -1 | tr -cd '0-9')"
@@ -107,6 +128,13 @@ summarize_tests() {
   done < <(find . -path ./.git -prune -o -type f -name 'TEST-*.xml' -print 2>/dev/null)
 
   echo "-------------------------------------------------------------------"
+  # ① rm 失败可见化（Wave 52，**仅默认模式**）：删除失败 + gradle 失败 ⇒ 汇总可能来自
+  #    陈旧 XML。--summary-only 分支绝不打印（它本就不跑 rm、不改退出码 —— 见 #23 契约）。
+  if [ "$SUMMARY_ONLY" -eq 0 ] && [ "${#rm_failed[@]}" -gt 0 ]; then
+    echo "[fulltest] ⚠️ 以下 test-results 目录未能清除（文件锁/只读/权限？）："
+    printf '[fulltest]   - %s\n' "${rm_failed[@]}"
+    echo "::warning::有 ${#rm_failed[@]} 个 test-results 目录未能清除 —— 若 gradle 也失败，下方汇总可能来自**残留的陈旧 XML**（非本轮结果，请人工核对 mtime）"
+  fi
   if [ "$g_files" -eq 0 ]; then
     echo "[fulltest] 未找到任何 TEST-*.xml —— 用例数无法汇总。"
     # GitHub 注解：CI 上会以**黄色 warning** 显示在 PR 页面 / Annotations 面板，
@@ -126,6 +154,21 @@ summarize_tests() {
       for m in $(printf '%s\n' "${!M_TOTAL[@]}" | LC_ALL=C sort); do
         echo "[fulltest]   - ${m}: tests=${M_TOTAL[$m]} failures=${M_FAIL[$m]} errors=${M_ERR[$m]}"
       done
+    fi
+    # ② TEST-*.xml 的 mtime 最早/最晚（Wave 52）：供人眼判「这些 XML 是否本轮产出」。
+    if [ "${#MTIMES[@]}" -gt 0 ]; then
+      local mt_min mt_max
+      mt_min="$(printf '%s\n' "${MTIMES[@]}" | sort -n | head -1)"
+      mt_max="$(printf '%s\n' "${MTIMES[@]}" | sort -n | tail -1)"
+      echo "[fulltest]   TEST-*.xml mtime 范围：最早 $(fmt_ts "$mt_min")  最晚 $(fmt_ts "$mt_max")"
+    fi
+    # ③ 默认模式下模块数 != 9 ⇒ 前置 ::warning::（Wave 52，**不改退出码** —— 与 #23 契约、
+    #    与「非阻断」设计一致；只把「静默缩面」变人眼可见）。期望 9 = settings.gradle.kts
+    #    的 include 数（与 arch-guard 前置断言的清单同源）。
+    nmod="${#M_TOTAL[@]}"
+    echo "[fulltest]   覆盖模块数：$nmod（预期 9）"
+    if [ "$SUMMARY_ONLY" -eq 0 ] && [ "$nmod" -ne 9 ]; then
+      echo "::warning::默认模式汇总到的模块数 = $nmod（预期 9）—— 可能有模块未跑 / 结果目录缺失 / rm 未清干净致陈旧 XML 混入，请人工核对"
     fi
   fi
   echo "-------------------------------------------------------------------"
