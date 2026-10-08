@@ -3,14 +3,14 @@
 > **唯一权威交接文档**。逐波细节看 `handoff-*.md`；README 台账是特性/路线图的权威版。
 > 本文件回答三件事：**W53 做了什么 / 留下了什么判据 / 下一个人从哪接手**。
 >
-> 基线：W52 收官 `97bd45e`（已推，CI 双绿）｜本波 tip 见 §八
+> 基线：W52 收官 `97bd45e`（已推，CI 双绿）｜本波 tip = `4ce095f`（已推，CI 双绿）见 §八
 
 ---
 
 ## 一、W53 总账
 
 ### 一句话
-**守卫网扩展 + 引擎 god-file Stage-1 拆分 + 多模态 P1 取证（L1/L2）+ 台账 #36 回收 + B1 判据侧接线外提 + role 观测面**：守卫 **25 → 27 项**、selftest **59 → 新增 #26/#27 用例**、`build.yml` 基线 **619 → 623**；引擎 `LiteRtLmEngine.kt` **2389 → 2054 行**（抽 4 个同包文件 = 349 行纯搬运，god-file 余量 346）；多模态容器 L1/L2 取证**实证**数组问题真实存在且 `Qwen2.5-1.5B` 模板不安全；H-A 矛盾定性为「未找到 collapse 实现 + role 相关性可测假设」；台账 #36 回收层3 正向观测面（聚合句 35 → 36 = 29✅/5⚠️/2⛔，并由 #27 机械钉住）。
+**守卫网扩展 + 引擎 god-file Stage-1 拆分 + 多模态 P1 取证（L1/L2）+ 台账 #36 回收 + B1 判据侧接线外提 + role 观测面**：守卫 **25 → 27 项**、selftest **59 → 65（PASS=65 FAIL=0）**、`build.yml` 基线 **619 → 623**；引擎 `LiteRtLmEngine.kt` **2389 → 2054 行**（抽 4 个同包文件 = 349 行纯搬运，god-file 余量 346）；多模态容器 L1/L2 取证**实证**数组问题真实存在且 `Qwen2.5-1.5B` 模板不安全；H-A 矛盾定性为「未找到 collapse 实现 + role 相关性可测假设」；台账 #36 回收层3 正向观测面（聚合句 35 → 36 = 29✅/5⚠️/2⛔，并由 #27 机械钉住）。
 
 ### 关键现实（如实申报）
 本波**子 Agent 因 429 限流两次失败**（`android-developer` 0s 即失败、`ci-workflow-specialist` 32m8s 后失败）。**主理人转为自行收尾**：复核所有 diff、补做开发席未完成的 **role 观测面（3 处 Edit）**、跑编译/守卫/单测/selftest、写交接、commit、推仓库、触发 CI。下表 commit 为收官时统一落地，**非**子 Agent 分批提交。
@@ -82,9 +82,10 @@
 
 | 判据 | 结果 | 证据 |
 |---|---|---|
-| **编译 + 装机** | ✅（待 assemble 完成回读） | `assembleDebug` 后台构建中；装机走 `adb push` + `pm install -r` |
-| **role 观测面（多模态 L3）** | ⏳ 待 L2 命中项真机复验 | L2 已实证 `Qwen2.5-1.5B` 模板不安全（数组必炸）；装机后可发图复验，日志带 `下发 role=` 直接定 role 相关性 |
-| **无本 app 崩溃** | ⏳ 待冒烟 logcat | 先验全量档含 native 行后再判 0 命中 |
+| **编译 + 装机** | ✅ | `assembleDebug` `BUILD SUCCESSFUL`（APK 121,737,746 B）；`adb push` + `pm install -r` Success；装机回读 `lastUpdateTime=2026-10-08 20:49:36`（即本波构建） |
+| **冒烟启动** | ✅ | 冷启动 `com.rickeal.agent.debug` PID 30246 存活；`am start` 走 `com.rickeal.agent.debug/com.rickeal.agent.MainActivity`（manifest 包名 ≠ applicationId 后缀，已踩坑纠正） |
+| **无本 app 崩溃** | ✅ | 全量 logcat（不过滤）无 PID 30246 的 `FATAL EXCEPTION` / `AndroidRuntime`；仅无害 `base.dm: No such file`（无压缩 profile）告警，`ProfileInstaller` 正常 |
+| **role 观测面（多模态 L3）** | ⏳ 待 L2 命中项真机复验 | L2 已实证 `Qwen2.5-1.5B` 模板不安全（数组必炸）；但 `Qwen2.5-1.5B` 系**纯文本模型**无法喂图触发数组路径 ⇒ 真机无法在该模型上复验 role；决定性证据已由 `minijinja` 离线复现（模板 `:23` 行号与真机一致）提供 |
 
 ### 3.1 ⛔ 未行使 / vacuous（如实申报，不记通过）
 - **B1「长审批停表」真机效应**：同 W52，未构造长等待剧本 ⇒ 代码路径已行使、算术已单测覆盖，但真机未构造长审批 ⇒ **仍 vacuous**。
@@ -153,7 +154,7 @@ W52 末 `build.yml` 基线仍 619，但当时实数已 621（W52 开发席 +2 �
 ## 七、下次接手须知
 
 1. **推送纪律**：`GIT_TERMINAL_PROMPT=0` + `-c credential.helper=`（空）**两者都要**（否则 GCM 无凭据**静默挂起**）；`-c http.sslVerify=false`（绕 MITM 的 `CRYPT_E_NO_REVOCATION_CHECK`）；**PAT 只以 URL inline 一次性使用、绝不落盘**，用完复位；推前 `git push --dry-run` 核（`git ls-remote` 匿名读 public 库会**假绿**）。
-2. **静态闸门基线**（改动前）：`arch-guard` **27 项全 OK**、`arch-guard-selftest` **PASS=（59 + #26/#27 新增）FAIL=0**（本机 ~22 min ⇒ 给 ≥600s 或 `run_in_background`）、`scripts/fulltest.sh` = `tests=623 failures=1`（唯一失败 = `SandboxFileScannerTest.kt:184` Windows 符号链接，**既有基线**）。
+2. **静态闸门基线**（改动前）：`arch-guard` **27 项全 OK**、`arch-guard-selftest` **PASS=65 FAIL=0**（本机 ~22 min ⇒ 给 ≥600s 或 `run_in_background`；新增 #26/#27 用例 case33/34/35 均「红来自真命中」）、`scripts/fulltest.sh` = `tests=623 failures=1`（唯一失败 = `SandboxFileScannerTest.kt:184` Windows 符号链接，**既有基线**）。
 3. **跑全量单测必须注入 `JAVA_HOME`/`ANDROID_HOME`/`GRADLE_USER_HOME`**（否则假全量），并**核对模块数 = 9**（`fulltest.sh` 自带「覆盖模块数：9（预期 9）」+ mtime 范围）。gradle 的 `N tests completed` 是**残缺口径**（只在有失败时打印且只覆盖失败模块），不可信。
 4. **纯文档提交 ⇒ 两条 workflow 都 0 run** ⇒ 需出包必须 `workflow_dispatch`。
 5. **设备**（OPPO PDRM00 / A13，serial `13309cc8`）：adb = `_j2env/sdk/platform-tools/adb.exe`（**不在 PATH**），Git Bash 需 `MSYS_NO_PATHCONV=1`。**装机必须** `adb push` + `pm install -r`（直接 `install -r` 报 `Failure [-99]`）。
@@ -170,18 +171,22 @@ W52 末 `build.yml` 基线仍 619，但当时实数已 621（W52 开发席 +2 �
 
 ## 八、CI run id
 
-推送 `97bd45e..tip`（**N commit**，fast-forward）后**两条 workflow 自动触发**（本波含 `scripts/**` / `.github/workflows/**` / `core-*/**` / `feature-*/**` 等非文档改动，无需 `workflow_dispatch`）：
+推送 `97bd45e..4ce095f`（**1 commit**，fast-forward）后**两条 workflow 自动触发**（本波含 `scripts/**` / `.github/workflows/**` / `core-*/**` / `feature-*/**` 等非文档改动，无需 `workflow_dispatch`）：
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | **（待推送后回填）** | （待回填） | `Lint (baseline gate)` / `Assemble Debug (JDK 21)`（含 Architecture guard + 自测）/ `Unit tests` 三 job |
-| **Release** | **（待推送后回填）** | （待回填） | `Build & (optionally) sign release`（分支推送非 tag ⇒ tag job skipped，符合预期） |
+| **Build** | **`37780427636`** | ✅ **success** | `Lint (baseline gate)` / `Assemble Debug (JDK 21)`（含 Architecture guard + 自测）/ `Unit tests` 三 job 全绿 |
+| **Release** | **`37780427551`** | ✅ **success** | `Build & (optionally) sign release` 全步骤 success；tag 相关 job = skipped（分支推送非 tag，符合预期） |
 
-### 8.1 守卫网在 CI 上的实跑（推送后从 job 日志正文取，非只看 job 结论）
-- **Build `Assemble Debug` job**：`OK  ` 行 = **27 条**（末条 `LiteRtLmEngine.kt 总行数 ≤ 2400`）；新增守卫可见：`OK  测试基线双向同步` / `OK  A5 台账聚合句与 §11.0.1 逐条三态一致`；selftest `case（#26 滞后）` / `case（#27 聚合不符）` **均判红且红来自真命中**。
-- ⚠️ **观测面缺口（沿用 W51 结论）**：`GITHUB_STEP_SUMMARY` **无 API** ⇒ CI 的「用例数数值（623）」**不可程序化读取** ⇒ 属 `⛔ 不可程序化核验`，**不得**据此推断「CI 已守住用例数不低于基线」（但 #26 在 CI 内已程序化钉住）。
+### 8.1 守卫网在 CI 上的实跑
+- **Build 三 job 全绿**：`Lint (baseline gate)` ✅ / `Unit tests` ✅ / `Assemble Debug (JDK 21)` ✅。其中 `Assemble Debug` job 内含 Architecture guard（27 条）+ 自测，job 结论 success ⇒ 守卫网在 CI 内已随 job 跑通。
+- **本地 selftest 实跑（本机，推送前）**：`自测结果：PASS=65 FAIL=0`（59 → 65，新增 #26/#27 用例 6 个）。新增守卫**非 vacuous** 的关键证据（`红来自真命中`）：
+  - `case33 build.yml 基线滞后 (第 26 条)` → 命中 `::error::[测试基线双向同步…]`，输出含「滞后 1 例」
+  - `case34 删一条 @Test 未同步基线 (第 26 条)` → 命中，输出含「少 1 例」
+  - `case35 README 聚合句与台账不一致 (第 27 条)` → 命中 `::error::[A5 台账聚合句与 §11.0.1 逐条三态一致…]`，输出含「聚合句与 §11.0.1 逐条台账不一致」
+- ⚠️ **观测面缺口（沿用 W51 结论）**：`GITHUB_STEP_SUMMARY` **无 API**，且本 PAT 缺 `actions:read`（job-log 端点 `GET /actions/jobs/{id}/logs` 返回 **401**）⇒ CI 内 arch-guard `OK` 行数 / selftest `PASS=` **不可程序化读取**（只能判「Assemble Debug job 步绿」这一层）。但三 job 全绿 + 本地 selftest PASS=65 已双保险 ⇒ **不得**仅凭 job 绿就推断「CI 已守住用例数不低于基线」，#26 在 CI 内已程序化钉住。
 
-> 本节在收官提交 + 推送后回填（W52 教训：run-id 回填迟到两次 ⇒ 本波维持**收官前/推送后立即回填**）。
+> 本节在收官提交 + 推送后回填（W52 教训：run-id 回填迟到两次 ⇒ 本波维持**收官前/推送后立即回填**；CI 双绿已于推送后核验）。
 
 ---
 
