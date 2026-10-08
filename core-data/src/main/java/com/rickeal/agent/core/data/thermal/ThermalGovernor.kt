@@ -227,9 +227,13 @@ class ThermalGovernor(
      * `coerceAtMost(base)`：降档只允许往小压。InferenceConfig 把 maxTokens 钳在
      * [64, 32768]（设置滑块下限 64），base < 512 时「减半再保底 256」会反超基准
      * （64 → 32 → 256），热档期反而把输出上限抬高 4 倍，与降热目标相反。
+     *
+     * @param tier 判据档位快照。默认取 `this.tier.value`（当前值）；调用方若同时要判据与
+     *   日志，应**只读一次** `tier.value` 后把同一快照传进来，避免两次读取之间档位跳变
+     *   导致「日志说的档位 ≠ 实际压的档位」（Wave 51 P3-3）。
      */
-    fun maxTokensCap(base: Int): Int =
-        if (tier.value >= ThermalTier.LIGHT) {
+    fun maxTokensCap(base: Int, tier: ThermalTier = this.tier.value): Int =
+        if (tier >= ThermalTier.LIGHT) {
             (base / 2).coerceAtLeast(256).coerceAtMost(base)
         } else {
             base
@@ -250,9 +254,11 @@ class ThermalGovernor(
      *
      * `coerceAtMost(base)`：降档只允许往小压（理由同 [maxTokensCap]）—— `base=1` 时
      * 「减半再保底 2」会反超基准（1 → 0 → 2），热档期反而把轮次翻倍，故必须夹上界。
+     *
+     * @param tier 判据档位快照（理由同 [maxTokensCap]）。
      */
-    fun maxRoundsCap(base: Int): Int =
-        if (tier.value >= ThermalTier.LIGHT) {
+    fun maxRoundsCap(base: Int, tier: ThermalTier = this.tier.value): Int =
+        if (tier >= ThermalTier.LIGHT) {
             (base / 2).coerceAtLeast(2).coerceAtMost(base)
         } else {
             base

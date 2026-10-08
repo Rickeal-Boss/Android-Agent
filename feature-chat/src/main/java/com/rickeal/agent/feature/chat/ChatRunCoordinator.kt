@@ -305,7 +305,7 @@ internal class ChatRunCoordinator(
                 }.getOrDefault(false)
                 if (!archived) {
                     AgentLogStore.warn(
-                        "恢复卡归档失败：renameTo 返回 false（file=${file.name}）" +
+                        "恢复卡归档失败：renameTo 失败（返回 false 或抛异常）（file=${file.name}）" +
                             "—— 该 run 的恢复卡下次进会话仍会复活",
                     )
                 }
@@ -393,19 +393,23 @@ internal class ChatRunCoordinator(
      */
     private fun thermallyCappedConfig(base: InferenceConfig, model: ModelDescriptor?): InferenceConfig {
         val governor = container.thermalGovernor
-        val cappedRounds = governor.maxRoundsCap(base.maxAgentRounds)
+        // 档位快照**只读一次**（Wave 51 P3-3）：判据（两个 cap）与日志的 `.name` 共用同一
+        // 快照 —— `tier` 是 StateFlow，两次读取之间档位可能跳变，否则会出现「日志说 X 档、
+        // 实际按 Y 档压」的自相矛盾。
+        val tier = governor.tier.value
+        val cappedRounds = governor.maxRoundsCap(base.maxAgentRounds, tier)
         // 思考模型（档案 minMaxTokens > 0）不压 maxTokens：appliedTo 必把它顶回下限。
         val tokenFloor = model?.fileName?.let { ModelSamplingProfiles.forFileName(it)?.minMaxTokens } ?: 0
-        val cappedTokens = if (tokenFloor > 0) base.maxTokens else governor.maxTokensCap(base.maxTokens)
+        val cappedTokens = if (tokenFloor > 0) base.maxTokens else governor.maxTokensCap(base.maxTokens, tier)
         val roundsChanged = cappedRounds != base.maxAgentRounds
         val tokensChanged = cappedTokens != base.maxTokens
         // 无变化即静默（保持既有语义），判据同时看两项。
         if (!roundsChanged && !tokensChanged) return base
-        val tier = governor.tier.value.name
+        val tierName = tier.name
         when {
             roundsChanged && tokensChanged -> AgentLogStore.info(
                 "热降档：新 run maxTokens ${base.maxTokens} → $cappedTokens，" +
-                    "轮次 ${base.maxAgentRounds} → $cappedRounds（$tier 档）",
+                    "轮次 ${base.maxAgentRounds} → $cappedRounds（$tierName 档）",
             )
 
             roundsChanged -> {
@@ -415,13 +419,13 @@ internal class ChatRunCoordinator(
                     "基准 ${base.maxTokens} ≤ 保底 256，已无可压空间"
                 }
                 AgentLogStore.info(
-                    "热降档：新 run 轮次 ${base.maxAgentRounds} → $cappedRounds（$tier 档）；" +
+                    "热降档：新 run 轮次 ${base.maxAgentRounds} → $cappedRounds（$tierName 档）；" +
                         "maxTokens 未压（$reason）",
                 )
             }
 
             else -> AgentLogStore.info(
-                "热降档：新 run maxTokens ${base.maxTokens} → $cappedTokens（$tier 档）；" +
+                "热降档：新 run maxTokens ${base.maxTokens} → $cappedTokens（$tierName 档）；" +
                     "轮次未变（基准 ${base.maxAgentRounds} 已触底）",
             )
         }

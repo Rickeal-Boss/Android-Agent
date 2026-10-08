@@ -77,9 +77,14 @@ val LiquidTypography = Typography(
  *  - `inverseOnSurface = onGlass` —— 玻璃上的主文本色，保证在 `glassTintElevated` 上可读。
  *  - `onSurface = onGlass` / `onSurfaceVariant = onGlassMuted` —— 主/次文本映射。
  *  - `surfaceVariant = glassTintElevated` —— 次级容器面。
- *  - `error = danger` / `onError = onAccent` —— 玻璃系统无独立 onDanger，取 onAccent
- *    （饱和色上的可读色，深色近黑 / 浅色白）作投影。
  *  - `outline = glassBorderBottom` —— 玻璃系统的描边色（底部暗内描边）。
+ *
+ * ## 刻意**不**映射的角色（如实申报）
+ *  - `error` / `onError` —— 早期版本曾映射成玻璃 `danger` / `onAccent`，Wave 51 复审**撤销**：
+ *    浅色下该组合对比度仅约 **4.22:1 < WCAG AA 4.5**，而 M3 默认的 `error` / `onError` 达标，
+ *    且全仓**零消费者**（无一处读 `colorScheme.error`）⇒ 保留 M3 默认，不引入不达标的投影。
+ *  - **未列出的角色一律走 M3 默认**（`surfaceTint` / `inversePrimary` / `surfaceContainer*` /
+ *    `tertiary` / `scrim` 等）—— 它们不是玻璃语义的一部分，本函数**不假装覆盖**。
  *
  * ⚠️ 已知取舍（申报）：浅色主题下 `inverseSurface = glassTintElevated`(#F2F3F8) 与米白壁纸
  * （wallpaperTop #FAF6ED）对比度低 ⇒ 浅色 Snackbar 的**块边界**弱于 M3 默认（深色块），
@@ -100,8 +105,6 @@ private fun bridgeGlassToMaterial(glassColors: GlassColorScheme, dark: Boolean):
         surfaceVariant = glassColors.glassTintElevated,
         inverseSurface = glassColors.glassTintElevated,
         inverseOnSurface = glassColors.onGlass,
-        error = glassColors.danger,
-        onError = glassColors.onAccent,
         outline = glassColors.glassBorderBottom,
     )
 }
