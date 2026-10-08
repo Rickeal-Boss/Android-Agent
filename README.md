@@ -333,7 +333,7 @@ Android-Agent/
 >   - **UI 批三条 P2 全部落地并真机目视**：① 键盘态输入框离键盘多 84dp（overlay 无条件生效 + `imePadding()` 叠加）⇒ 条件化后空隙 **≈25–36dp**（旧 ≈94dp）、收起态不压底栏 ② `GlassSegmented` **两处** Text 补 `overflow` ⇒ 真机由「CP/GP/NP」半字截断变为 **`C…`（1 全字 + 省略号）** ③ Snackbar 深色浅色块 ⇒ 抽 `bridgeGlassToMaterial` 单一事实源 + 补 13 个色角色，深色块色实测 **`(34,36,46)`**
 >   - **其他**：`renameTo` 返回值检查（全仓同族 4 处都查了、就这一处漏）；上下文条补 `maxLines`+`Ellipsis`；订正 `RunTokenLedger` 残留作废口径（全仓 `估算≈` **3 处全清**）；**守卫 #23**（`--summary-only` 退出码契约）+ `fulltest.sh` `files==0` 的 `::warning::`（**并修复它被 `$(…)` 捕获后不成为注解的缺口**）+ `build.yml` 用例数低于基线的非阻断 soft-check ⇒ **arch-guard 22 → 23 项、selftest 47 → 52**；全量单测 **598 → 619**
 >   - **外部报告对账**：复审 13 的「P1 涉及面 2 → **4 处**」与「先主因后自愈」顺序纪律均已采纳；每日简报（审 `e003509`）的两大建议**正是本波内容**，其「引擎 0.11.0 过时」在仓内不成立
-> - ⚠️ **真机验收积压：Wave 33 起累计 ≈32 条，台账已记 31 条（其中 27 条 `✅回收` / 4 条 `⛔或⚠️部分`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／层3 `useNativeTools` 日志／F4 文字 token 统一）；验收清单与取证命令见 §11。
+> - ⚠️ **真机验收台账：Wave 33 起累计 35 条（其中 28 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／层3 `useNativeTools` 日志／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
 
 ---
