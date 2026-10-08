@@ -333,6 +333,15 @@ Android-Agent/
 >   - **UI 批三条 P2 全部落地并真机目视**：① 键盘态输入框离键盘多 84dp（overlay 无条件生效 + `imePadding()` 叠加）⇒ 条件化后空隙 **≈25–36dp**（旧 ≈94dp）、收起态不压底栏 ② `GlassSegmented` **两处** Text 补 `overflow` ⇒ 真机由「CP/GP/NP」半字截断变为 **`C…`（1 全字 + 省略号）** ③ Snackbar 深色浅色块 ⇒ 抽 `bridgeGlassToMaterial` 单一事实源 + 补 13 个色角色，深色块色实测 **`(34,36,46)`**
 >   - **其他**：`renameTo` 返回值检查（全仓同族 4 处都查了、就这一处漏）；上下文条补 `maxLines`+`Ellipsis`；订正 `RunTokenLedger` 残留作废口径（全仓 `估算≈` **3 处全清**）；**守卫 #23**（`--summary-only` 退出码契约）+ `fulltest.sh` `files==0` 的 `::warning::`（**并修复它被 `$(…)` 捕获后不成为注解的缺口**）+ `build.yml` 用例数低于基线的非阻断 soft-check ⇒ **arch-guard 22 → 23 项、selftest 47 → 52**；全量单测 **598 → 619**
 >   - **外部报告对账**：复审 13 的「P1 涉及面 2 → **4 处**」与「先主因后自愈」顺序纪律均已采纳；每日简报（审 `e003509`）的两大建议**正是本波内容**，其「引擎 0.11.0 过时」在仓内不成立
+> - **W52（2026-10-08）**：**清观测盲区 + 挂账对账 + 小件行为修复**
+>   - 🔴 **B1 审批等待停表**（行为修复）：墙钟硬预算原自 run 起点起算、判定在**轮头**，而审批等待发生在**轮中** ⇒ 用户审批犹豫被全额计入任务耗时，批准后下一轮轮头可能立即 HARD 熔断（W51 一个污染 run 即此现象）。修法 = `RunState.pausedNanos` 累计审批挂起并从 `remaining` 剔除（evidence / 日志 / 诊断卡统一走 `effectiveElapsedMillis()`）+ 子 run 继承墙同步延长等效量；算术抽文件级纯函数 + 2 例边界单测。⚠️ **取舍**：只排除审批挂起，**不排除**模型生成 / 工具执行
+>   - 🔴 **B2 层3 判据首次有正向观测面**：原仅「漂移才 warn」且诊断未产出时恒判「一致」⇒ 离线永远判不了「引擎侧原生通道是否真失效」（层3 恒 `⛔`）。改为每 run 落一条 info 报 `useNativeTools` + 引擎 `nativeToolChannel`（诊断未产出报 `null`，**不冒充**一致）
+>   - **V-2 H-A 观测面**：主折叠点（`LiteRtLmEngine.kt:1766`）在**折叠前 ≥2 元素**时落「折叠前 N → 折叠后 M」日志（单元素不落，防刷屏）
+>   - 🔴 **`fulltest.sh` 假全量「对症」加固**（⚠️ 外部三份报告的因果**不成立**）：`rm -rf test-results` **自脚本创建（`6790cdd`）起就在 gradle 之前**——空环境实测「植入残留 → 跑默认模式 → 残留被删 + gradle 快速失败 + `::warning::` + exit 1」⇒ **无假全量**。真实 fail-open 面收窄为「`rm` 静默失败 + gradle 也失败」⇒ 修法 = rm 失败可见化 + 打印 XML mtime 范围 + 默认模式模块数 ≠9 告警（红线：`--summary-only` 恒 exit 0 **逐字保留**）
+>   - **守卫 23 → 25 项**（#24 fold 收口不变式：`Message.user` 下发点数 == `foldAdjacentText` 调用数，防新增下发点**静默重开 P1**；#25 `LiteRtLmEngine.kt` ≤2400）+ **selftest 52 → 59** + `build.yml` 用例数基线 **598 → 619** + 全量单测 **619 → 621**（唯一失败仍为 `SandboxFileScannerTest.kt:184` Windows 符号链接**既有基线**）
+>   - **台账聚合计数订正**：逐条实数（`awk` 计结论列）= **35 行 = 28 ✅ / 5 ⚠️ / 2 ⛔**（README 原「31 条 / 27 ✅ / 4」**三项全错**；handoff §五.5/§五.13 同步）
+>   - **真机复验（OPPO PDRM00 / A13）**：文本协议下模型一次发 **3 个 tool_call** ⇒ `多元素 content 下发：折叠前 3 → 折叠后 1`（**fold 真实行使、非 vacuous**）、`Failed to apply template` **0 命中**；B2 日志真机命中（`true`/`false` 两态，未冒充）；审批卡被批准 **5 次**且 **WallClockBudget 硬预算熔断 = 0**；沙箱正确拒绝绝对路径。⛔ 未行使：B1 的「长审批」效应（审批 ~7s 自动通过）
+>   - **多模态 P1 未覆盖补独立挂账** + **6 个**视觉预设标注「图片输入尚未验证」（与既有「视觉 GPU 未实测 → 禁 GPU」同纪律）
 > - ⚠️ **真机验收台账：Wave 33 起累计 35 条（其中 28 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／层3 `useNativeTools` 日志／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
 
