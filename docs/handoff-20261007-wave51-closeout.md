@@ -124,6 +124,34 @@ Step 2 create a file named w51.txt in the sandbox with content hello. Step 3 tel
 原生工具通道 = **开**；`backend=CPU`；`thinking=OFF`；系统夜间模式 = `auto`；
 `run-as com.rickeal.agent.debug find files -name '*w51*'` ⇒ **0 命中**；appops 通知 = default/allow。
 
+### 3.4 ✅ 最终产物一致性复验（「被测产物 = 出货代码」闭环，W51 补齐）
+⚠️ §3.1/§3.2 的首轮真机验证跑的是 **P3 之前**的包（`10-07 02:38`）。虽然 P3 三处改动
+（`LiquidAgentTheme` 去 `error`/`onError`、`ThermalGovernor` 加 `tier` 形参、`ChatRunCoordinator`
+档位快照 + 文案）**均不触及 `LiteRtLmEngine` 的 fold/自愈路径**，但按本仓纪律**被测产物必须等于出货代码**，
+故用最终 APK 重跑了一遍。
+
+- **被测产物**：`121,281,034 B / 2026-10-08 14:25`（`adb push` + `pm install -r` = Success；
+  装机回读 `lastUpdateTime = 2026-10-08 14:37:15` ⇒ **确已换包**）
+- **取证档** `/data/local/tmp/_w51f.log`（不过滤）：先验含 native 行（`grep -c 'W/native'` = **19**，
+  样本 `… litert_lm_loader.h:158] TFLite model type: TF_LITE_VISION_ENCODER not found …`）
+- **判据四件套（全部命中、非 vacuous）**：
+  | 判据 | 结果 |
+  |---|---|
+  | ① `Failed to apply template` | **0 命中**（全量档 `grep -c` = 0） |
+  | ② `settled` 非 Failed | `ModelStopped`（rounds=7） |
+  | ③ 3 条结果同批回灌 | round0 MODEL `finishReason=TOOL_CALLS`、`toolCalls` 长度 = **3** ⇒ seq4/5/6 **3 条 TOOL 同批**（round1 亦 3→3） |
+  | ④ 工具真执行 | `current_time` 真时间戳 ×4；`file_write` round0 `ok=false`（模型给绝对路径，沙箱**正确拒绝**）→ round1 改相对路径 `ok=true`，**沙箱文件真存在且内容逐字 = `hello`** |
+- **单文本基线**：`17 times 23 is 391.` ✅；无 `FATAL EXCEPTION` / `ANR`（=0）
+- **F3 用最终包重测**（与 P3-1 同源）：深色 Snackbar 背景实测 **RGB(34,36,46)**、文字 (244,245,250)
+  ⇒ **不再浅色块**；浅色 (242,243,248)/(16,18,26)。F1/F2 沿用首轮（最终包仅差 P3，不触及键盘态/分段控件布局）
+- ⚠️ **诚实排除一个污染 run**：首次复跑 settled=`Failed`，根因**不是模板**（模板失败 = 0），而是
+  **`WallClockBudget` 300s 硬预算耗尽**（授权对话框出现时回合被系统暂停 ~5min，run 内 227s > 180s 软预算）
+  ⇒ 判为**污染 run，不作 P1 结论**（留档 `_w51f_run_polluted.jsonl`）；干净重跑改用**自动授权脚本**
+  `_ci-tools/_w51f_autoauth.sh` 消除人工延迟后顺利收敛。
+- ⚠️ **模型输出退化（如实申报，非模板 bug）**：round2–7 反复同参调 `current_time`/`memory_read`，
+  触发 `SameParamDeadlock` 提醒后模型自行 STOP ⇒ `ModelStopped`。端侧小模型行为；**P1 只主张
+  「不炸 + 通道回灌 + 工具真执行」，三项均命中**。
+
 ---
 
 ## 四、坑复盘（本波最值得继承的 6 条）
