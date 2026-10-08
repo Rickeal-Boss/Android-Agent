@@ -439,7 +439,10 @@ internal fun isTemplateRenderFailure(raw: String): Boolean =
  * 🔴 反例纪律：**不得**把整个 List 压成文本 —— 那会把 ImageBytes/AudioBytes 一并变成字符串，
  * **打碎多模态**。只折叠**相邻 Text**，非 Text 是硬边界（遇到即 flush）。
  *
- * 分隔符 `"\n\n"` 与 ContextCompressor 合批口径对齐，防工具输出粘连破坏模型解析。
+ * 分隔符取空行 `"\n\n"`：用空行分隔相邻工具输出，避免粘连破坏模型解析 —— 这是本函数
+ * 自身的合理取舍，**不依赖任何外部「合批口径」**。（原文曾写「与 ContextCompressor 合批
+ * 口径对齐」，Wave 52 核验该背书不成立：`ContextCompressor.sanitizeForProvider` 零处
+ * `"\n\n"`，故删除假背书，保留分隔符本身。）
  *
  * ⚠️ 行为边界（如实申报，生产不可达）：空 `Text` 参与折叠时会照常写入分隔符 ⇒
  * `[Text("a"), Text("")]` → `[Text("a\n\n")]`（**尾随**空行）、`[Text("a"), Text(""),
@@ -1763,7 +1766,18 @@ class LiteRtLmEngine(
             awaitingNativeToolResponse = false
             // 出口收口（Wave 51 P1）：把相邻 Text 折成单段，使 content 恰好 1 个元素 ⇒ 下发为
             // string，规避 Qwen2.5 模板 `'…' + content + '…'` 对 JSON 数组的 `+` 报错。
-            Message.user(Contents.of(foldAdjacentText(buildContents(fresh))))
+            val preFoldContents = buildContents(fresh)
+            val foldedContents = foldAdjacentText(preFoldContents)
+            // H-A 观测面（Wave 52 V-2）：只报「折叠前 ≥2 元素」的实例（单元素是绝大多数正常轮，
+            // 不落日志以免刷屏）。折叠后仍 ≥2 ⇒ 含 ImageBytes/AudioBytes 等非 Text 元素 ⇒ 仍可能
+            // 触发模板 `+` 错（P1 未覆盖场景）；折叠后 =1 ⇒ 已收口。供日志侧统计「多元素 content
+            // 下发」实例，补齐 H-A（native 是否只在恰 1 元素时收敛为 string）的观测面。纯观测，不改行为。
+            if (preFoldContents.size >= 2) {
+                AgentLogStore.info(
+                    "多元素 content 下发：折叠前 ${preFoldContents.size} → 折叠后 ${foldedContents.size}"
+                )
+            }
+            Message.user(Contents.of(foldedContents))
         }
         // 重复惩罚（Wave 20，litertlm 0.17.1 起真实生效）：此前 SamplerConfig 无此参数、
         // SamplingParams.repetitionPenalty 只是「上层模拟或忽略」的死字段，0.17.1 把
