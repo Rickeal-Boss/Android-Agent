@@ -247,4 +247,51 @@ W50 收官交接写「`ChatParamsSheet.kt:149`（sheet 内容同样底部锚定 
 
 ## 八、CI run id
 
-（推送后回填）
+推送 `e003509..157d7ff`（**8 commit**，fast-forward）后**两条 workflow 自动触发**（本波含
+`scripts/**` / `.github/workflows/**` / `core-*/**` / `feature-*/**` 等非文档改动，无需 `workflow_dispatch`）：
+
+| workflow | run id | 结论 | 关键 job |
+|---|---|---|---|
+| **Build** | **`37737716605`** | ✅ **success** | `Lint (baseline gate)` / `Assemble Debug (JDK 21)`（含 **Architecture guard** + **Architecture guard self-test**）/ `Unit tests` **三 job 全绿** |
+| **Release** | **`37737716611`** | ✅ **success** | `Build & (optionally) sign release` 全步骤 success；`Gate tag release on signing secrets` / `Publish GitHub Release` = skipped（分支推送非 tag，符合预期） |
+
+### 8.1 守卫网在 CI 上的实跑（从 job 日志正文取，非只看 job 结论）
+- `OK  ` 行 = **23 条**（首条 `litertlm 仅存在于 core-engine`、末条 `fulltest.sh 的 --summary-only
+  分支恒 exit 0 且不经 exit 2`）；末行 `架构守卫全部通过。`
+- `自测结果：PASS=52 FAIL=0`
+- 行首 `::` 的**真注解**计数 = **0**（日志里的 `::error::` 都是**脚本源码行被回显**，不是注解）
+- 无 `FAIL [` 行
+
+### 8.2 产物
+| 来源 | 产物 | 大小 |
+|---|---|---|
+| Release | `liquidagent-release-apk-improve`（签名 release APK + AAB 打包） | **73,692,200 B** |
+| Release | `liquidagent-debug-improve` | 41,309,397 B |
+| Release | `liquidagent-release-mapping-improve`（R8 mapping） | 4,579,629 B |
+| Build | `liquidagent-debug-157d7ff…` | 41,309,478 B |
+| Build | `lint-reports-157d7ff…` | 24,201 B |
+
+对比 W50：release **73,691,893 → 73,692,200**（+307 B）／debug **41,303,807 → 41,309,478**（+5,671 B）／
+mapping **4,576,968 → 4,579,629**（+2,661 B）—— 增幅与「`foldAdjacentText` + 生成期自愈 + 主题桥接 +
+21 个新单测」相符，**无异常膨胀**。
+
+### 8.3 lint gate **真实通过**（下 artifact 解析，非只看 job 结论）
+`lint-reports-157d7ff…` 解析结果：issue 总数 = **1**，唯一一条为 `LintBaseline`（Hint，lint 指向
+baseline 文件自身，原文 `3 errors and 1 hint were filtered out because they are listed in the baseline file`）
+⇒ **真实新问题 = 0**，冻结 **4 条**全被 baseline 吸收（与 W49/W50 一致）。
+
+### 8.4 ⚠️ 本波 CI 侧的「观测面缺口」（如实标注，**不记通过**）
+- **用例数数值（期望 619）与「未触发低于基线 ⚠️」= `⛔ 观测面不可达`**：汇总步把 `fulltest.sh --summary-only`
+  的输出与 soft-check 结果都写进 `$GITHUB_STEP_SUMMARY`，而 **GitHub 不提供 step summary 的 API**，
+  job 日志正文里**没有** `tests=` 数值。可判的只有「`Run unit tests` 步 = success」+「汇总步 = success」
+  这一层 ⇒ **步绿 ✅ / 数值 ⛔**，两者**不得**合并记成「通过」。
+- **`::warning::` 回显通道本波未被行使（vacuous）**：本波无 warning 可回显 ⇒ 该修复**未取得行使证据**，
+  只能靠 W51 开发期的逐字复刻实测（空目录跑汇总步 ⇒ `::warning::` 出现在 stdout、`EXIT=0`）。
+- 同理：`fulltest.sh` 的 `files==0` 分支 `::warning::` 本波**未触发**（测试跑全了）⇒ 亦属未行使。
+
+### 8.5 check-run 注解（`/commits/157d7ff…/check-runs`）
+共 12 条（Lint 4 / Assemble 6 / Unit tests 2），**逐条为平台级**（`Android SDK root` / `ubuntu-latest
+将迁移` / `Node.js 20 deprecated` / `Built APK:` 等），**无一条来自本仓脚本** ⇒ 无「用例数低于基线 ⚠️」
+注解、无 `::warning::未找到任何 TEST-*.xml`、无 `::error::`。
+⚠️ 平台限制：soft-check 的 ⚠️ 与 `fulltest.sh` 的 `::warning::` 都只写 Summary，**若触发注解面板也不显示**
+⇒ 不得据「注解面板没有」推断「没触发」。
