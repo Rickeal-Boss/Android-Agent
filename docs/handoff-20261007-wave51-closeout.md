@@ -256,11 +256,15 @@ W50 收官交接写「`ChatParamsSheet.kt:149`（sheet 内容同样底部锚定 
 | **Release** | **`37737716611`** | ✅ **success** | `Build & (optionally) sign release` 全步骤 success；`Gate tag release on signing secrets` / `Publish GitHub Release` = skipped（分支推送非 tag，符合预期） |
 
 ### 8.1 守卫网在 CI 上的实跑（从 job 日志正文取，非只看 job 结论）
-- `OK  ` 行 = **23 条**（首条 `litertlm 仅存在于 core-engine`、末条 `fulltest.sh 的 --summary-only
-  分支恒 exit 0 且不经 exit 2`）；末行 `架构守卫全部通过。`
-- `自测结果：PASS=52 FAIL=0`
-- 行首 `::` 的**真注解**计数 = **0**（日志里的 `::error::` 都是**脚本源码行被回显**，不是注解）
-- 无 `FAIL [` 行
+- **Build `Assemble Debug` job**：`OK  ` 行 = **23 条**（首条 `litertlm 仅存在于 core-engine`、末条
+  `fulltest.sh 的 --summary-only 分支恒 exit 0 且不经 exit 2`）；末行 `架构守卫全部通过。`；
+  `自测结果：PASS=52 FAIL=0`。
+- **Release job**（16KB 对齐步亦跑守卫自测网）：`OK  ` 行 = **23 条**；`自测结果：PASS=52 FAIL=0`
+  ⇒ **Build/Release 对称，两条都取到字面层**。
+- 两条的**行首 `::` 真注解计数均 = 0**（日志里的 `::error::` 都是**脚本源码行被回显**，不是注解）；无 `FAIL [`。
+- 自测新增用例在列：`PASS [case26 exit 2 未被 SUMMARY_ONLY==0 包住 (第 23 条)]`、
+  `PASS [case27 --summary-only 早退载体缺失 (第 23 条)]`。
+- 注解级旁证：Build / Release / Lint **全部 job 均无 error 级注解**。
 
 ### 8.2 产物
 | 来源 | 产物 | 大小 |
@@ -295,3 +299,29 @@ baseline 文件自身，原文 `3 errors and 1 hint were filtered out because th
 注解、无 `::warning::未找到任何 TEST-*.xml`、无 `::error::`。
 ⚠️ 平台限制：soft-check 的 ⚠️ 与 `fulltest.sh` 的 `::warning::` 都只写 Summary，**若触发注解面板也不显示**
 ⇒ 不得据「注解面板没有」推断「没触发」。
+
+### 8.6 本波 CI 侧 **vacuous / 未行使** 清单（均为「条件未触发」，**不是失败**）
+| 项 | 状态 | 依据 |
+|---|---|---|
+| `::warning::` 回显通道 | **未行使（vacuous）** | 两 run 无任何 warning/error 可回显；机制已由开发期离线复验证实（空目录跑汇总步 ⇒ `::warning::` 出现在 stdout、`EXIT=0`） |
+| `fulltest.sh` 的 `files==0` 分支 | **未行使（vacuous）** | 本波测试正常产出 `TEST-*.xml` ⇒ 未触发 |
+| soft-check「低于基线」⚠️ 分支 | **未行使（vacuous）** | 总数 ≥ 598（新增 21 例）⇒ 未触发 |
+| arch-guard #23 的**红面**（生产侧） | **未行使** | 本波 `fulltest.sh` 合规；但 selftest 的 **case26/27 红面已在 CI 行使** —— `Architecture guard self-test` 步绿即证明它们已跑并断言通过 |
+
+### 8.7 CI 侧**观测面缺口**清单（如实记录，供后续波次参考）
+1. **job 日志正文鉴权专属**：未鉴权 `GET /actions/jobs/{id}/logs` = **403**；本仓 helper 内 PAT 已失效（401）
+   ⇒ **无有效凭据时无法离线取日志正文**（本波由主理人以新 PAT inline 取回）。
+2. **job Summary 面板 API 不可达**：`check-run.output.summary` 为空 + 公开 job HTML 不含 Summary 文本
+   ⇒ 逐模块用例数 / soft-check ⚠️ **只能肉眼读**。
+3. **artifact 下载鉴权专属**：未鉴权 = **401** ⇒ lint-reports / unit-test-reports 离线不可取。
+4. **可用降级通道（public 仓库）**：未鉴权可读 `runs` / `runs/{id}/jobs`（含 step conclusion）/
+   `check-runs/{id}/annotations` ⇒ 足以做「**步级 + 注解级**」判定，**不足以**做「日志正文 / Summary 数值」判定。
+   ⇒ **凡结论依赖后两者，一律标 `⛔`，不得降级成「通过」。**
+5. **运维项（独立于本波）**：helper 内 PAT 过期 ⇒ 影响所有依赖它的离线取数脚本（已记 W52 挂账）。
+
+### 8.8 lint 复核的**独立复算限制**（CI 席如实申报）
+CI 席因鉴权所限**无法独立复算** lint artifact 的内部计数（未鉴权下载 = 401）⇒ 该层标 `⛔`，
+但给出**三重旁证**：① `Run Android Lint (baseline gate)` 步 = success（硬门禁 `abortOnError=true` +
+`warningsAsErrors=true` ⇒ 0 新问题）；② Lint job 注解 = 3 notice + 1 warning（Node.js 20，infra，非本仓）、
+**无 error**；③ artifact 大小 **24,201 B 与 W48/W50 的 lint-reports zip 完全一致** ⇒ 报告内容未变，
+与「0 新问题 + 1 Hint」自洽。**方法合规性**（下 artifact → 解析 issue 集 → 对比 baseline）已判定 ✔。
