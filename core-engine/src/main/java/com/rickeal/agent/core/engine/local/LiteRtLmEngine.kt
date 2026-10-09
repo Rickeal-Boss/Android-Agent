@@ -25,6 +25,7 @@ import com.rickeal.agent.core.engine.EngineSessionDiagnostics
 import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
 import com.rickeal.agent.core.engine.mergeResilienceState
+import com.rickeal.agent.core.engine.shouldResetResilienceOnSwitchFlip
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
@@ -316,6 +317,15 @@ class LiteRtLmEngine(
      */
     @Volatile
     private var nativeToolsRejected: Boolean = false
+
+    /**
+     * 复位探测状态（W58 修补 B）：上一 run 观察到的「原生工具通道」开关值
+     *（null = 尚未观察）。仅被 [generateStream] 入口的复位块消费
+     *（判据见 [shouldResetResilienceOnSwitchFlip]）；随 [releaseInternal] 复位为 null
+     *（实例级状态，跨实例不复位 —— 保 evict 场景的 store 防护，见该纯函数 KDoc 申报）。
+     */
+    @Volatile
+    private var lastSeenSwitchOn: Boolean? = null
 
     /** 已发送消息的 id 水印（登记由 [freshMessages] 负责，见其 KDoc）。会话重建时必须清空。 */
     /**
@@ -1245,7 +1255,11 @@ class LiteRtLmEngine(
      * 外提后该语义获 JVM 覆盖（`EngineResilienceMergeTest`）。
      *
      * 调用点：[ensureConversation] 第一行 —— 必须先于任何 `nativeToolChannelActive()`
-     * 判定（见该调用点注释）。`cid == null`（理论上不出现的防御分支）静默跳过。
+     * 代码位调用（守卫 #28 判据③；否则同一轮读回状态对通道判定不可见，见该调用点注释）。
+     * W58 申报：单调不变式仍成立 —— 全引擎唯一的复位出口 =
+     * [generateStream] 入口对「同实例开关 OFF→ON 跳变」的复位块
+     *（[shouldResetResilienceOnSwitchFlip]），不经过本读回路径。
+     * `cid == null`（理论上不出现的防御分支）静默跳过。
      */
     private fun adoptResilienceFromStore(cid: String?) {
         if (cid == null) return
@@ -1375,6 +1389,23 @@ class LiteRtLmEngine(
     // -------------------------------------------------------- generate
 
     override fun generateStream(request: GenerationRequest): Flow<GenerationChunk> = flow {
+        // W58 修补 B（单调证伪的用户复位路径）：用户把「原生工具通道」开关重新打开
+        //（同实例 OFF→ON 跳变，判据 [shouldResetResilienceOnSwitchFlip]）时，一次性清掉
+        // 实例证伪字段、重建计数与进程级 store —— 用户显式设置优先（W48 哲学），复位后
+        // 重新给机会：再炸即再证伪（计数与日志留痕）。必须放在熔断闸门**之前**：本块是
+        // 同步 / 异步生成的共同必经点，且若晚于闸门，store 残留计数会先熔断、复位成空话。
+        // ⚠️ 复位边界（如实申报）：唯一复位 = 同实例观察到的开关 OFF→ON 跳变；跨实例
+        // 换新 / 进程重启场景 store 随进程清零或 lastSeen 未知 ⇒ 不复位（保 evict 防护）。
+        if (shouldResetResilienceOnSwitchFlip(lastSeenSwitchOn, request.config.nativeToolChannel)) {
+            nativeToolsRejected = false
+            templateRebuildCount = 0
+            resilienceStore.clearAll()
+            AgentLogStore.warn(
+                "原生工具通道：用户重新开启，已清证伪与重建计数，重新给机会" +
+                    "（再炸再证伪，计数与日志留痕）"
+            )
+        }
+        lastSeenSwitchOn = request.config.nativeToolChannel
         // W56 软熔断闸门：模板重建计数达到 K 时直接失败，不再行使「炸 → 自愈重建 → 再炸」
         // 的反复路径。计数取「实例字段 ∨ store」（fresh 实例的实例字段尚未经
         // [adoptResilienceFromStore] 读回，必须直读 store 才拦得住首炸）。
@@ -2284,6 +2315,9 @@ class LiteRtLmEngine(
         // （键 = cid）承载，releaseInternal 只清读速路径的实例字段 —— store 不在此清，
         // 「证伪不随 evict 清零」（W55 审查 P2#1）正是靠它成立。
         nativeToolsRejected = false
+        // W58 修补 B：复位探测状态是实例级字段，随实例一起作废 —— 残留会把「重载后的
+        // 首 run」误判成 OFF→ON 跳变（null 语义见 lastSeenSwitchOn KDoc）。
+        lastSeenSwitchOn = null
         // 重建计数同样绑定**本引擎实例**（同一模型 + 同一转换件）：引擎没了，实例字段即作废 ——
         // 否则下次加载会带入上一实例的累计值，让「会话级」语义失真。⚠️ W56：软熔断用的
         // 跨实例累计由 resilienceStore 承载（键 = cid），本复位只清实例读速字段，不影响熔断计数。

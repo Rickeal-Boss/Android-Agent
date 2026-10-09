@@ -69,7 +69,14 @@ class AppContainer(
 
     val settingsRepository: SettingsRepository = SettingsRepository(context)
     val modelRepository: ModelRepository = ModelRepository(context, settingsRepository)
-    val conversationRepository: ConversationRepository = ConversationRepository(context)
+
+    // W58 修补 B：进程级会话韧性 store 上移到 conversationRepository **之前** ——
+    // 后者的删除钩子（清该 cid 快照的卫生位，见 ConversationRepository 构造参数 KDoc）
+    // 按声明顺序依赖它。消费点仍在其下的 engineLoadCoordinator（DefaultEngineFactory 注入）。
+    private val engineResilienceStore: EngineResilienceStore = ProcessEngineResilienceStore()
+
+    val conversationRepository: ConversationRepository =
+        ConversationRepository(context) { id -> engineResilienceStore.clear(id) }
 
     /**
      * 附件存储器。**同时是附件目录的唯一事实来源** —— [importAttachment] 与
@@ -209,7 +216,7 @@ class AppContainer(
     // 加载中收到的 evict 延迟到 load 收尾消化（native load 不可中断）。AgentRunner 零改动。
     // W56：进程级会话韧性 store 在此唯一组装、经 DefaultEngineFactory 注入 LiteRtLmEngine
     //（nativeToolsRejected / templateRebuildCount 跨引擎实例存活，治 W55 审查 P2#1）。
-    private val engineResilienceStore: EngineResilienceStore = ProcessEngineResilienceStore()
+    // W58：store 声明上移到 conversationRepository 之前（删除钩子依赖，见其上注释）。
     private val engineLoadCoordinator: EngineLoadCoordinator =
         EngineLoadCoordinator(DefaultEngineFactory(engineResilienceStore))
 

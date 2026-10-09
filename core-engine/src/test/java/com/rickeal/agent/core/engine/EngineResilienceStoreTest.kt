@@ -54,4 +54,37 @@ class EngineResilienceStoreTest {
         assertFalse(other.nativeToolsRejected)
         assertEquals(0, other.templateRebuildCount)
     }
+
+    @Test
+    fun `clear 单键后读回默认快照`() {
+        store.write(
+            "cid-a",
+            EngineResilienceState(nativeToolsRejected = true, templateRebuildCount = 5),
+        )
+        store.clear("cid-a")
+        // 清键（W58 修补 B）= 删除该 cid 快照：读回回到默认值（复位发生在 merge 之前，
+        // 由用户显式动作触发，单调不变式不破）。
+        val state = store.read("cid-a")
+        assertFalse(state.nativeToolsRejected)
+        assertEquals(0, state.templateRebuildCount)
+    }
+
+    @Test
+    fun `clearAll 清空全部键后读回默认快照`() {
+        store.write(
+            "cid-a",
+            EngineResilienceState(nativeToolsRejected = true, templateRebuildCount = 5),
+        )
+        store.write(
+            "cid-b",
+            EngineResilienceState(nativeToolsRejected = false, templateRebuildCount = 7),
+        )
+        store.clearAll()
+        // 引擎「开关 OFF→ON」复位块（W58 修补 B）用的就是全清语义。
+        for (cid in listOf("cid-a", "cid-b")) {
+            val state = store.read(cid)
+            assertFalse(state.nativeToolsRejected)
+            assertEquals(0, state.templateRebuildCount)
+        }
+    }
 }

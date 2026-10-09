@@ -24,7 +24,17 @@ typealias ConversationsRepository = ConversationRepository
  *
  * 所有 IO 走 Dispatchers.IO；文件损坏时 load 返回 null，refresh 返回空列表，绝不崩溃。
  */
-class ConversationRepository(context: Context) {
+class ConversationRepository(
+    context: Context,
+    /**
+     * 会话删除后的清理钩子（W58 修补 B 附带卫生位）：[delete] 落盘完成后回调，
+     * 用于清掉进程级韧性 store 里该 cid 的快照（AppContainer 注入
+     * `engineResilienceStore::clear`），防「会话已删、证伪/计数快照仍占键」的残留。
+     * ⚠️ 如实申报：[delete] 当前**零生产调用点** —— 本钩子是为将来删除入口
+     * 预埋的卫生位，**不是**用户可见修复。
+     */
+    private val onConversationDeleted: (String) -> Unit = {},
+) {
     /**
      * 会话目录（`filesDir/conversations`）。
      *
@@ -109,6 +119,8 @@ class ConversationRepository(context: Context) {
             val next = _metas.value.filter { it.id != id }
             _metas.value = next
             store.write("index.json", next, ListSerializer(ConversationMeta.serializer()))
+            // 清理钩子（W58 卫生位）：落盘完成后通知外部清该 cid 的关联快照。
+            onConversationDeleted(id)
         }
     }
 

@@ -39,7 +39,10 @@ data class EngineResilienceState(
  *
  * ⚠️ 边界（如实申报）：本函数只钉**合并语义**，钉不住引擎**调用点存在性**
  *（调用点是否仍被 `adoptResilienceFromStore` / 熔断闸门行使属引擎方法体，纯函数测试
- * 覆盖不到；二者互补）。
+ * 覆盖不到；二者互补）。W58 申报：单调不变式仍成立 —— 全引擎唯一复位出口 =
+ * `LiteRtLmEngine.generateStream` 入口的「开关 OFF→ON 跳变」复位块
+ *（[shouldResetResilienceOnSwitchFlip]），复位发生在 merge 之前、由用户显式动作触发，
+ * 非 merge 拉退。
  */
 internal fun mergeResilienceState(
     instance: EngineResilienceState,
@@ -48,6 +51,24 @@ internal fun mergeResilienceState(
     nativeToolsRejected = instance.nativeToolsRejected || snapshot.nativeToolsRejected,
     templateRebuildCount = maxOf(instance.templateRebuildCount, snapshot.templateRebuildCount),
 )
+
+/**
+ * 「用户重新开启原生工具通道 ⇒ 韧性复位」的判据（W58 修补 B，纯函数外提以便 JVM 单测）。
+ *
+ * 只认**同实例观察到的开关 OFF→ON 跳变**：上一 run 读到 OFF（[lastSeen] == false）且
+ * 本 run 读到 ON（[current] == true）才算翻转 ⇒ 复位。语义 = 用户显式设置优先
+ *（W48 哲学，守卫 #21 同源）：证伪与计数都是「为用户挡必炸路径」的临时状态，
+ * 用户重开开关即是「再给一次机会」的显式指令。
+ *
+ * ⚠️ 边界（如实申报）：[lastSeen] == null（首 run / 实例刚换）**不**判翻转 ——
+ * 保 evict 场景的 store 防护：换新实例不能因「lastSeen 未知」把证伪清零重走必炸路径。
+ * 跨实例换新 / 进程重启场景下不复位，属已知残留（见 [LiteRtLmEngine.generateStream]
+ * 复位块注释的申报）。
+ *
+ * 契约：**纯函数** —— 无副作用、不读写 store；调用点（引擎复位块）负责执行复位动作。
+ */
+internal fun shouldResetResilienceOnSwitchFlip(lastSeen: Boolean?, current: Boolean): Boolean =
+    current && lastSeen == false
 
 /**
  * 进程级会话韧性 store（W56，治 W55 审查 P2#1「自愈置位随旧实例清零」）。
@@ -81,6 +102,20 @@ interface EngineResilienceStore {
 
     /** 整体覆盖写入 [cid] 的韧性状态（快照语义，无部分写）。 */
     fun write(cid: String, state: EngineResilienceState)
+
+    /**
+     * 清掉 [cid] 的韧性快照（W58 修补 B）：此后 [read] 回到默认值（未证伪 / 计数 0）。
+     * 单调不变式**不破** —— 清键只由用户显式动作（删除会话等卫生位）触发，
+     * 复位发生在 merge 之前，不是 merge 把状态拉退。
+     */
+    fun clear(cid: String)
+
+    /**
+     * 清空**全部**韧性快照（W58 修补 B）：语义同 [clear]，作用于所有 cid。
+     * 当前唯一调用点 = 引擎「原生工具通道 OFF→ON」复位块（用户显式重开通道，
+     * 见 [shouldResetResilienceOnSwitchFlip]）。
+     */
+    fun clearAll()
 }
 
 /**
@@ -98,5 +133,13 @@ class ProcessEngineResilienceStore : EngineResilienceStore {
 
     override fun write(cid: String, state: EngineResilienceState) {
         states[cid] = state
+    }
+
+    override fun clear(cid: String) {
+        states.remove(cid)
+    }
+
+    override fun clearAll() {
+        states.clear()
     }
 }
