@@ -10,19 +10,19 @@
 ## 一、W53 总账
 
 ### 一句话
-**守卫网扩展 + 引擎 god-file Stage-1 拆分 + 多模态 P1 取证（L1/L2）+ 台账 #36 回收 + B1 判据侧接线外提 + role 观测面**：守卫 **25 → 27 项**、selftest **59 → 65（PASS=65 FAIL=0）**、`build.yml` 基线 **619 → 623**；引擎 `LiteRtLmEngine.kt` **2389 → 2054 行**（抽 4 个同包文件 = 349 行纯搬运，god-file 余量 346）；多模态容器 L1/L2 取证**实证**数组问题真实存在且 `Qwen2.5-1.5B` 模板不安全；H-A 矛盾定性为「未找到 collapse 实现 + role 相关性可测假设」；台账 #36 回收层3 正向观测面（聚合句 35 → 36 = 29✅/5⚠️/2⛔，并由 #27 机械钉住）。
+**守卫网扩展 + 引擎 god-file Stage-1 拆分 + 多模态 P1 取证（L1/L2）+ 台账 #36 回收 + B1 判据侧接线外提 + role 观测面**：守卫 **25 → 27 项**、selftest **59 → 65（PASS=65 FAIL=0）**、`build.yml` 基线 **619 → 623**；引擎 `LiteRtLmEngine.kt` **2354 → 2054 行**（拆分净减 300 行；`4ce095f` 的 commit message 写 2389 系笔误，已推无法改写，以本处为准；抽 4 个同包文件 = 349 行纯搬运，god-file 余量 346）；多模态容器 L1/L2 取证**实证**数组问题真实存在且 `Qwen2.5-1.5B` 模板不安全；H-A 矛盾定性为「未找到 collapse 实现 + role 相关性可测假设」；台账 #36 回收层3 正向观测面（聚合句 35 → 36 = 29✅/5⚠️/2⛔，并由 #27 机械钉住）。
 
 ### 关键现实（如实申报）
 本波**子 Agent 因 429 限流两次失败**（`android-developer` 0s 即失败、`ci-workflow-specialist` 32m8s 后失败）。**主理人转为自行收尾**：复核所有 diff、补做开发席未完成的 **role 观测面（3 处 Edit）**、跑编译/守卫/单测/selftest、写交接、commit、推仓库、触发 CI。下表 commit 为收官时统一落地，**非**子 Agent 分批提交。
 
-### 改动清单（工作树 = 10 modified + 4 new）
+### 改动清单（工作树 = 10 modified + 5 new）
 
 | 文件 | 性质 | 说明 |
 |---|---|---|
 | `scripts/arch-guard.sh` | 工具链 | **+90**：新增守卫 #26（测试基线双向同步）、#27（A5 台账聚合句 ↔ 逐条三态）；#25 注释订正为「2354」（**工作区引擎已涨到 2054+，注释仍滞后，待改非写死写法**） |
 | `scripts/arch-guard-selftest.sh` | 工具链 | **+169**：为 #26/#27 补正向/负向 selftest 用例（含「baseline 滞后」「删例」「聚合句不符」） |
 | `.github/workflows/build.yml` | CI | 基线 `619 → 623`（W53 开发席 B1 判据接线 +2 例使 @Test 实数变 623；否则 #26 立刻红，讽刺性命中 #26 要抓的「滞后」形态） |
-| `core-engine/.../LiteRtLmEngine.kt` | 引擎 | **Stage-1 拆分**：2389 → 2054 行；加 `summarizeContentTypes()`（sealed `Content` 6 子类计数）、V-2 日志补元素类型；**主理人补 role 观测面**：`outboundRoleForDiag`（tool/user）+ onError 自愈日志带 role |
+| `core-engine/.../LiteRtLmEngine.kt` | 引擎 | **Stage-1 拆分**：2354 → 2054 行；加 `summarizeContentTypes()`（sealed `Content` 6 子类计数）、V-2 日志补元素类型；**主理人补 role 观测面**：`outboundRoleForDiag`（tool/user）+ onError 自愈日志带 role |
 | `core-engine/.../EngineLoadDegrade.kt`（新, 212） | 引擎 | 纯搬运 `EngineLoadDegrade` 逻辑（零行为变更） |
 | `core-engine/.../ThoughtChannels.kt`（新, 77） | 引擎 | 纯搬运 `thoughtChannelDefsFor` 等（零行为变更） |
 | `core-engine/.../PrefaceCheck.kt`（新, 43） | 引擎 | 纯搬运 preface 校验（零行为变更） |
@@ -36,6 +36,10 @@
 
 ⇒ **@Test 实数 = 623**（与 `build.yml` baseline 吻合，arch-guard #26 双绿）。
 
+> **勘误（W54 补注）**：
+> - **第 5 个 new = 本文件自身** `docs/handoff-20261009-wave53-closeout.md`（`git show 4ce095f --name-status` 实测 **5 A + 10 M**；原表仅列 4 个「（新）」行，漏计本文件）。
+> - ⚠️ **非纯搬运的可见性差异 2 处（如实申报）**：`GPU_FAILURE_FEATURES` / `GPU_FAILURE_HINT` 由父提交 `287d40a` 的 `private` 改 `internal`（拆到 `EngineLoadDegrade.kt` 后跨文件引用必需；仅可见性，**运行时零行为变更**）。
+
 ---
 
 ## 二、🔴 本波最重的技术内容
@@ -45,7 +49,7 @@
 - **#27 A5 台账聚合句一致**：解析 `docs/10-device-acceptance.md` §11.0.1 三态结论列，与 `README.md`/docs 聚合句比对，不等即判红。治理 W52 暴露的「README 聚合句三项全错 + build.yml 基线滞后」同族根因（**聚合口径无守卫**）。
 - **selftest +169**：为 #26/#27 各补正向 + 负向 fixture（含「删例致低于基线」「聚合句手改错」），堵「守卫自身 fail-open」。
 
-### 2.2 引擎 god-file Stage-1 拆分（2389 → 2054）
+### 2.2 引擎 god-file Stage-1 拆分（2354 → 2054）
 - 抽 4 个同包文件（共 349 行），**纯搬运零行为变更**：`EngineLoadDegrade`(212) / `ThoughtChannels`(77) / `PrefaceCheck`(43) / `TemplateRenderGuards`(17)。
 - `foldAdjacentText` + `summarizeContentTypes` **按要求留在原文件**以保守卫 #24 不变式（fold 收口）。
 - 守卫生线 `#25` ≤2400 当前 2054，**余量 346**；触顶 = 启动 Stage-2/3 评审，非改阈值。
@@ -120,7 +124,7 @@ W52 末 `build.yml` 基线仍 619，但当时实数已 621（W52 开发席 +2 �
 
 ### 🔴 优先（W54 首批）
 
-1. **H-A 定案三路径（第四审 §3.2 · Wave53 深审 F-1 同源）**：离线、小时级、可能直接消解 W51 以来悬置的核心矛盾——① checkout `v0.17.1` tag 对 `prompt_template.cc`/`parser_utils.cc`/`conversation.cc`/**JNI 桥接目录**做 tag↔tip diff 专找「单元素数组 → 标量」的 unwrap/collapse；② 把 PyPI minijinja 钉到 litertlm 0.17.1 vendored 同款版本重跑单元素复现；③ JVM 上用 0.17.1 AAR 调 `Contents.of("x").toJson()` 实证喂给模板的 JSON 形状。**这是 litertlm bump 的硬前置（见 item 13）**。
+1. **H-A 定案三路径（第四审 §3.2 · Wave53 深审 F-1 同源）**：离线、小时级、可能直接消解 W51 以来悬置的核心矛盾——① checkout `v0.17.1` tag 对 `prompt_template.cc`/`parser_utils.cc`/`conversation.cc`/**JNI 桥接目录**做 tag↔tip diff 专找「单元素数组 → 标量」的 unwrap/collapse；② 把 PyPI minijinja 钉到 litertlm 0.17.1 vendored 同款版本重跑单元素复现；③ JVM 上用 0.17.1 AAR 调 `Contents.of("x").toJson()` 实证喂给模板的 JSON 形状。**这是 litertlm bump 的硬前置（见 item 14）**。
 2. **B1 真机长审批剧本**：构造审批挂起 ≥5min10s，验证不被 HARD 熔断（四判据：审批弹出 / run 继续 / WallClockBudget 熔断 = 0 / pausedNanos 正确计入）。自动授权脚本需改为「不自动批」或手动按住；负向对照（无审批的真长任务）确认 HARD 熔断仍按有效时长触发。
 3. **多模态 L3 + 毒化 剧本改写（原「Qwen2.5-1.5B 发图」不可构造——纯文本模型 UI 不开放图片入口）**：① **毒化测试（优先，零容器/零真机窗口外成本）**：在 `Qwen2.5-1.5B` 上**关闭 fold** 一次回灌 ≥3 工具结果 ⇒ 应必炸（`Failed to apply template`）；再开 fold ⇒ 应不炸（折后 1 元素）——**直接定 H-A 悬案**，无需发图、无需新容器；② 视觉容器 L3 A/B：先经应用内市场取得 5 个未取证容器（`Qwen2-VL-2B` 风险最高，Qwen 系同源）→ `adb dd` + `minijinja` L2 定案 → 仅对模板不安全者排真机发图 A/B + `下发 role=` 读数。**Qwen2.5 上的 role 复验移除**（不可构造，离线 minijinja 已提供决定性证据）。
 4. **#25 注释非写死化**：注释数字已订正为 2054（Stage-1 拆分后实测），「注释/实际」脱节已消除；彻底非写死化（注释引用实时行数或移除具体数字）顺延至 god-file 拆分评审或并入自动化。
@@ -128,17 +132,17 @@ W52 末 `build.yml` 基线仍 619，但当时实数已 621（W52 开发席 +2 �
 
 ### 🟡 常规（W51–W52 挂账顺延，未动项）
 
-5. **`DeepSeek-R1-Distill-Qwen-1.5B` 被 `inferFamily` 误判 `thinking=false`**（W48 让 `enable_thinking` 恒发 ⇒ 可能关掉其推理）。**重启前提：拿到该容器 + 真机验 AUTO。不得无容器盲改。**
-6. **真机验收积压**：台账 36 条（29 ✅ / 5 ⚠️ / 2 ⛔）。未覆盖项：通知档B｜Gemma 两档｜层5「压缩触发重建」子路径｜记忆磁盘满·只读｜W37 UI 手感｜lint gate｜W38 行为变更｜W40 验收面｜F4 三级文字 token 统一。
-7. **F4 三级文字 token「同角色不同色」6 处**：先立「语义角色→颜色」单一映射表再全仓对齐。⚠️ 深色 `onGlassSubtle`(0x80) 是**脆弱达标**（余量 <10%）⇒ **不要降 alpha**。
-8. **数据回填 / 阈值回填**：口径见 W49 交接；阈值需 ≥2 个坏容器样本。
-9. **`TokenUsage.estimated` 治根字段**（唯一能长期不撒谎的口径方案）。
-10. **通知文案「渠道」误导**（`GenerationNotifier.kt` + 枚举 `CHANNEL_DISABLED`）。
-11. **法务** `TODO(legal)`×4 / `termsVersion`（**必须先于任何法务文本替换落地**）。
-12. **上游/已知限制**：`gemma-4-E2B-it-gpu`（GPU 输出乱码；CPU init `NOT_FOUND`）｜`MiniCPM-V-4-int8`（`Unsupported model type`）｜MiniCPM5 OFF 态规划外溢（2B int4 固有，**别动 `thoughtChannelDefsFor`**）。
-13. **`main` 分支快照声明过时**（实际 improve 领先 main 数百 commit）｜**litertlm bump 评估立项**｜**打 tag**（顺序：法务清零 → tag）。
+6. **`DeepSeek-R1-Distill-Qwen-1.5B` 被 `inferFamily` 误判 `thinking=false`**（W48 让 `enable_thinking` 恒发 ⇒ 可能关掉其推理）。**重启前提：拿到该容器 + 真机验 AUTO。不得无容器盲改。**
+7. **真机验收积压**：台账 36 条（29 ✅ / 5 ⚠️ / 2 ⛔）。未覆盖项：通知档B｜Gemma 两档｜层5「压缩触发重建」子路径｜记忆磁盘满·只读｜W37 UI 手感｜lint gate｜W38 行为变更｜W40 验收面｜F4 三级文字 token 统一。
+8. **F4 三级文字 token「同角色不同色」6 处**：先立「语义角色→颜色」单一映射表再全仓对齐。⚠️ 深色 `onGlassSubtle`(0x80) 是**脆弱达标**（余量 <10%）⇒ **不要降 alpha**。
+9. **数据回填 / 阈值回填**：口径见 W49 交接；阈值需 ≥2 个坏容器样本。
+10. **`TokenUsage.estimated` 治根字段**（唯一能长期不撒谎的口径方案）。
+11. **通知文案「渠道」误导**（`GenerationNotifier.kt` + 枚举 `CHANNEL_DISABLED`）。
+12. **法务** `TODO(legal)`×4 / `termsVersion`（**必须先于任何法务文本替换落地**）。
+13. **上游/已知限制**：`gemma-4-E2B-it-gpu`（GPU 输出乱码；CPU init `NOT_FOUND`）｜`MiniCPM-V-4-int8`（`Unsupported model type`）｜MiniCPM5 OFF 态规划外溢（2B int4 固有，**别动 `thoughtChannelDefsFor`**）。
+14. **`main` 分支快照声明过时**（实际 improve 领先 main 数百 commit）｜**litertlm bump 评估立项**｜**打 tag**（顺序：法务清零 → tag）。
     ⚠️ **bump 硬前置（第四审 §3.3 · H-A 耦合）**：P1 fold 修法的有效性依赖「native 把单元素数组当 string 处理」这一未经源码证实的行为（fold 的全部意义就是做单元素）。**bump 前必须完成**：① H-A 定案（v0.17.1 tag diff / minijinja 版本钉 / Java 侧 `Contents.of("x").toJson()` 实证，三选一或组合）；② 新版本上重跑 TextFoldTest 全套；③ 一次真机 fold 复验（折叠前 3 → 折叠后 1）。缺任一则 bump 可能**静默重开**已定案 P1（#24 只钉 fold 调用点存在性，拦不住行为级漂移）。**bump 不得先于上述前置合入。**
-14. **`ChatRunCoordinator.kt` 余量**（1278/1300，W52 无功能回灌 ⇒ 未拆分；W54 若有功能落此文件须先拆分后回灌）。
+15. **`ChatRunCoordinator.kt` 余量**（1278/1300，W52 无功能回灌 ⇒ 未拆分；W54 若有功能落此文件须先拆分后回灌）。
 
 ---
 
@@ -149,6 +153,10 @@ W52 末 `build.yml` 基线仍 619，但当时实数已 621（W52 开发席 +2 �
 | 第三审（W52 增量与 W53 路线，`20261008`） | `97bd45e` | ✅ 采纳：多模态 P1 容器取证列入挂账重启前提（L1/L2 已做）、守卫 #26/#27（A5 聚合句）、台账 #36 回收、引擎拆分。⚠️ 其「视觉预设 6 个」成立（W52 已标）；其「基线应 621」已被 W53 +2 推到 623（#26 双向同步兜底） |
 | 复检第二轮（Wave52，`20261008`） | `97bd45e` | ✅ 采纳：L2 取证方法（复用 W51 `adb dd` + `minijinja`）、`:442` KDoc 订正（W52 已做）、多模态挂账。⚠️ 无新不成立因果 |
 | 复审15（三线融合终稿与 W53 路线修补，`20261008`） | `97bd45e` | ✅ 采纳：计数链三连犯根治（#26）、台账聚合句机械钉住（#27）、引擎 god-file 拆分路线。⚠️ **其「W52 基线 619 滞后」成立**——W53 已上调 623 并由 #26 兜底 |
+| 复审15 子建议『反复炸防护（同 content 二次失败即停自愈）』 | `97bd45e` | ⚠️ **挂账**（顺序：N-W2 计数观测面 → 毒化真机 N 分布 → 定阈值 → 落防护；落点沿用复审15 裁决 = 进程级 `cid` 键控 store） |
+| 复审15 子建议『图片入口硬闸门』 | `97bd45e` | ⚠️ **挂账并并入 N-W3**（正确形态 = `image=true ⇒ evidenceLevel ≥ family-extrapolated` 的守卫；app 对 `supportsImages=false` 本就不发图，闸门仅在视觉模型上可达） |
+
+> **对账模板约定（W54 固化）**：每条外部建议的**子项**必须落一行，含「未采纳 + 原因」态（防「报告级落地掩盖子项缺失」）。子项级对账**不在机械守卫面**（无稳定锚点，靠人执行）——如实申报。
 
 > 方案席源码级核验三份报告 7+ 条论断（gemma-4 image=true、EngineLoadDegrade 只认 NOT_FOUND、baseline 619vs621、arch-guard.sh:546 注释、Coordinator 余量、裁决链三前提、AgentRunner:1901 不可达、P1 行使覆盖、V-2 日志区分度）**全部成立**，暴露面 **6 → 9 个预设**（含 3 个 Gemma 4）。报告间未再发现同源不成立因果（W52 已肃清）。
 
