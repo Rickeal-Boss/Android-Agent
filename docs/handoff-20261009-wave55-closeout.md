@@ -3,7 +3,7 @@
 > **唯一权威交接文档**。逐波细节看 `handoff-*.md`；README 台账是特性/路线图的权威版。
 > 本文件回答三件事：**W55 做了什么 / 留下了什么判据 / 下一个人从哪接手**。
 >
-> 基线：W54 收官 `19c1dab`（W54 共 12 commit，其 CI 触发推送 = `ac5a362..04efed3`）｜本波 tip = `improve` 分支最新（W55 共 8 commit；**CI 触发推送 = 推送后回填**）
+> 基线：W54 收官 `19c1dab`（W54 共 12 commit，其 CI 触发推送 = `ac5a362..04efed3`）｜本波 tip = `improve` 分支最新（W55 共 8 commit，**CI 触发推送 = `19c1dab..6efc0fb`**）
 > 前置文档：`docs/handoff-20261009-wave54-closeout.md`（W54 逐项记录）
 
 ---
@@ -202,12 +202,19 @@ fold 被 3 处共用（TOOL 回灌 / merge / 主折叠点）；只关 2 处**未
 
 ## 八、CI run id
 
-> **推送后回填占位**（W52 教训：run-id 回填迟到两次；本节须在推送后**立即**回填）。
+推送 `19c1dab..6efc0fb`（**8 commit**，fast-forward）后**两条 workflow 自动触发**（本波含 `core-engine/**` 与 `feature-models/**` 两个 `.kt` 改动，无需 `workflow_dispatch`）：
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | *推送后回填* | — | — |
-| **Release** | *推送后回填* | — | — |
+| **Build** | **`37914317306`** | ✅ **success** | `Lint (baseline gate)` ✅ / `Assemble Debug (JDK 21)` ✅ / `Unit tests` ✅（**三 job 全绿**） |
+| **Release** | **`37914317420`** | ✅ **success** | `Build & (optionally) sign release` 全步骤 success |
+
+### 8.1 守卫网在 CI 上的实跑（PAT 有 `actions:read` ⇒ 可读 job log）
+- `Assemble Debug (JDK 21)` job 内：`架构守卫全部通过。`（27 条）+ `自测结果：PASS=65 FAIL=0` + `arch-guard 自测全部通过。`
+- ⇒ CI 内守卫与自测**均非 vacuous**，与本地读数（27 / 65）一致。
+- ⚠️ 本波**无** `scripts/**` / `.github/workflows/**` 改动 ⇒ 无守卫逻辑变更；`release.yml` 仍被 `core-*/**` / `feature-*/**` 白名单命中（**已实测触发**）。
+
+> 本节已在推送后**立即回填**（W52 教训：run-id 回填迟到两次）。
 
 ---
 

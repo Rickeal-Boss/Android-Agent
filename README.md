@@ -363,6 +363,7 @@ Android-Agent/
 >   - 🔴 **同步路径模板失败自愈（治本）**：真机证实模板失败在 `conv.sendMessageAsync(...)` **同步抛出**、**不经** `onError` 回调 ⇒ W51 自愈（置 `conversationDirty` / 证伪 `nativeToolsRejected`）与 W54 `templateRebuildCount` 对**真实路径失效**。修法 = 把「模板失败处置」抽成 `handleTemplateRenderFailure`、**两条路径共用**（同步 catch / 异步 `onError`）+ 同步 `sendMessageAsync` 包 `try/catch`（**必须 rethrow**，不吞异常）+ 两处 `warn` 带**来源标识**（`同步下发` / `异步回调`）
 >   - **多模态 L1 剩 5 容器取证（全部数组安全）**：`Qwen2-VL-2B` / `SmolVLM2-500M` / `LFM2.5-VL-450M` / `LFM2.5-VL-1.6B` / `LFM2.5-VL-3B` 的 `chat_template` 用 `content is string` + `for item in content`（非 `+` 拼接）⇒ 三种 content 形状（string / 单元素数组 / 多元素数组）全 OK。🔴 **推翻 W53 假设**「Qwen 系同源 ⇒ 风险最高」——`Qwen2-VL-2B` 与 `Qwen2.5-1.5B` 模板形态**不同**（**同家族 ≠ 同模板**）。⚠️ 仅 L1（模板层）；**端到端图片输入（L3）仍待真机验证**
 >   - **台账 #37/#38 回收**（H-A 毒化 A/B + B1 长审批停表）⇒ 聚合句 **36 → 38 = 31 ✅ / 5 ⚠️ / 2 ⛔**（`build.yml` 基线维持 **624**，本波无新增 `@Test`）
+>   - **CI 双绿**：Build `37914317306` / Release `37914317420`（head `6efc0fb24`）；CI 内实测 `架构守卫全部通过。`（27 条）+ `自测结果：PASS=65 FAIL=0`
 > - ⚠️ **真机验收台账：Wave 33 起累计 38 条（其中 31 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**W55 新增回收 2 项**（H-A 毒化 A/B：fold ON 不炸 / fold OFF 炸 `:23`，台账 #37；**B1 长审批停表：审批挂起 ≈334s 不被 HARD 熔断**，台账 #38）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
 
