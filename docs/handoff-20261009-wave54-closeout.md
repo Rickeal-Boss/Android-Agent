@@ -3,7 +3,7 @@
 > **唯一权威交接文档**。逐波细节看 `handoff-*.md`；README 台账是特性/路线图的权威版。
 > 本文件回答三件事：**W54 做了什么 / 留下了什么判据 / 下一个人从哪接手**。
 >
-> 基线：W53 收官 `48b6880`（含其本地修补，本波随同推送）｜本波 tip = `4aa9158`，CI 见 §八
+> 基线：W53 收官 `48b6880`（含其本地修补，本波随同推送）｜本波 tip = `improve` 分支最新（W54 共 12 commit；**CI 触发推送 = `ac5a362..04efed3`**，其后 2 个 docs-only 回填实测 0 run），CI 见 §八
 > 前置文档：`docs/handoff-20261009-wave53-closeout.md`（W53 逐项记录）
 
 ---
@@ -174,6 +174,8 @@ W53 的 `48b6880` 一边订正 #25 注释数字、一边改同文件代码（净
 ## 八、CI run id
 
 推送 `ac5a362..04efed3`（**10 commit**，fast-forward）后**两条 workflow 自动触发**（本波含 `scripts/**` / `.github/workflows/**` / `core-*/**` / `feature-*/**` 等非文档改动，无需 `workflow_dispatch`）：
+
+> 其后 `04efed3..02e6708`（本回填 commit，**docs-only**）**实测 0 run**（复核 run 列表未新增）——与 §七.4 一致。
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
