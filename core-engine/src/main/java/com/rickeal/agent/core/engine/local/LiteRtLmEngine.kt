@@ -226,6 +226,21 @@ class LiteRtLmEngine(
     private var conversationDirty = false
 
     /**
+     * 会话级**累计重建计数**：本引擎实例自加载以来，因「生成期模板渲染失败」
+     *（[isTemplateRenderFailure]）而置会话重建的次数（[onError] 自愈分支 `++`）。
+     *
+     * 为什么是**实例级**而非 run 级：语义是**会话级**（同一引擎实例 = 同一会话生命周期，
+     * 随 [releaseInternal] 复位），不是单次 run 级；放 run 态会随 run 结束丢失累计。
+     *
+     * 用途：① 为**毒化测试判据**（关 fold 多发结果 ⇒ 必炸 / 开 fold ⇒ 不炸，直接钉「元素数」
+     * 维度，见 W53 交接 §五 优先条 3）提供可观测的失败次数；② 为将来「重建限次软熔断」
+     *（连续 N 次重建即停自愈，避免反复炸）预留数据面。
+     *
+     * ⚠️ 阈值**待真机 N 分布确定，勿现在拍** —— 本字段只做观测，不做判据（软熔断另立）。
+     */
+    private var templateRebuildCount = 0
+
+    /**
      * 投机解码能力的**真实探测结果**（null = 未探测/探测失败）。
      * 来源：官方 `Capabilities(modelPath).hasSpeculativeDecodingSupport()`。
      * 以此替代按文件名猜测，避免「能力位猜错」导致开了不支持的加速反而出错。
@@ -1403,6 +1418,9 @@ class LiteRtLmEngine(
                     // 与 finally（下方 `!finished ⇒ conversationDirty = true`）**冗余**：
                     // 显式补置是为了让「模板失败 ⇒ 重建会话」这个意图在错误路径上可见，**勿删 finally 那条**。
                     conversationDirty = true
+                    // 会话级累计重建计数（W54）：本分支是「因模板失败而重建」的唯一入口，
+                    // 计数 +1 供毒化测试判据 / 将来重建限次软熔断观测（见字段 KDoc，阈值勿现在拍）。
+                    templateRebuildCount++
                     // 为什么只在 nativeToolChannelActive() 为真时证伪通道：失败根因是 content
                     // 数组化、**与通道无关**（文本协议下同样炸，W50 组A 实证）；对纯文本协议用户
                     // 证伪通道只会带来无意义的「工具清单写回提示词」副作用。native 通道用户被降级
@@ -1412,10 +1430,12 @@ class LiteRtLmEngine(
                     if (nativeToolChannelActive()) {
                         nativeToolsRejected = true
                         AgentLogStore.warn(
-                            "原生工具通道：生成期模板渲染失败（$raw），已证伪本通道；下一 run 回退文本协议（下发 role=${outboundRoleForDiag}）",
+                            "原生工具通道：生成期模板渲染失败（$raw），已证伪本通道；下一 run 回退文本协议（下发 role=${outboundRoleForDiag}）（会话重建 #${templateRebuildCount}）",
                         )
                     } else {
-                        AgentLogStore.warn("生成期模板渲染失败（$raw），已置会话重建（下发 role=${outboundRoleForDiag}）")
+                        AgentLogStore.warn(
+                            "生成期模板渲染失败（$raw），已置会话重建（下发 role=${outboundRoleForDiag}）（会话重建 #${templateRebuildCount}）",
+                        )
                     }
                 }
                 channel.close(EngineException("LiteRT-LM: 生成失败 (${raw})$hint", throwable))
