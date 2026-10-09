@@ -510,7 +510,7 @@ CI 和静态审查都发现不了，只有真机能复现。
 
 ### 11.0 先读：这份清单的取证前提（Wave 39 新增）
 
-Wave 33 起累计的验收项 **38 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **31 条 ✅回收 / 5 条 ⚠️部分 / 2 条 ⛔不适用**；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
+Wave 33 起累计的验收项 **40 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **33 条 ✅回收 / 5 条 ⚠️部分 / 2 条 ⛔不适用**；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
 
 | 事实 | 后果 |
 |---|---|
@@ -639,6 +639,13 @@ Wave 33 起累计的验收项 **38 条**（逐条见 §11.0.1 台账，均附证
 |---|---|---|---|
 | 37 | **W55 H-A 毒化 A/B：fold ON 不炸 / fold OFF 炸 `:23`**（同构建双向印证「元素数」维度） | ✅ 回收 | 题面 = W50 组A 原文（ASCII，**文本协议** `nativeToolChannel:false`，模型 `Qwen2.5-1.5B`）。**Arm A（fold ON）**：`多元素 content 下发：折叠前 2 → 折叠后 1`、**无 `Failed to apply template`**、`settle=MaxRounds(rounds=8)`、含 51 条 native 行；**Arm B（同代码 + fold 全局 identity）**：`折叠前 3 → 折叠后 3；元素类型 Text=3` ⇒ `引擎重建：LOCAL 生成失败（… Failed to apply template: invalid operation: tried to use + operator on unsupported types string and sequence (in template:23)）` + `生成失败：LOCAL 重试后仍失败（… :23）`。⇒ **元素数（1 vs ≥2）是唯一区分维度**。崩溃经引擎重建重试后放弃、**无 `FATAL EXCEPTION`**（优雅降级）。⚠️ **Arm B 为临时测试补丁**（fold 全局 identity），**测后已完全还原**（`git status` 干净） |
 | 38 | **W55 B1 真机长审批停表**（审批挂起 ≈334s 不被 HARD 熔断） | ✅ **回收** | 构造：`file_write` 触发审批对话框后**故意不点**、保持 ≈334s（周期性 `keyevent 224` 保屏）再授权（**零产品代码改动**；对话框本身即暂停开关）。journal `run_1791538166073.jsonl` 时间线：`0.0s run_started` → `40.3s MODEL TOOL_CALLS`（对话框弹出）→ **`374.5s TOOL`（挂起 ≈334.2s）** → `377.7s settled=ModelStopped(rounds=1)`。**四判据全命中**：① 审批弹出（截图 `_ci-tools/_w55_b1d.png`）；② run 继续（`ModelStopped` 非 `Failed`）；③ `WallClockBudget` 硬熔断 = 0（日志无硬预算熔断）；④ `pausedNanos` 正确计入（**仅当 334.2s 挂起被剔除**，run 才可能以 **377.7s 墙钟 > 300s 硬预算**存活；有效时长 ≈43.5s）。⇒ **B1 停表算术真机成立**（此前自 W52 起一直 vacuous）。⚠️ `file_write` 因绝对路径被沙箱正确拒绝，不影响判据 |
+
+> **Wave 56 新增**（多模态 L3 + 毒化防护链；设备 OPPO PDRM00 / Android 13，debug 包；取证全文见 `_litert_forensics/_w56_tmpl/L3-RESULT.md` 与 `POISON-AB-RESULT.md`）：
+
+| # | 验收项 | 结论 | 证据锚点（cid / 行号 / 来源） |
+|---|---|---|---|
+| 39 | **W56 多模态 L3 端到端真机发图**（`LFM2.5-VL-450M_int8`，litertlm 0.17.1） | ✅ **回收** | 容器双源 SHA256 一致（`f941a5f9…106dda`，563,549,568 B）→ adb push 直放 `files/Download/` 自动登记（`vl` 文件名 ⇒ 图片能力位自动命中，`ModelHeuristics`）→ 会话创建成功（**MiniCPM 式 `Unsupported model type` 未复现**，native loader 确认 vision encoder 在档）→ 发图 run：`多元素 content 下发：折叠前 2 → 折叠后 2；元素类型 Text=1/Image=1`（**fold 硬边界不收口，模板 `for item in content` 分支真实行使**）、全档 `Failed to apply template`=**0**、`settled=ModelStopped(rounds=0)`、无 FATAL、native 行 14 条在档。模型回复与测试图**逐点相符**（黄条+红色主背景双锚点全中；⚠️ 数字 "37" 未读出＝450M 模型 OCR 弱，非管道问题）。性能 in 856/out 132 · 23.1 tok/s · 首字 4.5s。journal `36ef3941…/run_1791543746748.jsonl`。⚠️ **结论只覆盖实测容器**，其余 4 视觉容器仍「L1 模板安全 + 端到端待验」 |
+| 40 | **W56 毒化 A/B 防护链**（M=2 炸点复现 + W54/W55 自愈三件套首次真机行使 + 重建后不复炸） | ✅ **回收** | 文本协议 + Qwen2.5。**Arm A（fold ON，含 W56 store 新代码）**：3 tool_call 回灌 `折叠前 3 → 折叠后 1`、0 模板失败 ⇒ 回归 ✅。**Arm B（fold 全局 identity 临时补丁，测后已还原）**：round 0 单 tool_call 回灌 M=1 收敛不炸（再次实证 H-A 单元素臂）→ **19:37:58 `折叠前 2 → 折叠后 2；Text=2`（同参护栏提醒+工具结果，不经 fold 的回灌路径——方案预判的生产可达空白被实证）⇒ `Failed to apply template … (in template:23)` + `生成期模板渲染失败 …（下发 role=user）（会话重建 #1）（来源=同步下发）`**（W54 计数 + W55 同步自愈 + role 观测面**三件套首次真机行使**）→ `引擎重建 … 已换新实例重试本轮` → **`正常结束：3 轮` 未复炸**。⚠️ **store 计数跨实例累加判据 vacuous**（仅 1 次失败；JVM 仅覆盖 store 类语义，引擎侧读回接线零覆盖——W56 审查 P2）；K 阈值维持保守值待分布回填。⚠️ Arm B 临时补丁测后完全还原（`git status` 干净） |
 
 > **🔴 P1 · 模板渲染失败（W50 定案 → W51 修法落地 + 真机复验通过）**：
 > - **现象**：Qwen2.5-1.5B（`multi-prefill-seq_q8_ekv4096`）在**工具结果回灌那一轮**的 `nativeSendMessageAsync` 失败：`Failed to apply template: invalid operation: tried to use + operator on unsupported types string and sequence (in template:27 / :23)`。`createConversation` **从不失败**。

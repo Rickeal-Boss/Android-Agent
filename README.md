@@ -363,8 +363,14 @@ Android-Agent/
 >   - 🔴 **同步路径模板失败自愈（治本）**：真机证实模板失败在 `conv.sendMessageAsync(...)` **同步抛出**、**不经** `onError` 回调 ⇒ W51 自愈（置 `conversationDirty` / 证伪 `nativeToolsRejected`）与 W54 `templateRebuildCount` 对**真实路径失效**。修法 = 把「模板失败处置」抽成 `handleTemplateRenderFailure`、**两条路径共用**（同步 catch / 异步 `onError`）+ 同步 `sendMessageAsync` 包 `try/catch`（**必须 rethrow**，不吞异常）+ 两处 `warn` 带**来源标识**（`同步下发` / `异步回调`）
 >   - **多模态 L1 剩 5 容器取证（全部数组安全）**：`Qwen2-VL-2B` / `SmolVLM2-500M` / `LFM2.5-VL-450M` / `LFM2.5-VL-1.6B` / `LFM2.5-VL-3B` 的 `chat_template` 用 `content is string` + `for item in content`（非 `+` 拼接）⇒ 三种 content 形状（string / 单元素数组 / 多元素数组）全 OK。🔴 **推翻 W53 假设**「Qwen 系同源 ⇒ 风险最高」——`Qwen2-VL-2B` 与 `Qwen2.5-1.5B` 模板形态**不同**（**同家族 ≠ 同模板**）。⚠️ 仅 L1（模板层）；**端到端图片输入（L3）仍待真机验证**
 >   - **台账 #37/#38 回收**（H-A 毒化 A/B + B1 长审批停表）⇒ 聚合句 **36 → 38 = 31 ✅ / 5 ⚠️ / 2 ⛔**（`build.yml` 基线维持 **624**，本波无新增 `@Test`）
+> - **W56（2026-09-10）**：**多模态 L3 端到端真机打通 + 毒化防护链首次行使 + 进程级韧性 store + bump 挂起**
+>   - ✅ **多模态 L3 首臂通过**（`LFM2.5-VL-450M_int8`）：adb push 直放即登记（`vl` 文件名 ⇒ 图片能力位自动命中）、会话创建成功（MiniCPM 式 `Unsupported model type` 未复现）、发图 run `折叠前 2 → 折叠后 2；Text=1/Image=1`（fold 硬边界不收口 ⇒ 模板 `for item in content` 真实行使）、0 模板失败、模型答出黄条+红底（双锚点相符）。⚠️ 结论只覆盖实测容器，其余 4 视觉容器仍待端到端验证
+>   - ✅ **毒化 A/B 防护链真机成立**：Arm A（fold ON）`3→1` 不炸回归；Arm B（fold identity）**M=2 炸 `:23`**（同参护栏提醒路径生产可达——不经 fold 的回灌空白被实证）⇒ **W54 计数（会话重建 #1）+ W55 同步自愈（来源=同步下发）+ role 观测面三件套首次真机行使** → 重建重试成功 → 正常结束未复炸
+>   - **进程级会话韧性 store（治 W55 审查 P2#1 实例清零）**：`nativeToolsRejected`/`templateRebuildCount` 跨引擎实例存活（cid 键控、AppContainer 唯一组装）；软熔断 K=保守值（不熔断）待分布回填；⚠️ 引擎侧读回接线 JVM 零覆盖 + 真机判据 vacuous（如实申报）
+>   - **litertlm bump 正式挂起**（前置④红）：**v0.18.0 全树零命中收敛机制**（`MessageToTemplateInput`/`requires_typed_content` 已删且无等价替代）⇒ bump 过删除点 = fold 失效 = P1 静默回归；重启条件 = 上游恢复收敛或 app 侧出现标量 content 通道（`Contents.of(String)` 也返回 1 元素数组，W55 Probe 实证）
+>   - **台账 #39/#40 回收**（L3 端到端 + 毒化防护链）⇒ 聚合句 **38 → 40 = 33 ✅ / 5 ⚠️ / 2 ⛔**（`build.yml` 基线 624 → **627**，新增 store 单测 3 例）
 >   - **CI 双绿**：Build `37914317306` / Release `37914317420`（head `6efc0fb24`）；CI 内实测 `架构守卫全部通过。`（27 条）+ `自测结果：PASS=65 FAIL=0`
-> - ⚠️ **真机验收台账：Wave 33 起累计 38 条（其中 31 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**W55 新增回收 2 项**（H-A 毒化 A/B：fold ON 不炸 / fold OFF 炸 `:23`，台账 #37；**B1 长审批停表：审批挂起 ≈334s 不被 HARD 熔断**，台账 #38）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
+> - ⚠️ **真机验收台账：Wave 33 起累计 40 条（其中 33 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**W55 新增回收 2 项**（H-A 毒化 A/B，台账 #37；**B1 长审批停表**，台账 #38）；**W56 新增回收 2 项**（**多模态 L3 端到端真机发图**，台账 #39；**毒化 A/B 防护链**，台账 #40）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
 
 ---

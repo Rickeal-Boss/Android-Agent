@@ -292,7 +292,7 @@ object ModelPresets {
             note = "能看懂图片：用来体验拍照问答，体积最小",
             sizeBytes = 563549568,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）；端到端图片输入仍待真机验证",
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ **端到端图片输入已真机验证（W56 L3：OPPO A13 + 0.17.1，发图会话建成、0 模板失败、内容判别相符——仅覆盖本容器，同族其余容器不外推）**；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
             mirrors = domesticMirrors("LFM2.5-VL-450M", "LFM2.5-VL-450M_int8.litertlm"),
         ),
         // ── 视觉多模态批（2026-09-24 增补）：端侧 VL 帕累托前沿，500M/2B/1.6B/3B/8B 五档。
