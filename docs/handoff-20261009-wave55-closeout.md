@@ -3,7 +3,7 @@
 > **唯一权威交接文档**。逐波细节看 `handoff-*.md`；README 台账是特性/路线图的权威版。
 > 本文件回答三件事：**W55 做了什么 / 留下了什么判据 / 下一个人从哪接手**。
 >
-> 基线：W54 收官 `19c1dab`（W54 共 12 commit，其 CI 触发推送 = `ac5a362..04efed3`）｜本波 tip = `improve` 分支最新（W55 共 5 commit；**CI 触发推送 = 推送后回填**）
+> 基线：W54 收官 `19c1dab`（W54 共 12 commit，其 CI 触发推送 = `ac5a362..04efed3`）｜本波 tip = `improve` 分支最新（W55 共 8 commit；**CI 触发推送 = 推送后回填**）
 > 前置文档：`docs/handoff-20261009-wave54-closeout.md`（W54 逐项记录）
 
 ---
@@ -14,16 +14,19 @@
 **H-A 毒化定案（离线源码级决定性 + 真机同构建 A/B 双向印证）+ 同步路径模板失败自愈（治本）+ 多模态 L1 剩 5 容器取证（全部数组安全）**：H-A（native 把「恰 1 个 `text` 元素」的 content 数组**收敛为 string**）在 **litertlm v0.17.1** `generic_data_processor.cc:105-112` 找到**决定性源码收敛点**，且 **tip 已删除该收敛** ⇒ **bump 硬风险**（新增第四条前置）；真机证实模板失败在 `sendMessageAsync` **同步抛出**、绕过 `onError` 自愈 ⇒ 抽出 `handleTemplateRenderFailure` 两路径共用；5 个视觉容器模板经 `minijinja` 离线复现**全部数组安全**，**推翻 W53「Qwen 系同源 ⇒ 风险最高」假设**。**无新增 `@Test`** ⇒ `build.yml` 基线维持 **624**。**真机另回收 B1 长审批停表**（审批挂起 ≈334s 不被 HARD 熔断，**自 W52 落地以来首次行使**，台账 #38）。
 
 ### 关键现实（如实申报）
-- 本波**有 1 处用户可见行为修复**（同步路径模板失败自愈：原生工具通道用户遇模板失败时，不再「反复炸而不降级」——`nativeToolsRejected` 现可在真实路径置位）。
+- 本波**有 2 处行为修复**：
+  ① **同步路径模板失败自愈**（模板失败首次即置 `conversationDirty` + 计数 + 原生通道证伪）；
+  ② 🔴 **`activeGenerations` 同步抛出漏减**（`sendMessageAsync` 同步抛出会跳过 `consumeAsFlow` 的 `finally` ⇒ 实例永久 busy、`unload()` 抛「上一次生成仍在继续」——**W50 真机日志已见该症状**）。
+  ⚠️ **修复 ① 的范围申报（审查 P2）**：`nativeToolsRejected` / `conversationDirty` / `templateRebuildCount` 均为**引擎实例级**，而 `AgentRunner` 在**首次**失败后即 evict + 新建实例 ⇒ 这些置位**随旧实例被 `close()→releaseInternal` 清零**。故「不再反复炸而不降级」**仅在存活实例的生命周期内成立**；**跨实例持久化 = W56「反复炸防护」项**（进程级 `cid` 键控 store，见 §五 常规 3）。
 - **真机验证 = H-A 毒化 A/B 双向**（§三）+ **B1 长审批停表**（§三.2），是本波旗舰判据；其余为离线源码级 / 模板级取证。
 - ⚠️ **Arm B（fold OFF）为临时测试补丁**（fold 全局 identity），**测后已完全还原**（`git status` 干净）。
 - ⚠️ 修复后的**同步路径自愈真机回归未行使**（真机 A/B 用的是修前构建）⇒ 留 W56（§3.1）。
 
-### 改动清单（5 commit；5 文件）
+### 改动清单（8 commit；5 文件）
 
 | 文件 | 性质 | 说明 |
 |---|---|---|
-| `core-engine/.../local/LiteRtLmEngine.kt` | 引擎 | **+** `private fun handleTemplateRenderFailure(raw, role, source)`（模板失败统一处置）；`onError` 分支改调它（**行为等价**）；`conv.sendMessageAsync(...)` 包 `try/catch`（**rethrow**）；两处 `warn` 带**来源标识**（`同步下发` / `异步回调`）；`templateRebuildCount` KDoc 订正（两条路径统一 `++`）；**H-A 定案口径落档**（`foldAdjacentText` KDoc + 调用点注释 + `summarizeContentTypes` KDoc 同步为已定案） |
+| `core-engine/.../local/LiteRtLmEngine.kt` | 引擎 | **+** `private fun handleTemplateRenderFailure(raw, role, source)`（模板失败统一处置）；`onError` 分支改调它（**行为等价**）；`conv.sendMessageAsync(...)` 包 `try/catch`（**rethrow**）；两处 `warn` 带**来源标识**（`同步下发` / `异步回调`）；`templateRebuildCount` KDoc 订正（两条路径统一 `++`）；🔴 **审查 P2 收口**：`catch` 内补与 `finally` 同源的收尾（`activeGenerations.decrementAndGet()` + dirty + cancel —— 治「同步抛出漏减致实例永久 busy」）；**H-A 定案口径落档**（`foldAdjacentText` KDoc + 调用点注释 + `summarizeContentTypes` KDoc 同步为已定案） |
 | `feature-models/.../ModelPresets.kt` | 预设 | **+** 5 视觉容器（`Qwen2-VL-2B` / `SmolVLM2-500M` / `LFM2.5-VL-450M` / `LFM2.5-VL-1.6B` / `LFM2.5-VL-3B`）`backendBasis` 各补「W55 L1 模板已离线取证数组安全；端到端图片输入仍待真机验证」；`Qwen2-VL-2B` 额外注明**推翻 W53 假设** |
 | `docs/10-device-acceptance.md` | 文档 | **+** 台账 **#37**（H-A 毒化 A/B）+ **#38**（B1 长审批停表）；§11.0.1 聚合句 36 → **38**（29 → **31 ✅**） |
 | `README.md` | 文档 | 聚合句同步（**38 = 31 ✅ / 5 ⚠️ / 2 ⛔**）+ **新增 W55 波次段** |
@@ -62,6 +65,7 @@
 ### 2.4 同步路径模板失败自愈（治本）
 - **新发现**：`Failed to start nativeSendMessageAsync: … Failed to apply template …` 是 `conv.sendMessageAsync(...)` **同步抛出**，**不经** `onError` 回调 ⇒ 引擎 `onError` 的模板自愈分支（W51 置 `conversationDirty` / 证伪 `nativeToolsRejected`；W54 `templateRebuildCount`）对真实路径**失效**（真机日志无 `生成期` / `模板渲染失败`，只有 `AgentRunner.kt:1630/1580` 的引擎重建 warn）。
 - **修法**：抽 `handleTemplateRenderFailure(raw, role, source)` 统一处置；`onError` 改调它（**行为等价**）；同步 `sendMessageAsync` 包 `try/catch`（**必须 rethrow**，不吞异常）；两处 `warn` 加来源后缀（`同步下发` / `异步回调`）便于真机区分路径。
+- ⚠️ **同一 `catch` 另修一处既有缺口（审查 P2）**：`sendMessageAsync` 同步抛出会**跳过**下方 `channel.consumeAsFlow()` 的 `finally` ⇒ `activeGenerations`（`load()` 侧 `:1280` 已 `incrementAndGet`）**只增不减** ⇒ 实例永久 `isBusy=true`、后续 `unload()` 抛「上一次生成仍在继续，请稍候重试」。已在 `catch` 内补**与 `finally` 逐条同源**的收尾（二者互斥，不重复执行）。
 - ⚠️ **抽取时的偏差申报**：`outboundRoleForDiag` 是 flow 内**局部量**（非字段），故函数签名由规范设想的 `(raw: String)` 扩为 `(raw: String, role: String, source: String)`（`role` 随参传入、`source` 区分两路径）。**处置行为与规范逐条一致。**
 
 ### 2.5 多模态 L1 剩 5 容器取证（全部数组安全）
@@ -133,6 +137,12 @@ fold 被 3 处共用（TOOL 回灌 / merge / 主折叠点）；只关 2 处**未
 
 ### 4. ⚠️ 规范设想的函数签名可能与实现约束冲突
 规范写 `handleTemplateRenderFailure(raw: String)`，但 `outboundRoleForDiag` 是 flow 内局部量 ⇒ 必须随参传入（+ `source` 区分路径）。⇒ **落地时以代码约束为准并显式申报偏差**，不硬套规范字面。
+
+### 5. ⚠️ 自愈置位若落在「即将被 evict 的实例」上会静默失效（审查 P2）
+`nativeToolsRejected` / `conversationDirty` / `templateRebuildCount` 全是**引擎实例级**；而 `AgentRunner` 在**首次**失败后即 evict + 新建实例 ⇒ 这些置位随旧实例被 `close()→releaseInternal` **清零**。⇒ **凡「置位以改变下次行为」的自愈，必须先确证「承载置位的对象会活到下次」**；跨实例语义需另找载体（本波如实申报局限，持久化留 W56 §五 常规 3）。
+
+### 6. ⚠️ 同步抛出会绕过 `finally`（审查 P2，既有缺口）
+把 `sendMessageAsync` 与 `consumeAsFlow` 分成两个 try 块时，**前者的同步抛出会跳过后者 `finally`** ⇒ `activeGenerations` 只增不减（实例永久 busy）。W50 真机日志「上一次生成仍在继续，请稍候重试」即此症状。⇒ 资源计数必须**在同一个 try/finally 里配对**，或给每条抛出路径补等量收尾。
 
 ---
 

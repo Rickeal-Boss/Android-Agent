@@ -346,7 +346,7 @@ Android-Agent/
 >   - **守卫 25 → 27 项**（#26 测试基线双向同步：`build.yml` baseline == 全仓 `@Test` 代码位实数，**双向告警**，根治「计数链三连犯」；#27 A5 台账聚合句 ↔ §11.0.1 逐条三态机械钉住）+ **selftest 59 → 65** + `build.yml` 基线 **619 → 623**
 >   - 🔴 **引擎 god-file Stage-1 拆分**：`LiteRtLmEngine.kt` **2354 → 2054 行**（`4ce095f` 拆分结果），抽 4 个同包文件（`EngineLoadDegrade` / `ThoughtChannels` / `PrefaceCheck` / `TemplateRenderGuards` = 349 行**纯搬运零行为变更**）；`foldAdjacentText` + `summarizeContentTypes` 留在原文件以保守卫 #24 不变式
 >   - **多模态 P1 取证（L1/L2，无真机窗口）**：`Contents.toJson()` 恒返回 `JsonArray`（`javap`）+ C++ `NormalizeContent()` 原样透传（**不展平**）+ `adb exec-out dd` 抽容器 `chat_template` + `minijinja` 离线复现 ⇒ **数组问题真实存在**；逐容器定案：✅ 安全（模板用 `is sequence` + `for`）= `gemma-4-E2B-it`(CPU) / `gemma-4-E2B-it-gpu` / `MiniCPM-V-4-int8`；❌ 不安全 = `Qwen2.5-1.5B`（`:23` `'…' + message.content + '…'`）；**5 项未取证如实标保留**（`Qwen2-VL-2B` / `LFM2.5-VL×3` / `SmolVLM2 500M`）
->   - **H-A 矛盾定性**：三层源码（Kotlin/JNI/C++）**未找到 collapse 实现**，但 W52 真机「折后 1 元素不炸」冲突 ⇒ **不写「已证伪」**（「没找到 ≠ 证伪」）；补 **role 观测面**（`outboundRoleForDiag` + onError 自愈日志带 role）
+>   - **H-A 定案（W55 已闭环）**：**收敛点 = litertlm v0.17.1** `generic_data_processor.cc:105-112`（`content.size()==1 && [0].type=="text" && !requires_typed_content` ⇒ 收敛为 string）；**tip 已删该方法** ⇒ W53「三层源码未找到 collapse」成立但**无效**（读的是 tip，版本边界陷阱）。真机同构建 A/B：fold ON 不炸／fold OFF 炸 `:23`。补 **role 观测面**（`outboundRoleForDiag` + onError 自愈日志带 role）
 >   - **台账 #36 回收**（层3 正向观测面）⇒ 聚合句 **35 → 36 = 29 ✅ / 5 ⚠️ / 2 ⛔**
 >   - **CI 双绿**（`4ce095f`）：**Build `37780427636`** ✅ + **Release `37780427551`** ✅
 > - **W54（2026-10-09）**：**四份外部审查报告对账 + 观测面补强 + 审查收口**
