@@ -320,7 +320,7 @@ Android-Agent/
 >   - **R-A 通道 def 数据驱动化**：`channels` 改「**默认 `null` = 信任容器元数据**，仅 Gemma-4 显式」（`null` ≠ `emptyList()`——后者是**禁用通道**）；消除「else → Gemma def」这个 N1 机制本体，为**预设扩容**清路。真机复验 3 通过（MiniCPM5 / Qwen2.5 / gemma-4 回归）+ 1 不适用，**无回退**
 >   - **加固批**：D-1/D-4 措辞与解释器探测、**E1 探针判据分通道 + 采样对齐档案**（修正外部审查的因果描述）、**R-E salvage 内容级 HARD 闸门**（防退化输出进用户历史）、**R-B `scripts/fulltest.sh`**（把 `--continue` 纪律固化进仓库）、**R-C/R-D 守卫**（`ChatRunCoordinator` 行数 + 能力位 `USER` 章印唯一写入路径）⇒ **arch-guard 18 → 21 项、selftest 32 → 44**
 >   - **CI 双绿**（`79b00c3`）：**Build `37296661956`** ✅（含 `Lint (baseline gate)`，真实新问题 = 0）+ **Release `37296662094`** ✅（签名 APK / AAB / debug 三产物齐，R8 mapping 附）
-> - **W50（当前，2026-10-05）**：**§11 顺位 1–8 真机回收 + 三件外部报告 P3 收口 + CI 可观测性**
+> - **W50（2026-10-05）**：**§11 顺位 1–8 真机回收 + 三件外部报告 P3 收口 + CI 可观测性**
 >   - **§11 真机回收 8 ✅ / 3 ⚠️ / 2 ⛔**（W50 段 13 条逐条台账，见 §11.0.1 #19–#31）：✅ R1 层1 探测通过／层2 `tool_call` 下发／**层3 审批卡红线实证**（须用 `file_write`——只读工具不弹卡是正确行为）／沙箱子目录下钻／符号链接剔除／记忆 >2000 字符／通知档A／返回键两段式。⚠️ 层5「会话重建后一致性」（仅覆盖工具集变化子路径）／分段控件（仅 CPU/NPU 两段实证）／回显四关键字（Qwen 档，Gemma 两档未跑）。⛔ 层4「≥3 轮长任务」被 P1 中断／P1 模板渲染失败（本仓输入侧，W51 已修）
 >   - 🔴 **P1 定案（本仓输入侧）**：Qwen2.5 在工具结果回灌那一轮的**生成期**模板渲染失败（`string + sequence`）。真机 **A/B 证明「关掉原生工具通道、走文本协议同样炸」⇒ 排除上游**；决定性取证 = `Contents.toJson()` 返回 `JsonArray`（数组非 string）+ `prompt_template.cc:112-120` 未展平 ⇒ **模板侧期望 string、实际收到数组**。修法 = 合并多元素为单个 `Content.Text`（离线可改）⇒ **W51 已实施并通过真机复验**，见下
 >   - **代码侧 9 commit 全为零行为改动**：C1/C3 KDoc + C6 失败出口日志 + **删死字段 `ChatUiState.conversationId`**（全仓零读点）+ `fulltest.sh --summary-only` + **守卫 #22** + `build.yml` 非阻断用例数汇总（job summary，绿跑也带逐模块用例数）+ 上下文口径标签 B（清掉「引擎回报」错误措辞）+ C6 日志提级 `info → warn` ⇒ **arch-guard 21 → 22 项、selftest 44 → 47**
@@ -342,6 +342,20 @@ Android-Agent/
 >   - **台账聚合计数订正**：逐条实数（`awk` 计结论列）= **35 行 = 28 ✅ / 5 ⚠️ / 2 ⛔**（README 原「31 条 / 27 ✅ / 4」**三项全错**；handoff §五.5/§五.13 同步）。**W53 追加 #36**（层3 日志观测面回收）⇒ **36 行 = 29 ✅ / 5 ⚠️ / 2 ⛔**（并由 arch-guard 第 27 条机械钉住聚合句 ↔ 逐条台账）
 >   - **真机复验（OPPO PDRM00 / A13）**：文本协议下模型一次发 **3 个 tool_call** ⇒ `多元素 content 下发：折叠前 3 → 折叠后 1`（**fold 真实行使、非 vacuous**）、`Failed to apply template` **0 命中**；B2 日志真机命中（`true`/`false` 两态，未冒充）；审批卡被批准 **5 次**且 **WallClockBudget 硬预算熔断 = 0**；沙箱正确拒绝绝对路径。⛔ 未行使：B1 的「长审批」效应（审批 ~7s 自动通过）
 >   - **多模态 P1 未覆盖补独立挂账** + **6 个**视觉预设标注「图片输入尚未验证」（与既有「视觉 GPU 未实测 → 禁 GPU」同纪律）
+> - **W53（2026-10-08）**：**守卫网扩展 + 引擎 god-file Stage-1 拆分 + 多模态 P1 取证（L1/L2）**
+>   - **守卫 25 → 27 项**（#26 测试基线双向同步：`build.yml` baseline == 全仓 `@Test` 代码位实数，**双向告警**，根治「计数链三连犯」；#27 A5 台账聚合句 ↔ §11.0.1 逐条三态机械钉住）+ **selftest 59 → 65** + `build.yml` 基线 **619 → 623**
+>   - 🔴 **引擎 god-file Stage-1 拆分**：`LiteRtLmEngine.kt` **2354 → 2054 行**（`4ce095f` 拆分结果），抽 4 个同包文件（`EngineLoadDegrade` / `ThoughtChannels` / `PrefaceCheck` / `TemplateRenderGuards` = 349 行**纯搬运零行为变更**）；`foldAdjacentText` + `summarizeContentTypes` 留在原文件以保守卫 #24 不变式
+>   - **多模态 P1 取证（L1/L2，无真机窗口）**：`Contents.toJson()` 恒返回 `JsonArray`（`javap`）+ C++ `NormalizeContent()` 原样透传（**不展平**）+ `adb exec-out dd` 抽容器 `chat_template` + `minijinja` 离线复现 ⇒ **数组问题真实存在**；逐容器定案：✅ 安全（模板用 `is sequence` + `for`）= `gemma-4-E2B-it`(CPU) / `gemma-4-E2B-it-gpu` / `MiniCPM-V-4-int8`；❌ 不安全 = `Qwen2.5-1.5B`（`:23` `'…' + message.content + '…'`）；**5 项未取证如实标保留**（`Qwen2-VL-2B` / `LFM2.5-VL×3` / `SmolVLM2 500M`）
+>   - **H-A 矛盾定性**：三层源码（Kotlin/JNI/C++）**未找到 collapse 实现**，但 W52 真机「折后 1 元素不炸」冲突 ⇒ **不写「已证伪」**（「没找到 ≠ 证伪」）；补 **role 观测面**（`outboundRoleForDiag` + onError 自愈日志带 role）
+>   - **台账 #36 回收**（层3 正向观测面）⇒ 聚合句 **35 → 36 = 29 ✅ / 5 ⚠️ / 2 ⛔**
+>   - **CI 双绿**（`4ce095f`）：**Build `37780427636`** ✅ + **Release `37780427551`** ✅
+> - **W54（2026-10-09）**：**四份外部审查报告对账 + 观测面补强 + 审查收口**
+>   - ⛔ **报告1 的「唯一现行缺陷」N-W1 证伪**：其「B1 停表不向子 run 传播」漏看了 `AgentRunner.kt:1936` 的 `state.hardDeadlineNanos + state.pausedNanos` ⇒ 子 run 与父**共用同一堵墙**；其建议修法会**双重计入**、重开 Wave 31 已修的「上界放大」缺陷 ⇒ **否决实现**。**采纳其测试意图**做反向加固：spawn 点算术外提纯函数 `childDeadlineNanos` + 1 例测（钉「父挂起只计一次」，此前**零测试覆盖**）
+>   - **自愈重建计数观测面**（毒化测试前置件）：`LiteRtLmEngine` 加实例级 `@Volatile var templateRebuildCount`（`releaseInternal` 复位），`onError` 模板失败分支 `++`、两处 `warn` 带 `（会话重建 #N）`；⚠️ 阈值**待真机 N 分布确定，勿现在拍**
+>   - **#25 注释非写死化**（治 HEAD 处**活 stale**：W53 `48b6880` 一边订正注释数字、一边改同文件代码净 +9 行 ⇒ 注释当场过期）⇒ 注释只留冻结阈值 + 理由，实测行数以违规输出 `当前 $n 行` 为准
+>   - **M1 R-E KDoc 口径** + **对账子项级固化**（补 2 条 W53 漏账：「反复炸防护」「图片入口硬闸门」）+ **W53 文档勘误**（2389 → **2354** / `GPU_FAILURE_*` private→internal / 4new → **5new** / 行数加 commit 锚）
+>   - `build.yml` 基线 **623 → 624**（+1 例 @Test）；引擎 **2063 → 2087 行**（余量 313）
+>   - **真机冒烟（OPPO PDRM00 / A13）**：`assembleDebug` ✅ + `adb push` / `pm install -r` Success（`lastUpdateTime=2026-10-09 14:51:19`）+ 冷启动 PID 13804 存活 + **全量 logcat 无 app `FATAL EXCEPTION`** + UI 截图目视正常。⛔ 未行使：native 相关（本档**不含 native 行**）、B1 长审批、毒化
 > - ⚠️ **真机验收台账：Wave 33 起累计 36 条（其中 29 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
 
