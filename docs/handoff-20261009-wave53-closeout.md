@@ -10,7 +10,7 @@
 ## 一、W53 总账
 
 ### 一句话
-**守卫网扩展 + 引擎 god-file Stage-1 拆分 + 多模态 P1 取证（L1/L2）+ 台账 #36 回收 + B1 判据侧接线外提 + role 观测面**：守卫 **25 → 27 项**、selftest **59 → 65（PASS=65 FAIL=0）**、`build.yml` 基线 **619 → 623**；引擎 `LiteRtLmEngine.kt` **2354 → 2054 行**（拆分净减 300 行；`4ce095f` 的 commit message 写 2389 系笔误，已推无法改写，以本处为准；抽 4 个同包文件 = 349 行纯搬运，god-file 余量 346）；多模态容器 L1/L2 取证**实证**数组问题真实存在且 `Qwen2.5-1.5B` 模板不安全；H-A 矛盾定性为「未找到 collapse 实现 + role 相关性可测假设」；台账 #36 回收层3 正向观测面（聚合句 35 → 36 = 29✅/5⚠️/2⛔，并由 #27 机械钉住）。
+**守卫网扩展 + 引擎 god-file Stage-1 拆分 + 多模态 P1 取证（L1/L2）+ 台账 #36 回收 + B1 判据侧接线外提 + role 观测面**：守卫 **25 → 27 项**、selftest **59 → 65（PASS=65 FAIL=0）**、`build.yml` 基线 **619 → 623**；引擎 `LiteRtLmEngine.kt` **2354 → 2054 行**（`4ce095f` 拆分结果；W53 tip `48b6880` 为 2063、W54 后 2087 —— 行数会随波次变动，以 `arch-guard.sh` #25 违规输出为准）（拆分净减 300 行；`4ce095f` 的 commit message 写 2389 系笔误，已推无法改写，以本处为准；抽 4 个同包文件 = 349 行纯搬运，god-file 余量 346）；多模态容器 L1/L2 取证**实证**数组问题真实存在且 `Qwen2.5-1.5B` 模板不安全；H-A 矛盾定性为「未找到 collapse 实现 + role 相关性可测假设」；台账 #36 回收层3 正向观测面（聚合句 35 → 36 = 29✅/5⚠️/2⛔，并由 #27 机械钉住）。
 
 ### 关键现实（如实申报）
 本波**子 Agent 因 429 限流两次失败**（`android-developer` 0s 即失败、`ci-workflow-specialist` 32m8s 后失败）。**主理人转为自行收尾**：复核所有 diff、补做开发席未完成的 **role 观测面（3 处 Edit）**、跑编译/守卫/单测/selftest、写交接、commit、推仓库、触发 CI。下表 commit 为收官时统一落地，**非**子 Agent 分批提交。
@@ -22,7 +22,7 @@
 | `scripts/arch-guard.sh` | 工具链 | **+90**：新增守卫 #26（测试基线双向同步）、#27（A5 台账聚合句 ↔ 逐条三态）；#25 注释数字订正（**W54 `ba5025d` 已彻底去写死化：注释只留阈值 2400 + 推导理由，实测行数以违规输出 `当前 $n 行` 为准**） |
 | `scripts/arch-guard-selftest.sh` | 工具链 | **+169**：为 #26/#27 补正向/负向 selftest 用例（含「baseline 滞后」「删例」「聚合句不符」） |
 | `.github/workflows/build.yml` | CI | 基线 `619 → 623`（W53 开发席 B1 判据接线 +2 例使 @Test 实数变 623；否则 #26 立刻红，讽刺性命中 #26 要抓的「滞后」形态） |
-| `core-engine/.../LiteRtLmEngine.kt` | 引擎 | **Stage-1 拆分**：2354 → 2054 行；加 `summarizeContentTypes()`（sealed `Content` 6 子类计数）、V-2 日志补元素类型；**主理人补 role 观测面**：`outboundRoleForDiag`（tool/user）+ onError 自愈日志带 role |
+| `core-engine/.../LiteRtLmEngine.kt` | 引擎 | **Stage-1 拆分**：2354 → 2054 行（`4ce095f` 拆分结果）；加 `summarizeContentTypes()`（sealed `Content` 6 子类计数）、V-2 日志补元素类型；**主理人补 role 观测面**：`outboundRoleForDiag`（tool/user）+ onError 自愈日志带 role |
 | `core-engine/.../EngineLoadDegrade.kt`（新, 212） | 引擎 | 纯搬运 `EngineLoadDegrade` 逻辑（零行为变更） |
 | `core-engine/.../ThoughtChannels.kt`（新, 77） | 引擎 | 纯搬运 `thoughtChannelDefsFor` 等（零行为变更） |
 | `core-engine/.../PrefaceCheck.kt`（新, 43） | 引擎 | 纯搬运 preface 校验（零行为变更） |
@@ -49,7 +49,7 @@
 - **#27 A5 台账聚合句一致**：解析 `docs/10-device-acceptance.md` §11.0.1 三态结论列，与 `README.md`/docs 聚合句比对，不等即判红。治理 W52 暴露的「README 聚合句三项全错 + build.yml 基线滞后」同族根因（**聚合口径无守卫**）。
 - **selftest +169**：为 #26/#27 各补正向 + 负向 fixture（含「删例致低于基线」「聚合句手改错」），堵「守卫自身 fail-open」。
 
-### 2.2 引擎 god-file Stage-1 拆分（2354 → 2054）
+### 2.2 引擎 god-file Stage-1 拆分（2354 → 2054，`4ce095f` 拆分结果）
 - 抽 4 个同包文件（共 349 行），**纯搬运零行为变更**：`EngineLoadDegrade`(212) / `ThoughtChannels`(77) / `PrefaceCheck`(43) / `TemplateRenderGuards`(17)。
 - `foldAdjacentText` + `summarizeContentTypes` **按要求留在原文件**以保守卫 #24 不变式（fold 收口）。
 - 守卫生线 `#25` ≤2400 当前 2054，**余量 346**（**W54 后为 2087 行，余量 313**：`47a03a7` 观测面 +29 行 ⇒ 2083，本次审查收口（复位 + `@Volatile`）再 +4 行）；触顶 = 启动 Stage-2/3 评审，非改阈值。
