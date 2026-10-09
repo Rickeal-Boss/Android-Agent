@@ -510,7 +510,7 @@ CI 和静态审查都发现不了，只有真机能复现。
 
 ### 11.0 先读：这份清单的取证前提（Wave 39 新增）
 
-Wave 33 起累计的验收项 **36 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **29 条 ✅回收 / 5 条 ⚠️部分 / 2 条 ⛔不适用**；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
+Wave 33 起累计的验收项 **37 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **30 条 ✅回收 / 5 条 ⚠️部分 / 2 条 ⛔不适用**；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
 
 | 事实 | 后果 |
 |---|---|
@@ -632,6 +632,12 @@ Wave 33 起累计的验收项 **36 条**（逐条见 §11.0.1 台账，均附证
 | # | 验收项 | 结论 | 证据锚点（cid / 行号 / 来源） |
 |---|---|---|---|
 | 36 | **§11.10 R1 层3 原生工具通道日志观测面**（`useNativeTools` / 引擎 `nativeToolChannel`，W52 B2） | ✅ 回收 | W52 真机两态（OPPO PDRM00 / A13，debug 包）：原生态 `useNativeTools=true` + 引擎 `nativeToolChannel=true`；文本协议态 `useNativeTools=false` + 引擎 `nativeToolChannel=false`（**未冒充**：诊断未产出时报 `null`，不谎报「一致」）。原实现仅「漂移才 warn」且诊断缺失时恒判一致 ⇒ 层3 判据恒 `⛔`；B2 起每 run 落一条 info ⇒ 层3 首次有**正向**观测面 |
+
+> **Wave 55 新增**（H-A 毒化定案；设备 OPPO PDRM00 / Android 13，debug 包；取证全文见 `_litert_forensics/_w55_tmpl/W55-FINDINGS.md`）：
+
+| # | 验收项 | 结论 | 证据锚点（cid / 行号 / 来源） |
+|---|---|---|---|
+| 37 | **W55 H-A 毒化 A/B：fold ON 不炸 / fold OFF 炸 `:23`**（同构建双向印证「元素数」维度） | ✅ 回收 | 题面 = W50 组A 原文（ASCII，**文本协议** `nativeToolChannel:false`，模型 `Qwen2.5-1.5B`）。**Arm A（fold ON）**：`多元素 content 下发：折叠前 2 → 折叠后 1`、**无 `Failed to apply template`**、`settle=MaxRounds(rounds=8)`、含 51 条 native 行；**Arm B（同代码 + fold 全局 identity）**：`折叠前 3 → 折叠后 3；元素类型 Text=3` ⇒ `引擎重建：LOCAL 生成失败（… Failed to apply template: invalid operation: tried to use + operator on unsupported types string and sequence (in template:23)）` + `生成失败：LOCAL 重试后仍失败（… :23）`。⇒ **元素数（1 vs ≥2）是唯一区分维度**。崩溃经引擎重建重试后放弃、**无 `FATAL EXCEPTION`**（优雅降级）。⚠️ **Arm B 为临时测试补丁**（fold 全局 identity），**测后已完全还原**（`git status` 干净） |
 
 > **🔴 P1 · 模板渲染失败（W50 定案 → W51 修法落地 + 真机复验通过）**：
 > - **现象**：Qwen2.5-1.5B（`multi-prefill-seq_q8_ekv4096`）在**工具结果回灌那一轮**的 `nativeSendMessageAsync` 失败：`Failed to apply template: invalid operation: tried to use + operator on unsupported types string and sequence (in template:27 / :23)`。`createConversation` **从不失败**。
