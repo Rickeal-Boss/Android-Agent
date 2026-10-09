@@ -92,10 +92,11 @@ private const val SYSTEM_MERGE_CLOSE = "[/系统设定]"
  * 动机（Wave 51 P1）：Qwen2.5 容器的 chat_template 用 `'…' + message.content + '…'` 拼接
  * content（模板 `:23` / `:27`）。content 为 **JSON 数组** 时 minijinja 报
  * `Failed to apply template: … tried to use + operator on unsupported types string and sequence`。
- * 推断（**H-A 工作假设，未离线证实**）：native 侧很可能只在 content 恰好 1 个元素时收敛为
- * string ⇒ 折成单段文本即可下发为 string。旁证：① 真实模板 + minijinja 实测「content 为
- * 数组必炸」；② Java 侧 `Message.toJson()` 恒下发数组；③ 真机 W50 数据显示「单结果回灌
- * 多数不炸 / 3 结果回灌确定性炸」。**决定性实证需真机 A/B（W51 §1.4）**。
+ * **H-A（W55 已定案）**：native 侧只在 content 恰好 1 个元素（`[0].type == "text"` 且
+ * `!requires_typed_content`）时收敛为 string（收敛点 = litertlm v0.17.1 源码，坐标见调用点
+ * 注释）⇒ 折成单段文本即可下发为 string。旁证：① 真实模板 + minijinja 实测「content 为
+ * 数组必炸」；② Java 侧 `Message.toJson()` 恒下发数组；③ 真机 W50「单结果多数不炸 /
+ * 3 结果确定性炸」；④ **W55 同构建真机 A/B**（fold ON 不炸 / fold OFF 炸 `:23`）。
  *
  * 🔴 反例纪律：**不得**把整个 List 压成文本 —— 那会把 ImageBytes/AudioBytes 一并变成字符串，
  * **打碎多模态**。只折叠**相邻 Text**，非 Text 是硬边界（遇到即 flush）。
@@ -154,7 +155,8 @@ internal fun foldAdjacentText(contents: List<Content>): List<Content> {
  * [foldAdjacentText] 的硬边界，未收口）。附上计数后二者在日志侧一眼可分。
  *
  * ⚠️ 只做**观测**、**不参与**折叠决策（边界语义见 [foldAdjacentText]）；且「折成 1 个 `Text`」
- * **不等于**下发为 string（`Contents.toJson()` 恒数组，Wave 53 L1/L2 定案，详见调用点注释）。
+ * 在 Java 侧仍下发为**数组**（`Contents.toJson()` 恒数组，Wave 53 L1/L2 定案）；native 侧的
+ * 「1 元素 text 数组 ⇒ string」收敛语义见调用点注释（W55 定案）。
  *
  * 纯函数（文件级 internal，可被同模块 JVM 单测直接调）：不构造引擎、不触 native。
  */
@@ -1472,13 +1474,21 @@ class LiteRtLmEngine(
             // 恒返回 JSON 数组（`Contents.of(String)` 亦然；真机 litertlm 代码实测
             // `Contents.of("x").toJson()` = `[{"type":"text","text":"x"}]`），native 侧
             // `NormalizeContent` 亦原样保留数组。故本折叠**不能**断言已规避 Qwen2.5 模板
-            // `'…' + content + '…'` 的 `+` 报错。**不得**据此反向断言 H-A「native 只在恰 1 元素时
-            // 收敛为 string」**已证伪**：三层源码（Kotlin/JNI/C++）**均未找到** collapse 实现，且
-            // C++/JNI 读的是仓库 tip 源码（非真机 0.17.1 prebuilt）、JNI 桥接层不在快照内 ⇒ 证据链
-            // 不完整，「未找到」≠「不存在」。**真机证据相反**：W50 组A（3 元素）炸 vs W51/W52（折后
-            // 1 元素）不炸，该对照只能用「1 元素被 collapse」解释 ⇒ H-A 作为经验规律**仍成立**；折叠是
-            // 经真机复验的有效修复，**不得删除**（删则回归 W50 必炸）。冲突取舍：离线复现 vs 真机实证
-            // 冲突时**以真机为准**。折叠本身只做「相邻 Text 合并」这一件事。
+            // `'…' + content + '…'` 的 `+` 报错。
+            // ✅ **H-A 已定案（Wave 55）**：native 的收敛点 = litertlm **v0.17.1**
+            // `runtime/conversation/model_data_processor/generic_data_processor.cc:105-112` ——
+            // `content` 数组长度 == 1 且 `[0].type == "text"` 且 `!capabilities_.requires_typed_content`
+            // 时**收敛为 string**；≥2 元素保数组 ⇒ Qwen2.5 模板 `+` 必炸。
+            // W53 记「未找到 collapse 实现」的原因 = **版本边界陷阱**：W53 读的是仓库 **tip** 源码，
+            // tip **已删除**该收敛（tip 该文件仅 92 行、无 `MessageToTemplateInput` /
+            // `requires_typed_content`）⇒ 「未找到」≠「不存在」。
+            // **真机 A/B（Wave 55，同构建）**：fold ON（折后 1 元素）**不炸** / fold OFF（3 元素）
+            // 炸 `:23` ⇒ 元素数（1 vs ≥2）是唯一区分维度，与收敛点语义一致。
+            // 🔴 **bump 硬风险**：litertlm bump 过该删除点后，fold 折出的 1 元素数组**不再被收敛**
+            // ⇒ Qwen2.5 模板 `+` 必炸 ⇒ **P1 静默回归**；`#24` 守卫只钉 fold 调用点**存在性**，
+            // 拦不住此**行为级**漂移（bump 前必须按交接前置条复核收敛语义）。
+            // ⚠️ 折叠是经真机复验的有效修复，**不得删除**（删则回归 W50 必炸）。冲突取舍：离线复现
+            // vs 真机实证冲突时**以真机为准**。折叠本身只做「相邻 Text 合并」这一件事。
             val preFoldContents = buildContents(fresh)
             val foldedContents = foldAdjacentText(preFoldContents)
             // H-A 观测面（Wave 52 V-2；Wave 53 补元素类型摘要）：只报「折叠前 ≥2 元素」的实例
