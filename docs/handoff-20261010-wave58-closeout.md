@@ -1,6 +1,6 @@
 # W58 波次收官交接（Wave 58 Closeout）
 
-> 基线：W57 收官 `c6b1bdd`（W57 共 4 commit）｜本波 tip = **推送后回填**
+> 基线：W57 收官 `c6b1bdd`（W57 共 4 commit）｜本波 tip = `c785ac8`（**CI 触发推送 = Build `37968115697` / Release `37968115764` 双绿已回填**）
 > 前置文档：`docs/handoff-20261009-wave57-closeout.md`（W57 逐项记录，§六 = 本波挂账来源）
 > 方案：`_plans/w58-phase1-strategy.md`（仓外，方案席沈思远）｜审查：`_plans/w58-review.md`（仓外，审查席严质衡）｜真机取证：`_litert_forensics/_w58_smoke/`（仓外）
 
@@ -112,8 +112,13 @@
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | _待回填_ | — | — |
-| **Release** | _待回填_ | — | — |
+| **Build** | `37968115697` | ✅ success（head `c785ac82`） | Lint / Assemble Debug / Unit tests 全 success |
+| **Release** | `37968115764` | ✅ success | — |
+
+**CI 内实测（job log 直读，PAT `actions:read`）**：
+- `Assemble Debug` job：`架构守卫全部通过。`（**29 项**，含新增第 29 条）；`自测结果：PASS=77 FAIL=0`（selftest case39/40 红面在 CI 内亦 PASS）。
+- `Unit tests` job：`baseline=641`（soft-check 未触发 ⇒ tests ≥ 641）。
+- 本文档 commit 为 docs-only（`paths-ignore` 覆盖 `docs/**` + `*.md`）⇒ 预期 **0 run**。
 
 ---
 
