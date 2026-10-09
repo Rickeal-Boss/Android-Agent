@@ -195,10 +195,15 @@ exit 0
 SH
   # 第 24 条（Wave 52，fold 收口不变式）要求 LiteRtLmEngine.kt 存在且满足
   # 「Message.user 下发点数 == foldAdjacentText 调用数」；第 25 条（Wave 52）要求其
-  # 行数 ≤ 2400 ⇒ 骨架必须提供它（否则干净树会被这两条误红，正例失守）。
+  # 行数 ≤ 2400；第 28 条（Wave 57，韧性 store 双写双读接线）要求 adopt/persist 各 1
+  # 调用点，且读回点（adopt）行号 < 首个 nativeToolChannelActive() 调用行号
+  # ⇒ 骨架必须同时满足这三条（否则干净树会被误红，正例失守）。
   # fixture 给 1 处 Message.user 下发点 + 1 处 foldAdjacentText 调用（1 == 1，绿），
   # 且行数远低于 2400。def 行（`internal fun foldAdjacentText`）会被守卫的
   # `grep -v "fun foldAdjacentText"` 排除，不计入 fold_n —— 与真实文件同款。
+  # Wave 57 追加：`adoptResilienceFromStore(cid)` 与 `persistResilienceToStore()` 各 1 处
+  # **调用**（对应 def 行由守卫的 `grep -v "fun …"` 排除，与真实文件同款），且
+  # `nativeToolChannelActive()` 的**首个代码位调用**在 adopt 调用**之后**（钉读回顺序）。
   mkdir -p "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local"
   cat > "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
 package com.rickeal.agent.core.engine.local
@@ -207,6 +212,23 @@ internal fun foldAdjacentText(contents: List<Content>): List<Content> = contents
 
 fun downlink(fresh: List<Content>): Message =
     Message.user(Contents.of(foldAdjacentText(fresh)))
+
+class LiteRtLmEngine {
+    fun ensureConversation(cid: String?) {
+        adoptResilienceFromStore(cid)
+        val nativeToolsActive = nativeToolChannelActive()
+    }
+
+    fun handleTemplateRenderFailure() {
+        persistResilienceToStore()
+    }
+
+    private fun adoptResilienceFromStore(cid: String?) = Unit
+
+    private fun persistResilienceToStore() = Unit
+
+    private fun nativeToolChannelActive(): Boolean = true
+}
 KT
   # 第 26 条（Wave 53，测试基线双向同步）要求 build.yml 声明 `baseline=N` 且与全仓
   # `@Test` 代码位实数**相等** ⇒ 骨架必须提供**一份含匹配 baseline 的 build.yml** +
@@ -1447,6 +1469,131 @@ elif printf '%s\n' "$out" | grep -qF "聚合句与 §11.0.1 逐条台账不一�
   PASS=$((PASS + 1))
 else
   echo "FAIL [case35b] 输出里看不到「聚合句与 §11.0.1 逐条台账不一致」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 36 / case 37 / case 38：第 28 条（LiteRtLmEngine.kt 韧性 store 双写双读接线，
+# Wave 57）三面：
+#   case36 —— 从脚手架 fixture 删掉 `adoptResilienceFromStore(` **调用**（保留 def 行）
+#             ⇒ adopt_n=0 ⇒ 判红；断言红来自真命中（输出含「adoptResilienceFromStore(
+#             调用数(0) != 1」违规事实行），而非「守卫命令自身执行失败」。
+#             ⚠️ 删的是**调用**、def 行仍在 —— 正好钉住「def 行被 `grep -v "fun …"` 排除、
+#             只有真调用计入」这一判据（若排除失效，本 case 会因 adopt_n=1 而漏判）。
+#   case37 —— 行序颠倒（把 `nativeToolChannelActive()` 调用挪到 adopt 调用**之前**）
+#             ⇒ 判据③ 触发 ⇒ 判红；断言输出含「读回必须先于通道判定」违规事实行。
+#   case38 —— 脚手架 fixture 原样（含 adopt/persist 各 1 调用 + `nativeToolChannelActive()`
+#             在 adopt 之后）⇒ 必须**不红**（绿面；否则第 28 条会成为永远红的僵尸规则）；
+#             并追加一段 **KDoc 提及** `adoptResilienceFromStore(` / `persistResilienceToStore(`
+#             / `nativeToolChannelActive()` ⇒ 必须**仍绿**：钉死判据只认代码位（注释位被
+#             `grep -vE "^[0-9]+:[[:space:]]*[*/]"` 排除，与 #24 同款）。若不排除注释位，
+#             判据③ 会把真实文件 :224 那种 KDoc 提及当锚点 ⇒ **恒红**（本 case 正是防它）。
+#   三面都只在 $TMP 脚手架树内覆写 fixture，绝不碰生产文件。
+#   绿面（脚手架原样 → exit 0）同时由 positive case 兜住。
+# ---------------------------------------------------------------------------
+d="$TMP/case36-adopt-call-missing"
+scaffold "$d"
+cat > "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
+package com.rickeal.agent.core.engine.local
+
+internal fun foldAdjacentText(contents: List<Content>): List<Content> = contents
+
+fun downlink(fresh: List<Content>): Message =
+    Message.user(Contents.of(foldAdjacentText(fresh)))
+
+class LiteRtLmEngine {
+    fun ensureConversation(cid: String?) {
+        val nativeToolsActive = nativeToolChannelActive()
+    }
+
+    fun handleTemplateRenderFailure() {
+        persistResilienceToStore()
+    }
+
+    private fun adoptResilienceFromStore(cid: String?) = Unit
+
+    private fun persistResilienceToStore() = Unit
+
+    private fun nativeToolChannelActive(): Boolean = true
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case36 删掉 adopt 调用 (第 28 条)" "$rc" "$out" \
+  "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt/persist 调用点各 1，且读回先于通道判定）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case36b] 第 28 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "adoptResilienceFromStore( 调用数(0) != 1"; then
+  echo "PASS [case36b] 红来自真命中（输出含「adoptResilienceFromStore( 调用数(0) != 1」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case36b] 输出里看不到「adoptResilienceFromStore( 调用数(0) != 1」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case37-readback-order-reversed"
+scaffold "$d"
+cat > "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
+package com.rickeal.agent.core.engine.local
+
+internal fun foldAdjacentText(contents: List<Content>): List<Content> = contents
+
+fun downlink(fresh: List<Content>): Message =
+    Message.user(Contents.of(foldAdjacentText(fresh)))
+
+class LiteRtLmEngine {
+    fun ensureConversation(cid: String?) {
+        val nativeToolsActive = nativeToolChannelActive()
+        adoptResilienceFromStore(cid)
+    }
+
+    fun handleTemplateRenderFailure() {
+        persistResilienceToStore()
+    }
+
+    private fun adoptResilienceFromStore(cid: String?) = Unit
+
+    private fun persistResilienceToStore() = Unit
+
+    private fun nativeToolChannelActive(): Boolean = true
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case37 读回点晚于通道判定 (第 28 条判据③)" "$rc" "$out" \
+  "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt/persist 调用点各 1，且读回先于通道判定）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case37b] 第 28 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "读回必须先于通道判定"; then
+  echo "PASS [case37b] 红来自真命中（输出含「读回必须先于通道判定」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case37b] 输出里看不到「读回必须先于通道判定」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case38-wiring-comment-green"
+scaffold "$d"
+cat >> "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
+
+/**
+ * 说明（Wave 57）：KDoc 里提及 `adoptResilienceFromStore(` 与 `persistResilienceToStore(`
+ * 以及 `nativeToolChannelActive()` 都**不得**被第 28 条计入调用数 / 当作读回顺序锚点 ——
+ * 否则会被注释骗成假红（与 #24 的 KDoc 排除同款）。本段落须让守卫**仍绿**。
+ */
+val wiringKdocNote = 1
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case38 接线齐备 + KDoc 提及 (第 28 条绿面)] 退出 0（注释位被排除，未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case38] KDoc 里的 adopt/persist/nativeToolChannelActive 提及被误计入（第 28 条判据未排除注释位 ⇒ 会被注释骗）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
