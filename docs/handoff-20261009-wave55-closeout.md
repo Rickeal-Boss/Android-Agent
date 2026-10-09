@@ -3,7 +3,7 @@
 > **唯一权威交接文档**。逐波细节看 `handoff-*.md`；README 台账是特性/路线图的权威版。
 > 本文件回答三件事：**W55 做了什么 / 留下了什么判据 / 下一个人从哪接手**。
 >
-> 基线：W54 收官 `19c1dab`（W54 共 12 commit，其 CI 触发推送 = `ac5a362..04efed3`）｜本波 tip = `improve` 分支最新（W55 共 4 commit；**CI 触发推送 = 推送后回填**）
+> 基线：W54 收官 `19c1dab`（W54 共 12 commit，其 CI 触发推送 = `ac5a362..04efed3`）｜本波 tip = `improve` 分支最新（W55 共 5 commit；**CI 触发推送 = 推送后回填**）
 > 前置文档：`docs/handoff-20261009-wave54-closeout.md`（W54 逐项记录）
 
 ---
@@ -19,7 +19,7 @@
 - ⚠️ **Arm B（fold OFF）为临时测试补丁**（fold 全局 identity），**测后已完全还原**（`git status` 干净）。
 - ⚠️ 修复后的**同步路径自愈真机回归未行使**（真机 A/B 用的是修前构建）⇒ 留 W56（§3.1）。
 
-### 改动清单（4 commit；5 文件）
+### 改动清单（5 commit；5 文件）
 
 | 文件 | 性质 | 说明 |
 |---|---|---|
@@ -174,7 +174,8 @@ fold 被 3 处共用（TOOL 回灌 / merge / 主折叠点）；只关 2 处**未
 ## 七、下次接手须知
 
 1. **推送纪律**：`GIT_TERMINAL_PROMPT=0` + `-c credential.helper=`（空）**两者都要**（否则 GCM 无凭据**静默挂起**）；`-c http.sslVerify=false`（绕 MITM 的 `CRYPT_E_NO_REVOCATION_CHECK`）；**PAT 只以 URL inline 一次性使用、绝不落盘**。推前 **`git push --dry-run`** 核（`git ls-remote` 匿名读 public 库**假绿**；本地 `origin/<branch>` 跟踪引用可能**陈旧**）。
-2. **静态闸门基线**（改动前）：`arch-guard` **27 项全 OK**、`arch-guard-selftest` **PASS=65 FAIL=0**（本机 ~22 min ⇒ 给 ≥600s 或 `run_in_background`）、`scripts/fulltest.sh` = `tests=624 failures=1`（唯一失败 = `core-data` 的 `SandboxFileScannerTest.kt:184` Windows 符号链接，**既有基线**；gradle 会因它 exit 1，**不是**任务校验错误）。
+2. **静态闸门基线**（改动前）：`arch-guard` **27 项全 OK**、`arch-guard-selftest` **PASS=65 FAIL=0**（本机 ~5 min；W53 记的 ~22 min 已随环境变化，仍建议 `run_in_background`）、`scripts/fulltest.sh` = `tests=624 failures=1`（唯一失败 = `core-data` 的 `SandboxFileScannerTest.kt:184` Windows 符号链接）。
+   ⚠️ **W55 实测修正**：本波干净重跑得 `tests=624 **failures=0** errors=0`（9/9 模块，XML mtime 全为本轮）⇒ 该「既有失败」**不是常量基线**，而是**环境相关/不稳定**（符号链接创建权限或前次残留所致）。**判据以「无新增失败 + 模块数 = 9」为准，不预设 failures 值**；gradle 若因它 exit 1，**不是**任务校验错误。
 3. **跑全量单测必须注入 `JAVA_HOME`/`ANDROID_HOME`/`GRADLE_USER_HOME`**，并**核对模块数 = 9**。⚠️ **`GRADLE_OPTS` 的代理端口取 `${https_proxy}`**（本机实测 **4708**，非脚本注释里的 1799 兜底值）。gradle 的 `N tests completed` 是**残缺口径**，不可信。
 4. **纯文档提交 ⇒ 两条 workflow 都 0 run** ⇒ 需出包必须 `workflow_dispatch`。
 5. **设备**（OPPO PDRM00 / A13，serial `13309cc8`）：adb = `_j2env/sdk/platform-tools/adb.exe`（**不在 PATH**），Git Bash 需 `MSYS_NO_PATHCONV=1`；**`adb push` 的本地路径要写 Windows 形式**（`D:/...`）。**装机必须** `adb push` + `pm install -r`。⚠️ **并发 adb 会让设备瞬时 `not found`** ⇒ **串行执行**；⚠️ **沙箱会拦「多命令链式」（`;` / `&&`）** ⇒ **拆成单条**。
