@@ -111,7 +111,7 @@ internal fun AssistantPersistenceState.onCommitted(text: String) = copy(lastComm
  * ## ⚠️ W52 B1 起的耗时口径（Wave 54 补注，勿按旧口径对账）
  *
  * `WallClockBudget` 的耗时口径 = **有效执行时长**（墙钟 − 审批挂起 `RunState.pausedNanos`，
- * 见 `AgentRunner.wallClockRemainingMillis`）。故「审批等待导致的墙钟熔断」已消失、
+ * 见 `wallClockRemainingMillis`（core-agent 文件级纯函数））。故「审批等待导致的墙钟熔断」已消失、
  * 「真耗尽」的判定边界随之收紧 —— 对账 evidence 与 breaker 记录须用此口径。
  *
  * ## R-E（Wave 49）：为什么还要一道**内容级**闸门

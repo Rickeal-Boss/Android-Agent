@@ -227,7 +227,7 @@ class LiteRtLmEngine(
 
     /**
      * 会话级**累计重建计数**：本引擎实例自加载以来，因「生成期模板渲染失败」
-     *（[isTemplateRenderFailure]）而置会话重建的次数（[onError] 自愈分支 `++`）。
+     *（[isTemplateRenderFailure]）而置会话重建的次数（`onError` 自愈分支 `++`）。
      *
      * 为什么是**实例级**而非 run 级：语义是**会话级**（同一引擎实例 = 同一会话生命周期，
      * 随 [releaseInternal] 复位），不是单次 run 级；放 run 态会随 run 结束丢失累计。
@@ -238,6 +238,7 @@ class LiteRtLmEngine(
      *
      * ⚠️ 阈值**待真机 N 分布确定，勿现在拍** —— 本字段只做观测，不做判据（软熔断另立）。
      */
+    @Volatile
     private var templateRebuildCount = 0
 
     /**
@@ -2073,6 +2074,9 @@ class LiteRtLmEngine(
         // 未必接受同一形状。「证伪」同样绑定本引擎实例（换模型后应重新给一次机会）。
         probedNativeTools = null
         nativeToolsRejected = false
+        // 重建计数同样绑定**本引擎实例**（同一模型 + 同一转换件）：引擎没了，计数即作废 ——
+        // 否则下次加载会带入上一实例的累计值，让「会话级」语义失真（将来重建限次软熔断会误判）。
+        templateRebuildCount = 0
         // tool_call ↔ tool 结果的配对状态与已注册工具集都属于会话，随会话一起作废。
         awaitingNativeToolResponse = false
         registeredToolsSignature = null
