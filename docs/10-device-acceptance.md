@@ -510,7 +510,7 @@ CI 和静态审查都发现不了，只有真机能复现。
 
 ### 11.0 先读：这份清单的取证前提（Wave 39 新增）
 
-Wave 33 起累计的验收项 **40 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **33 条 ✅回收 / 5 条 ⚠️部分 / 2 条 ⛔不适用**；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
+Wave 33 起累计的验收项 **42 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **35 条 ✅回收 / 5 条 ⚠️部分 / 2 条 ⛔不适用**；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
 
 | 事实 | 后果 |
 |---|---|
@@ -646,6 +646,8 @@ Wave 33 起累计的验收项 **40 条**（逐条见 §11.0.1 台账，均附证
 |---|---|---|---|
 | 39 | **W56 多模态 L3 端到端真机发图**（`LFM2.5-VL-450M_int8`，litertlm 0.17.1） | ✅ **回收** | 容器双源 SHA256 一致（`f941a5f9…106dda`，563,549,568 B）→ adb push 直放 `files/Download/` 自动登记（`vl` 文件名 ⇒ 图片能力位自动命中，`ModelHeuristics`）→ 会话创建成功（**MiniCPM 式 `Unsupported model type` 未复现**，native loader 确认 vision encoder 在档）→ 发图 run：`多元素 content 下发：折叠前 2 → 折叠后 2；元素类型 Text=1/Image=1`（**fold 硬边界不收口，模板 `for item in content` 分支真实行使**）、全档 `Failed to apply template`=**0**、`settled=ModelStopped(rounds=0)`、无 FATAL、native 行 14 条在档。模型回复与测试图**逐点相符**（黄条+红色主背景双锚点全中；⚠️ 数字 "37" 未读出＝450M 模型 OCR 弱，非管道问题）。性能 in 856/out 132 · 23.1 tok/s · 首字 4.5s。journal `36ef3941…/run_1791543746748.jsonl`。⚠️ **结论只覆盖实测容器**，其余 4 视觉容器仍「L1 模板安全 + 端到端待验」 |
 | 40 | **W56 毒化 A/B 防护链**（M=2 炸点复现 + W54/W55 自愈三件套首次真机行使 + 重建后不复炸） | ✅ **回收** | 文本协议 + Qwen2.5。**Arm A（fold ON，含 W56 store 新代码）**：3 tool_call 回灌 `折叠前 3 → 折叠后 1`、0 模板失败 ⇒ 回归 ✅。**Arm B（fold 全局 identity 临时补丁，测后已还原）**：round 0 单 tool_call 回灌 M=1 收敛不炸（再次实证 H-A 单元素臂）→ **19:37:58 `折叠前 2 → 折叠后 2；Text=2`（同参护栏提醒+工具结果，不经 fold 的回灌路径——方案预判的生产可达空白被实证）⇒ `Failed to apply template … (in template:23)` + `生成期模板渲染失败 …（下发 role=user）（会话重建 #1）（来源=同步下发）`**（W54 计数 + W55 同步自愈 + role 观测面**三件套首次真机行使**）→ `引擎重建 … 已换新实例重试本轮` → **`正常结束：3 轮` 未复炸**。⚠️ **store 计数跨实例累加判据 vacuous**（仅 1 次失败；JVM 仅覆盖 store 类语义，引擎侧读回接线零覆盖——W56 审查 P2）；K 阈值维持保守值待分布回填。⚠️ Arm B 临时补丁测后完全还原（`git status` 干净） |
+| 41 | **W57 多模态 L3 扩容臂1 —— 异族容器 `SmolVLM2-500M`**（litertlm 0.17.1） | ✅ **回收** | 容器 SHA256（本地单源）= `b808b328…60ad0`，360,822,960 B → adb push 直放 `files/Download/` 冷启动自动登记（模型页 6 → **7**，`vl` 文件名 ⇒ 图片能力位自动命中）→ 会话创建成功（**无** `Unsupported model type`：`cid=66ff210d… kv=4096 role=on estPrompt=854`）→ 发图 run：`多元素 content 下发：折叠前 2 → 折叠后 2；元素类型 Text=1/Image=1`、全档 `Failed to apply template`=**0**（native 行 220 条在档）、`settled=ModelStopped(rounds=0)`、**运行窗 FATAL=0**。模型回复 **"The image shows a red background with the number 37 displayed in white."** ⇒ **红底 + 数字 "37" 双锚点全中**（**优于 W56 450M 臂**，后者读不出数字）。性能 in 854/out 16 · 28.2 tok/s · 首字 9389ms。journal `66ff210d…/run_1791549980226.jsonl`。⚠️ **结论只覆盖实测容器**（异族 ≠ 同族） |
+| 42 | **W57 多模态 L3 扩容臂2 —— 同族 fixB 容器 `LFM2.5-VL-1.6B_int4_fixB`** | ✅ **回收** | 容器 SHA256（本地单源）= `79ca9db8…d565c`，1,298,139,472 B（HF 直下 HTTP 200 @20.4 MB/s）→ adb push 直放（40.9 MB/s，字节数精确一致）→ 冷启动登记（模型页 7 → **8**）→ 会话创建成功（`cid=d46170ad… kv=4096 role=on`）→ 发图 run：`折叠前 2 → 折叠后 2；Text=1/Image=1`、`Failed to apply template`=**0**（native 行 124 条在档）、`settled=ModelStopped(rounds=0)`、**全档 FATAL=0**。模型回复 **"The colors I see are red, white, and yellow. The number displayed is 37."** ⇒ **三色 + 数字全中**（强判别对照臂）。性能 in 854/out 19 · 17.0 tok/s · 首字 15992ms。journal `d46170ad…/run_1791550542822.jsonl`。额外价值：上游 **LiteRT-LM#3246**（「只见图片顶部 1/4」）在 **fixB 变体上未复现**。⚠️ **同族 ≠ 同模板**，不外推至 3B |
 
 > **🔴 P1 · 模板渲染失败（W50 定案 → W51 修法落地 + 真机复验通过）**：
 > - **现象**：Qwen2.5-1.5B（`multi-prefill-seq_q8_ekv4096`）在**工具结果回灌那一轮**的 `nativeSendMessageAsync` 失败：`Failed to apply template: invalid operation: tried to use + operator on unsupported types string and sequence (in template:27 / :23)`。`createConversation` **从不失败**。
