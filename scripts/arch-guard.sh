@@ -686,6 +686,22 @@ check "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt 调用点 1、p
            if [ -z "$chan_line" ]; then echo "$E 找不到 nativeToolChannelActive() 代码位调用（读回顺序判据的锚点缺失，守卫面已失效）"
            elif [ -n "$adopt_line" ] && [ "$adopt_line" -ge "$chan_line" ]; then echo "$E 读回点行号($adopt_line) >= 首次 nativeToolChannelActive() 调用行号($chan_line)：读回必须先于通道判定（否则同一轮读回状态对通道判定不可见）"; fi'
 
+# 29) litertlm 版本钉死 0.17.1（W58，治外部审查 F-1 P0）：litertlm bump 过「1 元素 text
+#     数组→string」收敛删除点 ⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸（非发图才炸）。依据 =
+#     W55 真机 A/B 定案（元素数是唯一区分维度）+ W56 实证 v0.18.0 全树零命中。
+#     版本目录行是 bump 的**机械锚点**：判据用行首锚 `^litertlm =`（`[libraries]` 段的
+#     `litertlm-android = …` 与注释区提及均不命中；钉取值、不钉措辞）。
+#     fail-closed：文件缺失 / 提不出版本行均 exit 1 判红（防锚被改名后成空守卫 ——
+#     同 #26 baseline 提不出即红范式）。
+#     红输出 = F-1 后果摘要 + bump 前置清单提示（有意识动作化）。
+#     ⚠️ check() 契约 = stdout 非空即判红：判绿路径必须无输出，红路径必须 echo。
+check "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读四前置+前置⑤）" \
+  bash -c 'f=gradle/libs.versions.toml
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（版本目录蒸发，守卫面已失效）"; exit 1; fi
+           v=$(grep -oE "^litertlm[[:space:]]*=[[:space:]]*\"[^\"]+\"" "$f" | head -1 | cut -d\" -f2)
+           if [ -z "$v" ]; then echo "::error::$f 提不出 litertlm 版本行（行首锚被改名 ⇒ litertlm-android 访问器将解析失败，守卫面已失效）"; exit 1; fi
+           [ "$v" = "0.17.1" ] || echo "litertlm 已改为 $v：v0.18.0 起「1 元素 text 数组→string」收敛点已删且无等价替代（W56 实证 tag b2f686e2e 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸（非发图才炸）。bump 前必须按 W56 交接「四前置」+ W58 前置⑤（临时 K=3）逐条复核，并同步更新本守卫期望值"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

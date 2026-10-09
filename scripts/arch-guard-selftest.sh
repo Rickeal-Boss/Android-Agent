@@ -193,6 +193,15 @@ if [ "$SUMMARY_ONLY" -eq 1 ]; then
 fi
 exit 0
 SH
+  # 第 29 条（W58，litertlm 版本钉死 0.17.1）要求 gradle/libs.versions.toml 存在且
+  # 行首锚 `litertlm = "0.17.1"` 可提取 ⇒ 骨架必须提供**最小 toml**（只含一个版本行；
+  # 不含任何禁依赖关键词 —— 不触发第 4 条的版本目录扫描面）。
+  mkdir -p "$root/gradle"
+  cat > "$root/gradle/libs.versions.toml" <<'TOML'
+[versions]
+# 最小版本目录件（守卫 #29 的扫描面）；版本沿革说明可自由增改（守卫不钉注释）。
+litertlm = "0.17.1"
+TOML
   # 第 24 条（Wave 52，fold 收口不变式）要求 LiteRtLmEngine.kt 存在且满足
   # 「Message.user 下发点数 == foldAdjacentText 调用数」；第 25 条（Wave 52）要求其
   # 行数 ≤ 2400；第 28 条（Wave 57 建 / W58 改判据②）要求 adopt 调用 1、persist 调用 2
@@ -1658,6 +1667,77 @@ elif printf '%s\n' "$out" | grep -qF "persistResilienceToStore( 调用数(1) != 
   PASS=$((PASS + 1))
 else
   echo "FAIL [case40b] 输出里看不到「persistResilienceToStore( 调用数(1) != 2」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 39 / case 39b / case 39c / case 39d / case 39e：第 29 条（litertlm 版本钉死
+# 0.17.1，W58 治外部审查 F-1 P0）三红一绿：
+#   case39 —— sed 把版本 0.17.1 → 0.18.0 ⇒ 判红（版本漂移 = F-1 主修面）；
+#             断言红来自真命中（输出含「收敛点已删」后果摘要行），而非「守卫命令
+#             自身执行失败」。
+#   case39c —— toml 文件缺失（mv 改名，与 case17/case21/case32 同范式 —— 不用 rm，
+#             受限环境里 rm 可能被包装拦下）⇒ fail-closed 判红；
+#             断言输出含「版本目录蒸发」违规事实行（case39d）。
+#   case39e —— 绿面：[libraries] 段的相似行 `litertlm-android = …` 与**注释里**的
+#             `litertlm = "0.18.0"` 提及 ⇒ 必须**仍绿**（行首锚只认代码位、只钉取值；
+#             若锚误伤相似行/注释，正向 case 之外的第二绿面就没了）。
+#   骨架默认 toml 原样 0.17.1 ⇒ 绿（由 positive case 兜住）。
+#   各面都只在 $TMP 脚手架树内改（sed / mv / 追加），绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case39-litertlm-bumped"
+scaffold "$d"
+sed -i 's/0\.17\.1/0.18.0/' "$d/gradle/libs.versions.toml"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case39 litertlm 版本漂移 (第 29 条)" "$rc" "$out" \
+  "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读四前置+前置⑤）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case39b] 第 29 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "收敛点已删"; then
+  echo "PASS [case39b] 红来自真命中（输出含「收敛点已删」后果摘要行，非守卫自身故障）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case39b] 输出里看不到「收敛点已删」后果摘要行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case39c-litertlm-toml-missing"
+scaffold "$d"
+mv "$d/gradle/libs.versions.toml" "$d/gradle/.libs.versions.toml.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case39c libs.versions.toml 缺失 (第 29 条守卫面失效)" "$rc" "$out" \
+  "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读四前置+前置⑤）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case39d] 第 29 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "版本目录蒸发"; then
+  echo "PASS [case39d] 红来自真命中（输出含「版本目录蒸发」违规事实行，fail-closed 生效）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case39d] 输出里看不到「版本目录蒸发」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case39e-litertlm-anchor-green"
+scaffold "$d"
+cat >> "$d/gradle/libs.versions.toml" <<'TOML'
+
+[libraries]
+litertlm-android = "0.17.1"
+# 历史版本沿革注释：litertlm = "0.18.0"（注释里的提及不得命中行首锚，防被注释骗成假红）
+TOML
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case39e 相似行 + 注释提及 (第 29 条绿面)] 退出 0（行首锚只认代码位取值，未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case39e] [libraries] 相似行 / 注释里的版本提及被误判（第 29 条锚未排除非代码位 ⇒ 假红）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
