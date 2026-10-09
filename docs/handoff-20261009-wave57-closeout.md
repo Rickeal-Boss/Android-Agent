@@ -19,13 +19,13 @@
 
 ---
 
-## 二、改动清单（3 commit）
+## 二、改动清单（3 commit；本提交 = docs 回填）
 
 | commit | 性质 | 内容 |
 |---|---|---|
-| *待填* | feat(engine) | **读回接线可测化**：`EngineResilienceStore.kt` 新增 top-level `internal fun mergeResilienceState(instance, snapshot)`（OR/max 单调合并，KDoc 声明不变式与边界）；`LiteRtLmEngine.adoptResilienceFromStore` 改为调用它（**保留 R1**：warn transition 用**合并前**值，避免每次 adopt 刷日志）；`generateStream` 软熔断闸门同步复用（`mergeResilienceState(...).templateRebuildCount` ≡ 原 `maxOf(实例, store)`）。新增 `EngineResilienceMergeTest` **8 例**。P3：`ConcurrentHashMap` 改 import 风格；store KDoc 补「cid 键隔离 vs 单调合并」张力边界句。`build.yml` baseline **627 → 635** |
-| *待填* | test(guard) | **守卫 #28**「韧性 store 双写双读接线」：adopt/persist 调用点各 1（计数法，排除 def 行与注释位）+ 读回行号 < 首个 `nativeToolChannelActive()` 代码位调用行号（钉读回顺序，**脆性边界已在注释显式声明**）；文件缺失判红（不 fail-open）。selftest 新增 **case36/37/38**（红=删 adopt 调用 / 红=行序颠倒 / 绿=原样 + KDoc 提及仍绿）+ 脚手架 fixture 补 adopt/persist/通道调用 |
-| *待填* | docs | 本交接文档 + README W57 波次段 + 台账 #41/#42 + 取证落档 |
+| `c1c4eb9` | feat(engine) | **读回接线可测化**：`EngineResilienceStore.kt` 新增 top-level `internal fun mergeResilienceState(instance, snapshot)`（OR/max 单调合并，KDoc 声明不变式与边界）；`LiteRtLmEngine.adoptResilienceFromStore` 改为调用它（**保留 R1**：warn transition 用**合并前**值，避免每次 adopt 刷日志）；`generateStream` 软熔断闸门同步复用（`mergeResilienceState(...).templateRebuildCount` ≡ 原 `maxOf(实例, store)`）。新增 `EngineResilienceMergeTest` **8 例**。P3：`ConcurrentHashMap` 改 import 风格；store KDoc 补「cid 键隔离 vs 单调合并」张力边界句。`build.yml` baseline **627 → 635** |
+| `6dbc2fa` | test(guard) | **守卫 #28**「韧性 store 双写双读接线」：adopt/persist 调用点各 1（计数法，排除 def 行与注释位）+ 读回行号 < 首个 `nativeToolChannelActive()` 代码位调用行号（钉读回顺序，**脆性边界已在注释显式声明**）；文件缺失判红（不 fail-open）。selftest 新增 **case36/36b/37/37b/38**（红=删 adopt 调用 / 红=行序颠倒 / 绿=原样 + KDoc 提及仍绿）+ 脚手架 fixture 补 adopt/persist/通道调用 |
+| `7c075e3` | docs | 本交接文档 + README W57 波次段 + 台账 #41/#42 + 取证落档 |
 
 ⇒ **@Test 实数 = 635**（W57 +8 例 `EngineResilienceMergeTest`），`build.yml` baseline 同步 627 → 635（#26 双向同步）。
 
@@ -108,8 +108,13 @@
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | *待填* | *待填* | Lint / Assemble Debug / Unit tests |
-| **Release** | *待填* | *待填* | — |
+| **Build** | `37937473475` | ✅ success（head `7c075e3fb`） | Lint / Assemble Debug / Unit tests 全 success |
+| **Release** | `37937473619` | ✅ success | — |
+
+**CI 内实测（job log 直读，PAT `actions:read`）**：
+- `Assemble Debug` job：`架构守卫全部通过。`（**OK 计数 = 28**，含新增第 28 条）；`自测结果：PASS=70 FAIL=0`（selftest case36/37 红面在 CI 内亦 PASS）。
+- `Unit tests` job：`baseline=635`（soft-check 未触发 ⇒ tests ≥ 635）。
+- 本文档 commit 为 docs-only（`paths-ignore` 覆盖 `docs/**` + `*.md`）⇒ 预期 **0 run**。
 
 ---
 
