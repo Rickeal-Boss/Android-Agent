@@ -108,6 +108,12 @@ internal fun AssistantPersistenceState.onCommitted(text: String) = copy(lastComm
  * - 终止者取 `report.tripped` 里**最后一个 HARD** —— `WallClockBudget` 首次 SOFT trip 只进
  *   ledger 不中断，HARD 再 trip 一次才终止（见 `BreakerKind.WallClockBudget` KDoc）。
  *
+ * ## ⚠️ W52 B1 起的耗时口径（Wave 54 补注，勿按旧口径对账）
+ *
+ * `WallClockBudget` 的耗时口径 = **有效执行时长**（墙钟 − 审批挂起 `RunState.pausedNanos`，
+ * 见 `AgentRunner.wallClockRemainingMillis`）。故「审批等待导致的墙钟熔断」已消失、
+ * 「真耗尽」的判定边界随之收紧 —— 对账 evidence 与 breaker 记录须用此口径。
+ *
  * ## R-E（Wave 49）：为什么还要一道**内容级**闸门
  *
  * 「熔断类型是外部型」**不等于**「正文干净」。回显垃圾 / 保留 token / 循环退化可能**未达**
