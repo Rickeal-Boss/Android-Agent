@@ -101,8 +101,8 @@
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | *推送后回填* | — | — |
-| **Release** | *推送后回填* | — | — |
+| **Build** | `37927457910` | ✅ success（head `e00162595`） | Lint / Assemble Debug / Unit tests |
+| **Release** | `37927457769` | ✅ success | — |
 
 ---
 

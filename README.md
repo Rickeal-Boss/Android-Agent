@@ -369,6 +369,7 @@ Android-Agent/
 >   - **进程级会话韧性 store（治 W55 审查 P2#1 实例清零）**：`nativeToolsRejected`/`templateRebuildCount` 跨引擎实例存活（cid 键控、AppContainer 唯一组装）；软熔断 K=保守值（不熔断）待分布回填；⚠️ 引擎侧读回接线 JVM 零覆盖 + 真机判据 vacuous（如实申报）
 >   - **litertlm bump 正式挂起**（前置④红）：**v0.18.0 全树零命中收敛机制**（`MessageToTemplateInput`/`requires_typed_content` 已删且无等价替代）⇒ bump 过删除点 = fold 失效 = P1 静默回归；重启条件 = 上游恢复收敛或 app 侧出现标量 content 通道（`Contents.of(String)` 也返回 1 元素数组，W55 Probe 实证）
 >   - **台账 #39/#40 回收**（L3 端到端 + 毒化防护链）⇒ 聚合句 **38 → 40 = 33 ✅ / 5 ⚠️ / 2 ⛔**（`build.yml` 基线 624 → **627**，新增 store 单测 3 例）
+>   - **CI 双绿**：Build `37927457910` / Release `37927457769`（head `e00162595`）
 >   - **CI 双绿**：Build `37914317306` / Release `37914317420`（head `6efc0fb24`）；CI 内实测 `架构守卫全部通过。`（27 条）+ `自测结果：PASS=65 FAIL=0`
 > - ⚠️ **真机验收台账：Wave 33 起累计 40 条（其中 33 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**W55 新增回收 2 项**（H-A 毒化 A/B，台账 #37；**B1 长审批停表**，台账 #38）；**W56 新增回收 2 项**（**多模态 L3 端到端真机发图**，台账 #39；**毒化 A/B 防护链**，台账 #40）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
