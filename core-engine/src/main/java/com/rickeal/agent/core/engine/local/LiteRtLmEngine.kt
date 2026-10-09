@@ -1653,6 +1653,11 @@ class LiteRtLmEngine(
             // —— 当前 `Contents.toJson()` 恒数组、`Contents.of(String)` 亦返回 1 元素数组
             //（W55 Probe.java 实跑实证），0.17.1 Java 层不存在标量通道。重启时前置②③
             //（TextFoldTest 重跑 / 真机 fold 复验）随之恢复为「待办执行」。
+            // **前置⑤（W58 增补，消除 K 校准循环依赖）：bump 合入前必须先把
+            // TEMPLATE_REBUILD_FUSE_THRESHOLD 设为临时 K=3**（依据 = W56 毒化 Arm B 实测：
+            // 1 次失败 → 重建 → 重试成功未复炸，即正常自愈 1–2 次内收敛，×3 余量取 3；
+            // ≥3 意味着非自愈形态）。K 回填真值前维持 `Int.MAX_VALUE` 不拍值 ——
+            // 「先机制后数值」纪律不变，本条只钉**拍 K 的时机**（bump 合入之前）。
             // ⚠️ 折叠是经真机复验的有效修复，**不得删除**（删则回归 W50 必炸）。冲突取舍：离线复现
             // vs 真机实证冲突时**以真机为准**。折叠本身只做「相邻 Text 合并」这一件事。
             val preFoldContents = buildContents(fresh)
@@ -1684,6 +1689,23 @@ class LiteRtLmEngine(
             RepetitionPenaltyConfig(repetitionPenalty = repPenalty)
         } else {
             null
+        }
+        // W58 修补 D（收尾四件套单源化）：同步 catch 与 finally 两处收尾原先逐条手抄
+        //（「改一处必须同步改另一处」只是注释纪律，漏改 = 「永久 busy」回归复发的形态，
+        // Wave 55 审查 P2 已真实暴露过一次），外提为 flow 内**局部函数**后「同源」变成
+        // 结构事实 —— 捕获物（conv / finished）均为 flow 内局部量，局部函数恰好同作用域。
+        // 🔴 互斥穷尽论证（铁律）：`sendMessageAsync` 同步抛出 ⇒ catch 清理后 rethrow ⇒
+        // 流终止，下方 `channel.consumeAsFlow().collect` **不可达** ⇒ 只有 catch 执行；
+        // `sendMessageAsync` 正常返回 ⇒ catch 不可达 ⇒ 只有 finally 执行。两集合互斥且
+        // 穷尽（onError 回调是 native 异步另一入口，不经此 try/catch）。局部函数无早退、
+        // 无短路差异 ⇒ 行为与重构前逐字节等价。
+        fun generationCleanup() {
+            activeGenerations.decrementAndGet()
+            // 只有 onDone 正常收尾才算“健康”；被取消 / 出错 / 被外部 stop 都要重建会话
+            if (!finished) conversationDirty = true
+            // 流结束（正常 / 取消 / 异常）都确保底层停止，避免 GPU 继续烧电
+            runCatching { conv.cancelProcess() }
+            runCatching { channel.cancel() }
         }
         try {
             conv.sendMessageAsync(
@@ -1717,30 +1739,21 @@ class LiteRtLmEngine(
             if (isTemplateRenderFailure(raw)) {
                 handleTemplateRenderFailure(raw, outboundRoleForDiag, source = "同步下发")
             }
-            // 🔴 Wave 55 审查 P2（既有缺口，本波暴露）：`sendMessageAsync` 同步抛出时**不会**
-            // 走到下方 `channel.consumeAsFlow()` 的 `finally` ⇒ `activeGenerations` **只增不减**
-            //（`load()` 侧 `:1280` 已 `incrementAndGet`）⇒ 该实例**永久 busy**（`isBusy` 恒 true），
-            // 之后 `unload()` 抛「上一次生成仍在继续，请稍候重试」（W50 真机日志已见该症状）。
-            // 这里补**与下方 `finally` 逐条同源**的收尾；二者互斥（同步抛出后下方 try 不再进入），
-            // 不会重复执行。⚠️ 改任一处必须同步改另一处。
-            activeGenerations.decrementAndGet()
-            if (!finished) conversationDirty = true
-            runCatching { conv.cancelProcess() }
-            runCatching { channel.cancel() }
+            // 🔴 Wave 55 审查 P2：`sendMessageAsync` 同步抛出时**不会**走到下方
+            // `channel.consumeAsFlow()` 的 `finally` ⇒ 收尾四件套必须在本 catch 里执行一次
+            //（漏减 ⇒ `activeGenerations` 只增不减 ⇒ 该实例**永久 busy**，W50 真机已见
+            // 「上一次生成仍在继续」症状）。与 finally **互斥穷尽**（见 generationCleanup
+            // 声明处论证），单源收尾（W58 修补 D）。
+            generationCleanup()
             throw t
         }
 
         try {
             channel.consumeAsFlow().collect { chunk -> emit(chunk) }
         } finally {
-            // ⚠️ 本块与上方同步 `catch` 里的收尾**逐条同源**（二者互斥，不会重复执行）；
-            // 改任一处必须同步改另一处（Wave 55 审查 P2）。
-            activeGenerations.decrementAndGet()
-            // 只有 onDone 正常收尾才算“健康”；被取消 / 出错 / 被外部 stop 都要重建会话
-            if (!finished) conversationDirty = true
-            // 流结束（正常 / 取消 / 异常）都确保底层停止，避免 GPU 继续烧电
-            runCatching { conv.cancelProcess() }
-            runCatching { channel.cancel() }
+            // 收尾四件套单源（W58 修补 D）：与上方同步 catch **互斥穷尽**、不会重复执行，
+            // 原逐条手抄版本已收敛进 `generationCleanup`（分叉面消除）。
+            generationCleanup()
         }
     }
         .flowOn(engineDispatcher)
