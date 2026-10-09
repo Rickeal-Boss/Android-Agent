@@ -155,7 +155,7 @@ fold 被 3 处共用（TOOL 回灌 / merge / 主折叠点）；只关 2 处**未
 1. ✅ **B1 真机长审批剧本（W55 已交付）**：审批挂起 **≈334s > 300s 硬预算**仍存活（四判据全命中，台账 #38，见 §3.1）。**自 W52 起一直 vacuous，本波首次行使。**
 2. **多模态 L3 真机 A/B**：需一个已取证安全的视觉模型（L1 五选一）+ 发图 UI 路径；协议须同时带 **role + 元素数**（附件消息走多元素 `Contents`）。
 3. **反复炸防护**（顺序：毒化 N 分布 → 定阈值 → 落防护）：**本波已补「同步路径自愈」**（模板失败首次即置 `conversationDirty` + 计数），但**限次软熔断**仍待 N 分布。落点沿用复审15 裁决（进程级 `cid` 键控 store）。**别现在拍阈值。**
-4. **litertlm bump 评估立项**：⚠️ 硬前置（W53 / W54 三条 + **W55 新增第四条**）——① H-A 定案（**W55 已达成**）；② 新版本重跑 `TextFoldTest` 全套；③ 一次真机 fold 复验（折叠前 3 → 折叠后 1）；④ **确认目标版本仍保留「1 元素 text 数组 → string」的收敛**（v0.17.1 `GenericDataProcessor::MessageToTemplateInput` 语义）——**tip 已删除该收敛，bump 过删除点 ⇒ fold 失效 ⇒ Qwen2.5 P1 静默回归**（`#24` 只钉 fold 调用点存在性，拦不住行为级漂移）。**bump 不得先于上述前置合入。**
+4. **litertlm bump 评估立项**：⚠️ 硬前置（W53 / W54 三条 + **W55 新增第四条**）——① H-A 定案（**W55 已达成**）；② 新版本重跑 `TextFoldTest` 全套；③ 一次真机 fold 复验（折叠前 3 → 折叠后 1）；④ **确认目标版本仍保留「1 元素 text 数组 → string」的收敛**（v0.17.1 `GenericDataProcessor::MessageToTemplateInput` 语义）——**tip 已删除该收敛，bump 过删除点 ⇒ fold 失效 ⇒ Qwen2.5 P1 静默回归**（`#24` 只钉 fold 调用点存在性，拦不住行为级漂移）。**bump 不得先于上述前置合入。**（**W56 已核**：v0.18.0 tag commit `b2f686e2e` 源码树级 grep 零命中 `MessageToTemplateInput` / `requires_typed_content` = 收敛已删且无等价替代 ⇒ 前置④不通过，**bump 挂起**；重启条件见 `LiteRtLmEngine.kt` fold 出口注释区。）
 
 ### 🟡 常规（顺延，未动项）
 

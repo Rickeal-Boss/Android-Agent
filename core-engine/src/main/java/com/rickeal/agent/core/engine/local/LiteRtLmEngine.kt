@@ -1589,6 +1589,14 @@ class LiteRtLmEngine(
             // 🔴 **bump 硬风险**：litertlm bump 过该删除点后，fold 折出的 1 元素数组**不再被收敛**
             // ⇒ Qwen2.5 模板 `+` 必炸 ⇒ **P1 静默回归**；`#24` 守卫只钉 fold 调用点**存在性**，
             // 拦不住此**行为级**漂移（bump 前必须按交接前置条复核收敛语义）。
+            // **W56 挂起裁定**：v0.18.0（tag commit `b2f686e2e`）已核 —— 源码树级 `git grep`
+            // 对 `MessageToTemplateInput` / `requires_typed_content` **零命中** = 收敛已删
+            // 且无等价替代 ⇒ bump 前置④**不通过**，bump 挂起。
+            // **bump 重启条件（满足其一才重启评估）**：① 上游后续 tag 恢复「1 元素 text 数组
+            // → string」收敛语义（每季 tag 扫描一次即可）；② 或 app 侧出现标量 content 通道
+            // —— 当前 `Contents.toJson()` 恒数组、`Contents.of(String)` 亦返回 1 元素数组
+            //（W55 Probe.java 实跑实证），0.17.1 Java 层不存在标量通道。重启时前置②③
+            //（TextFoldTest 重跑 / 真机 fold 复验）随之恢复为「待办执行」。
             // ⚠️ 折叠是经真机复验的有效修复，**不得删除**（删则回归 W50 必炸）。冲突取舍：离线复现
             // vs 真机实证冲突时**以真机为准**。折叠本身只做「相邻 Text 合并」这一件事。
             val preFoldContents = buildContents(fresh)
