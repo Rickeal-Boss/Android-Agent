@@ -493,8 +493,8 @@ jobs:
             echo '```text'
             echo "$out"
             echo '```'
-            # 低于基线 soft-check（非阻断）：基线 tests=623（W53 校准：全仓 @Test 代码位实测 623，由 619 上调）。低于即打 ⚠️，绝不让 job 变红。
-            baseline=623
+            # 低于基线 soft-check（非阻断）：基线 tests=624（W54 校准：全仓 @Test 代码位实测 624，由 623 上调；W54 新增 1 例父子墙继承单测）。低于即打 ⚠️，绝不让 job 变红。
+            baseline=624
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

@@ -316,6 +316,26 @@ internal fun wallClockRemainingMillis(
 ): Long = (hardDeadlineNanos + pausedNanos - nowNanos) / 1_000_000L
 
 /**
+ * 子 run 继承的绝对硬截止（Wave 54 外提）：`子墙 = 父墙 + 父 paused`。
+ *
+ * **父挂起只计一次**：子墙 = 父墙 + 父 paused；子自身 paused 另计（W52 交接已证不变量）。
+ * 父 run 停表后，子 run 若仍拿未延长的绝对墙，就会「父 run 停过表、子 run 却按原墙判」而
+ * 提前熔断（W51 现象）—— 故继承时同步加上父 run 的审批挂起累计（[RunState.pausedNanos]）。
+ *
+ * 为什么外提为**文件级 `internal` 纯函数**（同 [wallClockRemainingMillis] 的口径）：本 spawn
+ * 点算术此前**零测试覆盖** —— 外部报告曾声称「父审批停表不向子 run 传播」，回源码却证伪
+ *（调用点本就是 `state.hardDeadlineNanos + state.pausedNanos`）。外提即把该算术变成可 JVM
+ * 直测的观测面，堵「照报告乱改」的回归口（见 [WallClockEvidenceTest]）。
+ *
+ * @param parentDeadlineNanos 父 run 的绝对硬截止（[RunState.hardDeadlineNanos]，nanoTime 刻度）。
+ * @param parentPausedNanos 父 run 的审批挂起累计（[RunState.pausedNanos]）；加回父墙 = 把父 run
+ *   已发生的审批等待从子 run 的预算里剔除（**只计一次**，不重复累加）。
+ * @return 子 run 继承的绝对硬截止（nanoTime 刻度）。
+ */
+internal fun childDeadlineNanos(parentDeadlineNanos: Long, parentPausedNanos: Long): Long =
+    parentDeadlineNanos + parentPausedNanos
+
+/**
  * 跨轮重复签名的处置结论（Wave 40 B1）：由签名在两个账本（seen / reminded）里的
  * 归属推导，**纯函数**、零协程依赖，JVM 直测（见 RepeatSignatureVerdictTest）。
  */
@@ -1933,7 +1953,7 @@ class AgentRunner(
             // `request.approvalHandler` 判空处），子 run 自己的 `pausedNanos` 恒为 0，
             // 此分支暂不可达。保留该表述是为**语义正确**（将来若给子 run 接审批通道，
             // 这行即生效），**不是**断言当前存在该路径。
-            deadlineNanos = state.hardDeadlineNanos + state.pausedNanos,
+            deadlineNanos = childDeadlineNanos(state.hardDeadlineNanos, state.pausedNanos),
         )
         val result = withContext(SubagentRunContext(parentContext)) {
             executeWithGuard(call, tool, policy)

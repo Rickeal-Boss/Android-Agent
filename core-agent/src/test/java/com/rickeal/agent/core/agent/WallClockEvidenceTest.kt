@@ -27,6 +27,10 @@ import kotlin.test.assertTrue
  * 而 evidence 那条测试**照样绿**。故补「判据接线」两例：① 无挂起必 HARD / 挂 60s 不 HARD；
  * ② remaining 与 effectiveElapsedMillis 同源（= 硬预算 − 有效时长）。
  *
+ * Wave 54 追加：spawn 点的**子墙继承算术** `childDeadlineNanos(parentDeadline, parentPaused)`
+ * （父墙 + 父 paused，父挂起只计一次）此前零测试覆盖 —— 外部报告曾称「父停表不向子 run 传播」，
+ * 回源码证伪（调用点本就是该加法），故外提为纯函数并在此钉住，堵「照报告乱改」的回归口。
+ *
  * 纯 JVM：`wallClock*Evidence` / `effectiveElapsedMillis` / `wallClockRemainingMillis` 都是
  * 顶层纯函数（零 Android / 零引擎依赖）。
  */
@@ -139,5 +143,24 @@ class WallClockEvidenceTest {
         assertEquals(170_000L, effective) // 200s 墙钟 − 30s 挂起 = 170s 有效执行
         assertEquals(130_000L, remaining) // 300s 硬预算 − 170s 有效 = 剩 130s
         assertEquals(300_000L - effective, remaining, "remaining 必须等于硬预算 − 有效执行时长")
+    }
+
+    @Test
+    fun `子墙继承 —— 父挂起只计一次（childDeadlineNanos）`() {
+        // 父墙 D、父审批挂起 P：子墙 = 父墙 + 父 paused（Wave 54 外提的 spawn 点算术）。
+        // 该算术此前零测试覆盖，是「照报告乱改」的回归口 —— 报告曾称「父停表不向子传播」，
+        // 回源码证伪（调用点本就是 `父墙 + 父 paused`），故在此直接钉住。
+        val d = 300_000L * 1_000_000L // 父硬截止（nanoTime 刻度，取 T0 = 0）
+        val p = 60_000L * 1_000_000L // 父审批挂起 60s
+        val child = childDeadlineNanos(d, p)
+        // ① 父挂起 P ⇒ 子墙比父墙恰好晚 P（childDeadlineNanos(D, P) − D == P）。
+        assertEquals(p, child - d, "子墙必须比父墙晚恰好父挂起量 P")
+        // ② 子 run remaining（子自身 paused=0）== 父 run remaining（含 P）⇒ 父挂起**只计一次**：
+        //    若继承时漏加 P 或重复累加，两条 remaining 立刻分叉（漏加 ⇒ 子提前熔断的 W51 现象）。
+        val now = 301_000L * 1_000_000L // 父墙已过 1s（纯墙钟口径下父/子均越界）
+        val childRemaining = wallClockRemainingMillis(child, pausedNanos = 0L, nowNanos = now)
+        val parentRemaining = wallClockRemainingMillis(d, pausedNanos = p, nowNanos = now)
+        assertEquals(parentRemaining, childRemaining, "子墙继承后，子(自身无挂起)与父(含 P)的 remaining 必须相等")
+        assertEquals(59_000L, childRemaining, "父挂 60s ⇒ 越界 1s 被抵回，remaining = 59s")
     }
 }
