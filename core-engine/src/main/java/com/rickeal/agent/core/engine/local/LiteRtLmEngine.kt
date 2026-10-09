@@ -19,6 +19,8 @@ import com.google.ai.edge.litertlm.ToolProvider
 import com.rickeal.agent.core.engine.EngineCapabilities
 import com.rickeal.agent.core.engine.EngineException
 import com.rickeal.agent.core.engine.EngineLoadConfig
+import com.rickeal.agent.core.engine.EngineResilienceState
+import com.rickeal.agent.core.engine.EngineResilienceStore
 import com.rickeal.agent.core.engine.EngineSessionDiagnostics
 import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
@@ -83,6 +85,18 @@ private const val MODEL_MIN_BYTES: Long = 64L * 1024L * 1024L
 private const val SYSTEM_MERGE_OPEN = "[系统设定]"
 /** [SYSTEM_MERGE_OPEN] 的成对闭定界符（存在理由与取舍见其 KDoc）。 */
 private const val SYSTEM_MERGE_CLOSE = "[/系统设定]"
+
+/**
+ * 模板重建**限次软熔断**阈值 K（W56）：`templateRebuildCount ≥ K` 时停止自愈重试、
+ * 直接以可行动文案失败（换模型 / 关图片输入），不再静默反复重建。
+ *
+ * 🔴 **K 勿拍值（W55/W56 申报口径）**：本值**待 W56 毒化 N/M 分布实验回填**。
+ * 当前取 [Int.MAX_VALUE] = **保守值 = 不熔断**：任何可达的计数都到不了阈值，
+ * 行为与 W55 **完全一致**（本常量只落机制，不落判定）。回填时改成实测分布
+ * 推导的有限值即可，机制面（[LiteRtLmEngine.generateStream] 开头的闸门 +
+ * [LiteRtLmEngine.handleTemplateRenderFailure] 的到限 warn）零改动。
+ */
+private const val TEMPLATE_REBUILD_FUSE_THRESHOLD: Int = Int.MAX_VALUE
 
 /**
  * 折叠 [contents] 中**相邻连续的 [Content.Text]** 为单个 `Content.Text`（`"\n\n"` 连接）；
@@ -215,6 +229,12 @@ internal fun summarizeContentTypes(contents: List<Content>): String {
  *     熔断管线（无报错、无日志）。
  */
 class LiteRtLmEngine(
+    /**
+     * 进程级会话韧性 store（W56）：按 cid 承载 `nativeToolsRejected` /
+     * `templateRebuildCount` 的跨实例存活（治 W55 审查 P2#1）。由
+     * `DefaultEngineFactory` 构造注入（AppContainer 唯一组装点）。
+     */
+    private val resilienceStore: EngineResilienceStore,
     private val engineDispatcher: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1),
 ) : LlmEngine {
 
@@ -242,6 +262,11 @@ class LiteRtLmEngine(
      *（连续 N 次重建即停自愈，避免反复炸）预留数据面。
      *
      * ⚠️ 阈值**待真机 N 分布确定，勿现在拍** —— 本字段只做观测，不做判据（软熔断另立）。
+     *
+     * ⚠️ W56 起**双载体**：本实例字段是读速路径；跨实例存活由进程级
+     * [resilienceStore]（键 = cid）承载 —— [adoptResilienceFromStore] 在建会话时读回
+     * （单调取大）、[handleTemplateRenderFailure] 写点双写。**releaseInternal 仍复位
+     * 实例字段**（语义见其注释），复位不影响 store 里的跨实例累计。
      */
     @Volatile
     private var templateRebuildCount = 0
@@ -281,6 +306,12 @@ class LiteRtLmEngine(
      * 里的工具清单段删掉，而引擎又注册不上工具 ⇒ **工具能力永久消失**（进程重启才恢复）。
      * 置位后 [nativeToolChannelActive] 恒 false，上层下一轮自动把工具清单段写回提示词，
      * 整体自愈回已验证的文本协议路径。随引擎释放（[releaseInternal]）复位。
+     *
+     * ⚠️ W56 起**双载体**：本实例字段是读速路径；跨实例存活由进程级
+     * [resilienceStore]（键 = cid）承载 —— [adoptResilienceFromStore] 在建会话时读回
+     * （单调 OR）、[handleTemplateRenderFailure] 写点双写。**releaseInternal 仍复位
+     * 实例字段**（换模型 / 重载后重新给一次机会的实例级语义不变）；store 侧按 cid
+     * 存活，是「证伪不随 evict 清零」的载体（W55 审查 P2#1）。
      */
     @Volatile
     private var nativeToolsRejected: Boolean = false
@@ -778,6 +809,10 @@ class LiteRtLmEngine(
     /** ExperimentalApi：renderPrefaceIntoString 渲染诊断（Wave 28，仅日志用途，失败静默）。 */
     @OptIn(ExperimentalApi::class)
     private fun ensureConversation(request: GenerationRequest): LiteRtConversation {
+        // W56：先读回、再判定 —— 下文 `nativeToolsActive`（经 `nativeToolChannelActive()`）
+        // 依赖 `nativeToolsRejected`，读回必须发生在**任何通道判定之前**，否则被 evict 重建的
+        // 新实例会重新注册已证伪的工具、重走必炸路径（W55 审查 P2#1 的症状本体）。
+        adoptResilienceFromStore(request.conversationId)
         val currentEngine = engine
             ?: throw EngineException("LiteRT-LM: 引擎未加载，请先 load()")
         // P0-A：系统提示词改由 ConversationConfig.systemInstruction 承载（native Message.system），
@@ -1194,6 +1229,55 @@ class LiteRtLmEngine(
         return created
     }
 
+    // ------------------------------------- 进程级韧性 store 读回 / 双写（W56）
+
+    /**
+     * 按 cid 从进程级 [resilienceStore] **读回**跨实例韧性状态（W56，治 W55 审查 P2#1）。
+     *
+     * 采用**单调合并**而非直接覆盖：`nativeToolsRejected` 取 OR（一旦证伪不回退）、
+     * `templateRebuildCount` 取 max（计数只增不减）。这样即使 store 与实例字段出现
+     * 瞬时错位（并发写 / 旧快照），读回也**永远不会把实例状态拉退**。
+     *
+     * 调用点：[ensureConversation] 第一行 —— 必须先于任何 `nativeToolChannelActive()`
+     * 判定（见该调用点注释）。`cid == null`（理论上不出现的防御分支）静默跳过。
+     */
+    private fun adoptResilienceFromStore(cid: String?) {
+        if (cid == null) return
+        val snapshot = resilienceStore.read(cid)
+        if (snapshot.nativeToolsRejected && !nativeToolsRejected) {
+            nativeToolsRejected = true
+            AgentLogStore.warn(
+                "原生工具通道：从进程级韧性 store 读回证伪置位（cid=$cid）—— " +
+                    "跨实例自愈状态恢复，本实例直接走文本协议，不再重走必炸路径"
+            )
+        }
+        if (snapshot.templateRebuildCount > templateRebuildCount) {
+            templateRebuildCount = snapshot.templateRebuildCount
+        }
+    }
+
+    /**
+     * 把当前实例韧性状态**双写**进进程级 [resilienceStore]（W56）。
+     *
+     * 写点纪律：只在 [handleTemplateRenderFailure]（模板失败唯一处置点）收尾处调用 ——
+     * 该函数是 `nativeToolsRejected` / `templateRebuildCount` 的统一写点，快照整体覆盖
+     * 能同时带走两字段（含探针失败 / legacy 回退路径在本次会话内先行的证伪置位）。
+     * 实例字段保持现读速路径不动；store 是跨实例存活的**增量载体**，纯增量、
+     * 单 commit 可 revert（删掉注入点即回到 W55 实例级现状）。
+     *
+     * `currentConversationId == null`（会话尚未建成，防御分支）静默跳过。
+     */
+    private fun persistResilienceToStore() {
+        val cid = currentConversationId ?: return
+        resilienceStore.write(
+            cid,
+            EngineResilienceState(
+                nativeToolsRejected = nativeToolsRejected,
+                templateRebuildCount = templateRebuildCount,
+            ),
+        )
+    }
+
     // ---------------------------------------------- 会话期模态降级（Wave 45）
 
     /**
@@ -1273,6 +1357,24 @@ class LiteRtLmEngine(
     // -------------------------------------------------------- generate
 
     override fun generateStream(request: GenerationRequest): Flow<GenerationChunk> = flow {
+        // W56 软熔断闸门：模板重建计数达到 K 时直接失败，不再行使「炸 → 自愈重建 → 再炸」
+        // 的反复路径。计数取「实例字段 ∨ store」（fresh 实例的实例字段尚未经
+        // [adoptResilienceFromStore] 读回，必须直读 store 才拦得住首炸）。
+        // 失败形态：本闸门抛 [EngineException] ⇒ 上层（AgentRunner）按既有生成失败路径
+        // 走一次重建重试后落 `Failed` 终态，错误文案即用户可行动指引。AgentRunner 的
+        // 重试结构本波不动（改动面纪律：store 是纯增量）。
+        // ⚠️ 当前 K = 保守值（Int.MAX_VALUE = 不熔断），本分支不可达，行为与 W55 一致；
+        // 阈值待 W56 毒化 N/M 分布回填（见 [TEMPLATE_REBUILD_FUSE_THRESHOLD] KDoc）。
+        request.conversationId?.let { cid ->
+            val storeCount = resilienceStore.read(cid).templateRebuildCount
+            val fuseCount = maxOf(templateRebuildCount, storeCount)
+            if (fuseCount >= TEMPLATE_REBUILD_FUSE_THRESHOLD) {
+                throw EngineException(
+                    "模板渲染失败已累计重建 $fuseCount 次（阈值 K=$TEMPLATE_REBUILD_FUSE_THRESHOLD），" +
+                        "已熔断自愈重试：请更换模型，或关闭图片/音频输入后新建会话重试"
+                )
+            }
+        }
         // 会话期模态降级（Wave 45）：`NOT_FOUND: TF_LITE_AUDIO_ENCODER_HW` 由 createConversation
         // 抛出（非 load），故降级链必须挂在这里。🔴 本调用**先于**下方 activeGenerations
         // 自增 —— 不得调换顺序，否则重建闸门自等自死锁（见 ensureConversationWithDegrade KDoc）。
@@ -1603,7 +1705,7 @@ class LiteRtLmEngine(
         // 显式补置是为了让「模板失败 ⇒ 重建会话」这个意图在错误路径上可见，**勿删 finally 那条**。
         conversationDirty = true
         // 会话级累计重建计数（W54）：两条路径经本函数统一 `++`，供毒化测试判据 /
-        // 将来重建限次软熔断观测（见字段 KDoc，阈值勿现在拍）。
+        // 重建限次软熔断观测（见字段 KDoc）。
         templateRebuildCount++
         if (nativeToolChannelActive()) {
             nativeToolsRejected = true
@@ -1613,6 +1715,19 @@ class LiteRtLmEngine(
         } else {
             AgentLogStore.warn(
                 "生成期模板渲染失败（$raw），已置会话重建（下发 role=$role）（会话重建 #${templateRebuildCount}）（来源=$source）",
+            )
+        }
+        // W56 双写：实例字段是读速路径，store 承载跨实例存活（治 W55 审查 P2#1「自愈
+        // 置位随旧实例被 evict 清零」）。放在函数收尾：一次快照写入同时带走上面的
+        // 计数 `++` 与（若命中）通道证伪置位。
+        persistResilienceToStore()
+        // W56 软熔断到限观测：只落 warn，行为干预在 generateStream 开头的闸门（下轮
+        // 生成直接失败）。当前 K = 保守值（不熔断），本分支不可达 —— 机制面先行落位，
+        // 阈值待 W56 毒化 N/M 分布回填（见 TEMPLATE_REBUILD_FUSE_THRESHOLD KDoc）。
+        if (templateRebuildCount >= TEMPLATE_REBUILD_FUSE_THRESHOLD) {
+            AgentLogStore.warn(
+                "模板重建软熔断已到阈值（#${templateRebuildCount} ≥ K=$TEMPLATE_REBUILD_FUSE_THRESHOLD）：" +
+                    "后续生成将直接失败、不再自愈重建，请更换模型或关闭图片/音频输入后新建会话"
             )
         }
     }
@@ -2132,9 +2247,13 @@ class LiteRtLmEngine(
         // 引擎没了，结果必须一起作废 —— 否则换模型后仍拿旧探针结论去注册工具，而新模型
         // 未必接受同一形状。「证伪」同样绑定本引擎实例（换模型后应重新给一次机会）。
         probedNativeTools = null
+        // W56 起复位语义收窄到**实例字段**：证伪的跨实例存活由进程级 resilienceStore
+        // （键 = cid）承载，releaseInternal 只清读速路径的实例字段 —— store 不在此清，
+        // 「证伪不随 evict 清零」（W55 审查 P2#1）正是靠它成立。
         nativeToolsRejected = false
-        // 重建计数同样绑定**本引擎实例**（同一模型 + 同一转换件）：引擎没了，计数即作废 ——
-        // 否则下次加载会带入上一实例的累计值，让「会话级」语义失真（将来重建限次软熔断会误判）。
+        // 重建计数同样绑定**本引擎实例**（同一模型 + 同一转换件）：引擎没了，实例字段即作废 ——
+        // 否则下次加载会带入上一实例的累计值，让「会话级」语义失真。⚠️ W56：软熔断用的
+        // 跨实例累计由 resilienceStore 承载（键 = cid），本复位只清实例读速字段，不影响熔断计数。
         templateRebuildCount = 0
         // tool_call ↔ tool 结果的配对状态与已注册工具集都属于会话，随会话一起作废。
         awaitingNativeToolResponse = false

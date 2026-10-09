@@ -36,6 +36,8 @@ import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
 import com.rickeal.agent.core.engine.EngineInitStatus
 import com.rickeal.agent.core.engine.EngineLoadCoordinator
+import com.rickeal.agent.core.engine.EngineResilienceStore
+import com.rickeal.agent.core.engine.ProcessEngineResilienceStore
 import com.rickeal.agent.core.engine.local.ModelHealthProbe
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.data.notify.GenerationNotifier
@@ -205,8 +207,11 @@ class AppContainer(
     // 引擎加载状态机（Wave3，gallery 竞态防护语义移植）：装饰 DefaultEngineFactory，
     // create() 返回的实例在 load 时向 engineInitStatus 状态流上报 Initializing/Initialized/Failed；
     // 加载中收到的 evict 延迟到 load 收尾消化（native load 不可中断）。AgentRunner 零改动。
+    // W56：进程级会话韧性 store 在此唯一组装、经 DefaultEngineFactory 注入 LiteRtLmEngine
+    //（nativeToolsRejected / templateRebuildCount 跨引擎实例存活，治 W55 审查 P2#1）。
+    private val engineResilienceStore: EngineResilienceStore = ProcessEngineResilienceStore()
     private val engineLoadCoordinator: EngineLoadCoordinator =
-        EngineLoadCoordinator(DefaultEngineFactory())
+        EngineLoadCoordinator(DefaultEngineFactory(engineResilienceStore))
 
     val engineFactory: EngineFactory get() = engineLoadCoordinator
 

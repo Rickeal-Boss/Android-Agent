@@ -14,14 +14,20 @@ import java.util.concurrent.ConcurrentHashMap
  * 按 kind 缓存引擎实例 —— 加载 4B 模型很贵，绝不能每次请求都重建。
  * 本应用已收敛为**纯端侧运行**：只有 LOCAL 一种引擎（远程 OpenAI 兼容通道
  * 已整体移除 —— 网络安全面与凭据管理成本不值）。
+ *
+ * [resilienceStore]（W56）：进程级会话韧性 store，随构造注入转交 [LiteRtLmEngine]，
+ * 使 `nativeToolsRejected` / `templateRebuildCount` 跨引擎实例（evict+重建）存活
+ *（治 W55 审查 P2#1「自愈置位随旧实例清零」）。AppContainer 是唯一组装点。
  */
-class DefaultEngineFactory : EngineFactory {
+class DefaultEngineFactory(
+    private val resilienceStore: EngineResilienceStore,
+) : EngineFactory {
 
     private val engines = ConcurrentHashMap<EngineKind, LlmEngine>()
 
     override fun create(kind: EngineKind): LlmEngine = engines.getOrPut(kind) {
         when (kind) {
-            EngineKind.LOCAL -> LiteRtLmEngine()
+            EngineKind.LOCAL -> LiteRtLmEngine(resilienceStore)
         }
     }
 
