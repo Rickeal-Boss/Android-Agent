@@ -173,14 +173,23 @@ W53 的 `48b6880` 一边订正 #25 注释数字、一边改同文件代码（净
 
 ## 八、CI run id
 
-推送 `ac5a362..4aa9158`（**9 commit**，fast-forward）后**两条 workflow 自动触发**（本波含 `scripts/**` / `.github/workflows/**` / `core-*/**` / `feature-*/**` 等非文档改动，无需 `workflow_dispatch`）：
+推送 `ac5a362..04efed3`（**10 commit**，fast-forward）后**两条 workflow 自动触发**（本波含 `scripts/**` / `.github/workflows/**` / `core-*/**` / `feature-*/**` 等非文档改动，无需 `workflow_dispatch`）：
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | **（推送后回填）** | — | `Lint (baseline gate)` / `Assemble Debug (JDK 21)`（含 Architecture guard 27 条 + selftest）/ `Unit tests` |
-| **Release** | **（推送后回填）** | — | `Build & (optionally) sign release` |
+| **Build** | **`37896782929`** | ✅ **success** | `Assemble Debug (JDK 21)` ✅ / `Lint (baseline gate)` ✅ / `Unit tests` ✅（**三 job 全绿**） |
+| **Release** | **`37896782933`** | ✅ **success** | `Build & (optionally) sign release` 全步骤 success |
 
-> 本节在推送后**立即回填**（W52 教训：run-id 回填迟到两次）。
+### 8.1 守卫网在 CI 上的实跑（本波**首次可读 CI job log**）
+本波所用 PAT **具备 `actions:read`** ⇒ 首次直接读到 CI 内 job log（W51–W53 均因缺权限只能判「job 绿」这一层）：
+- `Assemble Debug (JDK 21)` job 内：step 9 `Architecture guard` → **`架构守卫全部通过。`**（27 条）；step 10 `Architecture guard self-test` → **`自测结果：PASS=65 FAIL=0`** + `arch-guard 自测全部通过。`
+- **非 vacuous 证据**：case33/34/35（#26 基线滞后 / 删例、#27 聚合句不符）的「红来自真命中」断言**均在 CI 日志中可见**。
+- ⚠️ **CI 内 selftest 仅 ~9.5 s**（`07:03:22.000` → `07:03:31.479`），而**本机同脚本 ~22–24 min** —— 差异来自 Windows 文件系统（守卫的 `grep -rn` 全仓扫描 + 每 case 建临时树）。**判据以「PASS=65 FAIL=0」为准，耗时不是判据。**
+- `Unit tests` job：`test` 任务 Gradle job summary = ✅；checkout 实测 SHA = `04efed3950e558a071e5b6b8b2750e1c4542192a`（= 本波 tip）。
+  ⚠️ job log 首部的 `Commit: c3d12f33…` 是 **GitHub Runner 镜像版本**（两份 job log 均有），**非仓库 commit**，勿误读。
+- ⚠️ **观测面缺口（修正 W51 结论）**：`GITHUB_STEP_SUMMARY` 仍无 API；但 **PAT 有 `actions:read` 时 `GET /actions/jobs/{id}/logs` 返回 200 可取**（仓库外 `ghapi.sh` 内置的旧 PAT 已失效 401 ⇒ **需换新 PAT**）。⇒ W51 记的「CI 内 arch-guard `OK` 行数 / selftest `PASS=` 不可程序化读取」**已不再成立**。
+
+> 本节已在推送后**立即回填**（W52 教训：run-id 回填迟到两次）。
 
 ---
 

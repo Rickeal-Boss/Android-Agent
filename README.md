@@ -356,6 +356,7 @@ Android-Agent/
 >   - **M1 R-E KDoc 口径** + **对账子项级固化**（补 2 条 W53 漏账：「反复炸防护」「图片入口硬闸门」）+ **W53 文档勘误**（2389 → **2354** / `GPU_FAILURE_*` private→internal / 4new → **5new** / 行数加 commit 锚）
 >   - `build.yml` 基线 **623 → 624**（+1 例 @Test）；引擎 **2063 → 2087 行**（余量 313）
 >   - **真机冒烟（OPPO PDRM00 / A13）**：`assembleDebug` ✅ + `adb push` / `pm install -r` Success（`lastUpdateTime=2026-10-09 14:51:19`）+ 冷启动 PID 13804 存活 + **全量 logcat 无 app `FATAL EXCEPTION`** + UI 截图目视正常。⛔ 未行使：native 相关（本档**不含 native 行**）、B1 长审批、毒化
+>   - **CI 双绿**（`04efed3`）：**Build `37896782929`** ✅（`Assemble Debug` / `Lint (baseline gate)` / `Unit tests` 三 job 全绿）+ **Release `37896782933`** ✅。🔴 **本波首次可读 CI job log**（PAT 有 `actions:read`）⇒ 实测 CI 内 `架构守卫全部通过。`（27 条）+ `自测结果：PASS=65 FAIL=0`（case33/34/35「红来自真命中」可见）⇒ W51 记的「CI 内守卫读数不可程序化读取」**已不成立**
 > - ⚠️ **真机验收台账：Wave 33 起累计 36 条（其中 29 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
 
