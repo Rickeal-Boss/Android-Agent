@@ -11,11 +11,11 @@
 ## 一、W55 总账
 
 ### 一句话
-**H-A 毒化定案（离线源码级决定性 + 真机同构建 A/B 双向印证）+ 同步路径模板失败自愈（治本）+ 多模态 L1 剩 5 容器取证（全部数组安全）**：H-A（native 把「恰 1 个 `text` 元素」的 content 数组**收敛为 string**）在 **litertlm v0.17.1** `generic_data_processor.cc:105-112` 找到**决定性源码收敛点**，且 **tip 已删除该收敛** ⇒ **bump 硬风险**（新增第四条前置）；真机证实模板失败在 `sendMessageAsync` **同步抛出**、绕过 `onError` 自愈 ⇒ 抽出 `handleTemplateRenderFailure` 两路径共用；5 个视觉容器模板经 `minijinja` 离线复现**全部数组安全**，**推翻 W53「Qwen 系同源 ⇒ 风险最高」假设**。**无新增 `@Test`** ⇒ `build.yml` 基线维持 **624**。
+**H-A 毒化定案（离线源码级决定性 + 真机同构建 A/B 双向印证）+ 同步路径模板失败自愈（治本）+ 多模态 L1 剩 5 容器取证（全部数组安全）**：H-A（native 把「恰 1 个 `text` 元素」的 content 数组**收敛为 string**）在 **litertlm v0.17.1** `generic_data_processor.cc:105-112` 找到**决定性源码收敛点**，且 **tip 已删除该收敛** ⇒ **bump 硬风险**（新增第四条前置）；真机证实模板失败在 `sendMessageAsync` **同步抛出**、绕过 `onError` 自愈 ⇒ 抽出 `handleTemplateRenderFailure` 两路径共用；5 个视觉容器模板经 `minijinja` 离线复现**全部数组安全**，**推翻 W53「Qwen 系同源 ⇒ 风险最高」假设**。**无新增 `@Test`** ⇒ `build.yml` 基线维持 **624**。**真机另回收 B1 长审批停表**（审批挂起 ≈334s 不被 HARD 熔断，**自 W52 落地以来首次行使**，台账 #38）。
 
 ### 关键现实（如实申报）
 - 本波**有 1 处用户可见行为修复**（同步路径模板失败自愈：原生工具通道用户遇模板失败时，不再「反复炸而不降级」——`nativeToolsRejected` 现可在真实路径置位）。
-- **真机验证 = H-A 毒化 A/B 双向**（§三），是本波旗舰判据；其余为离线源码级 / 模板级取证。
+- **真机验证 = H-A 毒化 A/B 双向**（§三）+ **B1 长审批停表**（§三.2），是本波旗舰判据；其余为离线源码级 / 模板级取证。
 - ⚠️ **Arm B（fold OFF）为临时测试补丁**（fold 全局 identity），**测后已完全还原**（`git status` 干净）。
 - ⚠️ 修复后的**同步路径自愈真机回归未行使**（真机 A/B 用的是修前构建）⇒ 留 W56（§3.1）。
 
@@ -25,8 +25,8 @@
 |---|---|---|
 | `core-engine/.../local/LiteRtLmEngine.kt` | 引擎 | **+** `private fun handleTemplateRenderFailure(raw, role, source)`（模板失败统一处置）；`onError` 分支改调它（**行为等价**）；`conv.sendMessageAsync(...)` 包 `try/catch`（**rethrow**）；两处 `warn` 带**来源标识**（`同步下发` / `异步回调`）；`templateRebuildCount` KDoc 订正（两条路径统一 `++`）；**H-A 定案口径落档**（`foldAdjacentText` KDoc + 调用点注释 + `summarizeContentTypes` KDoc 同步为已定案） |
 | `feature-models/.../ModelPresets.kt` | 预设 | **+** 5 视觉容器（`Qwen2-VL-2B` / `SmolVLM2-500M` / `LFM2.5-VL-450M` / `LFM2.5-VL-1.6B` / `LFM2.5-VL-3B`）`backendBasis` 各补「W55 L1 模板已离线取证数组安全；端到端图片输入仍待真机验证」；`Qwen2-VL-2B` 额外注明**推翻 W53 假设** |
-| `docs/10-device-acceptance.md` | 文档 | **+** 台账 **#37**（H-A 毒化 A/B）；§11.0.1 聚合句 36 → **37**（29 → **30 ✅**） |
-| `README.md` | 文档 | 聚合句同步（**37 = 30 ✅ / 5 ⚠️ / 2 ⛔**）+ **新增 W55 波次段** |
+| `docs/10-device-acceptance.md` | 文档 | **+** 台账 **#37**（H-A 毒化 A/B）+ **#38**（B1 长审批停表）；§11.0.1 聚合句 36 → **38**（29 → **31 ✅**） |
+| `README.md` | 文档 | 聚合句同步（**38 = 31 ✅ / 5 ⚠️ / 2 ⛔**）+ **新增 W55 波次段** |
 | `docs/handoff-20261009-wave55-closeout.md` | 文档 | 本文件（新建） |
 
 ⇒ **@Test 实数 = 624**（本波**无新增 / 无删除** ⇒ `build.yml` baseline 维持 624，#26 双绿）。
@@ -93,7 +93,28 @@
 ⚠️ **Arm B 隔离难点**：fold 是**多路径承重**（不仅文本协议 TOOL 回灌，系统提示词 + 首条 user 合并也走同一 fold）⇒ 只关两处调用点**未隔离**（仍在第三处折叠），改为**全局 identity** 才构成「同一消息、只切 fold」的最干净对照。
 🔴 **本波新发现（由 Arm B 日志暴露）**：模板失败**不经 `onError`**（见 §2.4）⇒ W54 `templateRebuildCount` 在毒化测试中 **⛔ vacuous**（未被行使）——本波已修（§2.4）。
 
-### 3.1 ⛔ 未行使 / vacuous（如实申报，不记通过）
+### 3.1 B1 真机长审批停表（首次行使 ✅，台账 #38）
+
+> B1 自 W52 落地以来**一直 vacuous**（审批 ~7s 即过，构造不出长等待）。本波用「**审批对话框本身即暂停开关**」构造成功（**零产品代码改动**）。
+
+构造：`file_write`（需授权）触发审批对话框后**故意不点**、保持 ≈334s（周期性 `input keyevent 224` 保屏）再授权。
+题面（ASCII）：`Create a file named b1.txt inside the sandbox with content hello. Use the file_write tool.`
+
+journal `run_1791538166073.jsonl` 时间线：
+
+| 相对时刻 | 事件 |
+|---|---|
+| 0.0s | `run_started` |
+| 0.5s | `user_input` + `round_started(round=0)` |
+| 40.3s | `message MODEL TOOL_CALLS toolCalls=1`（`file_write`）⇒ **审批对话框弹出** |
+| **374.5s** | `message TOOL`（回灌）—— 审批挂起 **≈334.2s** |
+| 377.7s | **`settled = ModelStopped(rounds=1)`** ✅ |
+
+**四判据全命中**：① 审批弹出（截图 `_ci-tools/_w55_b1d.png`）；② run 继续（`ModelStopped` 非 `Failed`）；③ `WallClockBudget` 硬熔断 = 0（日志无硬预算熔断）；④ `pausedNanos` 正确计入（**仅当 334.2s 挂起被剔除**，run 才可能以 **377.7s 墙钟 > 300s 硬预算**存活；有效时长 ≈43.5s）。
+⇒ **B1 停表算术真机成立**；`WallClockBudget` 耗时口径 = 有效执行时长（扣审批挂起）**已真机证实**（此前只有 JVM 纯函数单测）。
+⚠️ 本轮 `file_write` 因**绝对路径**被沙箱正确拒绝，不影响 B1 判据。
+
+### 3.2 ⛔ 未行使 / vacuous（如实申报，不记通过）
 - **修复后同步路径自愈的真机读数**：本波修法已落地，但**未在新构建上重跑毒化以读 `来源=同步下发`**（真机 A/B 用的是修前构建）⇒ 该修复的**真机回归留 W56**。
 - **多模态 L3**：未发图 ⇒ 端到端图片输入**未验证**。
 
@@ -121,7 +142,7 @@ fold 被 3 处共用（TOOL 回灌 / merge / 主折叠点）；只关 2 处**未
 
 ### 🔴 优先（W56 首批）
 
-1. **B1 真机长审批剧本**：构造审批挂起 ≥5min10s（审批卡本身即暂停开关：不自动批 + 熄屏等待后手动批，**无需改产品代码**），验证不被 HARD 熔断（四判据：审批弹出 / run 继续 / `WallClockBudget` 熔断 = 0 / `pausedNanos` 正确计入）。
+1. ✅ **B1 真机长审批剧本（W55 已交付）**：审批挂起 **≈334s > 300s 硬预算**仍存活（四判据全命中，台账 #38，见 §3.1）。**自 W52 起一直 vacuous，本波首次行使。**
 2. **多模态 L3 真机 A/B**：需一个已取证安全的视觉模型（L1 五选一）+ 发图 UI 路径；协议须同时带 **role + 元素数**（附件消息走多元素 `Contents`）。
 3. **反复炸防护**（顺序：毒化 N 分布 → 定阈值 → 落防护）：**本波已补「同步路径自愈」**（模板失败首次即置 `conversationDirty` + 计数），但**限次软熔断**仍待 N 分布。落点沿用复审15 裁决（进程级 `cid` 键控 store）。**别现在拍阈值。**
 4. **litertlm bump 评估立项**：⚠️ 硬前置（W53 / W54 三条 + **W55 新增第四条**）——① H-A 定案（**W55 已达成**）；② 新版本重跑 `TextFoldTest` 全套；③ 一次真机 fold 复验（折叠前 3 → 折叠后 1）；④ **确认目标版本仍保留「1 元素 text 数组 → string」的收敛**（v0.17.1 `GenericDataProcessor::MessageToTemplateInput` 语义）——**tip 已删除该收敛，bump 过删除点 ⇒ fold 失效 ⇒ Qwen2.5 P1 静默回归**（`#24` 只钉 fold 调用点存在性，拦不住行为级漂移）。**bump 不得先于上述前置合入。**
@@ -130,7 +151,7 @@ fold 被 3 处共用（TOOL 回灌 / merge / 主折叠点）；只关 2 处**未
 
 5. **N-W3 预设 `evidenceLevel` 数据化 + 守卫**（`recommended=true ⇒ 非 unverified`；`image=true ⇒ ≥ family-extrapolated`）：并入「预设扩容波」。
 6. **`DeepSeek-R1-Distill-Qwen-1.5B` 被 `inferFamily` 误判 `thinking=false`**（W48 让 `enable_thinking` 恒发 ⇒ 可能关掉其推理）。**重启前提：拿到该容器 + 真机验 AUTO。不得无容器盲改。**
-7. **真机验收积压**：台账 37 条（30 ✅ / 5 ⚠️ / 2 ⛔）。未覆盖项：通知档B｜Gemma 两档｜层5「压缩触发重建」子路径｜记忆磁盘满·只读｜W37 UI 手感｜lint gate｜W38 行为变更｜W40 验收面｜F4 三级文字 token 统一｜**多模态 L3**。
+7. **真机验收积压**：台账 38 条（31 ✅ / 5 ⚠️ / 2 ⛔）。未覆盖项：通知档B｜Gemma 两档｜层5「压缩触发重建」子路径｜记忆磁盘满·只读｜W37 UI 手感｜lint gate｜W38 行为变更｜W40 验收面｜F4 三级文字 token 统一｜**多模态 L3**。
 8. **F4 三级文字 token「同角色不同色」6 处**：先立「语义角色→颜色」单一映射表再全仓对齐。⚠️ 深色 `onGlassSubtle`(0x80) 是**脆弱达标**（余量 <10%）⇒ **不要降 alpha**。
 9. **数据回填 / 阈值回填**：口径见 W49 交接；阈值需 ≥2 个坏容器样本。
 10. **`TokenUsage.estimated` 治根字段**（唯一能长期不撒谎的口径方案）。

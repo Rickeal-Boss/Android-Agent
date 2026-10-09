@@ -339,7 +339,7 @@ Android-Agent/
 >   - **V-2 H-A 观测面**：主折叠点（`LiteRtLmEngine.kt:1766`）在**折叠前 ≥2 元素**时落「折叠前 N → 折叠后 M」日志（单元素不落，防刷屏）
 >   - 🔴 **`fulltest.sh` 假全量「对症」加固**（⚠️ 外部三份报告的因果**不成立**）：`rm -rf test-results` **自脚本创建（`6790cdd`）起就在 gradle 之前**——空环境实测「植入残留 → 跑默认模式 → 残留被删 + gradle 快速失败 + `::warning::` + exit 1」⇒ **无假全量**。真实 fail-open 面收窄为「`rm` 静默失败 + gradle 也失败」⇒ 修法 = rm 失败可见化 + 打印 XML mtime 范围 + 默认模式模块数 ≠9 告警（红线：`--summary-only` 恒 exit 0 **逐字保留**）
 >   - **守卫 23 → 25 项**（#24 fold 收口不变式：`Message.user` 下发点数 == `foldAdjacentText` 调用数，防新增下发点**静默重开 P1**；#25 `LiteRtLmEngine.kt` ≤2400）+ **selftest 52 → 59** + `build.yml` 用例数基线 **598 → 619** + 全量单测 **619 → 621**（唯一失败仍为 `SandboxFileScannerTest.kt:184` Windows 符号链接**既有基线**）
->   - **台账聚合计数订正**：逐条实数（`awk` 计结论列）= **35 行 = 28 ✅ / 5 ⚠️ / 2 ⛔**（README 原「31 条 / 27 ✅ / 4」**三项全错**；handoff §五.5/§五.13 同步）。**W53 追加 #36**（层3 日志观测面回收）⇒ **36 行 = 29 ✅ / 5 ⚠️ / 2 ⛔**；**W55 追加 #37**（H-A 毒化 A/B 回收）⇒ **37 行 = 30 ✅ / 5 ⚠️ / 2 ⛔**（并由 arch-guard 第 27 条机械钉住聚合句 ↔ 逐条台账）
+>   - **台账聚合计数订正**：逐条实数（`awk` 计结论列）= **35 行 = 28 ✅ / 5 ⚠️ / 2 ⛔**（README 原「31 条 / 27 ✅ / 4」**三项全错**；handoff §五.5/§五.13 同步）。**W53 追加 #36**（层3 日志观测面回收）⇒ **36 行 = 29 ✅ / 5 ⚠️ / 2 ⛔**；**W55 追加 #37**（H-A 毒化 A/B 回收）+ **#38**（B1 长审批停表回收）⇒ **38 行 = 31 ✅ / 5 ⚠️ / 2 ⛔**（并由 arch-guard 第 27 条机械钉住聚合句 ↔ 逐条台账）
 >   - **真机复验（OPPO PDRM00 / A13）**：文本协议下模型一次发 **3 个 tool_call** ⇒ `多元素 content 下发：折叠前 3 → 折叠后 1`（**fold 真实行使、非 vacuous**）、`Failed to apply template` **0 命中**；B2 日志真机命中（`true`/`false` 两态，未冒充）；审批卡被批准 **5 次**且 **WallClockBudget 硬预算熔断 = 0**；沙箱正确拒绝绝对路径。⛔ 未行使：B1 的「长审批」效应（审批 ~7s 自动通过）
 >   - **多模态 P1 未覆盖补独立挂账** + **6 个**视觉预设标注「图片输入尚未验证」（与既有「视觉 GPU 未实测 → 禁 GPU」同纪律）
 > - **W53（2026-10-08）**：**守卫网扩展 + 引擎 god-file Stage-1 拆分 + 多模态 P1 取证（L1/L2）**
@@ -362,8 +362,8 @@ Android-Agent/
 >   - 🔴 **bump 硬风险（新增第四条前置）**：bump 过该删除点 ⇒ fold 折出的 1 元素数组**不再被收敛** ⇒ Qwen2.5 模板 `+` 必炸 ⇒ **P1 静默回归**；`#24` 守卫只钉 fold 调用点**存在性**，拦不住此**行为级**漂移
 >   - 🔴 **同步路径模板失败自愈（治本）**：真机证实模板失败在 `conv.sendMessageAsync(...)` **同步抛出**、**不经** `onError` 回调 ⇒ W51 自愈（置 `conversationDirty` / 证伪 `nativeToolsRejected`）与 W54 `templateRebuildCount` 对**真实路径失效**。修法 = 把「模板失败处置」抽成 `handleTemplateRenderFailure`、**两条路径共用**（同步 catch / 异步 `onError`）+ 同步 `sendMessageAsync` 包 `try/catch`（**必须 rethrow**，不吞异常）+ 两处 `warn` 带**来源标识**（`同步下发` / `异步回调`）
 >   - **多模态 L1 剩 5 容器取证（全部数组安全）**：`Qwen2-VL-2B` / `SmolVLM2-500M` / `LFM2.5-VL-450M` / `LFM2.5-VL-1.6B` / `LFM2.5-VL-3B` 的 `chat_template` 用 `content is string` + `for item in content`（非 `+` 拼接）⇒ 三种 content 形状（string / 单元素数组 / 多元素数组）全 OK。🔴 **推翻 W53 假设**「Qwen 系同源 ⇒ 风险最高」——`Qwen2-VL-2B` 与 `Qwen2.5-1.5B` 模板形态**不同**（**同家族 ≠ 同模板**）。⚠️ 仅 L1（模板层）；**端到端图片输入（L3）仍待真机验证**
->   - **台账 #37 回收**（H-A 毒化 A/B）⇒ 聚合句 **36 → 37 = 30 ✅ / 5 ⚠️ / 2 ⛔**（`build.yml` 基线维持 **624**，本波无新增 `@Test`）
-> - ⚠️ **真机验收台账：Wave 33 起累计 37 条（其中 30 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**W55 新增回收 1 项**（H-A 毒化 A/B：fold ON 不炸 / fold OFF 炸 `:23`，台账 #37）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
+>   - **台账 #37/#38 回收**（H-A 毒化 A/B + B1 长审批停表）⇒ 聚合句 **36 → 38 = 31 ✅ / 5 ⚠️ / 2 ⛔**（`build.yml` 基线维持 **624**，本波无新增 `@Test`）
+> - ⚠️ **真机验收台账：Wave 33 起累计 38 条（其中 31 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）——仍是最大风险敞口。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**W55 新增回收 2 项**（H-A 毒化 A/B：fold ON 不炸 / fold OFF 炸 `:23`，台账 #37；**B1 长审批停表：审批挂起 ≈334s 不被 HARD 熔断**，台账 #38）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
 
 ---

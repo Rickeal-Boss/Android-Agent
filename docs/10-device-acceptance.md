@@ -510,7 +510,7 @@ CI 和静态审查都发现不了，只有真机能复现。
 
 ### 11.0 先读：这份清单的取证前提（Wave 39 新增）
 
-Wave 33 起累计的验收项 **37 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **30 条 ✅回收 / 5 条 ⚠️部分 / 2 条 ⛔不适用**；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
+Wave 33 起累计的验收项 **38 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **31 条 ✅回收 / 5 条 ⚠️部分 / 2 条 ⛔不适用**；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
 
 | 事实 | 后果 |
 |---|---|
@@ -638,6 +638,7 @@ Wave 33 起累计的验收项 **37 条**（逐条见 §11.0.1 台账，均附证
 | # | 验收项 | 结论 | 证据锚点（cid / 行号 / 来源） |
 |---|---|---|---|
 | 37 | **W55 H-A 毒化 A/B：fold ON 不炸 / fold OFF 炸 `:23`**（同构建双向印证「元素数」维度） | ✅ 回收 | 题面 = W50 组A 原文（ASCII，**文本协议** `nativeToolChannel:false`，模型 `Qwen2.5-1.5B`）。**Arm A（fold ON）**：`多元素 content 下发：折叠前 2 → 折叠后 1`、**无 `Failed to apply template`**、`settle=MaxRounds(rounds=8)`、含 51 条 native 行；**Arm B（同代码 + fold 全局 identity）**：`折叠前 3 → 折叠后 3；元素类型 Text=3` ⇒ `引擎重建：LOCAL 生成失败（… Failed to apply template: invalid operation: tried to use + operator on unsupported types string and sequence (in template:23)）` + `生成失败：LOCAL 重试后仍失败（… :23）`。⇒ **元素数（1 vs ≥2）是唯一区分维度**。崩溃经引擎重建重试后放弃、**无 `FATAL EXCEPTION`**（优雅降级）。⚠️ **Arm B 为临时测试补丁**（fold 全局 identity），**测后已完全还原**（`git status` 干净） |
+| 38 | **W55 B1 真机长审批停表**（审批挂起 ≈334s 不被 HARD 熔断） | ✅ **回收** | 构造：`file_write` 触发审批对话框后**故意不点**、保持 ≈334s（周期性 `keyevent 224` 保屏）再授权（**零产品代码改动**；对话框本身即暂停开关）。journal `run_1791538166073.jsonl` 时间线：`0.0s run_started` → `40.3s MODEL TOOL_CALLS`（对话框弹出）→ **`374.5s TOOL`（挂起 ≈334.2s）** → `377.7s settled=ModelStopped(rounds=1)`。**四判据全命中**：① 审批弹出（截图 `_ci-tools/_w55_b1d.png`）；② run 继续（`ModelStopped` 非 `Failed`）；③ `WallClockBudget` 硬熔断 = 0（日志无硬预算熔断）；④ `pausedNanos` 正确计入（**仅当 334.2s 挂起被剔除**，run 才可能以 **377.7s 墙钟 > 300s 硬预算**存活；有效时长 ≈43.5s）。⇒ **B1 停表算术真机成立**（此前自 W52 起一直 vacuous）。⚠️ `file_write` 因绝对路径被沙箱正确拒绝，不影响判据 |
 
 > **🔴 P1 · 模板渲染失败（W50 定案 → W51 修法落地 + 真机复验通过）**：
 > - **现象**：Qwen2.5-1.5B（`multi-prefill-seq_q8_ekv4096`）在**工具结果回灌那一轮**的 `nativeSendMessageAsync` 失败：`Failed to apply template: invalid operation: tried to use + operator on unsupported types string and sequence (in template:27 / :23)`。`createConversation` **从不失败**。
