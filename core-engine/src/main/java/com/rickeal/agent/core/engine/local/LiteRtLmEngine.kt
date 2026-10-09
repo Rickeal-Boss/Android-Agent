@@ -24,6 +24,7 @@ import com.rickeal.agent.core.engine.EngineResilienceStore
 import com.rickeal.agent.core.engine.EngineSessionDiagnostics
 import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
+import com.rickeal.agent.core.engine.mergeResilienceState
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
@@ -1234,26 +1235,36 @@ class LiteRtLmEngine(
     /**
      * 按 cid 从进程级 [resilienceStore] **读回**跨实例韧性状态（W56，治 W55 审查 P2#1）。
      *
-     * 采用**单调合并**而非直接覆盖：`nativeToolsRejected` 取 OR（一旦证伪不回退）、
-     * `templateRebuildCount` 取 max（计数只增不减）。这样即使 store 与实例字段出现
-     * 瞬时错位（并发写 / 旧快照），读回也**永远不会把实例状态拉退**。
+     * 合并语义外提为纯函数 [mergeResilienceState]（W57）：`nativeToolsRejected` 取 OR
+     *（一旦证伪不回退）、`templateRebuildCount` 取 max（计数只增不减）⇒ 即使 store 与
+     * 实例字段出现瞬时错位（并发写 / 旧快照），读回也**永远不会把实例状态拉退**。
+     * 外提后该语义获 JVM 覆盖（`EngineResilienceMergeTest`）。
      *
      * 调用点：[ensureConversation] 第一行 —— 必须先于任何 `nativeToolChannelActive()`
      * 判定（见该调用点注释）。`cid == null`（理论上不出现的防御分支）静默跳过。
      */
     private fun adoptResilienceFromStore(cid: String?) {
         if (cid == null) return
-        val snapshot = resilienceStore.read(cid)
-        if (snapshot.nativeToolsRejected && !nativeToolsRejected) {
-            nativeToolsRejected = true
+        // R1（等价性关键）：transition 判据用**合并前**的实例值 `before`。若改用合并后值判，
+        // 则 store 一旦置位，本实例**每次** adopt 都会重复 warn（日志刷屏 = 行为漂移）。
+        // 用 `before` 才与改写前的 `snapshot.nativeToolsRejected && !nativeToolsRejected`
+        // 逐语义等价：只在「本实例首次由 false→true」告警。
+        val before = nativeToolsRejected
+        val merged = mergeResilienceState(
+            EngineResilienceState(
+                nativeToolsRejected = nativeToolsRejected,
+                templateRebuildCount = templateRebuildCount,
+            ),
+            resilienceStore.read(cid),
+        )
+        if (merged.nativeToolsRejected && !before) {
             AgentLogStore.warn(
                 "原生工具通道：从进程级韧性 store 读回证伪置位（cid=$cid）—— " +
                     "跨实例自愈状态恢复，本实例直接走文本协议，不再重走必炸路径"
             )
         }
-        if (snapshot.templateRebuildCount > templateRebuildCount) {
-            templateRebuildCount = snapshot.templateRebuildCount
-        }
+        nativeToolsRejected = merged.nativeToolsRejected
+        templateRebuildCount = merged.templateRebuildCount
     }
 
     /**
@@ -1366,8 +1377,15 @@ class LiteRtLmEngine(
         // ⚠️ 当前 K = 保守值（Int.MAX_VALUE = 不熔断），本分支不可达，行为与 W55 一致；
         // 阈值待 W56 毒化 N/M 分布回填（见 [TEMPLATE_REBUILD_FUSE_THRESHOLD] KDoc）。
         request.conversationId?.let { cid ->
-            val storeCount = resilienceStore.read(cid).templateRebuildCount
-            val fuseCount = maxOf(templateRebuildCount, storeCount)
+            // W57：熔断计数与 adopt 读回**共用同一合并语义**（[mergeResilienceState] 的 max
+            // 分支）—— 原先此处另写一份 `maxOf(templateRebuildCount, storeCount)`，与
+            // adopt 的 max 是同一口径却两处各写 ⇒ 改一处漏一处会让「软熔断」与「读回」对
+            // 同一 cid 得出不同累计值。改为复用纯函数后，两处口径永不漂移（行为逐字节等价：
+            // `mergeResilienceState(...).templateRebuildCount` == `max(实例字段, store)`）。
+            val fuseCount = mergeResilienceState(
+                EngineResilienceState(templateRebuildCount = templateRebuildCount),
+                resilienceStore.read(cid),
+            ).templateRebuildCount
             if (fuseCount >= TEMPLATE_REBUILD_FUSE_THRESHOLD) {
                 throw EngineException(
                     "模板渲染失败已累计重建 $fuseCount 次（阈值 K=$TEMPLATE_REBUILD_FUSE_THRESHOLD），" +
