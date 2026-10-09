@@ -227,7 +227,10 @@ class LiteRtLmEngine(
 
     /**
      * 会话级**累计重建计数**：本引擎实例自加载以来，因「生成期模板渲染失败」
-     *（[isTemplateRenderFailure]）而置会话重建的次数（`onError` 自愈分支 `++`）。
+     *（[isTemplateRenderFailure]）而置会话重建的次数。**两条路径**——同步 `sendMessageAsync`
+     * 的 catch / 异步 `onError` 回调——经 [handleTemplateRenderFailure] **统一 `++`**
+     *（Wave 55：真机证实失败在 `sendMessageAsync` **同步抛出**、不经 `onError`，故此前
+     * 只有 `onError` 一条入口时该计数对真实路径失效）。
      *
      * 为什么是**实例级**而非 run 级：语义是**会话级**（同一引擎实例 = 同一会话生命周期，
      * 随 [releaseInternal] 复位），不是单次 run 级；放 run 态会随 run 结束丢失累计。
@@ -1413,31 +1416,12 @@ class LiteRtLmEngine(
                 }
                 // 生成期模板渲染失败的自愈（Wave 51 P1）：Qwen2.5 容器模板用
                 // `'…' + message.content + '…'` 拼接 content，content 为 JSON 数组时必炸
-                //（详见 [foldAdjacentText] 的 KDoc）。出口收口后仍可能命中（多模态 / 其它模型），
-                // 故这里补一道自愈：置会话重建；仅在**原生工具通道激活**时证伪本通道。
+                //（详见 [foldAdjacentText] 的 KDoc）。出口收口后仍可能命中（多模态 / 其它模型）。
+                // ⚠️ Wave 55：真机证实模板失败实际在 `sendMessageAsync` **同步抛出**、**不经**
+                // 本回调 ⇒ 本分支对真实路径不可达（仅为「native 在回调期才报」的兜底）。
+                // 处置逻辑已抽到 [handleTemplateRenderFailure]，与同步 catch 共用一份、避免分叉。
                 if (isTemplateRenderFailure(raw)) {
-                    // 与 finally（下方 `!finished ⇒ conversationDirty = true`）**冗余**：
-                    // 显式补置是为了让「模板失败 ⇒ 重建会话」这个意图在错误路径上可见，**勿删 finally 那条**。
-                    conversationDirty = true
-                    // 会话级累计重建计数（W54）：本分支是「因模板失败而重建」的唯一入口，
-                    // 计数 +1 供毒化测试判据 / 将来重建限次软熔断观测（见字段 KDoc，阈值勿现在拍）。
-                    templateRebuildCount++
-                    // 为什么只在 nativeToolChannelActive() 为真时证伪通道：失败根因是 content
-                    // 数组化、**与通道无关**（文本协议下同样炸，W50 组A 实证）；对纯文本协议用户
-                    // 证伪通道只会带来无意义的「工具清单写回提示词」副作用。native 通道用户被降级
-                    // 后，native 路径特有的 `assistant + tool_calls` 的 `:27` 失败面也随之消失。
-                    // 防循环：nativeToolsRejected 置位后 nativeToolChannelActive() 恒 false ⇒ 不会
-                    // 反复证伪；重建只在 dirty 置位后下一 run 发生一次。
-                    if (nativeToolChannelActive()) {
-                        nativeToolsRejected = true
-                        AgentLogStore.warn(
-                            "原生工具通道：生成期模板渲染失败（$raw），已证伪本通道；下一 run 回退文本协议（下发 role=${outboundRoleForDiag}）（会话重建 #${templateRebuildCount}）",
-                        )
-                    } else {
-                        AgentLogStore.warn(
-                            "生成期模板渲染失败（$raw），已置会话重建（下发 role=${outboundRoleForDiag}）（会话重建 #${templateRebuildCount}）",
-                        )
-                    }
+                    handleTemplateRenderFailure(raw, outboundRoleForDiag, source = "异步回调")
                 }
                 channel.close(EngineException("LiteRT-LM: 生成失败 (${raw})$hint", throwable))
             }
@@ -1525,24 +1509,40 @@ class LiteRtLmEngine(
         } else {
             null
         }
-        conv.sendMessageAsync(
-            outbound,
-            callback,
-            extraContext = extraContext,
-            repetitionPenaltyConfig = repetitionPenaltyConfig,
-            // 输出上限逐消息生效（Wave 28）：KV 预算已由 EngineConfig.maxNumTokens =
-            // contextLength 承载（输入+输出总和），maxTokens 在这里的语义回归本位 ——
-            // 「单次生成的输出 token 上限」（含思考输出，litertlm 口径）。逐消息参数
-            // 不进 Conversation 状态：用户改输出上限既不重建引擎也不重建会话，立即生效。
-            // NPU 后端无此约束（约束的是 samplerConfig，见上），照常传递。
-            maxOutputToken = request.config.maxTokens,
-            // thinking 独立预算（Wave 47 项1）：非 null 时 native 到预算强制转正文
-            // （`ThinkingBudgetConstraint`，0.17.1 AAR `.so` 字节级证实已编入）。
-            // 与上方 `extraContext["enable_thinking"]` 互补不冲突（native 侧 `contains`
-            // 守卫保证 extraContext 优先）：thinkingOn=true 时二者同值（true）；thinkingOn=false
-            // 时本项为 null，关思考由 extraContext 的显式 `enable_thinking=false` 承担（Wave 48 1-B）。
-            thinkingConfig = thinkingConfig,
-        )
+        try {
+            conv.sendMessageAsync(
+                outbound,
+                callback,
+                extraContext = extraContext,
+                repetitionPenaltyConfig = repetitionPenaltyConfig,
+                // 输出上限逐消息生效（Wave 28）：KV 预算已由 EngineConfig.maxNumTokens =
+                // contextLength 承载（输入+输出总和），maxTokens 在这里的语义回归本位 ——
+                // 「单次生成的输出 token 上限」（含思考输出，litertlm 口径）。逐消息参数
+                // 不进 Conversation 状态：用户改输出上限既不重建引擎也不重建会话，立即生效。
+                // NPU 后端无此约束（约束的是 samplerConfig，见上），照常传递。
+                maxOutputToken = request.config.maxTokens,
+                // thinking 独立预算（Wave 47 项1）：非 null 时 native 到预算强制转正文
+                // （`ThinkingBudgetConstraint`，0.17.1 AAR `.so` 字节级证实已编入）。
+                // 与上方 `extraContext["enable_thinking"]` 互补不冲突（native 侧 `contains`
+                // 守卫保证 extraContext 优先）：thinkingOn=true 时二者同值（true）；thinkingOn=false
+                // 时本项为 null，关思考由 extraContext 的显式 `enable_thinking=false` 承担（Wave 48 1-B）。
+                thinkingConfig = thinkingConfig,
+            )
+        } catch (t: Throwable) {
+            // Wave 55：真机证实「生成期模板渲染失败」是在 `sendMessageAsync` **同步抛出**
+            //（`Failed to start nativeSendMessageAsync: … Failed to apply template …`），
+            // **不经**异步 `onError` 回调 ⇒ 原先只挂在 `onError` 的自愈（W51 置
+            // `conversationDirty` / 证伪 `nativeToolsRejected`；W54 `templateRebuildCount`）
+            // 对真实路径**失效**。这里补一道与 `onError` **等价**的处置（共用
+            // [handleTemplateRenderFailure]，避免两份逻辑分叉）。
+            // ⚠️ **必须 rethrow**：不吞异常 —— 失败仍由上层（`AgentRunner` 的引擎重建重试）
+            // 承接；本 catch 只**新增**模板判据分支，非模板类失败原样上抛。
+            val raw = t.message ?: ""
+            if (isTemplateRenderFailure(raw)) {
+                handleTemplateRenderFailure(raw, outboundRoleForDiag, source = "同步下发")
+            }
+            throw t
+        }
 
         try {
             channel.consumeAsFlow().collect { chunk -> emit(chunk) }
@@ -1557,6 +1557,43 @@ class LiteRtLmEngine(
     }
         .flowOn(engineDispatcher)
         .cancellable()
+
+    /**
+     * 「生成期模板渲染失败」的**统一处置**（Wave 55）：置会话重建 + 累计计数 + 原生通道证伪 +
+     * 对应 `warn`。抽成单一函数是为了让**两条路径共用一份逻辑**，避免行为分叉：
+     * ① 同步 `conv.sendMessageAsync(...)` 的 catch（[source] = `同步下发`）——**真机实测的
+     * 真实路径**（失败在 `sendMessageAsync` 同步抛出）；② 异步 `onError` 回调
+     *（[source] = `异步回调`）——兜底「native 在回调期才报」的形态。
+     *
+     * 为什么只在 [nativeToolChannelActive] 为真时证伪通道：失败根因是 content 数组化、
+     * **与通道无关**（文本协议下同样炸，W50 组A 实证）；对纯文本协议用户证伪通道只会带来
+     * 无意义的「工具清单写回提示词」副作用。native 通道用户被降级后，native 路径特有的
+     * `assistant + tool_calls` 的 `:27` 失败面也随之消失。防循环：`nativeToolsRejected` 置位后
+     * [nativeToolChannelActive] 恒 false ⇒ 不会反复证伪；重建只在 dirty 置位后下一 run 发生一次。
+     *
+     * @param raw 失败原文（`Throwable.message`），用于判据与日志。
+     * @param role 本次下发消息的内容来源语义（`tool` / `user`），仅用于日志；由调用点传入
+     *  （`outboundRoleForDiag` 是 flow 内的局部量，故随参数传入而非读字段）。
+     * @param source 失败来源标识（`同步下发` / `异步回调`），仅用于日志区分路径，不影响处置行为。
+     */
+    private fun handleTemplateRenderFailure(raw: String, role: String, source: String) {
+        // 与 finally（`!finished ⇒ conversationDirty = true`）**冗余**：
+        // 显式补置是为了让「模板失败 ⇒ 重建会话」这个意图在错误路径上可见，**勿删 finally 那条**。
+        conversationDirty = true
+        // 会话级累计重建计数（W54）：两条路径经本函数统一 `++`，供毒化测试判据 /
+        // 将来重建限次软熔断观测（见字段 KDoc，阈值勿现在拍）。
+        templateRebuildCount++
+        if (nativeToolChannelActive()) {
+            nativeToolsRejected = true
+            AgentLogStore.warn(
+                "原生工具通道：生成期模板渲染失败（$raw），已证伪本通道；下一 run 回退文本协议（下发 role=$role）（会话重建 #${templateRebuildCount}）（来源=$source）",
+            )
+        } else {
+            AgentLogStore.warn(
+                "生成期模板渲染失败（$raw），已置会话重建（下发 role=$role）（会话重建 #${templateRebuildCount}）（来源=$source）",
+            )
+        }
+    }
 
     /**
      * 挑出本轮「还没发过」的消息，并**登记进水印**（用 message.id）。
