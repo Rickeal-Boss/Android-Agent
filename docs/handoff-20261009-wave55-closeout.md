@@ -3,7 +3,7 @@
 > **唯一权威交接文档**。逐波细节看 `handoff-*.md`；README 台账是特性/路线图的权威版。
 > 本文件回答三件事：**W55 做了什么 / 留下了什么判据 / 下一个人从哪接手**。
 >
-> 基线：W54 收官 `19c1dab`（W54 共 12 commit，其 CI 触发推送 = `ac5a362..04efed3`）｜本波 tip = `improve` 分支最新（W55 共 8 commit，**CI 触发推送 = `19c1dab..6efc0fb`**）
+> 基线：W54 收官 `19c1dab`（W54 共 12 commit，其 CI 触发推送 = `ac5a362..04efed3`）｜本波 tip = `improve` 分支最新（W55 共 10 commit，**CI 触发推送 = `19c1dab..6efc0fb`**；`60b86f4` 起为 docs-only 回填/订正，实测 0 run）
 > 前置文档：`docs/handoff-20261009-wave54-closeout.md`（W54 逐项记录）
 
 ---
@@ -22,7 +22,7 @@
 - ⚠️ **Arm B（fold OFF）为临时测试补丁**（fold 全局 identity），**测后已完全还原**（`git status` 干净）。
 - ⚠️ 修复后的**同步路径自愈真机回归未行使**（真机 A/B 用的是修前构建）⇒ 留 W56（§3.1）。
 
-### 改动清单（8 commit；5 文件）
+### 改动清单（10 commit；5 文件；含 2 个纯 docs 订正/回填 commit）
 
 | 文件 | 性质 | 说明 |
 |---|---|---|
