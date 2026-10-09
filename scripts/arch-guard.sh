@@ -646,39 +646,41 @@ check "A5 台账聚合句与 §11.0.1 逐条三态一致（README / docs 聚合�
            done
            [ "$bad" -eq 0 ] || echo "修法：把聚合句改成与台账实数一致（改一个数字必须全仓 grep 该数字的所有形态再改）"'
 
-# 28) LiteRtLmEngine.kt 「进程级韧性 store 双写双读接线」（Wave 57）：
+# 28) LiteRtLmEngine.kt 「进程级韧性 store 双写双读接线」（Wave 57 建 / W58 改判据②）：
 #     读回点（adoptResilienceFromStore，ensureConversation 首行）与写点
-#     （persistResilienceToStore，handleTemplateRenderFailure 收尾）是**承重接线**：
+#     （persistResilienceToStore：① ensureConversation 成功路径 cid 赋值后 +
+#     ② handleTemplateRenderFailure 收尾，W58 起两个写点）是**承重接线**：
 #     读回点若被删 ⇒ P2#1（「自愈置位随 evict 清零」的证伪）静默复发；写点若被删 ⇒
-#     跨实例计数永不落 store。二者在开发期**单轮根本测不出**（行使需 evict + 重建），
+#     跨实例计数永不落 store（写点①缺 = 建会话期证伪不带 store，W58 修补 A 的主修面）。
+#     二者在开发期**单轮根本测不出**（行使需 evict + 重建），
 #     与 #24（fold 收口）同属「靠枚举维护的承重不变式」⇒ 用守卫冻结其存在性。
 #     判据（同 #24 计数法，排除 def 行与注释/KDoc 位）：
 #       ① `adoptResilienceFromStore(` 调用数 == 1（不含 `private fun adoptResilienceFromStore(` def 行）
-#       ② `persistResilienceToStore(`  调用数 == 1（不含 `private fun persistResilienceToStore(` def 行）
+#       ② `persistResilienceToStore(`  调用数 == 2（不含 def 行；写点①建会话成功路径 + 写点②模板失败收尾）
 #       ③ 读回点行号 < 首次 `nativeToolChannelActive()` **代码位**调用行号（钉「读回先于通道判定」）
 #     ⚠️ 判据③的**脆性边界（显式声明 —— 任务书要求留痕）**：③ 取的是**全文件首个**
 #        `nativeToolChannelActive()` 代码位调用行号，而读回点（ensureConversation 首行）
-#        恰好在其之前 ⇒ 当前成立（实测 :815 < :828）。但它**对重构敏感**：若将来在 adopt
+#        恰好在其之前 ⇒ 当前成立。但它**对重构敏感**：若将来在 adopt
 #        调用点之前新增任何 `nativeToolChannelActive()` 调用（例如把某辅助方法挪到
 #        ensureConversation 之上），③ 会**误红**。届时请人工确认「读回先于通道判定」的语义
 #        是否仍成立，或把判据收窄到 ensureConversation 作用域内 —— **不要**默默删掉 ③
 #        （它是当前唯一钉住读回顺序的机械载体；纯函数单测覆盖不到调用点顺序）。
 #     ⚠️ ③ **必须排除注释位**：本文件 KDoc/注释里多处提及 `nativeToolChannelActive()`
-#        （首处在 :224，远早于首个真调用 :828）；若不排除注释位，③ 会把注释行当锚点
-#        ⇒ 读回点(:815) 反而「晚于」注释锚点(:224) ⇒ **恒红**。故两次 grep 都走
+#        （首处在文件头类 KDoc，远早于首个真调用）；若不排除注释位，③ 会把注释行当锚点
+#        ⇒ 读回点反而「晚于」注释锚点 ⇒ **恒红**。故两次 grep 都走
 #        `grep -vE "^[0-9]+:[[:space:]]*[*/]"`（与 #24 同款注释排除）。
 #     ⚠️ ③ 的**锚点缺失面**：若全文件找不到 `nativeToolChannelActive()` 代码位调用，判红
 #        （读回顺序判据的锚点消失 = 守卫面失效，绝不静默 fail-open）。
 #     口径声明：本守卫钉**调用点存在性 + 读回顺序**；**不**钉合并语义（OR/max，由纯函数
 #     单测负责）、**不**钉 KDoc 措辞 —— 二者互补（「语义 + 接线」双钉），勿夸大任一方为全覆盖。
 #     文件缺失 ⇒ exit 1 + ::error::（守卫面失效必须判红，绝不静默 fail-open）。
-check "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt/persist 调用点各 1，且读回先于通道判定）" \
+check "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt 调用点 1、persist 调用点 2，且读回先于通道判定）" \
   bash -c 'E=core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt
            if [ ! -f "$E" ]; then echo "::error::$E 不存在（被改名/删除？第 28 条守卫面已失效）"; exit 1; fi
            adopt_n=$(grep -nE "adoptResilienceFromStore\(" "$E" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | grep -v "fun adoptResilienceFromStore" | wc -l)
            persist_n=$(grep -nE "persistResilienceToStore\(" "$E" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | grep -v "fun persistResilienceToStore" | wc -l)
            [ "$adopt_n" -eq 1 ] || echo "$E 的 adoptResilienceFromStore( 调用数($adopt_n) != 1：读回点（ensureConversation 首行）被删/重复 ⇒ P2#1（自愈置位随 evict 清零）静默复发"
-           [ "$persist_n" -eq 1 ] || echo "$E 的 persistResilienceToStore( 调用数($persist_n) != 1：写点（handleTemplateRenderFailure 收尾）被删/重复 ⇒ 跨实例计数永不落 store"
+           [ "$persist_n" -eq 2 ] || echo "$E 的 persistResilienceToStore( 调用数($persist_n) != 2：写点（① ensureConversation 成功路径 + ② handleTemplateRenderFailure 收尾）被删/重复 ⇒ 跨实例计数永不落 store"
            adopt_line=$(grep -nE "adoptResilienceFromStore\(" "$E" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | grep -v "fun adoptResilienceFromStore" | head -1 | cut -d: -f1)
            chan_line=$(grep -nE "nativeToolChannelActive\(\)" "$E" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | head -1 | cut -d: -f1)
            if [ -z "$chan_line" ]; then echo "$E 找不到 nativeToolChannelActive() 代码位调用（读回顺序判据的锚点缺失，守卫面已失效）"

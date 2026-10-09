@@ -195,8 +195,9 @@ exit 0
 SH
   # 第 24 条（Wave 52，fold 收口不变式）要求 LiteRtLmEngine.kt 存在且满足
   # 「Message.user 下发点数 == foldAdjacentText 调用数」；第 25 条（Wave 52）要求其
-  # 行数 ≤ 2400；第 28 条（Wave 57，韧性 store 双写双读接线）要求 adopt/persist 各 1
-  # 调用点，且读回点（adopt）行号 < 首个 nativeToolChannelActive() 调用行号
+  # 行数 ≤ 2400；第 28 条（Wave 57 建 / W58 改判据②）要求 adopt 调用 1、persist 调用 2
+  #（写点① ensureConversation 成功路径 + 写点② handleTemplateRenderFailure 收尾），
+  # 且读回点（adopt）行号 < 首个 nativeToolChannelActive() 调用行号
   # ⇒ 骨架必须同时满足这三条（否则干净树会被误红，正例失守）。
   # fixture 给 1 处 Message.user 下发点 + 1 处 foldAdjacentText 调用（1 == 1，绿），
   # 且行数远低于 2400。def 行（`internal fun foldAdjacentText`）会被守卫的
@@ -204,6 +205,8 @@ SH
   # Wave 57 追加：`adoptResilienceFromStore(cid)` 与 `persistResilienceToStore()` 各 1 处
   # **调用**（对应 def 行由守卫的 `grep -v "fun …"` 排除，与真实文件同款），且
   # `nativeToolChannelActive()` 的**首个代码位调用**在 adopt 调用**之后**（钉读回顺序）。
+  # W58 追加：ensureConversation 内补 `persistResilienceToStore()`（写点①，adopt 之后、
+  # 通道判定之前）⇒ persist 调用共 2 处，与判据② 的「== 2」对齐。
   mkdir -p "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local"
   cat > "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
 package com.rickeal.agent.core.engine.local
@@ -216,6 +219,7 @@ fun downlink(fresh: List<Content>): Message =
 class LiteRtLmEngine {
     fun ensureConversation(cid: String?) {
         adoptResilienceFromStore(cid)
+        persistResilienceToStore()
         val nativeToolsActive = nativeToolChannelActive()
     }
 
@@ -1481,14 +1485,17 @@ fi
 #             调用数(0) != 1」违规事实行），而非「守卫命令自身执行失败」。
 #             ⚠️ 删的是**调用**、def 行仍在 —— 正好钉住「def 行被 `grep -v "fun …"` 排除、
 #             只有真调用计入」这一判据（若排除失效，本 case 会因 adopt_n=1 而漏判）。
+#             ⚠️ W58：fixture 保留写点①②两处 persist（persist_n=2）⇒ 本 case 的红**只**
+#             来自判据①（adopt），不混入判据②（若 fixture 漏补写点①，会多出一条
+#             persist 红线 —— 仍是红，但触发面失真）。
 #   case37 —— 行序颠倒（把 `nativeToolChannelActive()` 调用挪到 adopt 调用**之前**）
 #             ⇒ 判据③ 触发 ⇒ 判红；断言输出含「读回必须先于通道判定」违规事实行。
-#   case38 —— 脚手架 fixture 原样（含 adopt/persist 各 1 调用 + `nativeToolChannelActive()`
+#   case38 —— 脚手架 fixture 原样（含 adopt 调用 1 + persist 调用 2 + `nativeToolChannelActive()`
 #             在 adopt 之后）⇒ 必须**不红**（绿面；否则第 28 条会成为永远红的僵尸规则）；
 #             并追加一段 **KDoc 提及** `adoptResilienceFromStore(` / `persistResilienceToStore(`
 #             / `nativeToolChannelActive()` ⇒ 必须**仍绿**：钉死判据只认代码位（注释位被
 #             `grep -vE "^[0-9]+:[[:space:]]*[*/]"` 排除，与 #24 同款）。若不排除注释位，
-#             判据③ 会把真实文件 :224 那种 KDoc 提及当锚点 ⇒ **恒红**（本 case 正是防它）。
+#             判据③ 会把真实文件头类 KDoc 那种提及当锚点 ⇒ **恒红**（本 case 正是防它）。
 #   三面都只在 $TMP 脚手架树内覆写 fixture，绝不碰生产文件。
 #   绿面（脚手架原样 → exit 0）同时由 positive case 兜住。
 # ---------------------------------------------------------------------------
@@ -1504,6 +1511,7 @@ fun downlink(fresh: List<Content>): Message =
 
 class LiteRtLmEngine {
     fun ensureConversation(cid: String?) {
+        persistResilienceToStore()
         val nativeToolsActive = nativeToolChannelActive()
     }
 
@@ -1520,7 +1528,7 @@ class LiteRtLmEngine {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case36 删掉 adopt 调用 (第 28 条)" "$rc" "$out" \
-  "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt/persist 调用点各 1，且读回先于通道判定）"
+  "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt 调用点 1、persist 调用点 2，且读回先于通道判定）"
 if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
   echo "FAIL [case36b] 第 28 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
   printf '%s\n' "$out" | sed 's/^/    | /'
@@ -1548,6 +1556,7 @@ class LiteRtLmEngine {
     fun ensureConversation(cid: String?) {
         val nativeToolsActive = nativeToolChannelActive()
         adoptResilienceFromStore(cid)
+        persistResilienceToStore()
     }
 
     fun handleTemplateRenderFailure() {
@@ -1563,7 +1572,7 @@ class LiteRtLmEngine {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case37 读回点晚于通道判定 (第 28 条判据③)" "$rc" "$out" \
-  "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt/persist 调用点各 1，且读回先于通道判定）"
+  "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt 调用点 1、persist 调用点 2，且读回先于通道判定）"
 if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
   echo "FAIL [case37b] 第 28 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
   printf '%s\n' "$out" | sed 's/^/    | /'
@@ -1594,6 +1603,61 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case38] KDoc 里的 adopt/persist/nativeToolChannelActive 提及被误计入（第 28 条判据未排除注释位 ⇒ 会被注释骗）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 40 / case 40b：第 28 条判据② 的**独立红面**（W58 修补 A 同步）——
+#   case40 —— 从脚手架 fixture 只删掉 **写点①**（ensureConversation 成功路径）的
+#             `persistResilienceToStore()`，**保留**写点②（handleTemplateRenderFailure
+#             收尾）⇒ persist_n=1 != 2 ⇒ 判红。这正是 W58 修补 A 的主修面：
+#             建会话期的证伪置位（证伪重试 / legacy 连带）不再落 store，单调计数
+#             跨建会话失真 —— 开发期单轮测不出，只有守卫拦得住。
+#             adopt 仍 1 处、读回顺序不变 ⇒ 红**只**来自判据②（触发面纯净）。
+#   case40b —— 红必须来自**真命中**（输出含「persistResilienceToStore( 调用数(1) != 2」
+#             违规事实行），而非「守卫命令自身执行失败」（与 case36b / case37b 同一范式）。
+#   两面都只在 $TMP 脚手架树内覆写 fixture，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case40-persist-writer1-missing"
+scaffold "$d"
+cat > "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
+package com.rickeal.agent.core.engine.local
+
+internal fun foldAdjacentText(contents: List<Content>): List<Content> = contents
+
+fun downlink(fresh: List<Content>): Message =
+    Message.user(Contents.of(foldAdjacentText(fresh)))
+
+class LiteRtLmEngine {
+    fun ensureConversation(cid: String?) {
+        adoptResilienceFromStore(cid)
+        val nativeToolsActive = nativeToolChannelActive()
+    }
+
+    fun handleTemplateRenderFailure() {
+        persistResilienceToStore()
+    }
+
+    private fun adoptResilienceFromStore(cid: String?) = Unit
+
+    private fun persistResilienceToStore() = Unit
+
+    private fun nativeToolChannelActive(): Boolean = true
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case40 只删写点①建会话侧 persist (第 28 条判据②)" "$rc" "$out" \
+  "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt 调用点 1、persist 调用点 2，且读回先于通道判定）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case40b] 第 28 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "persistResilienceToStore( 调用数(1) != 2"; then
+  echo "PASS [case40b] 红来自真命中（输出含「persistResilienceToStore( 调用数(1) != 2」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case40b] 输出里看不到「persistResilienceToStore( 调用数(1) != 2」违规事实行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

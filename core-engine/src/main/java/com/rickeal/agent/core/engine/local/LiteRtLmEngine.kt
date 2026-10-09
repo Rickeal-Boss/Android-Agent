@@ -1189,6 +1189,10 @@ class LiteRtLmEngine(
         // 工具永远注册不上。
         registeredToolsSignature = if (roleChannelActive && !toolsDroppedOnRetry) toolsSignature else null
         currentConversationId = request.conversationId
+        // 韧性 store 写点①（W58 修补 A）：cid 此刻已就位，把 adopt 合并结果与本次建会话期
+        // 先行的证伪置位（证伪重试 / legacy 连带两路，都发生在本行之前的同一次建会话内）
+        // 一并落 store —— 快照整体覆盖 + adopt 单调合并 ⇒ 幂等、永不拉退。
+        persistResilienceToStore()
         currentContextVersion = request.contextVersion
         currentSystemText = systemText
         // KV 占用可观测（Wave 28）：「只输出提示词然后胡言乱语」残留的第二条根因链是
@@ -1270,9 +1274,12 @@ class LiteRtLmEngine(
     /**
      * 把当前实例韧性状态**双写**进进程级 [resilienceStore]（W56）。
      *
-     * 写点纪律：只在 [handleTemplateRenderFailure]（模板失败唯一处置点）收尾处调用 ——
-     * 该函数是 `nativeToolsRejected` / `templateRebuildCount` 的统一写点，快照整体覆盖
-     * 能同时带走两字段（含探针失败 / legacy 回退路径在本次会话内先行的证伪置位）。
+     * 写点纪律（W58 起两个写点）：① [ensureConversation] 成功路径（`currentConversationId`
+     * 赋值后）—— 承接 adopt 合并结果与建会话期先行的证伪置位；②
+     * [handleTemplateRenderFailure]（模板失败唯一处置点）收尾。快照整体覆盖 + adopt
+     * 单调合并 ⇒ 幂等、永不拉退。
+     * ⚠️ 残留边界（如实申报）：若建会话最终仍抛错、写点①未达，则该次证伪不带 store
+     * —— 与单写点时代一致，进程重启即清，属可接受残留。
      * 实例字段保持现读速路径不动；store 是跨实例存活的**增量载体**，纯增量、
      * 单 commit 可 revert（删掉注入点即回到 W55 实例级现状）。
      *
