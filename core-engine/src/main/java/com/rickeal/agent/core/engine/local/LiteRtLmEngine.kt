@@ -1551,12 +1551,24 @@ class LiteRtLmEngine(
             if (isTemplateRenderFailure(raw)) {
                 handleTemplateRenderFailure(raw, outboundRoleForDiag, source = "同步下发")
             }
+            // 🔴 Wave 55 审查 P2（既有缺口，本波暴露）：`sendMessageAsync` 同步抛出时**不会**
+            // 走到下方 `channel.consumeAsFlow()` 的 `finally` ⇒ `activeGenerations` **只增不减**
+            //（`load()` 侧 `:1280` 已 `incrementAndGet`）⇒ 该实例**永久 busy**（`isBusy` 恒 true），
+            // 之后 `unload()` 抛「上一次生成仍在继续，请稍候重试」（W50 真机日志已见该症状）。
+            // 这里补**与下方 `finally` 逐条同源**的收尾；二者互斥（同步抛出后下方 try 不再进入），
+            // 不会重复执行。⚠️ 改任一处必须同步改另一处。
+            activeGenerations.decrementAndGet()
+            if (!finished) conversationDirty = true
+            runCatching { conv.cancelProcess() }
+            runCatching { channel.cancel() }
             throw t
         }
 
         try {
             channel.consumeAsFlow().collect { chunk -> emit(chunk) }
         } finally {
+            // ⚠️ 本块与上方同步 `catch` 里的收尾**逐条同源**（二者互斥，不会重复执行）；
+            // 改任一处必须同步改另一处（Wave 55 审查 P2）。
             activeGenerations.decrementAndGet()
             // 只有 onDone 正常收尾才算“健康”；被取消 / 出错 / 被外部 stop 都要重建会话
             if (!finished) conversationDirty = true
