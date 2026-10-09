@@ -380,7 +380,15 @@ Android-Agent/
 >   - **台账 #41/#42 回收**（L3 扩容两臂）⇒ 聚合句 **40 → 42 = 35 ✅ / 5 ⚠️ / 2 ⛔**（`build.yml` 基线 **627 → 635**，新增 8 例；守卫 **27 → 28** 项、selftest **PASS 65 → 70**）
 >   - **litertlm bump 复查**：上游最新 tag 仍 **v0.18.0**（无新 tag）⇒ 前置④仍红，bump 继续挂起
 >   - ⚠️ **本波取证事故（跨波复用）**：`adb shell <cmd> > file` 经 pty **LF→CRLF** ⇒ 读二进制（datastore pb）备份即污染、写回后 app `CorruptionException` 启动崩。**读二进制用 `adb exec-out`**；写二进制走 `adb push` → `/data/local/tmp/` → `run-as cp`（`run-as` 读不到 app 外部 files 目录）
-> - ⚠️ **真机验收台账：Wave 33 起累计 42 条（其中 35 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**W55 新增回收 2 项**（H-A 毒化 A/B，台账 #37；**B1 长审批停表**，台账 #38）；**W56 新增回收 2 项**（**多模态 L3 端到端真机发图**，台账 #39；**毒化 A/B 防护链**，台账 #40）；**W57 新增回收 2 项**（**多模态 L3 扩容两臂**：异族 `SmolVLM2-500M`，台账 #41；同族 fixB `LFM2.5-VL-1.6B_int4_fixB`，台账 #42）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
+> - **W58（2026-10-10）**：**三线审查融合修补波——守卫 #29（litertlm 版本钉）+ 韧性 store 语义补全（A 第二写点 / B 用户复位 / C bump 前置⑤ / D 收尾单源化）+ Stage-2 拆分预案 + W58 构建真机冒烟**
+>   - **守卫 #29「litertlm 版本必须为 0.17.1」**（治外部深度审查 F-1 P0）：此前版本变更在 28 项守卫 + lint + 全量单测下**全绿**，而 v0.18.0 已删收敛点 ⇒ fold 静默失效 ⇒ Qwen2.5 系**每轮必炸**——风险只活在文档与注释里。#29 用行首锚钉死版本，文件缺失 / 提不出版本行均 fail-closed；bump 从「改一行 toml 静默发生」变成「必须同时改守卫并复核四前置 + 前置⑤」。selftest +5（case39×5：红/绿/缺失/真命中/相似行不误伤）
+>   - **修补 A（store 写点补全）**：`ensureConversation` 成功路径补 persist 第二写点（守卫 #28 判据② `==1→==2`）+ KDoc 订正「快照能带走探针/legacy 证伪」过度声称——建会话证伪路径此前**永不落 store**（第五审 🔴A）
+>   - **修补 B（用户复位路径，对齐 W48「用户显式设置优先」）**：开关 OFF→ON 跳变 ⇒ 清实例证伪 + 重建计数 + `store.clearAll()` + warn（复位块在 `generateStream` 入口熔断闸门前、同步/异步共同必经点）；`lastSeen=null` 不复位保 evict 防护；store 增 `clear/clearAll`；`ConversationRepository.delete` 清键钩子（**零生产调用点，预埋卫生位**，如实申报）；单测 +6（第五审 🔴B）
+>   - **修补 C**：bump 重启清单追加**前置⑤**「合入前设临时 K=3（W56 Arm B 实测 1 次收敛 ×3 余量）」——不拍值生效，只钉拍值时机，消除 K↔bump 循环依赖；**修补 D**：`generationCleanup()` 单源化（同步 catch 与 finally 双份收尾从注释纪律变结构事实，互斥穷尽论证在档）
+>   - ✅ **W58 构建真机冒烟（台账 #43）**：APK dex 实测含 **4 个新符号** ⇒ 冷启动 `FATAL`=0；**连续两轮文本 run**（`OK` / `Hi` 均 `settled=ModelStopped`）行使单源化收尾路径，`activeGenerations` 漏减回归无复发；`Failed to apply template`=0（native 行 82 先验在档）。⚠️ 修补 B 翻转复位**端到端未行使**（发送 tap 受设备休眠 + Compose bounds 漂移干扰；JVM 4 例已覆盖，开关已复原 ON，挂 W59）
+>   - **台账 #43 回收**（W58 冒烟）⇒ 聚合句 **42 → 43 = 36 ✅ / 5 ⚠️ / 2 ⛔**（`build.yml` 基线 **635 → 641**，新增 6 例；守卫 **28 → 29** 项、selftest **PASS 70 → 77**；引擎 **2291 → 2345**，余量 **55**——W59 引擎行为面新增前先执行 Stage-2 候选 2「加载集群」拆分）
+>   - **bump 复查**：上游最新 tag 仍 **v0.18.0**（无新 tag）⇒ 前置④仍红，bump 挂起维持
+> - ⚠️ **真机验收台账：Wave 33 起累计 43 条（其中 36 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**W55 新增回收 2 项**（H-A 毒化 A/B，台账 #37；**B1 长审批停表**，台账 #38）；**W56 新增回收 2 项**（**多模态 L3 端到端真机发图**，台账 #39；**毒化 A/B 防护链**，台账 #40）；**W57 新增回收 2 项**（**多模态 L3 扩容两臂**：异族 `SmolVLM2-500M`，台账 #41；同族 fixB `LFM2.5-VL-1.6B_int4_fixB`，台账 #42）；**W58 新增回收 1 项**（**W58 构建真机冒烟含连续两轮文本**，台账 #43）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
 
 ---
