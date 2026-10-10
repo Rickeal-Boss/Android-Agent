@@ -1,6 +1,6 @@
 # W60 波次收官交接（Wave 60 Closeout）
 
-> 基线：W59 收官 `a4e9365`｜本波 tip = `（收官刀后回填）`（6 刀代码 + 1 刀文档）
+> 基线：W59 收官 `a4e9365`｜本波 tip = `d788c2b`（6 刀代码 + 1 刀文档，已推）
 > 前置文档：`docs/handoff-20261010-wave59-closeout.md`（§五 = 本波挂账来源）
 > 方案：`_plans/w60-strategy.md`（仓外，方案席沈思远，行号实测于 a4e9365）｜审查：`_plans/w60-review.md`（仓外，审查席严质衡）
 > 真机取证：`_litert_forensics/_w60_smoke/`（`w60_full.log` 41.3MB 全档 + `w60_l3.log` 5.2MB）
@@ -121,5 +121,10 @@ APK = W60 工作树构建（`8f5e3b6`，localbuild assembleDebug BUILD SUCCESSFU
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | `（待回填）` | — | Lint / Assemble Debug / Unit tests |
-| **Release** | `（待回填）` | — | — |
+| **Build** | `38061252921` | ✅ success（head `d788c2b`） | Lint (baseline gate) / Assemble Debug (JDK 21) / Unit tests 全 success |
+| **Release** | `38061252912` | ✅ success | — |
+
+**CI 内实测（job log 直读，PAT `actions:read`）**：
+- `Assemble Debug` job：`架构守卫全部通过。`（33 项）+ `自测结果：PASS=92 FAIL=0`。
+- `Unit tests` job：`baseline=649`（W60 校准，soft-check 未触发 ⇒ tests ≥ 649）。
+- 本文档 commit 为 docs-only（`paths-ignore` 覆盖 `docs/**` + `*.md`）⇒ 预期 **0 run**。
