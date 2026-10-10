@@ -52,6 +52,8 @@ APK = W60 工作树构建（`8f5e3b6`，localbuild assembleDebug BUILD SUCCESSFU
 - **下载**：5 个缺失预设从 ModelScope（HF 直连被沙箱阻断）下载，**字节数逐一精确吻合预设 `sizeBytes`**：Gemma 4 E4B·GPU 2969059328 / DeepSeek-R1 1.5B 1833451520 / Phi-4-mini 3910090752 / Qwen2-VL 2B 1783424544 / LFM2.5-VL 3B 2352023888（合计 ≈12GB）。`adb push` 到 app Download 目录（~35MB/s）⇒ 冷启动后模型页 **「共 13 个」**，`models.json` 实读 13 条。
 - **功能测试（题面 `Say OK`，逐模型）**：
 
+> （W61 订正：本表初版曾把 gemma 两条误记为 MiniCPM-V-4 的签名，已按逐模型日志复核改正 —— gemmaE2Bgpu/gemmaE4Bgpu 日志中 Unsupported model type 命中数 = 0。）
+
 | 模型 | settled | 判据/备注 |
 |---|---|---|
 | LFM2.5-VL-1.6B_int4_fixB | ModelStopped ✅ | 回复 `OK`（另轮 `GO`） |
@@ -64,8 +66,8 @@ APK = W60 工作树构建（`8f5e3b6`，localbuild assembleDebug BUILD SUCCESSFU
 | LFM2.5-VL-3B_int4_fixB | ModelStopped ✅ | 回复 `OK` |
 | SmolVLM2-500M | ModelStopped ⚠️ | round0 陷重复循环 `finish=LENGTH` → **`StreamRepetitionDetector` 注入系统提醒**「你刚才的输出陷入重复循环，已被截断」→ round1 换答案（**重复自愈链行使**）；文本能力弱为预设已申报特性 |
 | DeepSeek-R1-Distill-Qwen-1.5B | ModelStopped ⚠️ | 2 次重复提醒后收尾；输出为推理腔（与 README 挂账「`inferFamily` 误判 thinking=false」同源，未新增） |
-| gemma-4-E2B-it-gpu | **Failed** ❌ | `Failed to create conversation config: INVALID_ARGUMENT: Unsupported model type`（预设已申报：GPU 特化变体在 0.17.1 不可用、CPU 后端 NOT_FOUND） |
-| gemma-4-E4B-it-gpu | **Failed** ❌ | 同上（同源风险，预设已申报「未验证前谨慎」） |
+| gemma-4-E2B-it-gpu | **Failed** ❌ | 引擎初始化失败：`Failed to create engine: NOT_FOUND: TF_LITE_PREFILL_DECODE not found in the model`（llm_litert_compiled_model_executor_factory.cc:222 └:91） |
+| gemma-4-E4B-it-gpu | **Failed** ❌ | 引擎初始化失败：`Failed to create engine: NOT_FOUND`（容器缺 AUDIO/VISION 编码器 section，model_signature_utils.cc:250） |
 | MiniCPM-V-4-int8 | **Failed** ❌ | `Unsupported model type`（既有已知限制） |
 
 ⇒ **13 模型零 FATAL**；3 个 ❌ 全为**已知/已申报**的容器↔运行时错配，**无新增缺陷**（连续第八波正确性零新增 P0/P1）。
