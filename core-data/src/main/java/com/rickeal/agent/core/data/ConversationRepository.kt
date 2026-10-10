@@ -31,7 +31,9 @@ class ConversationRepository(
      * 用于清掉进程级韧性 store 里该 cid 的快照（AppContainer 注入
      * `engineResilienceStore::clear`），防「会话已删、证伪/计数快照仍占键」的残留。
      * ⚠️ 如实申报：[delete] 当前**零生产调用点** —— 本钩子是为将来删除入口
-     * 预埋的卫生位，**不是**用户可见修复。
+     * 预埋的卫生位，**不是**用户可见修复。启用时点：待「删除会话 UI」立项上线
+     * （A1 产品面裁决后激活）；在此之前本钩子休眠，**不撤**（撤 = 未来重接线成本）。
+     *（W59 H-3 处置成文）
      */
     private val onConversationDeleted: (String) -> Unit = {},
 ) {
