@@ -1,6 +1,6 @@
 # W61 波次收官交接（Wave 61 Closeout）
 
-> 基线：W60 收官 `06505b7`｜本波 tip = `（收官刀后回填）`（7 刀代码/文档 + 1 刀收官交接）
+> 基线：W60 收官 `06505b7`｜本波 tip = `1da011d`（7 刀代码/文档 + 1 刀收官交接）
 > 前置文档：`docs/handoff-20261010-wave60-closeout.md`（§五 = W61 挂账来源）
 > 方案：`_plans/w61-strategy.md`（仓外，方案席沈思远）｜主理人取证：`_plans/w61-lead-recon.md`｜真机计划+结果：`_plans/w61-device-plan.md`｜审查：审查席严质衡报告
 > 真机取证：`_w61_dev/`（`repro_minicpm5.log` + `results/*_run.jsonl` + `*_log.txt`）
@@ -89,5 +89,10 @@
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | 待回填 | | |
-| **Release** | 待回填 | | |
+| **Build** | `38069289805` | ✅ success（head `1da011d`） | Lint (baseline gate) / Assemble Debug (JDK 21) / Unit tests 全 success |
+| **Release** | `38069289856` | ✅ success（head `1da011d`） | — |
+
+**CI 内实测（job log 直读，PAT `actions:read`）**：
+- `Assemble Debug` job：`架构守卫全部通过。`（33 项）+ `自测结果：PASS=93 FAIL=0`。
+- `Unit tests` job：`BUILD SUCCESSFUL`，`baseline=652`（W61 校准注释已在案，soft-check 未触发 ⇒ tests ≥ 652）。
+- 本文档 commit 为 docs-only（`paths-ignore` 覆盖 `docs/**` + `*.md`）⇒ 预期 **0 run**。
