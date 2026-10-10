@@ -249,6 +249,24 @@ class LiteRtLmEngine(
     /** 在途生成数量。卸载/关闭引擎前必须等它归零，否则会从脚底下抽掉 native 对象。 */
     private val activeGenerations = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /**
+     * 生成世代序号 → 当前世代令牌（W59 A4，generation-scoped token 幂等防御）。
+     *
+     * 每个 `generateStream` flow 收集即自增一次（自增**先于** flow 体内一切入口逻辑），
+     * [handleTemplateRenderFailure] 首行按令牌校验：只有**当前世代**的处置（证伪置位 /
+     * 计数 `++` / 写点② persist）生效，迟到 / 异世代的处置整体丢弃 —— 幂等单源，
+     * 非「两处各加 flag」。
+     *
+     * 为什么需要它：模板失败的两条入口（异步 onError 回调 / 同步 catch）与「用户立刻
+     * 发起下一次生成（新世代）」之间存在窗口 —— 旧代的证伪置位若迟到落账，会污染**新世代**
+     * 刚复位/刚建好的会话态（复审 P3#6/#7 的窗口本体）。当前代 token 恒等 ⇒ 所有既有
+     * 路径仅多一次相等比较，行为逐字节不变。
+     */
+    private val generationSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+    @Volatile
+    private var currentGenerationToken: Long = -1
+
     /** 上一条流是否被「非正常结束」（用户停止 / 取消 / onError）。 */
     @Volatile
     private var conversationDirty = false
@@ -952,6 +970,12 @@ class LiteRtLmEngine(
     // -------------------------------------------------------- generate
 
     override fun generateStream(request: GenerationRequest): Flow<GenerationChunk> = flow {
+        // W59 A4（generation-scoped token）：世代自增**先于 flow 体内一切入口逻辑**
+        //（复位块 / 熔断闸门 / 建会话）—— 每个 flow 收集即一个新世代。当前代的所有既有
+        // 路径仅多一次相等比较，行为逐字节不变（token 恒等）；迟到 / 异世代的模板失败
+        // 处置在 handleTemplateRenderFailure 首行按 token 丢弃（幂等单源，见其 KDoc）。
+        val token = generationSeq.incrementAndGet().toLong()
+        currentGenerationToken = token
         // W58 修补 B（单调证伪的用户复位路径）：用户把「原生工具通道」开关重新打开
         //（同实例 OFF→ON 跳变，判据 [shouldResetResilienceOnSwitchFlip]）时，一次性清掉
         // 实例证伪字段、重建计数与进程级 store —— 用户显式设置优先（W48 哲学），复位后
@@ -962,6 +986,9 @@ class LiteRtLmEngine(
         // ⚠️ 本复位可达性的前提 = 开关切换不触发实例更换（sameEngine 复用判据不含
         // nativeToolChannel，由 EngineSameEngineContractTest 钉死；若判据变更，
         // 翻转复位与开关即时生效会同时死亡 —— 复审 18 A3 因果申报，W59）。
+        // W59 A4：token 自增先于本块 ⇒ 复位后到达的旧代 onError（旧 token）在
+        // handleTemplateRenderFailure 处被丢弃，不复位后再证伪（关 P3#6）；
+        // 写点②随 token 门控，clearAll 与在飞写的窗口收敛（关 P3#7）。
         if (shouldResetResilienceOnSwitchFlip(lastSeenSwitchOn, request.config.nativeToolChannel)) {
             nativeToolsRejected = false
             templateRebuildCount = 0
@@ -1149,7 +1176,7 @@ class LiteRtLmEngine(
                 // 本回调 ⇒ 本分支对真实路径不可达（仅为「native 在回调期才报」的兜底）。
                 // 处置逻辑已抽到 [handleTemplateRenderFailure]，与同步 catch 共用一份、避免分叉。
                 if (isTemplateRenderFailure(raw)) {
-                    handleTemplateRenderFailure(raw, outboundRoleForDiag, source = "异步回调")
+                    handleTemplateRenderFailure(token, raw, outboundRoleForDiag, source = "异步回调")
                 }
                 channel.close(EngineException("LiteRT-LM: 生成失败 (${raw})$hint", throwable))
             }
@@ -1305,7 +1332,7 @@ class LiteRtLmEngine(
             // 承接；本 catch 只**新增**模板判据分支，非模板类失败原样上抛。
             val raw = t.message ?: ""
             if (isTemplateRenderFailure(raw)) {
-                handleTemplateRenderFailure(raw, outboundRoleForDiag, source = "同步下发")
+                handleTemplateRenderFailure(token, raw, outboundRoleForDiag, source = "同步下发")
             }
             // 🔴 Wave 55 审查 P2：`sendMessageAsync` 同步抛出时**不会**走到下方
             // `channel.consumeAsFlow()` 的 `finally` ⇒ 收尾四件套必须在本 catch 里执行一次
@@ -1340,12 +1367,26 @@ class LiteRtLmEngine(
      * `assistant + tool_calls` 的 `:27` 失败面也随之消失。防循环：`nativeToolsRejected` 置位后
      * [nativeToolChannelActive] 恒 false ⇒ 不会反复证伪；重建只在 dirty 置位后下一 run 发生一次。
      *
+     * @param token 发起本次处置的生成世代令牌（W59 A4）：**首行即校验** —— 与
+     *  [currentGenerationToken] 不等（迟到 / 异世代）⇒ 整个处置（证伪置位、计数 `++`、
+     *  写点② persist）丢弃并落一条 info，直接 return。幂等单源：旧代污染不到新世代
+     *  刚复位 / 刚建好的会话态（关 P3#6 / P3#7）；当前代 token 恒等 ⇒ 既有路径仅多
+     *  一次相等比较。
      * @param raw 失败原文（`Throwable.message`），用于判据与日志。
      * @param role 本次下发消息的内容来源语义（`tool` / `user`），仅用于日志；由调用点传入
      *  （`outboundRoleForDiag` 是 flow 内的局部量，故随参数传入而非读字段）。
      * @param source 失败来源标识（`同步下发` / `异步回调`），仅用于日志区分路径，不影响处置行为。
      */
-    private fun handleTemplateRenderFailure(raw: String, role: String, source: String) {
+    private fun handleTemplateRenderFailure(token: Long, raw: String, role: String, source: String) {
+        // W59 A4：世代校验先行（幂等单源）—— 迟到 / 异世代的证伪置位、计数 `++`、
+        // 写点② persist **一并丢弃**（不是各路径分别加 flag），日志留痕便于真机归因。
+        if (token != currentGenerationToken) {
+            AgentLogStore.info(
+                "模板渲染失败处置丢弃：过期世代（token=$token，当前世代 ${currentGenerationToken}）" +
+                    "—— 新世代已启动，旧代处置不再落账（来源=$source）"
+            )
+            return
+        }
         // 与 finally（`!finished ⇒ conversationDirty = true`）**冗余**：
         // 显式补置是为了让「模板失败 ⇒ 重建会话」这个意图在错误路径上可见，**勿删 finally 那条**。
         conversationDirty = true
