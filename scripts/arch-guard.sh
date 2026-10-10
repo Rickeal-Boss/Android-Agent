@@ -758,6 +758,9 @@ check "LiteRtLmEngineLoader.kt 总行数 ≤ 900（core-engine 行数表 #25 家
 #     判据（两条，均 fail-closed）：
 #       ① shouldDropStaleDisposal( **调用点数 == 1**（不含 def 行）⇒ 钉「门控未被删」；
 #       ② handleTemplateRenderFailure(token, **调用点数 == 2** ⇒ 钉「两调用点都传 token」。
+#     W61：判据① 加**注释位排除**（`grep -vE "^[0-9]+:[[:space:]]*[*/]"`，与 #24/#28/#30 同款）
+#     —— 防 KDoc/注释提及 `shouldDropStaleDisposal(token, …)` 调用形态造成假红；此前 #33 是
+#     #24/#28/#30 家族中唯一漏排除者（#30 已于 W60 补，本波补 #33；同一 fail-closed 假红形态）。
 #     ⚠️ 判据② 的健壮性（实测）：def 行为 `handleTemplateRenderFailure(token: Long, ...)`
 #    （`token` 后是 `:` 非 `,`）⇒ 正则 `handleTemplateRenderFailure\(token,` 天然不匹配 def；
 #     KDoc 引用均为 `[handleTemplateRenderFailure]` 形态、不含 `(token,` ⇒ 无需注释排除即精确命中 2。
@@ -767,7 +770,7 @@ check "LiteRtLmEngineLoader.kt 总行数 ≤ 900（core-engine 行数表 #25 家
 check "LiteRtLmEngine 世代门控接线（shouldDropStaleDisposal 调用 1；handleTemplateRenderFailure(token,…) 调用 2）" \
   bash -c 'E=core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt
            if [ ! -f "$E" ]; then echo "::error::$E 不存在（第 33 条守卫面已失效）"; exit 1; fi
-           g=$(grep -nE "shouldDropStaleDisposal\(" "$E" | grep -v "fun shouldDropStaleDisposal" | wc -l)
+           g=$(grep -nE "shouldDropStaleDisposal\(" "$E" | grep -v "fun shouldDropStaleDisposal" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | wc -l)
            c=$(grep -cE "handleTemplateRenderFailure\(token," "$E")
            [ "$g" -eq 1 ] || echo "$E 的 shouldDropStaleDisposal( 调用数($g) != 1：世代门控被删/重复 ⇒ A4 幂等静默失效"
            [ "$c" -eq 2 ] || echo "$E 的 handleTemplateRenderFailure(token,…) 调用数($c) != 2：两调用点（异步回调/同步下发）必须都传 token"'

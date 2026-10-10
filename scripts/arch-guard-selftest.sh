@@ -1995,6 +1995,32 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# case 47：第 33 条（LiteRtLmEngine 世代门控接线，W60；W61 判据① 加注释位排除）
+#   绿面 —— 只在 **KDoc/注释** 里提 `shouldDropStaleDisposal(token, current)` 调用形态
+#   ⇒ 必须**仍绿**（防被注释骗，沿 case46（#30 的 KDoc 绿面）范式）：注释位被
+#   `^[0-9]+:[[:space:]]*[*/]` 排除 ⇒ 调用点数仍 1。仅 $TMP 内追加，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case47-gate-kdoc-green"
+scaffold "$d"
+cat >> "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
+
+/**
+ * 说明：注释位出现 shouldDropStaleDisposal(token, current) 调用形态，
+ * 不得被第 33 条守卫判据① 计入调用点数（注释位必须排除）。
+ */
+val kdocOnlyGateNote = 1
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case47 KDoc 提及 shouldDropStaleDisposal(token, current) (第 33 条绿面)] 退出 0（注释位被排除，未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case47] KDoc 里的门控调用形态被误计入（第 33 条判据① 未排除注释位 ⇒ 会被注释骗）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
 echo "-----------------------------------------"
 echo "自测结果：PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -ne 0 ]; then
