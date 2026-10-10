@@ -72,11 +72,12 @@ class EngineSameEngineContractTest {
     }
 
     @Test
-    fun `backend 或 contextLength 变化判 not same`() {
-        // 既有语义回归钉：backend（EngineConfig 级参数）与 contextLength（KV 预算，
-        // native 按它分配）任一变化都必须**整机重建** —— 判据必须 false。
+    fun `backend 变化判 not same`() {
+        // 单变异钉（W60 从「backend 或 contextLength」双变异例拆出）：**仅 backend 异**
+        //（contextLength 恒 4096），必须**整机重建** —— 判据必须 false。
+        // 拆分动机：原双变异单断言无法区分是哪个维度触发 false ⇒ 钉面弱化（W59 审查 P3-1）。
         val cpu = InferenceConfig(backend = InferenceBackend.CPU, contextLength = 4096)
-        val gpu = InferenceConfig(backend = InferenceBackend.GPU, contextLength = 8192)
+        val gpu = InferenceConfig(backend = InferenceBackend.GPU, contextLength = 4096)
         assertFalse(
             isSameEngine(
                 forceRebuild = false,
@@ -107,7 +108,47 @@ class EngineSameEngineContractTest {
                     requestedAudioBackend = gpu.audioBackend,
                 ),
             ),
-            "backend / contextLength 变化必须判 not same（整机重建组，静默复用 = 调参不生效）",
+            "backend 变化必须判 not same（整机重建组，静默复用 = 调参不生效）",
+        )
+    }
+
+    @Test
+    fun `contextLength 变化判 not same`() {
+        // 单变异钉（W60 拆出）：**仅 contextLength 异**（backend 恒 CPU，KV 预算由 native
+        // 按它分配），必须**整机重建** —— 判据必须 false。
+        val cpu = InferenceConfig(backend = InferenceBackend.CPU, contextLength = 4096)
+        val cpu2 = InferenceConfig(backend = InferenceBackend.CPU, contextLength = 8192)
+        assertFalse(
+            isSameEngine(
+                forceRebuild = false,
+                loaded = true,
+                hasEngine = true,
+                loadedModelPath = "/models/a.litertlm",
+                modelPath = "/models/a.litertlm",
+                loadedContextLength = cpu.contextLength,
+                contextLength = cpu2.contextLength,
+                loadedBackend = cpu.backend,
+                backend = cpu2.backend,
+                loadedVisionBackend = resolveVisionBackend(
+                    wantsVision = false,
+                    requestedBackend = cpu.backend,
+                    requestedVisionBackend = cpu.visionBackend,
+                ),
+                visionBackend = resolveVisionBackend(
+                    wantsVision = false,
+                    requestedBackend = cpu2.backend,
+                    requestedVisionBackend = cpu2.visionBackend,
+                ),
+                loadedAudioBackend = resolveAudioBackend(
+                    wantsAudio = false,
+                    requestedAudioBackend = cpu.audioBackend,
+                ),
+                audioBackend = resolveAudioBackend(
+                    wantsAudio = false,
+                    requestedAudioBackend = cpu2.audioBackend,
+                ),
+            ),
+            "contextLength 变化必须判 not same（整机重建组，静默复用 = 调参不生效）",
         )
     }
 }

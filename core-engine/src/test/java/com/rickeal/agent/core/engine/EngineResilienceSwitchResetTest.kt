@@ -36,8 +36,10 @@ class EngineResilienceSwitchResetTest {
     }
 
     @Test
-    fun `ON 转 OFF 不判翻转`() {
-        // 用户关闭通道：无需复位（文本协议路径不消费证伪/计数）。
+    fun `持续关闭不判翻转`() {
+        // (false, false) = 持续关闭（W60 改名，原名「ON 转 OFF 不判翻转」名实不符）：
+        // 通道一直关着，无「跳变」可言 ⇒ 无需复位（文本协议路径不消费证伪/计数）。
+        // 真正的 ON→OFF 由例 6（持续开启转 OFF）覆盖。
         assertFalse(shouldResetResilienceOnSwitchFlip(lastSeen = false, current = false))
     }
 
