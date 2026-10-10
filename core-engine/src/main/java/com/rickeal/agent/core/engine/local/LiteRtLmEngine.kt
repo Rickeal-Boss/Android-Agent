@@ -118,6 +118,8 @@ private const val TEMPLATE_REBUILD_FUSE_THRESHOLD: Int = Int.MAX_VALUE
  * ⚠️ 不覆盖范围（诚实申报）：只要消息含 `ImageBytes`/`AudioBytes` 就必然 ≥2 个元素 ⇒ 仍可能
  * 触发同一模板错误。Qwen2.5-1.5B 是纯文本模型，app 侧按 `supportsImages`/`supportsAudio` 本就
  * 不向它下发多模态，故该场景不在本波覆盖内。
+ * 本函数只负责 content 数组的相邻 Text 折叠；模板**其它分支**（如原生工具通道的 `tools` 段）的
+ * 渲染失败面**不属**本函数覆盖范围（实证：W61 定案 MiniCPM5 原生通道 `tools` 段失败，与 fold 无关）。
  *
  * 纯函数（文件级 internal，可被同模块 JVM 单测直接调）：不构造引擎、不触 native。
  */
@@ -1391,6 +1393,13 @@ class LiteRtLmEngine(
      * `assistant + tool_calls` 的 `:27` 失败面也随之消失。防循环：`nativeToolsRejected` 置位后
      * [nativeToolChannelActive] 恒 false ⇒ 不会反复证伪；重建只在 dirty 置位后下一 run 发生一次。
      *
+     * ⚠️ 探针保真度缺口的**生成期落点**（W61 定案）：原生工具通道下本函数收到的失败**未必**是
+     * content 数组化所致 —— MiniCPM5 实证失败在模板 `tools` 段（`tojson(ensure_ascii=…)` 与
+     * minijinja 2.14.0 不兼容，见 docs/12 锚 #13），与 fold / content 数组无关。探针只验
+     * 「哑工具 + 建会话」、从不渲染 `tools` 段 ⇒ 盖不住「真实工具集 + 生成期模板渲染」（见
+     * [probeNativeTools] KDoc 的保真度缺口节）。本函数即该缺口在生成期的**实际处置位**
+     * （证伪通道 ⇒ 下一 run 回退文本协议 ⇒ 自愈）。
+     *
      * @param token 发起本次处置的生成世代令牌（W59 A4）：**首行即校验** —— 与
      *  [currentGenerationToken] 不等（迟到 / 异世代）⇒ 整个处置（证伪置位、计数 `++`、
      *  写点② persist）丢弃并落一条 info，直接 return。幂等单源：旧代污染不到新世代
@@ -1747,6 +1756,15 @@ class LiteRtLmEngine(
      * 工具 schema 的解析发生在 `createConversation` **内部**（`ToolManager`），形状不被接受时
      * 整段抛错，而这完全取决于转换件的 chat template，**无法离线验证**。猜错的代价是会话
      * 创建失败（连文本协议一起没了），所以结论必须来自一次真跑。
+     *
+     * ## ⚠️ 探针保真度缺口（W61 定案，诚实申报）
+     *
+     * 探针只验「**哑工具 + 建会话**」形状：只注册 1 个哑工具，建会话后**立即 close**、
+     * **从不 `sendMessageAsync`** ⇒ 模板的 `tools` 段**永不被渲染**。故它**盖不住「真实工具集 +
+     * 生成期模板渲染」**——MiniCPM5 实证：探针通过（哑工具建会话成功），生成期注册真实工具集后
+     * `sendMessageAsync` 渲染 `tools` 段即炸（`Failed to apply template: too many arguments`，
+     * 根因见 docs/12 锚 #13）。这与 legacy 回退路径处已申报的同类边界（探针盖不住 roleConfig）
+     * **并列**，是「探针通过 ≠ 生产可用」的**第二个实例**（此处在**生成期**，非建会话期）。
      *
      * ## 为什么不放进 load() 无条件跑（审查 P1-1）
      *

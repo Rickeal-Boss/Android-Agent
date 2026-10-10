@@ -1,6 +1,6 @@
 # docs/12 — litertlm 0.17.1 行为锚定面清单（bump 前置⑥）
 
-> 本清单 = **bump 前置⑥**（W59 A5 成文，第六审 §3 A5 十二项为底稿）。
+> 本清单 = **bump 前置⑥**（W59 A5 成文，第六审 §3 A5 十二项为底稿；**W61 增补锚 #13 ⇒ 十三项**）。
 > **复核纪律：逐项复核完成后在本表「打勾」列标记，全部打勾之前不得动 `gradle/libs.versions.toml` 的 litertlm 版本行**（守卫 #29 钉版本取值、红输出指向本清单）。
 > 文档头不写本仓引擎源码行号（上游源码坐标为外部锚，可保留）；本清单只做「bump 复核面」的枚举，行为语义的完整论证见各定案波次的交接稿与源码内注释。
 
@@ -8,7 +8,7 @@
 
 litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0 起「1 元素 text 数组 → string」收敛点被删且无等价替代（tag `b2f686e2e` 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸。除该 P0 级阻断外，0.17.1 上还钉着一批**依赖上游实现细节**的行为锚 —— bump 时任何一项漂移都可能产生「编译能过、真机静默回归」的故障面。本清单把它们收拢为一处，作为 bump 评审的**机械复核单**。
 
-## 锚定面清单（12 项）
+## 锚定面清单（13 项）
 
 | # | 锚定项 | 定案波次 | 依据（本仓锚 / 外部锚） | bump 复核要点 | 打勾 |
 |---|---|---|---|---|---|
@@ -24,12 +24,13 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 | 10 | 模板渲染失败在 `sendMessageAsync` **同步抛出** | W55 真机证实 | `Failed to start nativeSendMessageAsync: … Failed to apply template …`；同步 catch 与异步 onError 双入口共用统一处置（W59 A4 起 token 门控幂等） | 真机复核失败路径形态（同步/异步）未漂移；若改为异步回调，处置入口仍兼容（双入口设计） | ☐ |
 | 11 | `ConversationConfig.systemInstruction` 类型为 `Contents?` | P0-A / W48（0.17.1 起，旧版是 `String?`） | 引擎侧 `systemText?.let { Contents.of(it) }`；传裸 String 编译不过（编译期即拦） | 确认类型未回退；若改回 String 或换类型，构造点编译错 = 有意识动作化 | ☐ |
 | 12 | 模板引擎 = minijinja 2.14.0 | —（外部锚：上游 minijinja 版本，无本仓定案波次） | v0.17.1 上游模板引擎版本（外部 Cargo 锚；W50-W55 离线复现所用行为基线） | 核对新版依赖的 minijinja 是否仍 2.14.0；升级需重跑「content 为数组必炸」离线复现，确认 `+` 报错语义未变 | ☐ |
+| 13 | 容器模板可含 minijinja 2.14.0 **不支持的 filter 参数** | W61 定案 | 实证 = MiniCPM5 容器 `chat_template` 第 6 行 `{{- tool \| tojson(ensure_ascii=False) }}`（在 `{%- if tools %}` 块内，即**原生工具通道**分支；`:160` 同款）；依据 = v0.17.1 `runtime/components/rust/minijinja_template.rs:142`（`fn tojson(value: minijinja::Value)` **单参**）+ `:187`（`env.add_filter("tojson", tojson)`）+ 离线复现（minijinja 2.14.0 收到 `ensure_ascii=False` ⇒ `too many arguments … (in <string>:6)`，与真机 `Failed to apply template: too many arguments (in template:6)` 逐字同型）+ 真机日志（`原生工具通道：生成期模板渲染失败 … 已证伪本通道`） | 核对新版内嵌 minijinja 版本与 **filter 签名集**（`tojson` 等）；**若新版放宽 `tojson` 参数**（接受关键字参数）⇒ 本容器原生工具通道可用性需真机复验（「探针通过、生成期炸」的探针保真度缺口随之消失）。⚠️ 该失败面**仅在模板语句所在分支被行使时到达**（MiniCPM5 在 `tools` 非空的原生工具通道），与 fold / `requires_typed_content` 无关（W61 双源定案，勿按第七审 §3.1 补前置注记） | ☐ |
 
 ## 复核流程
 
 1. 新 tag 发布后：`git grep` 核对 #1 收敛语义（`MessageToTemplateInput` / `requires_typed_content` 是否回归）→ 直接决定 bump 是否阻断；
 2. 解包 AAR 核对 #5 `.so` 符号、#6/#7/#11 Java API 签名；
-3. 离线复现 #2/#12（minijinja 行为基线）；
+3. 离线复现 #2/#12/#13（minijinja 行为基线 + filter 签名集：`tojson(ensure_ascii=…)` 是否仍报 `too many arguments`）；
 4. 真机批复核 #3/#9/#10（thought 通道声明、preface 诊断、模板失败路径）；
 5. 全部打勾 + 守卫 #29 期望值同步更新后，方可动 toml 版本行。
 

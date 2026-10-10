@@ -391,7 +391,7 @@ Android-Agent/
 >   - ✅ **拆分 + A3 同 commit**：加载集群（≈390 行）外提 `LiteRtLmEngineLoader.kt`（704 行）+ `sameEngine` 判据三纯函数单源化（**签名缺席 nativeToolChannel** = 契约本体）+ `EngineSameEngineContractTest` 2 例（开关不进重建判据、backend/contextLength 变更重建——复审第六审 A3「隐性契约无人钉」关账）+ 重锚清单两类分列（#24/#28 拆分后实跑 4==4 / adopt 1 / persist 2 零改）
 >   - ✅ **A4 generation-scoped token 幂等防御**：`handleTemplateRenderFailure` 过期世代处置丢弃（复审 17/18「K 生效前置」承诺兑现，兼关 P3#6/#7 并发观察项）
 >   - ✅ **守卫 #30/#31**：`ChatRunCoordinator` run 级 model 读点冻结（==3，复合键迁移前置提示）｜AgentRunner 行数表 ≤2900（#25 家族第 4 员，治复审 18 P3-α 盲区）
->   - ✅ **修补 B UI 可达性**（深度审查 H-1 方案①）+ 一行件包（P3-Ⓐ/Ⓑ/Ⓒ/Ⓔ + SwitchReset 6 组合穷尽）+ `docs/12-litertlm-0171-anchors.md`（**bump 前置⑥**十二项锚定面成文）
+>   - ✅ **修补 B UI 可达性**（深度审查 H-1 方案①）+ 一行件包（P3-Ⓐ/Ⓑ/Ⓒ/Ⓔ + SwitchReset 6 组合穷尽）+ `docs/12-litertlm-0171-anchors.md`（**bump 前置⑥**十二项锚定面成文；**W61 增补锚 #13 ⇒ 十三项**）
 >   - ⚠️ **W59 构建真机冒烟（台账 #44，部分行使）**：安装 Success + 冷启动 **FATAL=0**；行使面因 **USB 充电态 tap 注入设备级失效**中断（keyevent 正常、无线 adb 已验证可用，用户裁夺跳过）——文本 run / 换模型真重建 / 翻转复位端到端挂 W60
 >   - **台账 #44 回收（⚠️ 部分）**⇒ 聚合句 **43 → 44 = 36 ✅ / 6 ⚠️ / 2 ⛔**（`build.yml` 基线 **641 → 645**，新增 4 例；守卫 **29 → 31** 项、selftest **PASS 77 → 84**；引擎 **2345 → 1970**，余量 **430**）
 >   - **bump 复查**：上游最新 tag 仍 **v0.18.0**（无新 tag）⇒ 前置④仍红，bump 挂起维持
