@@ -52,6 +52,7 @@ FAIL=0
 # 生成一个含 executeBodyUnchecked 的 AgentRunner.kt；$2 = 方法体行数。
 # arch-guard 第 12 条用「下一个 4 空格缩进的 fun 行号 − 本方法签名行号」估算体积，
 # 因此方法体必须夹在签名行与 afterMethod() 之间，且 afterMethod 必须顶格 4 空格。
+# 第 31 条（W59，AgentRunner.kt ≤ 2900）绿面：默认 body=5，总行数远低于阈值。
 write_runner() {
   local root="$1" body="$2"
   local f="$root/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunner.kt"
@@ -112,11 +113,18 @@ class ChatViewModel(
 )
 KT
   # 第 20 条（Wave 49 R-C）在 ChatRunCoordinator.kt 缺失时判「守卫面失效」⇒ 骨架必须
-  # 提供它（否则干净树会被本条误红）。给一个只有类声明的最小文件，行数远低于 1300。
+  # 提供它（否则干净树会被本条误红）。行数远低于 1300。
+  # 第 30 条（W59，run 级 model 读点冻结）要求文件内恰有 **3 处**
+  # `model = uiState.value.activeModel` 形态（AgentRequest 传参位）⇒ 骨架必须铺满 3 处
+  #（判据 ==3；漏铺/多铺都会让干净树误红 —— case41c 独立钉死这个同步关系）。
   cat > "$root/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt" <<'KT'
 package com.rickeal.agent.feature.chat
 
-class ChatRunCoordinator
+class ChatRunCoordinator {
+    fun run1() = AgentRequest(model = uiState.value.activeModel)
+    fun run2() = AgentRequest(model = uiState.value.activeModel)
+    fun run3() = AgentRequest(model = uiState.value.activeModel)
+}
 KT
   # 第 21 条（Wave 49 R-D）要求生产源码里存在**唯一**的 USER 章印点 ⇒ 骨架必须提供它
   # （否则干净树会被本条误红）。给一个含 `capabilitiesSource = CapabilitySource.USER`
@@ -1738,6 +1746,101 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case39e] [libraries] 相似行 / 注释里的版本提及被误判（第 29 条锚未排除非代码位 ⇒ 假红）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 41 / 41b / 41c：第 30 条（ChatRunCoordinator run 级 model 读点冻结，W59）两面：
+#   case41 —— 从脚手架 fixture 删 1 处 `model = uiState.value.activeModel`（3 → 2）
+#             ⇒ 计数 2 != 3 ⇒ 判红；case41b 断言红来自真命中（输出含
+#             「取值点(实数 2) != 3」违规事实行），而非「守卫命令自身执行失败」。
+#   case41c —— 脚手架原样（恰 3 处）⇒ 必须不红（绿面；独立钉死 scaffold 铺点数与
+#             判据 ==3 的同步关系 —— 漏铺会让正例与绿面一起恒红）。
+#   各面都只在 $TMP 脚手架树内改（sed / 删行），绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case41-model-readpoint-missing"
+scaffold "$d"
+sed -i '/fun run2/d' "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case41 删 1 处 model 读点 (第 30 条)" "$rc" "$out" \
+  "ChatRunCoordinator 的 AgentRequest.model 取值点必须为全局 activeModel 读点（3 处；引入会话级 model 前须先解 EngineResilienceStore 复合键前置）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case41b] 第 30 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "取值点(实数 2) != 3"; then
+  echo "PASS [case41b] 红来自真命中（输出含「取值点(实数 2) != 3」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case41b] 输出里看不到「取值点(实数 2) != 3」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case41c-model-readpoint-green"
+scaffold "$d"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case41c scaffold 恰 3 处 model 读点 (第 30 条绿面)] 退出 0（scaffold 与判据 ==3 同步）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case41c] scaffold 的 3 处 model 读点未对齐判据 ==3（第 30 条误红 ⇒ 正例失守）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 42 / 42b / 42c / 42d：第 31 条（AgentRunner.kt ≤ 2900，W59 治 P3-α）两面：
+#   case42 —— 向 fixture 灌到超 2900 行（沿 case20 对 ChatRunCoordinator 的追行手法）
+#             ⇒ 判红；case42b 断言红来自真命中（输出含「超 2900 行上限」计数行）。
+#   case42c —— 目标文件缺失（mv 改名，与 case17/case21/case32 同范式）⇒ fail-closed
+#             判红；case42d 断言输出含「不存在（被改名/删除？第 31 条守卫面已失效）」
+#             违规事实行。
+#   各面都只在 $TMP 脚手架树内改（覆写 / mv），绝不碰生产文件。
+#   绿面（write_runner 默认 body=5，远低于阈值）由 positive case 兜住。
+# ---------------------------------------------------------------------------
+d="$TMP/case42-runner-oversize"
+scaffold "$d"
+{ echo 'package com.rickeal.agent.core.agent'
+  echo ''
+  echo 'class AgentRunner {'
+  local_r=1
+  while [ "$local_r" -le 2905 ]; do echo "    val r$local_r: Int = $local_r"; local_r=$((local_r + 1)); done
+  echo '}'
+} > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunner.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case42 AgentRunner.kt 超行数上限 (第 31 条)" "$rc" "$out" \
+  "AgentRunner.kt 总行数 ≤ 2900（core-agent 文件级行数表 #25 家族第 4 员，触顶 = 启动 AgentRunner 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case42b] 第 31 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "超 2900 行上限"; then
+  echo "PASS [case42b] 红来自真命中（输出含「超 2900 行上限」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case42b] 输出里看不到「超 2900 行上限」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case42c-runner-missing"
+scaffold "$d"
+mv "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunner.kt" \
+   "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/.AgentRunner.kt.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case42c AgentRunner.kt 缺失 (第 31 条守卫面失效)" "$rc" "$out" \
+  "AgentRunner.kt 总行数 ≤ 2900（core-agent 文件级行数表 #25 家族第 4 员，触顶 = 启动 AgentRunner 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case42d] 第 31 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "AgentRunner.kt 不存在（被改名/删除？第 31 条守卫面已失效）"; then
+  echo "PASS [case42d] 红来自真命中（输出含「AgentRunner.kt 不存在（被改名/删除？第 31 条守卫面已失效）」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case42d] 输出里看不到「AgentRunner.kt 不存在」违规事实行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

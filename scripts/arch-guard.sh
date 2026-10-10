@@ -702,6 +702,38 @@ check "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读
            if [ -z "$v" ]; then echo "::error::$f 提不出 litertlm 版本行（行首锚被改名 ⇒ litertlm-android 访问器将解析失败，守卫面已失效）"; exit 1; fi
            [ "$v" = "0.17.1" ] || echo "litertlm 已改为 $v：v0.18.0 起「1 元素 text 数组→string」收敛点已删且无等价替代（W56 实证 tag b2f686e2e 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸（非发图才炸）。bump 前必须按 W56 交接「四前置」+ W58 前置⑤（临时 K=3）逐条复核，并同步更新本守卫期望值"'
 
+# 30) ChatRunCoordinator「run 级 model 来源冻结」（W59，方案 §3）：AgentRequest.model 的
+#     取值点必须仍为全局 activeModel 读点（b8b9446 实测 3 处 = AgentRequest 传参位）。
+#     动机：若引入「会话级 model」（per-run 换模型），EngineResilienceStore 的键 (cid)
+#     必须先扩 (cid, model)（复合键迁移是前置，见其 KDoc 复合键申报）—— 否则同一会话
+#     换模型后证伪/计数快照跨模型串键。红 = 有意识动作化（同 #26/#28 哲学）。
+#     ⚠️ 判据边界申报：只钉「run 的 model 传参来源」这一形态
+#    （`model = uiState.value.activeModel`）；config/policy 位
+#    （thermallyCappedConfig(..., uiState.value.activeModel) 等不含该形态）是合法
+#     演化面，不钉。三读点若因重构改名/变形，本守卫红 = 有意识动作化，改判据前必须
+#     先评估复合键前置是否已解。计数动态输出（不写死行号，历史坑：注释写死行号必 stale）。
+#     fail-closed（沿 #29 范式）：文件缺失 → exit 1 + ::error::。
+#     红输出自带处置指引（判红契约：stdout 非空即红；相等断言自己 echo 违规事实行）。
+check "ChatRunCoordinator 的 AgentRequest.model 取值点必须为全局 activeModel 读点（3 处；引入会话级 model 前须先解 EngineResilienceStore 复合键前置）" \
+  bash -c 'f=feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 30 条守卫面已失效）"; exit 1; fi
+           n=$(grep -cE "^.*model = uiState\.value\.activeModel" "$f")
+           [ "$n" -eq 3 ] || echo "ChatRunCoordinator 的 AgentRequest.model 取值点(实数 $n) != 3：run 级 model 来源必须仍为全局 activeModel 读点。若引入「会话级 model」（per-run 换模型），复合键迁移是前置——EngineResilienceStore 键 (cid) 须先扩 (cid, model)（见其 KDoc 复合键申报），并同步更新本守卫"'
+
+# 31) AgentRunner.kt 总行数上限（W59，治 P3-α）：#25 家族第 4 员
+#     （#18 ChatViewModel 1600 / #20 ChatRunCoordinator 1300 / #25 LiteRtLmEngine 2400 /
+#     #31 AgentRunner 2900）。core-agent 现有文件级守卫仅第 12 条（主循环**方法**体积），
+#     本条补「文件级」盲区（P3-α 本体）。阈值 2900 的推导：b8b9446 实测 2802 行，
+#     ≈+3.5% 余量取整（与 #25 的 ≈+2.5% 取整哲学同族，多给一档以容纳 W59+ 挂账多项
+#     落其邻域的一次波次增量）。⚠️ 触顶语义 = 启动 AgentRunner 拆分评审
+#    （onSend/onToolLoop 候选），**不是改阈值**（与 #18/#20/#25 同款「只许缩不许涨」）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "AgentRunner.kt 总行数 ≤ 2900（core-agent 文件级行数表 #25 家族第 4 员，触顶 = 启动 AgentRunner 拆分评审，非改阈值）" \
+  bash -c 'f=core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunner.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 31 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 2900 ] || echo "AgentRunner.kt 当前 $n 行，超 2900 行上限（触顶 = 启动 AgentRunner 拆分评审（onSend/onToolLoop 候选），非改阈值）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"
