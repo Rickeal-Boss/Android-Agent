@@ -114,6 +114,10 @@ interface EngineResilienceStore {
      * 清空**全部**韧性快照（W58 修补 B）：语义同 [clear]，作用于所有 cid。
      * 当前唯一调用点 = 引擎「原生工具通道 OFF→ON」复位块（用户显式重开通道，
      * 见 [shouldResetResilienceOnSwitchFlip]）。
+     *
+     * ⚠️ 连带面（有意，W59 P3-Ⓒ 申报）：清**全部** cid —— 用户重开通道是全局意图，
+     * 其他会话的证伪/计数一并清、各自重走一次必炸再自愈；换会话本就换键，无实际误伤。
+     * 取舍论证：开关是全局设置 ⇒ 全局清成立（深度审查 H-2 方向确认）。
      */
     fun clearAll()
 }

@@ -335,7 +335,7 @@ object ModelPresets {
             note = "同体积看图能力最强之一：多语言视觉与 OCR 均衡（含视觉修复）",
             sizeBytes = 1298139472,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W57 L3：台账 #41，异族/同族 fixB 双通过，0 模板失败 + 内容判别命中——仅覆盖本容器，同族其余容器不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W57 L3：台账 #42，异族/同族 fixB 双通过，0 模板失败 + 内容判别命中——仅覆盖本容器，同族其余容器不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
             mirrors = domesticMirrors("LFM2.5-VL-1.6B", "LFM2.5-VL-1.6B_int4_fixB.litertlm"),
         ),
         ModelPreset(

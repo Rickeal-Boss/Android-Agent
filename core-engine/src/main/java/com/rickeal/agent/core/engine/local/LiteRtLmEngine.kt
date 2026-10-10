@@ -82,6 +82,8 @@ private const val SYSTEM_MERGE_CLOSE = "[/系统设定]"
  * 行为与 W55 **完全一致**（本常量只落机制，不落判定）。回填时改成实测分布
  * 推导的有限值即可，机制面（[LiteRtLmEngine.generateStream] 开头的闸门 +
  * [LiteRtLmEngine.handleTemplateRenderFailure] 的到限 warn）零改动。
+ * bump 前临时 K=3 已定（见 fold 出口前置⑤注释）—— 拍的是**时机**不是真值，
+ * 保留「回填真值前不拍值」原义（W59 P3-Ⓑ 补注）。
  */
 private const val TEMPLATE_REBUILD_FUSE_THRESHOLD: Int = Int.MAX_VALUE
 
@@ -1007,6 +1009,8 @@ class LiteRtLmEngine(
         // 重试结构本波不动（改动面纪律：store 是纯增量）。
         // ⚠️ 当前 K = 保守值（Int.MAX_VALUE = 不熔断），本分支不可达，行为与 W55 一致；
         // 阈值待 W56 毒化 N/M 分布回填（见 [TEMPLATE_REBUILD_FUSE_THRESHOLD] KDoc）。
+        // bump 前临时 K=3 已定（见 fold 出口前置⑤注释）—— 保留「回填真值前不拍值」原义
+        //（W59 P3-Ⓑ 补注）。
         request.conversationId?.let { cid ->
             // W57：熔断计数与 adopt 读回**共用同一合并语义**（[mergeResilienceState] 的 max
             // 分支）—— 原先此处另写一份 `maxOf(templateRebuildCount, storeCount)`，与
@@ -1253,6 +1257,7 @@ class LiteRtLmEngine(
             // 1 次失败 → 重建 → 重试成功未复炸，即正常自愈 1–2 次内收敛，×3 余量取 3；
             // ≥3 意味着非自愈形态）。K 回填真值前维持 `Int.MAX_VALUE` 不拍值 ——
             // 「先机制后数值」纪律不变，本条只钉**拍 K 的时机**（bump 合入之前）。
+            // （0.17.1 行为锚定面清单 = 前置⑥，见 docs/12-litertlm-0171-anchors.md —— W59 P3-Ⓐ 交叉引用。）
             // ⚠️ 折叠是经真机复验的有效修复，**不得删除**（删则回归 W50 必炸）。冲突取舍：离线复现
             // vs 真机实证冲突时**以真机为准**。折叠本身只做「相邻 Text 合并」这一件事。
             val preFoldContents = buildContents(fresh)

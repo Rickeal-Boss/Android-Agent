@@ -700,7 +700,7 @@ check "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（版本目录蒸发，守卫面已失效）"; exit 1; fi
            v=$(grep -oE "^litertlm[[:space:]]*=[[:space:]]*\"[^\"]+\"" "$f" | head -1 | cut -d\" -f2)
            if [ -z "$v" ]; then echo "::error::$f 提不出 litertlm 版本行（行首锚被改名 ⇒ litertlm-android 访问器将解析失败，守卫面已失效）"; exit 1; fi
-           [ "$v" = "0.17.1" ] || echo "litertlm 已改为 $v：v0.18.0 起「1 元素 text 数组→string」收敛点已删且无等价替代（W56 实证 tag b2f686e2e 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸（非发图才炸）。bump 前必须按 W56 交接「四前置」+ W58 前置⑤（临时 K=3）逐条复核，并同步更新本守卫期望值"'
+           [ "$v" = "0.17.1" ] || echo "litertlm 已改为 $v：v0.18.0 起「1 元素 text 数组→string」收敛点已删且无等价替代（W56 实证 tag b2f686e2e 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸（非发图才炸）。bump 前必须按 W56 交接「四前置」+ W58 前置⑤（临时 K=3）逐条复核，并同步更新本守卫期望值。0.17.1 行为锚定面清单（前置⑥）见 docs/12-litertlm-0171-anchors.md（W59 P3-Ⓐ 指向行，只追加不改动既有子串）"'
 
 # 30) ChatRunCoordinator「run 级 model 来源冻结」（W59，方案 §3）：AgentRequest.model 的
 #     取值点必须仍为全局 activeModel 读点（b8b9446 实测 3 处 = AgentRequest 传参位）。

@@ -12,7 +12,8 @@ import kotlin.test.assertTrue
  *  - 该复位不复位 ⇒ 用户的显式重开被证伪/计数永久压制（用户显式设置优先被架空）；
  *  - 不该复位乱复位 ⇒ null（首 run / 实例刚换）被误判成翻转，evict 后重走必炸路径
  *    （W55 审查 P2#1 复发）。
- * 四个用例穷尽 (lastSeen, current) 的判据面。纯 JVM、零 native、真调纯函数（非 vacuous）。
+ * 六个用例穷尽 (lastSeen, current) 的判据面（W59 补齐 (null,false) / (true,false) 两例，
+ * 与复审 18 P4① 六组合穷进口径对齐）。纯 JVM、零 native、真调纯函数（非 vacuous）。
  */
 class EngineResilienceSwitchResetTest {
 
@@ -38,5 +39,19 @@ class EngineResilienceSwitchResetTest {
     fun `ON 转 OFF 不判翻转`() {
         // 用户关闭通道：无需复位（文本协议路径不消费证伪/计数）。
         assertFalse(shouldResetResilienceOnSwitchFlip(lastSeen = false, current = false))
+    }
+
+    @Test
+    fun `首 run 的 null 配关闭不判翻转`() {
+        // (null, false)（W59 补例）：首 run 即关（或实例刚换且用户此刻是关）——
+        // 无「跳变」可言，不得复位（否则 evict 后首 run 即清 store，破坏 P2#1 防护）。
+        assertFalse(shouldResetResilienceOnSwitchFlip(lastSeen = null, current = false))
+    }
+
+    @Test
+    fun `持续开启转 OFF 不判翻转`() {
+        // (true, false)（W59 补例）：持续开启后用户关闭 —— 关闭方向无复位面
+        //（复位只认 OFF→ON 跳变），证伪/计数原样留待用户重开时处置。
+        assertFalse(shouldResetResilienceOnSwitchFlip(lastSeen = true, current = false))
     }
 }
