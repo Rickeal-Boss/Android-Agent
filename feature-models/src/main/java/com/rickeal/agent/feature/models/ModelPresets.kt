@@ -181,10 +181,10 @@ object ModelPresets {
             //    encoder），CPU 后端 engine init 直接 NOT_FOUND。
             // 对照：同 prompt、同管线下 CPU 变体（下方条目）多轮工具调用正常收尾；
             // MiniCPM5-2B / Qwen2.5-1.5B 亦正常 ⇒ 应用侧健康，属容器↔运行时错配。
-            note = "⚠️ 已知输出退化（真机实测）：GPU 特化变体在 0.17.1 下不可用，请用下方 CPU 变体",
+            note = "⚠️ 0.17.1 下不可用（真机实测）：引擎初始化即失败（Failed to create engine: NOT_FOUND: TF_LITE_PREFILL_DECODE not found in the model）；另有 W43 观测的输出退化症状（另一机型）；请用下方 CPU 变体",
             sizeBytes = 2008432640,
             recommended = false,
-            backendBasis = "官方 GPU 特化变体（ML Drift GPU）——⚠️ 实测输出退化，待上游修复后再开放",
+            backendBasis = "官方 GPU 特化变体（ML Drift GPU）——⚠️ 实测不可用（W60：引擎初始化 NOT_FOUND，容器缺 TF_LITE_PREFILL_DECODE signature；W43：输出退化 + CPU 后端 NOT_FOUND），待上游修复后再开放",
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -199,7 +199,7 @@ object ModelPresets {
             note = "端侧主力（实测可用）：多轮工具调用与正常收尾均验证通过",
             sizeBytes = 2588147712,
             recommended = true,
-            backendBasis = "CPU 特化变体（实测通过）；GPU 变体已知输出退化，勿用",
+            backendBasis = "CPU 特化变体（实测通过）；GPU 变体不可用（W60 引擎初始化 NOT_FOUND / W43 输出退化），勿用",
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it.litertlm"),
         ),
         ModelPreset(
@@ -209,12 +209,13 @@ object ModelPresets {
             ramText = "≥ 5.2 GB",
             requiredRamBytes = (5.2 * GB).toLong(),
             memBasis = BASIS_GPU,
-            // 同 E2B · GPU：同一转换线的 GPU 特化变体，未单独真机验证；E2B GPU 已实测
-            // 输出退化（见上条注记），本条按同源风险标注「未验证」，待真机或上游修复。
-            note = "更大的模型：回答更好，需要 8GB 以上内存的手机（GPU 特化变体，未真机验证）",
+            // 同 E2B · GPU：同一转换线的 GPU 特化变体。W60 真机实测**引擎初始化失败**
+            // （NOT_FOUND，容器缺 VISION/AUDIO 编码器 section，见 backendBasis），与
+            // E2B · GPU 同源；本工程**无 E4B CPU 变体** ⇒ 该变体 0.17.1 下不可用。
+            note = "更大的模型：回答更好，需要 8GB 以上内存的手机（GPU 特化变体，0.17.1 下实测不可用）",
             sizeBytes = 2969059328,
             recommended = false,
-            backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）——⚠️ 同源变体 E2B GPU 实测退化，未验证前谨慎；⚠️ 视觉能力系 gemma-4 家族外推（同族 E2B-it 已逐容器取证带视觉编码器，E4B 未单独取证）",
+            backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）——❌ 实测不可用（W60：引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section，model_signature_utils.cc:250），与 E2B·GPU 同源）；⚠️ 视觉能力系 gemma-4 家族外推（同族 E2B-it 已逐容器取证带视觉编码器，E4B 未单独取证）",
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -263,7 +264,8 @@ object ModelPresets {
             recommended = true,
             backendBasis = "官方 Galaxy S26 OpenCL 全委托实测（逐节点零拒绝，GPU/CPU 双验证）；" +
                 "要求 litert-lm ≥ 0.16 —— 2026-09-26 运行时已升 0.17.1 满足 → GPU 放行。" +
-                "⚠️ 真机为首次验证，加载/速度异常请反馈",
+                "⚠️ 真机为首次验证，加载/速度异常请反馈。" +
+                "⚠️ 原生工具通道在本容器不可用（模板 tojson(ensure_ascii=…) 与 litertlm 0.17.1 内嵌 minijinja 2.14.0 不兼容，生成期报 too many arguments；已由「证伪 + 回退文本协议」自愈）；文本协议路径不受影响",
             mirrors = domesticMirrors("MiniCPM5-2B", "MiniCPM5-2B_int4.litertlm"),
         ),
         ModelPreset(
@@ -320,7 +322,7 @@ object ModelPresets {
             note = "阿里通义视觉模型：中文看图、截图问答与 OCR 强",
             sizeBytes = 1783424544,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（视觉 GPU + 解码 CPU）与 Galaxy S26（0.15）验证；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）；端到端图片输入仍待真机验证。⚠️ W55 已推翻 W53「Qwen 系同源 ⇒ 风险最高」的假设——其模板与 `Qwen2.5-1.5B` 的 `+` 拼接形态**不同**（同家族 ≠ 同模板）",
+            backendBasis = "官方在 Pixel 8a（视觉 GPU + 解码 CPU）与 Galaxy S26（0.15）验证；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W60 L3：台账 #46，红/黄/数字 37 三锚点命中，0 模板失败——仅覆盖本容器，同族不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）；⚠️ W55 已推翻 W53「Qwen 系同源 ⇒ 风险最高」的假设——其模板与 `Qwen2.5-1.5B` 的 `+` 拼接形态**不同**（同家族 ≠ 同模板）",
             mirrors = domesticMirrors("Qwen2-VL-2B", "Qwen2-VL-2B.litertlm"),
         ),
         ModelPreset(
@@ -349,7 +351,7 @@ object ModelPresets {
             note = "小体积视觉旗舰：精细图像理解与文档 OCR，8GB 内存机型舒适运行（含视觉修复）",
             sizeBytes = 2352023888,
             recommended = false,
-            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；⚠️ 图片输入尚未验证（P1 多模态未覆盖，见 W52 挂账）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）；端到端图片输入仍待真机验证",
+            backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W60 L3：台账 #46，红/黄/数字 37 三锚点命中，中文回答，0 模板失败——仅覆盖本容器，同族不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
             mirrors = domesticMirrors("LFM2.5-VL-3B", "LFM2.5-VL-3B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -362,7 +364,7 @@ object ModelPresets {
             note = "视觉能力天花板：8B 级多模态，仅建议 8GB 以上内存机型",
             sizeBytes = 4214021104,
             recommended = false,
-            backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU；⚠️ 模板已离线取证数组安全（Wave 53 L2：容器模板对多元素 content 走 is-string 分支并循环吐 <image_soft_token>，非 Qwen2.5 的「+」拼接形态），端到端图片输入仍待真机验证",
+            backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU；⚠️ 模板已离线取证数组安全（Wave 53 L2：容器模板对多元素 content 走 is-string 分支并循环吐 <image_soft_token>，非 Qwen2.5 的「+」拼接形态），❌ 端到端不可用（W60：Failed to create conversation config: INVALID_ARGUMENT: Unsupported model type，0.17.1 已知限制）",
             mirrors = domesticMirrors("MiniCPM-V-4", "MiniCPM-V-4-int8.litertlm"),
         ),
     )
