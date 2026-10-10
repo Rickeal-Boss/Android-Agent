@@ -181,6 +181,25 @@ internal fun summarizeContentTypes(contents: List<Content>): String {
 }
 
 /**
+ * 「过期世代处置丢弃」判据（W60 外提纯函数，W59 A4 承重语义的 JVM 可测化）。
+ *
+ * 为什么需要它：W59 A4 的幂等单源 = [handleTemplateRenderFailure] 首行按**生成世代令牌**
+ * 校验 —— 迟到 / 异世代的处置（证伪置位、计数 `++`、写点② persist）必须**整批丢弃**，
+ * 否则旧代会污染到新世代刚复位 / 刚建好的会话态（关 P3#6 / P3#7）。原判据
+ * `token != currentGenerationToken` 内联在 native 重类的方法体内，**JVM 不可实例化**
+ * ⇒ 无法直接单测；外提为文件级纯函数后即可被同模块 JVM 单测直接断言
+ *（与 [foldAdjacentText] / [summarizeContentTypes] 同范式）。
+ *
+ * 契约：纯函数 —— 无副作用、不读字段；调用点（[handleTemplateRenderFailure] 首行）负责
+ * 丢弃动作本身。`token != current` 即判丢弃；当前代 token 恒等 ⇒ 既有路径仅多一次相等比较。
+ *
+ * ⚠️ 边界（如实申报）：本函数只钉**判据语义**（相等 / 不等两个方向），钉不住
+ * **调用点存在性 / 传参正确性** —— 若有人删掉 handler 内的门控（纯函数变死码）或删掉
+ * 一个调用点，本单测仍绿。该缺口由守卫 #33（世代门控接线）互补钉死，二者合起来才完整。
+ */
+internal fun shouldDropStaleDisposal(token: Long, current: Long): Boolean = token != current
+
+/**
  * LiteRT-LM 本地引擎。
  *
  * 桥接要点（架构文档 §3.4 说明 1~4）：
@@ -1385,7 +1404,8 @@ class LiteRtLmEngine(
     private fun handleTemplateRenderFailure(token: Long, raw: String, role: String, source: String) {
         // W59 A4：世代校验先行（幂等单源）—— 迟到 / 异世代的证伪置位、计数 `++`、
         // 写点② persist **一并丢弃**（不是各路径分别加 flag），日志留痕便于真机归因。
-        if (token != currentGenerationToken) {
+        // W60：判据外提为纯函数 [shouldDropStaleDisposal]（JVM 可测化），语义逐字等价。
+        if (shouldDropStaleDisposal(token, currentGenerationToken)) {
             AgentLogStore.info(
                 "模板渲染失败处置丢弃：过期世代（token=$token，当前世代 ${currentGenerationToken}）" +
                     "—— 新世代已启动，旧代处置不再落账（来源=$source）"
