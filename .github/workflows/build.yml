@@ -493,8 +493,8 @@ jobs:
             echo '```text'
             echo "$out"
             echo '```'
-            # 低于基线 soft-check（非阻断）：基线 tests=649（W60 校准：全仓 @Test 代码位实测 649，由 645 上调；W60 测试补强新增 4 例 —— A4 世代门控纯函数 3 例（EngineStaleDisposalGateTest）+ 契约测试例 2 拆单变异 +1，守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
-            baseline=649
+            # 低于基线 soft-check（非阻断）：基线 tests=652（W61 校准：全仓 @Test 代码位实测 652，由 649 上调；W61 测试补强新增 3 例 —— ModelHeuristics OTHER 分支 thinking 判据修复 3 单测（DeepSeek-R1 蒸馏系 / Qwen2.5 防误伤 / 随机非推理名），守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
+            baseline=652
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

@@ -143,4 +143,33 @@ class ModelHeuristicsTest {
             ModelHeuristics.resolveCapabilities(persisted, null, heuristic),
         )
     }
+
+    // --- W61：OTHER 分支按推理标识识别 thinking（DeepSeek-R1 蒸馏系修复） ---
+
+    @Test
+    fun `DeepSeek-R1 蒸馏系落 OTHER 且识别为 thinking`() {
+        // DeepSeek-R1-Distill-Qwen-1.5B：文件名含 qwen 但不含 qwen3 ⇒ 落 OTHER；
+        // OTHER 分支按推理标识（r1 / reasoner / deepseek+distill）识别 thinking = true。
+        val r = ModelHeuristics.infer(
+            "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
+        )
+        assertEquals(ModelFamily.OTHER, r.family)
+        assertEquals(true, r.capabilities.thinking)
+    }
+
+    @Test
+    fun `Qwen2_5 落 OTHER 但不误判 thinking`() {
+        // 防误伤：Qwen2.5-1.5B 亦落 OTHER，但不含 r1 / reasoner / （deepseek+distill）
+        // ⇒ thinking 必须为 false（不得用裸 `think` 或裸 `distill` 误伤）。
+        val r = ModelHeuristics.infer("Qwen2.5-1.5B-Instruct_q8_ekv4096.litertlm")
+        assertEquals(ModelFamily.OTHER, r.family)
+        assertEquals(false, r.capabilities.thinking)
+    }
+
+    @Test
+    fun `随机非推理名落 OTHER 且 thinking=false`() {
+        val r = ModelHeuristics.infer("some-random-other.litertlm")
+        assertEquals(ModelFamily.OTHER, r.family)
+        assertEquals(false, r.capabilities.thinking)
+    }
 }

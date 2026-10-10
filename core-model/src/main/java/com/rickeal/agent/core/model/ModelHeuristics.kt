@@ -165,6 +165,12 @@ object ModelHeuristics {
             preferredBackends = setOf(InferenceBackend.CPU, InferenceBackend.GPU),
         )
 
+        // OTHER 分支：无专属家族分支的模型（含 DeepSeek-R1 蒸馏系，见 inferFamily KDoc）。
+        // - thinking（W61 修复）：DeepSeek-R1 系推理模型文件名含 `qwen` 但不含 `qwen3`/`qwen-3`
+        //   ⇒ [inferFamily] 落 OTHER（其 KDoc 已登记该已知误分类）。故 OTHER 分支按**推理标识**
+        //   识别 thinking：`r1` / `reasoner` / （`deepseek` 与 `distill` 合取）。
+        //   ⚠️ 标记纪律：**不得**用裸 `think`（易误伤普通词）；`distill` 单独用也过宽，须与
+        //   `deepseek` 合取；Qwen2.5-1.5B 亦落 OTHER ⇒ 上式**不得**命中 `qwen2.5`（已单测钉住）。
         else -> ModelCapabilities(
             text = true,
             // "vl"：Qwen2-VL / LFM2.5-VL / SmolVLM；"minicpm-v"：MiniCPM-V 系列文件名是
@@ -172,7 +178,8 @@ object ModelHeuristics {
             image = lower.contains("vl") || lower.contains("vision") || lower.contains("minicpm-v"),
             audio = lower.contains("audio") || lower.contains("omni"),
             toolCalling = lower.contains("it") || lower.contains("instruct"),
-            thinking = false,
+            thinking = lower.contains("r1") || lower.contains("reasoner") ||
+                (lower.contains("deepseek") && lower.contains("distill")),
             preferredBackends = setOf(InferenceBackend.CPU),
         )
     }
