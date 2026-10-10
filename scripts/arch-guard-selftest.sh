@@ -251,6 +251,16 @@ class LiteRtLmEngine {
     private fun nativeToolChannelActive(): Boolean = true
 }
 KT
+  # 第 32 条（W60，LiteRtLmEngineLoader.kt ≤ 900）要求该文件存在 ⇒ 骨架必须提供它，
+  # 否则正例 + 所有绿面 case 会被本条 fail-closed 误红（守卫假绿陷阱的镜像：漏铺 ⇒ 全红）。
+  # 行数远低于 900。
+  cat > "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngineLoader.kt" <<'KT'
+package com.rickeal.agent.core.engine.local
+
+class LiteRtLmEngineLoader {
+    fun load(): Int = 0
+}
+KT
   # 第 26 条（Wave 53，测试基线双向同步）要求 build.yml 声明 `baseline=N` 且与全仓
   # `@Test` 代码位实数**相等** ⇒ 骨架必须提供**一份含匹配 baseline 的 build.yml** +
   # **恰好 N 条 @Test 载体**（否则干净树会被本条误红，正例失守）。
@@ -1841,6 +1851,62 @@ elif printf '%s\n' "$out" | grep -qF "AgentRunner.kt 不存在（被改名/删�
   PASS=$((PASS + 1))
 else
   echo "FAIL [case42d] 输出里看不到「AgentRunner.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 43 / 43b / 44 / 44b：第 32 条（LiteRtLmEngineLoader.kt ≤ 900，W60）两面：
+#   case43 —— 向 fixture 灌到超 900 行（沿 case31/case42 追行手法）⇒ 判红；
+#             case43b 断言红来自真命中（输出含「超 900 行上限」计数行），而非
+#             「守卫命令自身执行失败」。
+#   case44 —— 目标文件缺失（mv 改名，与 case17/case21/case32/case42c 同范式）⇒
+#             fail-closed 判红；case44b 断言输出含「LiteRtLmEngineLoader.kt 不存在
+#             （被改名/删除？第 32 条守卫面已失效）」违规事实行。
+#   各面都只在 $TMP 脚手架树内改（覆写 / mv），绝不碰生产文件。
+#   绿面（scaffold fixture 行数远低于 900）由 positive case 兜住。
+# ---------------------------------------------------------------------------
+d="$TMP/case43-loader-oversize"
+scaffold "$d"
+{ echo 'package com.rickeal.agent.core.engine.local'
+  echo ''
+  echo 'class LiteRtLmEngineLoader {'
+  local_l=1
+  while [ "$local_l" -le 905 ]; do echo "    val l$local_l: Int = $local_l"; local_l=$((local_l + 1)); done
+  echo '}'
+} > "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngineLoader.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case43 LiteRtLmEngineLoader.kt 超行数上限 (第 32 条)" "$rc" "$out" \
+  "LiteRtLmEngineLoader.kt 总行数 ≤ 900（core-engine 行数表 #25 家族第 5 员，触顶 = 启动 Loader 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case43b] 第 32 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "超 900 行上限"; then
+  echo "PASS [case43b] 红来自真命中（输出含「超 900 行上限」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case43b] 输出里看不到「超 900 行上限」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case44-loader-missing"
+scaffold "$d"
+mv "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngineLoader.kt" \
+   "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/.LiteRtLmEngineLoader.kt.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case44 LiteRtLmEngineLoader.kt 缺失 (第 32 条守卫面失效)" "$rc" "$out" \
+  "LiteRtLmEngineLoader.kt 总行数 ≤ 900（core-engine 行数表 #25 家族第 5 员，触顶 = 启动 Loader 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case44b] 第 32 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "LiteRtLmEngineLoader.kt 不存在（被改名/删除？第 32 条守卫面已失效）"; then
+  echo "PASS [case44b] 红来自真命中（输出含「LiteRtLmEngineLoader.kt 不存在（被改名/删除？第 32 条守卫面已失效）」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case44b] 输出里看不到「LiteRtLmEngineLoader.kt 不存在」违规事实行，判据可疑"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

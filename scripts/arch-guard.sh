@@ -734,6 +734,22 @@ check "AgentRunner.kt 总行数 ≤ 2900（core-agent 文件级行数表 #25 家
            n=$(wc -l < "$f")
            [ "$n" -le 2900 ] || echo "AgentRunner.kt 当前 $n 行，超 2900 行上限（触顶 = 启动 AgentRunner 拆分评审（onSend/onToolLoop 候选），非改阈值）"'
 
+# 32) LiteRtLmEngineLoader.kt 总行数上限（W60）：#25 家族第 5 员
+#     （#18 ChatViewModel 1600 / #20 ChatRunCoordinator 1300 / #25 LiteRtLmEngine 2400 /
+#     #31 AgentRunner 2900 / #32 LiteRtLmEngineLoader 900）。Loader 是 W59 拆分**新产物**，
+#     此前无任何文件级守卫（`grep -rn "LiteRtLmEngineLoader" scripts/arch-guard.sh` = 0）。
+#     ⚠️ **阈值张力如实申报**：#25 家族哲学 ≈ +2.5% 余量（704 × 1.025 ≈ 722），本条取
+#     900（+27.8%）**显著宽于家族哲学**。辩护理由：① Loader 是**机械支撑件**（加载集群，
+#     非状态机），增长面受加载逻辑天然约束；② 704 行文件上 +2.5% 仅 18 行余量、不实用；
+#     ③ 与 #31 同为 W59 拆分新产物，给一档宽余量容纳 W60+ 邻域挂账。
+#     触顶语义 = 启动 Loader 拆分评审，**不是改阈值**（与 #18/#20/#25/#31 同款「只许缩不许涨」）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "LiteRtLmEngineLoader.kt 总行数 ≤ 900（core-engine 行数表 #25 家族第 5 员，触顶 = 启动 Loader 拆分评审，非改阈值）" \
+  bash -c 'f=core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngineLoader.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 32 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 900 ] || echo "LiteRtLmEngineLoader.kt 当前 $n 行，超 900 行上限（触顶 = 启动 Loader 拆分评审，非改阈值）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"
