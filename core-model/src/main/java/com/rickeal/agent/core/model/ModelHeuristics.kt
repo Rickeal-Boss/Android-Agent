@@ -171,6 +171,8 @@ object ModelHeuristics {
         //   识别 thinking：`r1` / `reasoner` / （`deepseek` 与 `distill` 合取）。
         //   ⚠️ 标记纪律：**不得**用裸 `think`（易误伤普通词）；`distill` 单独用也过宽，须与
         //   `deepseek` 合取；Qwen2.5-1.5B 亦落 OTHER ⇒ 上式**不得**命中 `qwen2.5`（已单测钉住）。
+        //   ⚠️ 边界：本位的运行时效果**仅经 AUTO 档**（OFF/ON 由用户显式选择，见 LiteRtLmEngine
+        //   的 thinkingOn 解析）；另 UI 模型卡「思考」chip 亦读本位。
         else -> ModelCapabilities(
             text = true,
             // "vl"：Qwen2-VL / LFM2.5-VL / SmolVLM；"minicpm-v"：MiniCPM-V 系列文件名是

@@ -181,7 +181,7 @@ object ModelPresets {
             //    encoder），CPU 后端 engine init 直接 NOT_FOUND。
             // 对照：同 prompt、同管线下 CPU 变体（下方条目）多轮工具调用正常收尾；
             // MiniCPM5-2B / Qwen2.5-1.5B 亦正常 ⇒ 应用侧健康，属容器↔运行时错配。
-            note = "⚠️ 0.17.1 下不可用（真机实测）：引擎初始化即失败（Failed to create engine: NOT_FOUND: TF_LITE_PREFILL_DECODE not found in the model）；另有 W43 观测的输出退化症状（另一机型）；请用下方 CPU 变体",
+            note = "⚠️ 0.17.1 下不可用（真机实测）：引擎初始化失败（容器缺 TF_LITE_PREFILL_DECODE section）；请用下方 CPU 变体",
             sizeBytes = 2008432640,
             recommended = false,
             backendBasis = "官方 GPU 特化变体（ML Drift GPU）——⚠️ 实测不可用（W60：引擎初始化 NOT_FOUND，容器缺 TF_LITE_PREFILL_DECODE signature；W43：输出退化 + CPU 后端 NOT_FOUND），待上游修复后再开放",
