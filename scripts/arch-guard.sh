@@ -712,12 +712,14 @@ check "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读
 #    （thermallyCappedConfig(..., uiState.value.activeModel) 等不含该形态）是合法
 #     演化面，不钉。三读点若因重构改名/变形，本守卫红 = 有意识动作化，改判据前必须
 #     先评估复合键前置是否已解。计数动态输出（不写死行号，历史坑：注释写死行号必 stale）。
+#     W60：判据加**注释位排除**（`grep -vE "^[0-9]+:[[:space:]]*[*/]"`，与 #24/#28 同款）
+#     —— 防 KDoc/注释提及该形态造成假红；此前 #30 是唯一漏排除者。
 #     fail-closed（沿 #29 范式）：文件缺失 → exit 1 + ::error::。
 #     红输出自带处置指引（判红契约：stdout 非空即红；相等断言自己 echo 违规事实行）。
 check "ChatRunCoordinator 的 AgentRequest.model 取值点必须为全局 activeModel 读点（3 处；引入会话级 model 前须先解 EngineResilienceStore 复合键前置）" \
   bash -c 'f=feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 30 条守卫面已失效）"; exit 1; fi
-           n=$(grep -cE "^.*model = uiState\.value\.activeModel" "$f")
+           n=$(grep -nE "^.*model = uiState\.value\.activeModel" "$f" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | wc -l)
            [ "$n" -eq 3 ] || echo "ChatRunCoordinator 的 AgentRequest.model 取值点(实数 $n) != 3：run 级 model 来源必须仍为全局 activeModel 读点。若引入「会话级 model」（per-run 换模型），复合键迁移是前置——EngineResilienceStore 键 (cid) 须先扩 (cid, model)（见其 KDoc 复合键申报），并同步更新本守卫"'
 
 # 31) AgentRunner.kt 总行数上限（W59，治 P3-α）：#25 家族第 4 员

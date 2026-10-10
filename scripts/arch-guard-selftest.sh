@@ -1969,6 +1969,32 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# case 46：第 30 条（ChatRunCoordinator run 级 model 读点冻结，W59；W60 加注释位排除）
+#   绿面 —— 只在 **KDoc/注释** 里提 `model = uiState.value.activeModel` ⇒ 必须**仍绿**
+#   （防被注释骗，沿 case30（#24 的 KDoc 绿面）范式）：注释位被
+#   `^[0-9]+:[[:space:]]*[*/]` 排除 ⇒ 计数仍 3。仅 $TMP 内追加，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case46-model-kdoc-green"
+scaffold "$d"
+cat >> "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt" <<'KT'
+
+/**
+ * 说明：AgentRequest 的 `model = uiState.value.activeModel` 出现在 KDoc 里，
+ * 不得被第 30 条守卫计入 run 级 model 读点（注释位必须排除）。
+ */
+val kdocOnlyModelNote = 1
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case46 KDoc 提及 model = uiState.value.activeModel (第 30 条绿面)] 退出 0（注释位被排除，未误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case46] KDoc 里的 model 读点被误计入（第 30 条判据未排除注释位 ⇒ 会被注释骗）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
 echo "-----------------------------------------"
 echo "自测结果：PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -ne 0 ]; then
