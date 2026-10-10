@@ -1,13 +1,10 @@
 package com.rickeal.agent.core.engine.local
 
-import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.Capabilities
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation as LiteRtConversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
-import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
@@ -38,7 +35,6 @@ import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelModality
 import com.rickeal.agent.core.model.newId
 import com.rickeal.agent.core.model.Role
-import com.rickeal.agent.core.model.SamplingParams
 import com.rickeal.agent.core.model.ThinkingMode
 import com.rickeal.agent.core.model.TokenEstimator
 import com.rickeal.agent.core.model.TokenUsage
@@ -56,18 +52,7 @@ import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-
-/**
- * 模型文件预检的体积下限（64MB）。
- *
- * 低于它视为「下载中断的残片」：内置最小的预设（450M 视觉模型）也有 ~0.25GB，
- * 而 DownloadManager 中断/被清理后常留下几 MB 的半截文件、或下载源返回的错误页
- * （几 KB~几十 KB）。取 64MB 既不会误伤任何真实模型，也能拦住绝大多数残片。
- */
-private const val MODEL_MIN_BYTES: Long = 64L * 1024L * 1024L
 
 /**
  * 中档回退（第三态）把系统提示词并进首条 USER 时，提示词块用的**开定界符**（复审 A4）。
@@ -242,6 +227,25 @@ class LiteRtLmEngine(
 
     override val kind: EngineKind = EngineKind.LOCAL
 
+    /**
+     * 加载态载体（W59 Stage-2 拆分）：native Engine 构造/重建/释放、模型文件预检、
+     * GPU 降级驱动循环、复用判据与模态降级重建全部迁入 [LiteRtLmEngineLoader]；
+     * 引擎保留**会话态**（conversation / 水印 / 角色通道 / 韧性计数）与生成链。
+     *
+     * 接缝注入（接缝纪律与顺序契约见 loader 类 KDoc，改动须逐字申报）：
+     *  - `waitForGenerations` = 在途生成闸门（引擎的 activeGenerations 计数是会话态）；
+     *  - `onRebuildRelease` = 重建前全量复位（本类 `releaseInternal`：先会话态后加载态，
+     *    加载态半边经 [LiteRtLmEngineLoader.releaseLoadState] 下沉执行）；
+     *  - `onResampleSessionReset` = 复用判据短路且仅采样参数变化时的会话级复位
+     *   （[resetSessionForResample]，语句与拆分前逐字一致）。
+     */
+    private val loader = LiteRtLmEngineLoader(
+        waitForGenerations = { waitForGenerationsToFinish() },
+        onRebuildRelease = { releaseInternal() },
+        onResampleSessionReset = { resetSessionForResample() },
+        engineDispatcher = engineDispatcher,
+    )
+
     /** 在途生成数量。卸载/关闭引擎前必须等它归零，否则会从脚底下抽掉 native 对象。 */
     private val activeGenerations = java.util.concurrent.atomic.AtomicInteger(0)
 
@@ -272,14 +276,6 @@ class LiteRtLmEngine(
      */
     @Volatile
     private var templateRebuildCount = 0
-
-    /**
-     * 投机解码能力的**真实探测结果**（null = 未探测/探测失败）。
-     * 来源：官方 `Capabilities(modelPath).hasSpeculativeDecodingSupport()`。
-     * 以此替代按文件名猜测，避免「能力位猜错」导致开了不支持的加速反而出错。
-     */
-    @Volatile
-    private var probedSpeculativeDecoding: Boolean? = null
 
     /**
      * 原生工具通道的**真实探测结果**（null = 未探测，true/false = 探测通过/失败）。
@@ -339,39 +335,11 @@ class LiteRtLmEngine(
      */
     private val sentMessageIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
-    private val mutex = Mutex()
-    private var engine: Engine? = null
+    // 加载态字段组（mutex / engine / loadedModelPath / loadedContextLength /
+    // loadedBackend / loadedSampling / loadedVisionBackend / loadedAudioBackend /
+    // actualBackend / loadConfig / degradedModality / loaded / probedSpeculativeDecoding）
+    // 已随 W59 拆分迁入 LiteRtLmEngineLoader —— 引擎侧一律经 `loader.` 前缀读取。
     private var conversation: LiteRtConversation? = null
-    private var loadedModelPath: String? = null
-
-    /**
-     * 加载时锁定的 **KV cache 预算**（token 数）。
-     *
-     * Wave 28 语义修正（「只输出提示词然后胡言乱语」残留的第二条根因链）：litertlm 的
-     * `EngineConfig.maxNumTokens` 是「输入+输出总和 = KV cache 总容量」，**不是输出上限**。
-     * 旧实现把输出上限 `InferenceConfig.maxTokens`（默认 1024）传了进去 —— 系统提示词
-     * （5 段 + 工具清单，中文按 ~1 token/字符即 1500+ token）单独就超出 1024 的 KV，
-     * 首次 prefill 即触发 litertlm 硬报错（"Input token ids are too long"）或提前收尾。
-     * 现改为传 `InferenceConfig.contextLength`（按模型采样档案钳制后 = 转换件 metadata
-     * 的 max_num_tokens，预设内存闸门正是按 KV@4096 预算的）。
-     *
-     * 复用判据随之换轴：KV 预算（contextLength）变化 → 整引擎重建（native 按它分配
-     * KV）；而 maxTokens 只是**逐消息输出上限**（走 `sendMessageAsync(maxOutputToken=)`），
-     * 变更既不重建引擎也不重建会话 —— 用户在参数面板改输出上限立即生效。
-     */
-    private var loadedContextLength: Int = -1
-    private var loadedBackend: InferenceBackend? = null
-    /**
-     * 加载时锁定的采样参数。
-     *
-     * `SamplerConfig` 是在 `ensureConversation()` 里按「会话创建那一刻」的
-     * `request.config.sampling` 构造并随 Conversation 缓存的 —— 会话不重建，
-     * 新的 temperature / topP / topK 永远进不了引擎。所以 load() 的复用判据必须带上它，
-     * 否则用户反复调参、输出毫无变化且无任何报错。
-     */
-    private var loadedSampling: SamplingParams? = null
-    private var loadedVisionBackend: InferenceBackend? = null
-    private var loadedAudioBackend: InferenceBackend? = null
     private var currentConversationId: String? = null
     /**
      * 当前 Conversation 对应的应用侧上下文版本（[GenerationRequest.contextVersion]）。
@@ -448,36 +416,11 @@ class LiteRtLmEngine(
     override val sessionDiagnostics: StateFlow<EngineSessionDiagnostics?> =
         _sessionDiagnostics.asStateFlow()
 
-    /**
-     * 本次加载**实际生效**的后端（Wave 33）：GPU 降级成功后为 CPU。与
-     * [loadedBackend]（恒记用户请求值，防误重建，by design）成对 —— 两者不等即
-     * 「请求 GPU 实际 CPU」的运行时事实，经 [EngineSessionDiagnostics] 暴露给 UI。
-     */
-    @Volatile
-    private var actualBackend: InferenceBackend? = null
-    private var loadConfig: EngineLoadConfig? = null
-
-    /**
-     * 加载期 / 会话创建期因容器缺 section 而被去掉的模态（Wave 44 P0-2；Wave 45 起会话
-     * 创建期亦可触发，空集 = 未降级）。
-     *
-     * **另立字段的理由（不许并进复用判据）**：[EngineAttempt.degraded] 是**运行时事实**，
-     * 与 [loadedVisionBackend] / [loadedAudioBackend]（记**用户请求的解析值**，进 `sameEngine`
-     * 判据）**正交**。若把降级写进 `loaded*Backend`，则「请求 GPU 实际去 audio」会在下次
-     * `load()` 被判成配置变化而整引擎重建（重新加载权重，纯浪费；降级结果在进程生命周期内
-     * 稳定）—— 与 `actualBackend` 分离 [loadedBackend] 是同一纪律。
-     *
-     * ⚠️ **必须加进 [releaseInternal] 复位**（唯一复位点纪律）：历史上漏抄字段清单出过事故
-     * （`sentMessageIds` 漏复位 ⇒ 模型失忆）。
-     */
-    @Volatile
-    private var degradedModality: Set<ModelModality> = emptySet()
-
-    @Volatile
-    private var loaded: Boolean = false
+    // （actualBackend / loadConfig / degradedModality / loaded 已随 W59 拆分迁入
+    // LiteRtLmEngineLoader，读用一律经 loader 的同名暴露属性。）
 
     override val isLoaded: Boolean
-        get() = loaded
+        get() = loader.isLoaded
 
     override val isBusy: Boolean
         get() = activeGenerations.get() > 0
@@ -491,329 +434,15 @@ class LiteRtLmEngine(
         if (!waitForGenerationsToFinish()) {
             throw EngineException("LiteRT-LM：上一次生成仍在继续，请稍候重试")
         }
-        loadLocked(config, seedDegrade = emptySet(), forceRebuild = false)
+        // W59 拆分：加载集群（loadLocked / 预检 / GPU 降级链 / 复用判据）迁入
+        // LiteRtLmEngineLoader.load —— 闸门仍由本侧施加，等不到即抛的行为不变。
+        loader.load(config)
     }
 
-    /**
-     * 加锁加载段（Wave 45）：[load] 与会话期模态降级重建 [reloadForDegrade] **共用**。
-     *
-     * **闸门由各调用方在入口施加**（本函数不重复 [waitForGenerationsToFinish]）：
-     *  - [load]：闸门 → `loadLocked(∅, false)`；
-     *  - [reloadForDegrade]：闸门 → `loadLocked(degradedModality + modality, true)`。
-     *
-     * 为什么共用而非另写一份（Wave 45 R1，规避「两份实现各自演化 ⇒ 静默失效」的历史坑）：
-     * Engine 构造 + GPU 二段降级 + 诊断 + 日志是一整块，复制必然分叉。
-     *
-     * @param seedDegrade 会话期降级重建时**预置**的「已去模态」集合（load 路径恒 ∅）；
-     *   作为 [EngineAttempt.degraded] 的种子，并据它把对应模态后端置 null。
-     * @param forceRebuild 为 true 时**强制**整引擎重建（`sameEngine` 复用判据失效）——
-     *   会话期降级重建必须换掉 native Engine（audio / vision 后端是 EngineConfig 级参数，
-     *   不重建改不了）。
-     */
-    private suspend fun loadLocked(
-        config: EngineLoadConfig,
-        seedDegrade: Set<ModelModality>,
-        forceRebuild: Boolean,
-    ) {
-        withContext(engineDispatcher) {
-            mutex.withLock {
-                val modelPath = config.model?.path
-                if (modelPath.isNullOrBlank()) {
-                    throw EngineException("LiteRT-LM: modelPath 为空")
-                }
-                // 复用条件必须带 loaded：只有「已经成功加载过、且参数没变」才允许短路复用。
-                // 少了 loaded，一次失败的加载会留下 engine != null 的半死状态，下次 load()
-                // 直接短路并把 loaded 置 true，上层就以为引擎可用 —— 实际底层是坏的，
-                // 用户只能杀掉 App 才能重试。
-                val wantsVision = config.model?.capabilities?.image == true
-                val wantsAudio = config.model?.capabilities?.audio == true
-                // 「引擎实际会拿到的后端」，而不是用户配置里的原始值。
-                // 两者必须同源（`EngineConfig` 也用这两个值），否则判据与事实脱节：
-                // 模型不支持视觉时原始配置可能是 null 也可能是用户随手设的 GPU，
-                // 但引擎实际拿到的一定是 null —— 拿原始值去比会得出「没变」的错误结论。
-                // 视觉后端**跟随主后端**（2026-09-26 真机实锤根修）：旧默认 GPU 是从
-                // gallery 样例抄来的（Gemma 3n 要求 GPU 视觉），无差别套用后，主后端选
-                // CPU 的设备视觉仍走 GPU —— 真机表现：CPU 模式 LLM executor 创建成功、
-                // vision executor 的 CompiledModel::Create 失败（报错定位
-                // vision_litert_compiled_model_executor.cc:273）。GPU 不可用的设备上
-                // 这等于「CPU 模式也永远加载失败」。NPU 不支持视觉编码器（上游 vision
-                // executor 对非 CPU/GPU 后端直接 InvalidArgument），强制落回 CPU。
-                val resolvedVisionBackend = if (wantsVision) {
-                    config.config.visionBackend ?: when (config.config.backend) {
-                        InferenceBackend.NPU -> InferenceBackend.CPU
-                        else -> config.config.backend
-                    }
-                } else {
-                    null
-                }
-                val resolvedAudioBackend = if (wantsAudio) {
-                    config.config.audioBackend ?: InferenceBackend.CPU
-                } else {
-                    null
-                }
-                // 复用判据**分两组，别混**：
-                //  - sampling（temperature / topP / topK）：随 Conversation 一起固化，
-                //    所以变了只需**重建会话**（重建 4B 引擎要几十秒，能省就省）；
-                //  - visionBackend / audioBackend：是 **EngineConfig 级别**的参数，
-                //    只在 `Engine(engineConfig)` 构造时传入，`createConversation()` 根本拿不到。
-                //    把它们放进「重建会话」那一组是静默失效 —— 用户改了视觉后端，
-                //    会话重建完了但引擎里的 visionBackend 还是旧的，改了等于没改
-                //    （与 ENG-2 原本「调参不生效」是同一类症状）。所以它们变了必须**整机重建**。
-                //
-                // 比的是**解析后的值**，因此也自动覆盖了「模态从无到有」：
-                // 用户在模型页把能力位 image 从 false 改成 true（onEditCapabilities / probe 补齐），
-                // 解析值就从 null 变成 GPU —— 判据为 false，引擎重建，视觉后端才会真正存在。
-                // 若改成拿原始配置比并加 `!wantsVision ||` 前缀，这条路径会判成「可复用」，
-                // 于是模型被标成支持视觉、UI 允许发图，而底层 Engine 根本没有视觉后端 —— 静默失效。
-                val sameEngine = !forceRebuild &&
-                    loaded &&
-                    engine != null &&
-                    loadedModelPath == modelPath &&
-                    loadedContextLength == config.config.contextLength &&
-                    loadedBackend == config.config.backend &&
-                    loadedVisionBackend == resolvedVisionBackend &&
-                    loadedAudioBackend == resolvedAudioBackend
-                if (sameEngine) {
-                    loadConfig = config
-                    // 采样参数是随 Conversation 一起固化的，只改这些参数**不必**重建引擎
-                    // （重建 4B 引擎要几十秒），但必须重建会话，否则新参数永远不生效。
-                    val samplingChanged = loadedSampling != config.config.sampling
-                    if (samplingChanged) {
-                        runCatching { conversation?.close() }
-                        conversation = null
-                        currentConversationId = null
-                        currentContextVersion = 0
-                        // 会话重建 = 上下文从零开始，水印必须一起清：
-                        // 留着的话新会话会把整段历史当成「已发送」而不再重发 —— 模型直接失忆。
-                        sentMessageIds.clear()
-                        // 中档回退标记随会话作废（Wave 33，与其他重建点同一纪律）。
-                        systemMergedPending = false
-                    }
-                    loadedSampling = config.config.sampling
-                    return@withLock
-                }
-                releaseInternal()
-
-                // ── 模型文件预检（2026-09-26）──────────────────────────────────────
-                // 「initialize 失败」里最常见的一类真因是文件本身坏了/没了（DownloadManager
-                // 中断留下的半截文件、被系统清理、下载源返回了 HTML 错误页），这类问题到
-                // native 层才炸出来时用户完全读不懂。用 Kotlin 侧就能查的三件事先拦，
-                // 把「引擎加载失败」换成可操作的文案：
-                //  1、不存在 → 明说「重新下载」；
-                //  2、体积 < [MODEL_MIN_BYTES] → 下载几乎必然中断（最小的预设也有 ~0.25GB）；
-                //  3、按扩展名校验容器魔数（见下方 when 的 KDoc）→ 魔数不对 = 下到的不是模型。
-                val modelFile = java.io.File(modelPath)
-                // 文件名只取前 48 字符进文案（复审 E1b）：用户自命名/adb push 的文件
-                // 名可能很长或含特殊字符，原样拼进错误提示会撑爆弹窗与诊断日志。
-                val displayName = modelFile.name.take(48)
-                if (!modelFile.exists()) {
-                    throw EngineException(
-                        "模型文件不存在：$displayName —— 可能已被系统清理，请在模型页重新下载"
-                    )
-                }
-                if (modelFile.length() < MODEL_MIN_BYTES) {
-                    throw EngineException(
-                        "模型文件不完整（仅 ${modelFile.length() / (1024L * 1024L)}MB）—— " +
-                            "下载很可能已中断，请删除后重新下载"
-                    )
-                }
-                // 两种模型容器、两套魔数（2026-09-26 修正）：
-                //  - .litertlm = LiteRT-LM **自研容器**：头部 8 字节 ASCII "LITERTLM" +
-                //    版本 u32 + section 数 u32…（Range 请求实测 SmolVLM2-500M 与
-                //    Qwen2.5-1.5B 两个官方直链的头部，均为 "LITERTLM" 开头，**不是 zip**）。
-                //    ⚠️ 曾想当然按「zip（PK）」校验，把所有正常模型全部拦截 —— 真机
-                //    「模型文件完全没问题却报格式异常」的根因，引以为戒：魔数必须实测。
-                //  - .task = TFLite Task Library 模型，是真正的 zip 容器（PK）。
-                val modelExt = modelFile.extension.lowercase()
-                val expectedMagic: ByteArray? = when (modelExt) {
-                    "litertlm" -> "LITERTLM".toByteArray(Charsets.US_ASCII)
-                    "task" -> byteArrayOf('P'.code.toByte(), 'K'.code.toByte())
-                    else -> null
-                }
-                if (expectedMagic != null) {
-                    val magic = ByteArray(expectedMagic.size)
-                    java.io.FileInputStream(modelFile).use { ins ->
-                        val read = ins.read(magic)
-                        if (read != expectedMagic.size || !magic.contentEquals(expectedMagic)) {
-                            throw EngineException(
-                                "模型文件格式异常（不是 .$modelExt 容器）—— " +
-                                    "下载源可能返回了错误页，请换源后重新下载"
-                            )
-                        }
-                    }
-                }
-                // 缓存目录必须真实存在：GPU 权重/编译缓存写不进去时，CompiledModel::Create
-                // 会以同一种 INTERNAL 报错炸掉（vision executor 的 GetGpuModelCacheData /
-                // SetGpuCacheOptions 就在编译前取缓存文件路径）。getExternalFilesDir 返回的
-                // 目录通常已存在，但「存储未挂载时返回 null → 回退 cacheDir」的路径不保证。
-                val effectiveCacheDir = (config.externalFilesDir ?: config.cacheDir)?.let { path ->
-                    java.io.File(path).apply { runCatching { mkdirs() } }.absolutePath
-                }
-
-                // ── 创建引擎：错误驱动降级链（Wave 44 P0-2）──────────────────────────
-                // 两条**正交、可叠加**的降级链，决策逻辑全在 [EngineLoadDegrade]（纯函数、
-                // 可单测）；这里只做「建引擎 → 失败 → 问 next() → 建下一个」的驱动循环。
-                //  1. 模态降级（只认 NOT_FOUND）：容器缺 VISION_ENCODER / AUDIO_ENCODER_HW
-                //     子图时，去掉对应模态重建（先 AUDIO 后 VISION）。Wave 43 真机根因：
-                //     Gemma-4 E2B 启发式 audio=true 但容器无 audio section ⇒ 旧实现直接失败。
-                //     ⚠️ Wave 45 起模态降级**亦可发生于会话创建期**（NOT_FOUND 实际由
-                //     createConversation 抛出）：见 ensureConversation 的 catch 与 reloadForDegrade。
-                //  2. 后端降级（既有，2026-09-26）：Manifest 未声明 libOpenCL.so（Android 12+
-                //     访问厂商非 NDK 库必须 <uses-native-library>）时 GPU 委托 dlopen 失败 →
-                //     CompiledModel::Create 抛 INTERNAL（llm_litert_compiled_model_executor.cc:1928）。
-                //     上游 issue #1860：SDK 无预检 API，调用方自己降级重试 CPU。
-                // 复用判据仍记**用户请求的**解析值 —— 降级是运行时事实、不是新配置，否则
-                // 「请求 GPU 实际 CPU」会在下次 load() 被判成配置变化而整引擎重建。
-                //
-                // GPU 文案门控（复审 P1-2）：只有用户请求真的涉及 GPU（主后端或视觉后端）
-                // 才允许说「GPU 委托不可用」——与旧 `attempts.size > 1` 逐字等价。
-                val gpuInvolved = EngineLoadDegrade.gpuInvolved(
-                    config.config.backend,
-                    resolvedVisionBackend,
-                )
-                val hadGpuAttempt = gpuInvolved
-
-                var current = EngineLoadDegrade.initial(
-                    backend = config.config.backend,
-                    // 会话期降级重建（Wave 45）：seedDegrade 里的模态把对应后端置 null，
-                    // 于是本轮 EngineConfig 不再带该模态 —— 这是「audio 真降得掉」的关键
-                    // （EngineConfig 读的是 current.*，不是 resolved*）。
-                    visionBackend = if (ModelModality.VISION in seedDegrade) null else resolvedVisionBackend,
-                    audioBackend = if (ModelModality.AUDIO in seedDegrade) null else resolvedAudioBackend,
-                    degraded = seedDegrade,
-                )
-                // visited 去重 + 上限 4（防循环）：任何重复状态不再入队。
-                val visited = mutableSetOf(current)
-                var attemptIndex = 0
-                var lastError: Throwable? = null
-                while (true) {
-                    val engineConfig = EngineConfig(
-                        modelPath = modelPath,
-                        backend = toBackend(current.backend, config.nativeLibraryDir),
-                        visionBackend = current.visionBackend?.let { toBackend(it, config.nativeLibraryDir) },
-                        audioBackend = current.audioBackend?.let { toBackend(it, config.nativeLibraryDir) },
-                        maxNumTokens = config.config.contextLength,
-                        cacheDir = effectiveCacheDir,
-                    )
-                    try {
-                        val created = Engine(engineConfig)
-                        try {
-                            created.initialize()
-                        } catch (t: Throwable) {
-                            runCatching { created.close() }
-                            throw EngineException("LiteRT-LM: initialize 失败 (${t.message})", t)
-                        }
-
-                        engine = created
-                        loadedModelPath = modelPath
-                        // 真实能力探测：官方 API 直接读模型文件，比按文件名猜可靠得多。
-                        // 失败不影响加载（getOrNull 回退到启发式）。
-                        probedSpeculativeDecoding = runCatching {
-                            Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
-                        }.getOrNull()
-                        // 原生工具通道探针不在 load() 里跑 —— 见 [probeNativeTools] 的 KDoc：
-                        // 它只在**上层真的开了这个开关、且第一次问能力时**才探一次并缓存，
-                        // 默认关闭时 load() 与 Wave 33 完全一致（零额外 Conversation）。
-                        loadedContextLength = config.config.contextLength
-                        loadedBackend = config.config.backend
-                        // 实际生效后端（Wave 33）：attemptIndex==0 = 请求值原样生效；
-                        // attemptIndex>0 = 至少降过一次，实际是 current.backend。
-                        actualBackend = current.backend
-                        // 降级事实另立出口（Wave 44 P0-2）：与 loaded*Backend（复用判据）正交。
-                        degradedModality = current.degraded
-                        loadedSampling = config.config.sampling
-                        // 记**解析后的值**，与 sameEngine 判据同源；记原始配置会让
-                        // 「能力位从 false 改 true」时两侧都是同一个原始值而误判为可复用。
-                        loadedVisionBackend = resolvedVisionBackend
-                        loadedAudioBackend = resolvedAudioBackend
-                        loadConfig = config
-                        loaded = true
-                        if (attemptIndex > 0) {
-                            val degradedLabel = if (current.degraded.isEmpty()) {
-                                "无"
-                            } else {
-                                current.degraded.joinToString("/")
-                            }
-                            AgentLogStore.warn(
-                                "LiteRT-LM 已以降级配置完成加载（请求后端：${config.config.backend}，" +
-                                    "实际后端：${current.backend}，已去模态：$degradedLabel）"
-                            )
-                        }
-                        // GPU 大上下文风险留档（Wave 33，log-only）：GPU 变体的 OpenCL
-                        // buffer + 编译缓存与 KV cache 双占内存，contextLength 拉大后低端机
-                        // 初始化失败风险显著升高。证据留档便于事后归因，不改任何行为。
-                        // 判据用**实际生效**后端（复审 P2-1）：actualBackend 已在上方赋值，
-                        // 请求 GPU 但降级成功跑 CPU 的场景下风险不存在，不应误报。
-                        if (
-                            actualBackend == InferenceBackend.GPU &&
-                            config.config.contextLength > 4096
-                        ) {
-                            AgentLogStore.warn(
-                                "GPU 后端上下文 ${config.config.contextLength} tok：" +
-                                    "GPU 变体 OpenCL buffer+编译缓存与 KV 双占内存，" +
-                                    "低端机初始化失败风险高（证据留档，不改行为）"
-                            )
-                        }
-                        lastError = null
-                        break
-                    } catch (t: Throwable) {
-                        // 任何失败路径都必须彻底复位（engine 置空 / loaded 置 false /
-                        // 参数记忆与水印清空），否则下一次 load() 会拿残留状态误判为
-                        // 「可复用」，引擎就永久卡在坏状态里。
-                        releaseInternal()
-                        lastError = t
-                        val next = EngineLoadDegrade.next(current, t, gpuInvolved)
-                        attemptIndex++
-                        if (next == null ||
-                            attemptIndex >= EngineLoadDegrade.MAX_LOAD_ATTEMPTS ||
-                            !visited.add(next)
-                        ) {
-                            break
-                        }
-                        // 只做留档：区分「去模态」与「后端降级」两条链，便于真机归因。
-                        if (next.degraded.size > current.degraded.size) {
-                            val removed = (next.degraded - current.degraded).joinToString("/")
-                            AgentLogStore.warn(
-                                "LiteRT-LM 容器缺少 $removed 编码器 section" +
-                                    "（NOT_FOUND：${t.message?.take(160) ?: "未知错误"}），自动去模态重试"
-                            )
-                        } else {
-                            AgentLogStore.warn(
-                                "LiteRT-LM GPU 后端不可用（${t.message?.take(160) ?: "未知错误"}），" +
-                                    "自动降级 CPU 重试"
-                            )
-                        }
-                        current = next
-                    }
-                }
-                lastError?.let { t ->
-                    // 可操作文案（Wave 33）：两段尝试都失败且错误消息命中 GPU 特征串时，
-                    // 附加「驱动/OpenCL 缺失」的归因与下一步指引。纯字符串映射，不改行为。
-                    // 门控（复审 P1-2）：只在真的做过 GPU 尝试时才拼 GPU 文案。
-                    val gpuHint = if (
-                        hadGpuAttempt &&
-                        GPU_FAILURE_FEATURES.any { t.message.orEmpty().contains(it, ignoreCase = true) }
-                    ) {
-                        GPU_FAILURE_HINT
-                    } else {
-                        ""
-                    }
-                    if (t is EngineException) {
-                        // initialize 失败包装路径：保留原文案结构，特征命中则补指引。
-                        throw EngineException(t.message + gpuHint, t.cause)
-                    }
-                    throw EngineException("LiteRT-LM: 创建 Engine 失败 (${t.message})$gpuHint", t)
-                }
-            }
-        }
-    }
-
-    private fun toBackend(backend: InferenceBackend, nativeLibraryDir: String?): Backend = when (backend) {
-        InferenceBackend.CPU -> Backend.CPU()
-        InferenceBackend.GPU -> Backend.GPU()
-        // 简报 §3.1：NPU 需要 nativeLibraryDir，且 samplerConfig 必须为 null
-        InferenceBackend.NPU -> Backend.NPU(nativeLibraryDir = nativeLibraryDir ?: "")
-    }
+    // 加锁加载段（loadLocked）/ 模型文件预检 / GPU 二段降级驱动循环 / toBackend
+    // 已随 W59 拆分整体迁入 LiteRtLmEngineLoader（同包 internal class）；
+    // 复用判据外提为纯函数 resolveVisionBackend / resolveAudioBackend / isSameEngine
+    //（契约固化见 EngineSameEngineContractTest）。
 
     // -------------------------------------------------------- conversation
 
@@ -824,7 +453,7 @@ class LiteRtLmEngine(
         // 依赖 `nativeToolsRejected`，读回必须发生在**任何通道判定之前**，否则被 evict 重建的
         // 新实例会重新注册已证伪的工具、重走必炸路径（W55 审查 P2#1 的症状本体）。
         adoptResilienceFromStore(request.conversationId)
-        val currentEngine = engine
+        val currentEngine = loader.nativeEngine
             ?: throw EngineException("LiteRT-LM: 引擎未加载，请先 load()")
         // P0-A：系统提示词改由 ConversationConfig.systemInstruction 承载（native Message.system），
         // 取第一条非空 SYSTEM 正文。
@@ -1075,8 +704,9 @@ class LiteRtLmEngine(
             //    必然同样失败，且会永久置 nativeToolsRejected=true（一次假证伪）。
             val degrade = EngineLoadDegrade.modalityToDegradeOnSessionError(
                 error = t,
-                currentModalities = currentEngineModalities(),
-                degradedModality = degradedModality,
+                // W59 拆分：实际启用模态与降级事实属加载态，读 loader。
+                currentModalities = loader.currentEngineModalities(),
+                degradedModality = loader.degradedModality,
             )
             if (degrade != null) throw ModalityDegradeNeeded(degrade)
             val reason = t.message?.take(160) ?: "未知错误"
@@ -1231,15 +861,17 @@ class LiteRtLmEngine(
             roleChannelActive = roleChannelActive,
             legacyFallbackReason = legacyFallbackReason,
             systemMergedIntoUser = systemMergedPending,
-            requestedBackend = loadedBackend,
-            actualBackend = actualBackend,
-            contextLength = loadedContextLength,
+            // W59 拆分：loadedBackend / actualBackend / loadedContextLength / degradedModality
+            // 属加载态，读 loader 的同名暴露属性（语义见其 KDoc）。
+            requestedBackend = loader.requestedBackend,
+            actualBackend = loader.actualBackend,
+            contextLength = loader.contextLength,
             // 用**实际登记**的工具集签名判定（legacy 回退与「证伪重试」两条路都没注册工具，
             // 而 nativeTools 此时仍非空 —— 拿它判断会报出「注册了但没注册」的假事实）。
             nativeToolChannel = registeredToolsSignature != null,
             // 加载期 / 会话创建期模态降级事实（Wave 44 P0-2；Wave 45 起会话创建期亦可触发）：
             // 与 requested/actualBackend 正交。
-            degradedModality = degradedModality,
+            degradedModality = loader.degradedModality,
         )
         return created
     }
@@ -1312,79 +944,10 @@ class LiteRtLmEngine(
 
     // ---------------------------------------------- 会话期模态降级（Wave 45）
 
-    /**
-     * 会话创建遇「容器缺编码器子图」的内部信号（非终态失败，需去模态重建后重试）。
-     *
-     * 为什么用「抛信号 + flow 层重试」而非把 [ensureConversation] 改成 suspend 内部重建
-     * （Wave 45 §4-2）：[ensureConversation] 在开头捕获 `currentEngine = engine` 局部引用后
-     * mutate ~15 个字段，若在其内部 suspend 并重建，`currentEngine` 会变陈旧（重建后 engine
-     * 是新对象）⇒ 极易踩 native use-after-free。信号方案让 [generateStream] 重建后**重新调用**
-     * [ensureConversation]（拿到全新 `currentEngine`），规避该陷阱。
-     *
-     * 可见性 `private`：仅本文件内抛 / 捕（[ensureConversation] 抛、[ensureConversationWithDegrade]
-     * 捕），不跨模块观测（Wave 45 裁决 §4）。
-     */
-    private class ModalityDegradeNeeded(val modality: ModelModality) :
-        Exception("会话创建缺 $modality 编码器子图，需去模态重建后重试")
-
-    /**
-     * 当前 Engine **实际启用**的模态 = 用户请求解析值（`loaded*Backend` 非空）− 已降级模态。
-     *
-     * ⚠️ `loadedVisionBackend` / `loadedAudioBackend` 记的是**用户请求的解析值**（Wave 45 §4-6，
-     * 有意错位：进 `sameEngine` 复用判据，防误重建），**不等于** Engine 实际启用的模态 ——
-     * 所以必须再减去 [degradedModality]，才是「本次会话还能拿它去降的模态」。
-     */
-    private fun currentEngineModalities(): Set<ModelModality> = buildSet {
-        if (loadedVisionBackend != null) add(ModelModality.VISION)
-        if (loadedAudioBackend != null) add(ModelModality.AUDIO)
-    } - degradedModality
-
-    /**
-     * 会话期模态降级重建：与 [load] 共用 [loadLocked]，差异 = `forceRebuild=true` + `seedDegrade`。
-     *
-     * 时序纪律（Wave 45 §4-5，**单点赋值**）：不在调用本函数**之前**写 [degradedModality] ——
-     * [loadLocked] 内部先 [releaseInternal]（会把 degradedModality 清空，V19/L1917），成功后再
-     * 由 L749 统一赋值 `degradedModality = current.degraded`。故「要去掉的模态」作为 `seedDegrade`
-     * **传参**进 [loadLocked]，最终值 = `degradedModality + modality`。
-     */
-    private suspend fun reloadForDegrade(modality: ModelModality) {
-        // 闸门（Wave 45 §4-1）：沿用既有安全契约 —— releaseInternal 会 engine?.close()，
-        // 对**并发**在途生成是 native use-after-free（SIGSEGV，runCatching 抓不住）。
-        if (!waitForGenerationsToFinish()) {
-            throw EngineException("LiteRT-LM：有在途生成，模态降级重建被跳过，请稍候重试")
-        }
-        val config = loadConfig
-            ?: throw EngineException("LiteRT-LM：会话期降级重建缺少 loadConfig")
-        AgentLogStore.warn(
-            "LiteRT-LM 会话创建遇容器缺 $modality 编码器 section（NOT_FOUND），" +
-                "已去该模态重建引擎后重试（请求后端：${config.config.backend}）"
-        )
-        loadLocked(
-            config = config,
-            seedDegrade = degradedModality + modality,
-            forceRebuild = true,
-        )
-    }
-
-    /**
-     * 建会话 + 会话期模态降级的有限重试（每模态一次，上限 [EngineLoadDegrade.MAX_SESSION_DEGRADE_ATTEMPTS]）。
-     *
-     * 🔴 **不得把 [activeGenerations] 的 `incrementAndGet()` 上提到本函数之前**（Wave 45 R12）：
-     * 会话期重建发生在自增**之前** ⇒ 本生成尚未计数 ⇒ [reloadForDegrade] 的闸门读到 0、零等待
-     * 返回。若把自增上提，[waitForGenerationsToFinish] 会**自等自**（等自己归零）⇒ 真死锁。
-     */
-    private suspend fun ensureConversationWithDegrade(request: GenerationRequest): LiteRtConversation {
-        var attempts = 0
-        while (true) {
-            try {
-                return ensureConversation(request)
-            } catch (signal: ModalityDegradeNeeded) {
-                attempts++
-                if (attempts > EngineLoadDegrade.MAX_SESSION_DEGRADE_ATTEMPTS) throw signal
-                reloadForDegrade(signal.modality)
-            }
-        }
-    }
+    // 会话期模态降级一族（ModalityDegradeNeeded 信号 / currentEngineModalities /
+    // reloadForDegrade / ensureConversationWithDegrade 有限重试）已随 W59 拆分整体迁入
+    // LiteRtLmEngineLoader；引擎侧建会话（ensureConversation）仍抛该信号、经
+    // loader.ensureConversationWithDegrade(request) { ensureConversation(it) } 闭环。
 
     // -------------------------------------------------------- generate
 
@@ -1396,6 +959,9 @@ class LiteRtLmEngine(
         // 同步 / 异步生成的共同必经点，且若晚于闸门，store 残留计数会先熔断、复位成空话。
         // ⚠️ 复位边界（如实申报）：唯一复位 = 同实例观察到的开关 OFF→ON 跳变；跨实例
         // 换新 / 进程重启场景 store 随进程清零或 lastSeen 未知 ⇒ 不复位（保 evict 防护）。
+        // ⚠️ 本复位可达性的前提 = 开关切换不触发实例更换（sameEngine 复用判据不含
+        // nativeToolChannel，由 EngineSameEngineContractTest 钉死；若判据变更，
+        // 翻转复位与开关即时生效会同时死亡 —— 复审 18 A3 因果申报，W59）。
         if (shouldResetResilienceOnSwitchFlip(lastSeenSwitchOn, request.config.nativeToolChannel)) {
             nativeToolsRejected = false
             templateRebuildCount = 0
@@ -1433,8 +999,10 @@ class LiteRtLmEngine(
         }
         // 会话期模态降级（Wave 45）：`NOT_FOUND: TF_LITE_AUDIO_ENCODER_HW` 由 createConversation
         // 抛出（非 load），故降级链必须挂在这里。🔴 本调用**先于**下方 activeGenerations
-        // 自增 —— 不得调换顺序，否则重建闸门自等自死锁（见 ensureConversationWithDegrade KDoc）。
-        val conv = ensureConversationWithDegrade(request)
+        // 自增 —— 不得调换顺序，否则重建闸门自等自死锁（见 loader 侧
+        // ensureConversationWithDegrade 的 KDoc）。W59 拆分接缝②：建会话函数留在引擎
+        //（内含 adopt/persist/闸门接线），经 buildSession 回调传入重试循环。
+        val conv = loader.ensureConversationWithDegrade(request) { ensureConversation(it) }
         activeGenerations.incrementAndGet()
         val thinkingOn = when (request.config.thinking) {
             ThinkingMode.ON -> true
@@ -2102,8 +1670,8 @@ class LiteRtLmEngine(
     private fun nativeToolChannelActive(): Boolean =
         !nativeToolsRejected &&
             probedNativeTools == true &&
-            loadConfig?.config?.nativeToolChannel == true &&
-            loadConfig?.model?.capabilities?.toolCalling == true
+            loader.config?.config?.nativeToolChannel == true &&
+            loader.config?.model?.capabilities?.toolCalling == true
 
     /**
      * 跑一次原生工具通道探针（哑工具 + 一次性会话），结果写进 [probedNativeTools]。
@@ -2176,12 +1744,12 @@ class LiteRtLmEngine(
 
     override suspend fun capabilities(): EngineCapabilities {
         return withContext(engineDispatcher) {
-            val model = loadConfig?.model
+            val model = loader.config?.model
             // 开关打开时才探，结果按引擎实例缓存（null = 未探测 ⇒ 再问时重探）。
             // 语义详见 probeNativeTools 的 KDoc。model 显式传入：通道 def 按模型选择（Wave 48），
             // 探针必须与生产构造点下发同一份 def。
-            if (probedNativeTools == null && loadConfig?.config?.nativeToolChannel == true) {
-                val currentEngine = engine
+            if (probedNativeTools == null && loader.config?.config?.nativeToolChannel == true) {
+                val currentEngine = loader.nativeEngine
                 if (currentEngine != null) probeNativeTools(currentEngine, model)
             }
             val caps = model?.capabilities
@@ -2189,8 +1757,8 @@ class LiteRtLmEngine(
             // 已把该模态去掉，能力位必须同步收窄。⚠️ 本收窄只覆盖「模型卡文案 / 能力查询」；
             // 对话页发图/发音频的门控在 `ChatScreen`（读模型描述符静态位），已在 Wave 44 收口时
             // 叠加本降级事实 ⇒ 两处合起来才杜绝「底层无该后端、UI 仍允许发」的静默失效。
-            // 降级事实读 @Volatile 字段，与 loadLocked 同源；空集时行为与 Wave 43 逐字节一致。
-            val degraded = degradedModality
+            // 降级事实读 loader 的 @Volatile 字段，与 loadLocked 同源；空集时行为与 Wave 43 逐字节一致。
+            val degraded = loader.degradedModality
             EngineCapabilities(
                 supportsText = caps?.text ?: true,
                 supportsImage = (caps?.image ?: false) && ModelModality.VISION !in degraded,
@@ -2201,12 +1769,12 @@ class LiteRtLmEngine(
                 // Wave 28 对齐：maxContextTokens 报**引擎实际持有的 KV 预算**
                 // （loadConfig 的 contextLength，即 EngineConfig.maxNumTokens 实参），
                 // 不再是模型描述符的启发式默认 —— 上层据此对齐压缩预算才有意义。
-                maxContextTokens = loadConfig?.config?.contextLength
+                maxContextTokens = loader.config?.config?.contextLength
                     ?: model?.contextLength ?: 4096,
                 // Wave 34 题 A：与 nativeToolChannelActive() 同源（同判据、同三条件）。
                 nativeToolChannel = nativeToolChannelActive(),
                 nativeThinkingChannel = caps?.thinking ?: false,
-                supportsSpeculativeDecoding = probedSpeculativeDecoding
+                supportsSpeculativeDecoding = loader.probedSpeculativeDecoding
                     ?: caps?.speculativeDecoding
                     ?: false,
                 engineLabel = "LiteRT-LM ${model?.displayName.orEmpty()}",
@@ -2263,7 +1831,8 @@ class LiteRtLmEngine(
             throw EngineException("LiteRT-LM：上一次生成仍在继续，请稍候重试")
         }
         withContext(engineDispatcher) {
-            mutex.withLock {
+            // W59 拆分：加载态互斥锁归 loader 所有，经 withLoadStateLocked 包住复位块。
+            loader.withLoadStateLocked {
                 // 必须复用 releaseInternal()，不要在这里另抄一份字段清单：
                 // 原来只清了 conversation / currentConversationId / loaded，把 **Engine 本身**
                 // （2~3GB 权重）以及 loadedModelPath / loadedContextLength / loadedBackend /
@@ -2287,15 +1856,38 @@ class LiteRtLmEngine(
         releaseInternal()
         // 这三个不随引擎/会话资源一起走，单独复位
         conversationDirty = false
-        loadConfig = null
-        probedSpeculativeDecoding = null
+        // W59 拆分：loadConfig 记忆 / 投机解码探测结果属加载态，经 loader 清尾
+        //（releaseInternal 的复位路径刻意保留它们 —— 语义见 loader.clearCloseOnlyState KDoc）。
+        loader.clearCloseOnlyState()
+    }
+
+    /**
+     * 同实例「复用判据短路且仅采样参数变化」时的会话级复位（W59 拆分接缝③）：
+     * loadLocked 迁入 loader 后，该分支要动的全是**会话态**（conversation close / cid /
+     * 上下文版本 / 水印 / 中档回退标记），经构造注入回调回引擎原样执行 ——
+     * 语句与拆分前 loadLocked 的 samplingChanged 分支逐字一致。
+     */
+    private fun resetSessionForResample() {
+        runCatching { conversation?.close() }
+        conversation = null
+        currentConversationId = null
+        currentContextVersion = 0
+        // 会话重建 = 上下文从零开始，水印必须一起清：
+        // 留着的话新会话会把整段历史当成「已发送」而不再重发 —— 模型直接失忆。
+        sentMessageIds.clear()
+        // 中档回退标记随会话作废（Wave 33，与其他重建点同一纪律）。
+        systemMergedPending = false
     }
 
     private fun releaseInternal() {
+        // W59 拆分接缝①（顺序契约）：本函数 = **先会话态后加载态**。加载态半边
+        //（engine close → engine 置空 → actualBackend / degradedModality / loaded /
+        // loaded* 清零）下沉为 loader.releaseLoadState()；两个 close 的相对顺序
+        //（先 conversation 后 engine）与字段清零集合逐字保持 —— 复位顺序重排 ⇒
+        // 半死状态/模型失忆复发（历史坑，改动须评审走查申报）。
         runCatching { conversation?.close() }
-        runCatching { engine?.close() }
+        loader.releaseLoadState()
         conversation = null
-        engine = null
         currentConversationId = null
         currentContextVersion = 0
         // 角色通道绑定随 Conversation 一起销毁：会话没了，native 侧的 systemInstruction /
@@ -2306,20 +1898,7 @@ class LiteRtLmEngine(
         // 中档回退标记与诊断快照随会话一起销毁（Wave 33）：快照归 null = UI 端
         // 「没有已建会话」，不渲染任何降级提示。
         systemMergedPending = false
-        actualBackend = null
-        // 模态降级事实随引擎释放作废（Wave 44 P0-2）：它描述「本次加载」的运行时事实，
-        // 引擎没了就没有「本次加载」—— 漏复位会让下次加载的诊断出口报出上一次的降级。
-        degradedModality = emptySet()
         _sessionDiagnostics.value = null
-        loaded = false
-        // 「复用判据」的记忆必须和 engine 一起清掉：只清 engine 而留着这几个参数，
-        // 会让下一次 load() 拿着残留参数误判成「同一个引擎」而跳过重建。
-        loadedModelPath = null
-        loadedContextLength = -1
-        loadedBackend = null
-        loadedSampling = null
-        loadedVisionBackend = null
-        loadedAudioBackend = null
         // 原生工具通道探针结果绑定的是**这个引擎实例**（同一个模型文件 + 同一份转换件）。
         // 引擎没了，结果必须一起作废 —— 否则换模型后仍拿旧探针结论去注册工具，而新模型
         // 未必接受同一形状。「证伪」同样绑定本引擎实例（换模型后应重新给一次机会）。
