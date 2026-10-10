@@ -224,11 +224,17 @@ TOML
   # `nativeToolChannelActive()` 的**首个代码位调用**在 adopt 调用**之后**（钉读回顺序）。
   # W58 追加：ensureConversation 内补 `persistResilienceToStore()`（写点①，adopt 之后、
   # 通道判定之前）⇒ persist 调用共 2 处，与判据② 的「== 2」对齐。
+  # W60 追加（第 33 条世代门控接线）：fixture 必须含 `shouldDropStaleDisposal(` 的
+  # def（被 `grep -v "fun shouldDropStaleDisposal"` 排除）+ **1 处调用**（门控），且
+  # `handleTemplateRenderFailure(token,` 恰 **2 处调用**（两调用点：异步回调 / 同步下发）；
+  # def 行为 `token: Long`（`token` 后是 `:` 非 `,`）⇒ 天然不被判据② 计入 —— 与真实文件同款。
   mkdir -p "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local"
   cat > "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
 package com.rickeal.agent.core.engine.local
 
 internal fun foldAdjacentText(contents: List<Content>): List<Content> = contents
+
+internal fun shouldDropStaleDisposal(token: Long, current: Long): Boolean = token != current
 
 fun downlink(fresh: List<Content>): Message =
     Message.user(Contents.of(foldAdjacentText(fresh)))
@@ -240,7 +246,16 @@ class LiteRtLmEngine {
         val nativeToolsActive = nativeToolChannelActive()
     }
 
-    fun handleTemplateRenderFailure() {
+    fun runAsync(token: Long) {
+        handleTemplateRenderFailure(token, "raw", "user", "异步回调")
+    }
+
+    fun runSync(token: Long) {
+        handleTemplateRenderFailure(token, "raw", "user", "同步下发")
+    }
+
+    fun handleTemplateRenderFailure(token: Long, raw: String, role: String, source: String) {
+        if (shouldDropStaleDisposal(token, currentGenerationToken)) return
         persistResilienceToStore()
     }
 
@@ -249,6 +264,8 @@ class LiteRtLmEngine {
     private fun persistResilienceToStore() = Unit
 
     private fun nativeToolChannelActive(): Boolean = true
+
+    private var currentGenerationToken: Long = -1
 }
 KT
   # 第 32 条（W60，LiteRtLmEngineLoader.kt ≤ 900）要求该文件存在 ⇒ 骨架必须提供它，
@@ -1907,6 +1924,46 @@ elif printf '%s\n' "$out" | grep -qF "LiteRtLmEngineLoader.kt 不存在（被改
   PASS=$((PASS + 1))
 else
   echo "FAIL [case44b] 输出里看不到「LiteRtLmEngineLoader.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 45 / 45b / 45c：第 33 条（LiteRtLmEngine 世代门控接线，W60）：
+#   case45 —— 从 scaffold fixture 删 1 处 `handleTemplateRenderFailure(token,`（2 → 1，
+#             sed 删「同步下发」行）⇒ 计数 1 != 2 ⇒ 判红；case45b 断言红来自真命中
+#            （输出含「handleTemplateRenderFailure(token,…) 调用数(1) != 2」违规事实行）。
+#   case45c —— scaffold 原样（1 门控调用 + 2 调用点）⇒ 必须不红（绿面；独立钉死 scaffold
+#             铺点与判据的同步关系 —— 漏铺会让正例与绿面一起恒红）。
+#   各面都只在 $TMP 脚手架树内改（sed 删行），绝不碰生产文件。
+# ---------------------------------------------------------------------------
+d="$TMP/case45-gate-callsite-missing"
+scaffold "$d"
+sed -i '/同步下发/d' "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case45 删 1 处 handleTemplateRenderFailure(token, 调用点 (第 33 条)" "$rc" "$out" \
+  "LiteRtLmEngine 世代门控接线（shouldDropStaleDisposal 调用 1；handleTemplateRenderFailure(token,…) 调用 2）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case45b] 第 33 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "handleTemplateRenderFailure(token,…) 调用数(1) != 2"; then
+  echo "PASS [case45b] 红来自真命中（输出含「handleTemplateRenderFailure(token,…) 调用数(1) != 2」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case45b] 输出里看不到「handleTemplateRenderFailure(token,…) 调用数(1) != 2」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case45c-gate-green"
+scaffold "$d"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case45c scaffold 世代门控接线 (第 33 条绿面)] 退出 0（scaffold 与判据 ==1/==2 同步）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case45c] scaffold 的门控调用/调用点未对齐判据（第 33 条误红 ⇒ 正例失守）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

@@ -750,6 +750,26 @@ check "LiteRtLmEngineLoader.kt 总行数 ≤ 900（core-engine 行数表 #25 家
            n=$(wc -l < "$f")
            [ "$n" -le 900 ] || echo "LiteRtLmEngineLoader.kt 当前 $n 行，超 900 行上限（触顶 = 启动 Loader 拆分评审，非改阈值）"'
 
+# 33) LiteRtLmEngine 世代门控接线（W60，沿 #28「语义 + 接线双钉」哲学）：项 1 外提的
+#     shouldDropStaleDisposal 纯函数单测只钉**判据语义**，钉不住**调用点存在性与传参** ——
+#     若有人删掉 handler 内的门控（纯函数变死码）或删掉一个调用点，A4 幂等静默失效。
+#     判据（两条，均 fail-closed）：
+#       ① shouldDropStaleDisposal( **调用点数 == 1**（不含 def 行）⇒ 钉「门控未被删」；
+#       ② handleTemplateRenderFailure(token, **调用点数 == 2** ⇒ 钉「两调用点都传 token」。
+#     ⚠️ 判据② 的健壮性（实测）：def 行为 `handleTemplateRenderFailure(token: Long, ...)`
+#    （`token` 后是 `:` 非 `,`）⇒ 正则 `handleTemplateRenderFailure\(token,` 天然不匹配 def；
+#     KDoc 引用均为 `[handleTemplateRenderFailure]` 形态、不含 `(token,` ⇒ 无需注释排除即精确命中 2。
+#     口径声明：本守卫钉**调用点存在性 + 传参形态**；**不**钉 token 取值语义正确性
+#    （grep 覆盖不到，由纯函数单测负责，与 #28 同类边界，勿夸大任一方为全覆盖）。
+#     fail-closed：文件缺失 → exit 1 + ::error::（守卫面失效必须判红）。
+check "LiteRtLmEngine 世代门控接线（shouldDropStaleDisposal 调用 1；handleTemplateRenderFailure(token,…) 调用 2）" \
+  bash -c 'E=core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt
+           if [ ! -f "$E" ]; then echo "::error::$E 不存在（第 33 条守卫面已失效）"; exit 1; fi
+           g=$(grep -nE "shouldDropStaleDisposal\(" "$E" | grep -v "fun shouldDropStaleDisposal" | wc -l)
+           c=$(grep -cE "handleTemplateRenderFailure\(token," "$E")
+           [ "$g" -eq 1 ] || echo "$E 的 shouldDropStaleDisposal( 调用数($g) != 1：世代门控被删/重复 ⇒ A4 幂等静默失效"
+           [ "$c" -eq 2 ] || echo "$E 的 handleTemplateRenderFailure(token,…) 调用数($c) != 2：两调用点（异步回调/同步下发）必须都传 token"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"
