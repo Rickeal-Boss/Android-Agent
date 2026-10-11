@@ -465,6 +465,24 @@ private class StreamLoopException(
 ) : RuntimeException("轮内输出陷入重复循环（thinking=$inThinking, signature=$signature）")
 
 /**
+ * 轮内循环提醒文案的语义分流（W62 外提为可 JVM 单测的纯函数）。
+ *
+ * 思考预算耗尽（[StreamRepetitionDetector.THINKING_BUDGET_MARKER]）⇒
+ * [THINKING_BUDGET_REMINDER]；其余 marker（真重复循环）与 `null`（兜底）⇒
+ * [INTRA_LOOP_REMINDER]。
+ *
+ * ⚠️ **单一落点**：marker 只在此判一次，调用点（[handlePostStreamSignals] 的 intra
+ * 分支）不重复判 —— 避免「口径分叉」（[StreamRepetitionDetector] KDoc 记录的历史坑：
+ * 两份判定各自演化 ⇒ 检测静默失效）。
+ */
+internal fun intraLoopReminderFor(marker: String?): String =
+    if (marker == StreamRepetitionDetector.THINKING_BUDGET_MARKER) {
+        THINKING_BUDGET_REMINDER
+    } else {
+        INTRA_LOOP_REMINDER
+    }
+
+/**
  * Agent 主循环（架构文档 §4.1 / §4.6）。
  *
  * 工具通道策略：引擎声明支持 `EngineCapabilities.nativeToolChannel` **且**用户在设置里
@@ -2136,13 +2154,9 @@ class AgentRunner(
             journal?.appendMessage(repeatModel)
             // 单槽纪律：已有待注入提醒时不覆盖（同参 > 重复回答 > 零工具）；
             // 随后立刻消费成合成消息，不留到下一轮造成双重注入。
-            // W62 语义分流：思考预算耗尽（thinking_char_budget）≠ 重复循环，按 marker 选文案。
-            val loopReminderText =
-                if (loopMarker == StreamRepetitionDetector.THINKING_BUDGET_MARKER) {
-                    THINKING_BUDGET_REMINDER
-                } else {
-                    INTRA_LOOP_REMINDER
-                }
+            // W62 语义分流：思考预算耗尽（thinking_char_budget）≠ 重复循环，按 marker 选文案
+            // （单一落点见 intraLoopReminderFor）。
+            val loopReminderText = intraLoopReminderFor(loopMarker)
             if (state.pendingReminder == null) {
                 state.pendingReminder = loopReminderText
             }
