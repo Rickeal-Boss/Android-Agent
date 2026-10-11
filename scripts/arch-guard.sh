@@ -790,6 +790,7 @@ check "LiteRtLmEngine 世代门控接线（shouldDropStaleDisposal 调用 1；ha
 check "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）" \
   bash -c "F=feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt
            if [ ! -f \"\$F\" ]; then echo \"::error::\$F 不存在（第 34 条守卫面已失效）\"; exit 1; fi
+           if [ ! -f \"$GUARD_DIR/check-known-broken.py\" ]; then echo \"::error::check-known-broken.py 不存在（第 34 条守卫面已失效）\"; exit 1; fi
            python \"$GUARD_DIR/check-known-broken.py\" \"\$F\" || python3 \"$GUARD_DIR/check-known-broken.py\" \"\$F\""
 
 # 35) AgentRunnerToolSetup.kt 总行数上限（W64）：#25 家族第 6 员

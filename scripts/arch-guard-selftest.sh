@@ -2345,6 +2345,20 @@ KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case49 knownBrokenOn 声明被删 (第 34 条面失效)" "$rc" "$out" \
   "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）"
+# case49b：红必须来自**真命中**（输出里能看到 check-known-broken.py 对「声明被删」
+#          打出的逐字违规行），而不是「守卫命令自身执行失败」—— 后者那行同样含守卫名，
+#          会让 assert_red 假绿（与 case48b / case12b / case12d 同一范式）。
+#          逐字原文取自 scripts/check-known-broken.py 的 DECL 未命中分支：
+#            "<path> 不存在 `val knownBrokenOn: String?` 声明（字段被删 = 第 34 条守卫面失效）"
+#          模式串含反引号 ⇒ 必须用**单引号**包裹（双引号会触发命令替换）。
+if printf '%s\n' "$out" | grep -qF '不存在 `val knownBrokenOn: String?` 声明（字段被删 = 第 34 条守卫面失效）'; then
+  echo "PASS [case49b] 红来自真命中（输出含 check-known-broken.py 的「声明被删」逐字违规行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case49b] 输出里看不到「声明被删」逐字违规行（可能是守卫自身故障被判红 ⇒ 假 PASS）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
 
 fi
 # ---------------------------------------------------------------------------
