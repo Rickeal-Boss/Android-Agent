@@ -493,8 +493,8 @@ jobs:
             echo '```text'
             echo "$out"
             echo '```'
-            # 低于基线 soft-check（非阻断）：基线 tests=655（W62 校准：全仓 @Test 代码位实测 655，由 652 上调；W62 新增 3 例 —— intraLoopReminderFor 语义分流单测（思考预算 marker 专用文案 / 真重复 marker 通用文案 / null 兜底），守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
-            baseline=655
+            # 低于基线 soft-check（非阻断）：基线 tests=659（W63 刀A 校准：全仓 @Test 代码位实测 659，由 655 上调；W63 刀A 新增 4 例 —— loopFailurePhraseFor / loopFailureUserMessageFor 终态口径 marker 分流单测（思考预算短语 / 思考预算 Failed 消息 / 真重复 marker / null 兜底），守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
+            baseline=659
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

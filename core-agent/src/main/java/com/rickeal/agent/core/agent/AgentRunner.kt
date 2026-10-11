@@ -483,6 +483,44 @@ internal fun intraLoopReminderFor(marker: String?): String =
     }
 
 /**
+ * 轮内截断失败的**终态口径**语义分流（W63 刀A）：给超限收尾的终止日志 /
+ * [BreakerKind.StreamLoop] evidence / 轮间进度消息提供与 marker 一致的失败短语。
+ *
+ * W62 只分流了提醒文案（[intraLoopReminderFor]），终态收尾仍硬编码「重复循环」：
+ * 思考预算耗尽的 run 被终止时，收尾日志与诊断卡 evidence 均报「重复循环」，与真
+ * 循环不可区分（K-2 残留）。本函数沿用「单一落点」纪律：marker 只在此判一次，
+ * 调用点（终止日志 / evidence / StreamReset 文案 / AgentLogStore.warn）不重复判
+ * —— 避免口径分叉（W62 教训：同一语义多处落点只改一处）。
+ *
+ * @return 思考预算 marker ⇒「思考预算耗尽」（不含「重复循环」字样）；其余 marker
+ *   （真重复循环）与 `null`（兜底）⇒「轮内重复循环」。
+ */
+internal fun loopFailurePhraseFor(marker: String?): String =
+    if (marker == StreamRepetitionDetector.THINKING_BUDGET_MARKER) {
+        "思考预算耗尽"
+    } else {
+        "轮内重复循环"
+    }
+
+/**
+ * 终态失败的用户可见消息（W63 刀A，与 [loopFailurePhraseFor] 同族）。
+ *
+ * 与短语分设两个函数的原因：[AgentEvent.Failed] 的句式是「模型输出陷入X」/
+ * 「模型X」，与日志的「连续 N 轮触发X」句式不同，塞进一个函数只会加分支。两者
+ * 判别的是同一个 marker 常量，且单测钉住判别特征词互斥（思考预算耗尽 / 重复循环），
+ * 不至于分叉。
+ *
+ * @return 思考预算 marker ⇒「模型思考预算耗尽，已停止本轮任务」；其余与 `null`
+ *   （兜底）⇒「模型输出陷入重复循环，已停止本轮任务」（原句保持不变）。
+ */
+internal fun loopFailureUserMessageFor(marker: String?): String =
+    if (marker == StreamRepetitionDetector.THINKING_BUDGET_MARKER) {
+        "模型思考预算耗尽，已停止本轮任务"
+    } else {
+        "模型输出陷入重复循环，已停止本轮任务"
+    }
+
+/**
  * Agent 主循环（架构文档 §4.1 / §4.6）。
  *
  * 工具通道策略：引擎声明支持 `EngineCapabilities.nativeToolChannel` **且**用户在设置里
@@ -2117,8 +2155,10 @@ class AgentRunner(
         if (loopMarker != null) {
             state.intraLoopStreak++
             if (state.intraLoopStreak > MAX_INTRA_STREAM_LOOP_ROUNDS) {
+                // W63 刀A：终态口径按 marker 分流（单一落点 loopFailurePhraseFor），
+                // 思考预算耗尽不再报「重复循环」。
                 AgentLogStore.error(
-                    "连续 ${state.intraLoopStreak} 轮触发轮内重复循环（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发），终止 run"
+                    "连续 ${state.intraLoopStreak} 轮触发${loopFailurePhraseFor(loopMarker)}（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发），终止 run"
                 )
                 // 既有判据登记（Wave 30）：只写账不改行为。prompt_echo 与其他 marker
                 // 混合计入 StreamLoop —— 不为区分改 detector 行为。
@@ -2126,7 +2166,7 @@ class AgentRunner(
                     state.breaker.trip(
                         BreakerKind.StreamLoop,
                         round = state.round,
-                        evidence = "连续 ${state.intraLoopStreak} 轮触发轮内重复循环（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发）",
+                        evidence = "连续 ${state.intraLoopStreak} 轮触发${loopFailurePhraseFor(loopMarker)}（已注入 $MAX_INTRA_STREAM_LOOP_ROUNDS 次提醒仍复发）",
                     )
                 }
                 journal?.append(
@@ -2135,7 +2175,8 @@ class AgentRunner(
                 )
                 emit(
                     AgentEvent.Failed(
-                        "模型输出陷入重复循环，已停止本轮任务",
+                        // W63 刀A：Failed 消息同源分流（见 loopFailureUserMessageFor）。
+                        loopFailureUserMessageFor(loopMarker),
                         report = buildBottleneckReportFor(state, journal, registeredToolNames),
                         terminatedBy = TerminationReason.BreakerTripped,
                     ),
@@ -2174,9 +2215,11 @@ class AgentRunner(
             // 已流出的循环乱文必须让 UI 丢弃：下一轮照常 emit(TextDelta)，而
             // RoundStarted 不清流式缓冲 ⇒ 不清屏就会「乱文 + 新回答」叠一个气泡
             // （复审3 §4-1）。emit 在 round++ 之前，UI 先清、下一轮再从空开始。
-            emit(AgentEvent.StreamReset("轮内重复截断（连续第 ${state.intraLoopStreak} 次）"))
+            // W63 刀A：截断提示与 warn 日志同样按 marker 分流（非终态，但同属
+            // 「轮内截断」口径 —— 思考预算轮不再报「重复循环」）。
+            emit(AgentEvent.StreamReset("${loopFailurePhraseFor(loopMarker)}截断（连续第 ${state.intraLoopStreak} 次）"))
             AgentLogStore.warn(
-                "第 ${state.round + 1} 轮轮内重复循环：丢弃 ${calls.size} 个工具调用并注入提醒（连续第 ${state.intraLoopStreak} 次）"
+                "第 ${state.round + 1} 轮${loopFailurePhraseFor(loopMarker)}：丢弃 ${calls.size} 个工具调用并注入提醒（连续第 ${state.intraLoopStreak} 次）"
             )
             state.round++
             return PostStreamStep.NextRound
