@@ -39,6 +39,7 @@ import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.data.DeviceCapability
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.ModelDescriptor
 
@@ -339,6 +340,17 @@ fun ModelCard(
             actions = { dismiss ->
                 GlassButton(text = "取消", onClick = dismiss, material = GlassMaterial.THIN)
                 GlassButton(text = "仍要尝试", onClick = {
+                    // W64 L-4：用户主动复验已知坏容器的留痕 —— 先落日志再触发加载。
+                    // 顺序刻意排在 onLoad() 之前：① 语义上「我即将尝试」是前置事实；
+                    // ② 兜底 —— 若该容器走 native 路径直接闪退（Kotlin catch 不住），
+                    //    onLoad() 之后的日志永远写不出来，这条标记会随进程一起丢。
+                    // 容器标识用 fileName 而非 displayName：与 knownBrokenOn 的登记键一致
+                    // （ModelPresets.findByFileName(model.fileName)），便于日后 grep 对照预设；
+                    // 且 displayName 可空（卡上多处 ifBlank 回退），fileName 稳定。
+                    AgentLogStore.warn(
+                        "用户主动复验已知坏容器（仍要尝试）：${model.fileName}" +
+                            "｜已知失败签名：$knownBrokenOn",
+                    )
                     // 原加载路径原样触发（onLoad 即 ModelsViewModel.onLoad）：
                     // 失败语义完全不变，本对话框只加提示。
                     onLoad()
