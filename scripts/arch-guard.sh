@@ -792,6 +792,25 @@ check "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得�
            if [ ! -f \"\$F\" ]; then echo \"::error::\$F 不存在（第 34 条守卫面已失效）\"; exit 1; fi
            python \"$GUARD_DIR/check-known-broken.py\" \"\$F\" || python3 \"$GUARD_DIR/check-known-broken.py\" \"\$F\""
 
+# 35) AgentRunnerToolSetup.kt 总行数上限（W64）：#25 家族第 6 员
+#     （#18 ChatViewModel 1600 / #20 ChatRunCoordinator 1300 / #25 LiteRtLmEngine 2400 /
+#     #31 AgentRunner 2900 / #32 LiteRtLmEngineLoader 900 / #35 AgentRunnerToolSetup 400）。
+#     ⚠️ **为何补（第九审 L-3）：这是本仓第四次「拆分新文件裸奔」** —— W59 从 AgentRunner
+#     拆出 Loader 时先裸奔、W60 才补 #32；本次 W64 又从 AgentRunner.kt 拆出
+#     AgentRunnerToolSetup.kt（现 108 行），若不同步加文件级守卫，就会重演「拆出来的
+#     新文件无人守、日后长成下一个 god-file」的循环。故本波在拆分落地的**同一波**补上，
+#     不再欠账（W64「不再顺延」军令状）。
+#     阈值推导：现 108 行 ⇒ 400 ≈ 108 × 3.7，给后续「工具装配外提」留足空间，
+#     同时远低于 god-file 量级（400 行以内仍是单职责可读规模）。
+#     ⚠️ **触顶不是改数字，是启动 AgentRunnerToolSetup 拆分评审**（与
+#     #18/#20/#25/#31/#32 同款「只许缩不许涨」精神）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "AgentRunnerToolSetup.kt 总行数 ≤ 400（core-agent 行数表 #25 家族第 6 员，触顶 = 启动 AgentRunnerToolSetup 拆分评审，非改阈值）" \
+  bash -c 'f=core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerToolSetup.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 35 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 400 ] || echo "AgentRunnerToolSetup.kt 当前 $n 行，超 400 行上限（触顶 = 启动 AgentRunnerToolSetup 拆分评审，非改阈值）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

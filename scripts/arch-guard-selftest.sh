@@ -25,6 +25,143 @@
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
+# ===========================================================================
+# W64 Task C：选择性执行（--only / --affected）—— 本地 pre-push 提速，CI 口径不变
+# ---------------------------------------------------------------------------
+# 背景：全量 selftest 在本机约 50 分钟（Windows Git-Bash 下每次 `bash -c` + grep 的
+#   进程启动开销被放大），pre-push 全跑不现实。本机制让本地只跑「受本次改动影响的
+#   守卫子集」；**CI 仍以无参数全量运行** —— 不带参数时默认路径的 case 集合、
+#   PASS/FAIL 计数与退出码**完全不变**（下面的 `guard_selected` 在全量模式下恒真）。
+#
+# --affected 口径与回退（务必读）：
+#   · 改动集 = 「未推送提交」∪「未提交改动」：
+#       git diff --name-only '@{u}...HEAD'   （无 upstream 时该式不可用 ⇒ 回退全量）
+#       git diff --name-only HEAD            （工作区/暂存区 vs HEAD）
+#   · 每个改动文件经下方映射表 → 守卫编号；**任一文件映射不到子集 ⇒ 整体回退全量**
+#     （绝不静默少跑：宁可多跑，不可漏跑）。
+#   · `scripts/*` 命中 ⇒ 直接回退全量（守卫链 / 自测网自身改动会牵动全部守卫）。
+#   · 非 git 仓库 / 无改动文件 ⇒ 回退全量。
+#   ⚠️ 已知局限（如实申报）：映射表只覆盖**本仓现存的、有专属守卫的文件**；
+#      未列出的 .kt（例如新增模块）一律回退全量。仓库级扫描型守卫
+#      （#1/#5/#6/#9/#15/#16/#17/#21/#26/#27 扫 `.`）不随单个文件改动被选中 ——
+#      它们的兜底是「改动 scripts/* 或无映射文件 ⇒ 全量」以及 **CI 恒全量**。
+# 测试缝：环境变量 ARCH_SELFTEST_AFFECTED_FILES（换行或冒号分隔的相对路径）可覆盖
+#   git 检测，仅供人工 / 自测验证映射表；不设则为空，走真实 git。仅在 --affected 下生效。
+# ===========================================================================
+ONLY_SET=""
+AFFECTED=0
+
+usage() {
+  cat <<'USAGE'
+用法: bash scripts/arch-guard-selftest.sh [选项]
+
+  （无参数）            运行全部 case（CI 口径，默认；计数与退出码与既往一致）
+  --only <n>[,<n>…]     只运行「守的是第 <n> 条守卫」的 case；其余整体跳过
+                        （fixture 不建、守卫不跑、PASS/FAIL 不计数）。
+                        例：--only 34,35   （只跑 #34 / #35 的 case）
+  --affected            依 git 改动文件映射到守卫编号，等价于 --only <映射结果>；
+                        映射不全 / 改动 scripts/* / 无 upstream ⇒ 回退全量
+  -h, --help            显示本帮助并退出
+USAGE
+}
+
+# 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
+# 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)  usage; exit 0 ;;
+    --only)     ONLY_SET="${2:-}"; shift 2 ;;
+    --only=*)   ONLY_SET="${1#--only=}"; shift ;;
+    --affected) AFFECTED=1; shift ;;
+    *) echo "::error::未知参数：$1（用 --help 查看用法）" >&2; exit 2 ;;
+  esac
+done
+
+# 文件 → 守卫编号映射表（--affected 用）。输出 "FULL" 表示回退全量。
+# ⚠️ 只列「该文件专属守卫」；未列出的文件 ⇒ 调用方回退全量（保守，绝不静默少跑）。
+affected_guards_for_file() {
+  case "$1" in
+    scripts/*)                                                                    echo FULL ;;
+    core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt)       echo "24 25 28 33" ;;
+    core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngineLoader.kt) echo "32" ;;
+    core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunner.kt)          echo "12 31" ;;
+    core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerToolSetup.kt) echo "35" ;;
+    core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt)          echo "13" ;;
+    feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt) echo "34" ;;
+    feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt)    echo "18" ;;
+    feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt) echo "20 30" ;;
+    .github/workflows/build.yml)                                                   echo "22 23 26" ;;
+    core-model/*)                                                                  echo "3 15 26" ;;
+    *)                                                                             echo FULL ;;
+  esac
+}
+
+# 依改动文件集解析出 ONLY_SET；无法收敛到子集则置空（= 全量）。
+resolve_affected() {
+  local files="" f guards acc="" full=0 root=""
+  if [ -n "${ARCH_SELFTEST_AFFECTED_FILES:-}" ]; then
+    files="$(printf '%s' "$ARCH_SELFTEST_AFFECTED_FILES" | tr ':' '\n')"
+  else
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""
+    if [ -z "$root" ]; then
+      echo "::warning::[--affected] 非 git 仓库 ⇒ 回退全量" >&2
+      ONLY_SET=""; return 0
+    fi
+    if git -C "$root" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+      files="$( { git -C "$root" diff --name-only '@{u}...HEAD'
+                  git -C "$root" diff --name-only HEAD
+                } | sort -u )"
+    else
+      echo "::warning::[--affected] 无 upstream（@{u} 不可解析）⇒ 回退全量（无法判定未推送范围）" >&2
+      ONLY_SET=""; return 0
+    fi
+  fi
+  if [ -z "$(printf '%s' "$files" | tr -d '[:space:]')" ]; then
+    echo "::notice::[--affected] 无改动文件 ⇒ 回退全量" >&2
+    ONLY_SET=""; return 0
+  fi
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    guards="$(affected_guards_for_file "$f")"
+    if [ "$guards" = "FULL" ]; then
+      echo "::notice::[--affected] $f ⇒ 映射不到守卫子集，回退全量" >&2
+      full=1; break
+    fi
+    acc="$acc $guards"
+  done <<EOF
+$files
+EOF
+  if [ "$full" -eq 1 ]; then ONLY_SET=""; return 0; fi
+  ONLY_SET="$(printf '%s' "$acc" | tr ' ' '\n' | grep -v '^$' | sort -un | paste -sd, -)"
+  echo "::notice::[--affected] 选定守卫：#$ONLY_SET（仅本地；CI 仍全量）" >&2
+}
+
+[ "$AFFECTED" -eq 1 ] && resolve_affected
+
+# 校验 --only / --affected 选出的守卫编号都是已知的（防拼错后静默零跑）。
+if [ -n "$ONLY_SET" ]; then
+  for g in ${ONLY_SET//,/ }; do
+    case " $KNOWN_GUARDS " in
+      *" $g "*) ;;
+      *) echo "::error::--only 含未知守卫编号：$g（已知：$KNOWN_GUARDS）" >&2; exit 2 ;;
+    esac
+  done
+fi
+
+# 谓词：当前 case 是否被选中。$1 = 该 case 的守卫标签（数字，或 ALL=仅全量模式运行）。
+# 全量模式（ONLY_SET 为空）恒真 ⇒ 默认行为与既往逐 case 一致（计数 / 退出码不变）。
+guard_selected() {
+  [ -z "$ONLY_SET" ] && return 0
+  [ "$1" = "ALL" ] && return 1
+  local g
+  for g in $1; do
+    case ",$ONLY_SET," in *",$g,"*) return 0 ;; esac
+  done
+  return 1
+}
+
 GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/arch-guard.sh"
 if [ ! -f "$GUARD" ]; then
   echo "::error::找不到 arch-guard.sh（期望与自测脚本同目录）：$GUARD"
@@ -278,6 +415,16 @@ class LiteRtLmEngineLoader {
     fun load(): Int = 0
 }
 KT
+  # 第 35 条（W64，AgentRunnerToolSetup.kt ≤ 400）为 fail-closed：文件缺失即红 ⇒
+  # 骨架必须提供它，否则正例 + 所有绿面 case 会被本条误红（守卫假绿陷阱的镜像：
+  # 漏铺 ⇒ 全红）。给一个远低于 400 行的最小文件。
+  cat > "$root/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerToolSetup.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+class AgentRunnerToolSetup {
+    fun setup(): Int = 0
+}
+KT
   # 第 34 条（W63 刀C，knownBrokenOn 互斥 recommended）要求 feature-models 的
   # ModelPresets.kt 存在且含 `val knownBrokenOn: String?` 声明 ⇒ 骨架必须提供一份
   # **全合法组合**的最小预设表（推荐项不标坏 / 坏容器不推荐），否则干净树会被
@@ -412,10 +559,13 @@ assert_red() {
 }
 
 echo "=== arch-guard 自测网 ==="
+# 选择性执行时的显式提示（全量模式下 ONLY_SET 为空 ⇒ 不打印，默认输出不变）。
+[ -n "$ONLY_SET" ] && echo "（选择性执行：仅运行守卫 #$ONLY_SET 的 case；CI 仍以无参数全量运行）"
 
 # ---------------------------------------------------------------------------
 # 正例：干净树必须退出 0（防「守卫永远红」/ 前置断言误伤）
 # ---------------------------------------------------------------------------
+if guard_selected ALL; then
 d="$TMP/positive"
 scaffold "$d"
 out="$(run_guard "$d")"; rc=$?
@@ -428,9 +578,11 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 1：core-model 内出现 java.net.URL ⇒ 第 5 条（全仓禁网络栈）必须报红
 # ---------------------------------------------------------------------------
+if guard_selected 5; then
 d="$TMP/case1-network"
 scaffold "$d"
 echo 'import java.net.URL' > "$d/core-model/Violation.kt"
@@ -438,9 +590,11 @@ out="$(run_guard "$d")"; rc=$?
 assert_red "case1 core-model 网络栈 (第 5 条)" "$rc" "$out" \
   "全仓禁网络栈（java.net/javax.net/okhttp/okio/HttpClient/SocketChannel）"
 
+fi
 # ---------------------------------------------------------------------------
 # case 2：core-model 内出现 import android.os.Build ⇒ 第 3 条（core-model 无 android 依赖）报红
 # ---------------------------------------------------------------------------
+if guard_selected 3; then
 d="$TMP/case2-android"
 scaffold "$d"
 printf 'import android.os.Build\n' > "$d/core-model/Violation.kt"
@@ -448,10 +602,12 @@ out="$(run_guard "$d")"; rc=$?
 assert_red "case2 core-model android 依赖 (第 3 条)" "$rc" "$out" \
   "core-model 无 android/androidx 依赖"
 
+fi
 # ---------------------------------------------------------------------------
 # case 3：executeBodyUnchecked 631 行 ⇒ 第 12 条（主循环方法体积）报红
 #         （n = 签名行到下一个方法行 = body + 3 ⇒ body=628 得 631 行）
 # ---------------------------------------------------------------------------
+if guard_selected 12; then
 d="$TMP/case3-size"
 scaffold "$d"
 write_runner "$d" 628
@@ -459,10 +615,12 @@ out="$(run_guard "$d")"; rc=$?
 assert_red "case3 主循环方法体积 631 行 (第 12 条)" "$rc" "$out" \
   "主循环方法体积未超预算（executeBodyUnchecked ≤ 550 行）"
 
+fi
 # ---------------------------------------------------------------------------
 # case 4：删掉 Manifest 的 INTERNET 行 ⇒ 第 7 条（Manifest 有 INTERNET）报红
 #         （这条正是 Wave 30 修掉的僵尸规则，必须能测出）
 # ---------------------------------------------------------------------------
+if guard_selected 7; then
 d="$TMP/case4-manifest"
 scaffold "$d"
 cat > "$d/app/src/main/AndroidManifest.xml" <<'XML'
@@ -474,11 +632,13 @@ out="$(run_guard "$d")"; rc=$?
 assert_red "case4 Manifest 缺 INTERNET (第 7 条)" "$rc" "$out" \
   "Manifest 有 INTERNET（系统下载链路必需，Wave 12）"
 
+fi
 # ---------------------------------------------------------------------------
 # case 5：AgentRequest 含「宿主侧零赋值点」的可空字段 ⇒ 第 13 条（孤儿守卫）报红
 #         其中 ghostGeneric 故意用泛型类型 `Map<String, Int>? = null` ——
 #         旧抽取正则（字符类不含逗号/空格）会**静默漏检**该形态，本 case 正是钉死它。
 # ---------------------------------------------------------------------------
+if guard_selected 13; then
 d="$TMP/case5-orphan"
 scaffold "$d"
 cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
@@ -501,10 +661,12 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 6：executeBodyUnchecked 是类内**最后一个**方法（无后置方法边界）⇒ 第 12 条
 #         的 e 非空断言应判「守卫面失效」报红（否则 n 变负会静默通过 = 僵尸规则）。
 # ---------------------------------------------------------------------------
+if guard_selected 12; then
 d="$TMP/case6-tail"
 scaffold "$d"
 cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunner.kt" <<'KT'
@@ -520,11 +682,13 @@ out="$(run_guard "$d")"; rc=$?
 assert_red "case6 方法在类尾 (第 12 条守卫面失效)" "$rc" "$out" \
   "主循环方法体积未超预算（executeBodyUnchecked ≤ 550 行）"
 
+fi
 # ---------------------------------------------------------------------------
 # case 7：可空字段**有**宿主侧赋值点、但**没有** @wire-owner 标记 ⇒ 第 13 条必须报红。
 #         钉死「① 无标记即红」是独立断言 —— 若只靠旧的「零赋值点」判定，本 case
 #         会因为赋值点存在而漏判（新增字段忘了申报就静默过关）。
 # ---------------------------------------------------------------------------
+if guard_selected 13; then
 d="$TMP/case7-unmarked"
 scaffold "$d"
 mkdir -p "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat"
@@ -552,11 +716,13 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 8：`internal` 标记 + 赋值点**只在 core-agent/** ⇒ 第 13 条必须**不红**。
 #         钉死 `deadlineNanos` 的真实形态（宿主侧刻意不传、由父 run 透传给子 run）——
 #         旧实现「全局 grep」对它只是碰巧正确；收紧搜索面到宿主侧会让它恒红。
 # ---------------------------------------------------------------------------
+if guard_selected 13; then
 d="$TMP/case8-internal"
 scaffold "$d"
 cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
@@ -582,10 +748,12 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 9：`pending:理由串` 但该理由串**不在** README 挂账台账节 ⇒ 第 13 条必须报红
 #         （③ 交叉断言的「红」面）。case9b 再钉「绿」面，防本条变成永远红的僵尸规则。
 # ---------------------------------------------------------------------------
+if guard_selected 13; then
 d="$TMP/case9-pending-unledgered"
 scaffold "$d"
 cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
@@ -617,10 +785,12 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 10：同一 fixture 里把理由串**补进** README 挂账台账节 ⇒ 第 13 条必须**不红**。
 #          钉死 ③ 的「绿」面：只有红面会让它成为永远红的僵尸规则（挂着账就必须放行）。
 # ---------------------------------------------------------------------------
+if guard_selected 13; then
 d="$TMP/case10-pending-ledgered"
 scaffold "$d"
 cat > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt" <<'KT'
@@ -650,6 +820,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 11：baseline 条目数超冻结值 ⇒ 第 14 条必须报红（防 baseline 变成
 #          「顺手把新问题 regen 进去」的僵尸豁免入口 —— 那会让整条 lint 门禁失效）。
@@ -659,6 +830,7 @@ fi
 #          84 > 4 仍成立，故样本无需改）。若冻结值涨到 84 以上，必须同步调大本样本。
 # case11b：条目数低于冻结值（清了存量）⇒ 必须不红（「只许缩不许涨」的另一面）。
 # ---------------------------------------------------------------------------
+if guard_selected 14; then
 d="$TMP/case11-baseline-overage"
 scaffold "$d"
 "$PY" - "$d/app/lint-baseline.xml" <<'PYGEN'
@@ -712,6 +884,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 12：测试源集里 @Test 方法以「返回值型断言」收尾 ⇒ 第 15 条必须报红。
 #          Wave 37 实案：JUnit 4 要求测试方法返回 void，而 Kotlin 表达式体的返回类型
@@ -719,6 +892,7 @@ fi
 #          ⇒ 方法非 void ⇒ 整个测试类 initializationError（该类所有用例静默不跑，
 #          Gradle 只报「N tests completed, 1 failed」，极具误导性）。
 # ---------------------------------------------------------------------------
+if guard_selected 15; then
 d="$TMP/case12-test-nonvoid"
 scaffold "$d"
 mkdir -p "$d/core-agent/src/test/java/com/x"
@@ -754,6 +928,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 12c：反引号方法名含 JVM 非法字符 ⇒ 第 15 条必须报红。
 #          Wave 38 实案：JVM 规范 §4.2.2 禁止方法名含 `. ; [ /`（`<` `>` 亦不可）。
@@ -761,6 +936,7 @@ fi
 #          `e: ... Name contains illegal characters: /` ⇒ compileDebugUnitTestKotlin 失败
 #          ⇒ **整个 Build job 红**。本机无 JDK 完全查不出（CI 是唯一通道），故必须静态拦。
 # ---------------------------------------------------------------------------
+if guard_selected 15; then
 d="$TMP/case12c-illegal-name"
 scaffold "$d"
 mkdir -p "$d/core-agent/src/test/java/com/x"
@@ -794,6 +970,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 13：一个模块目录被改名/删除（目录不再存在）⇒ 前置「模块存在性」断言必须报红。
 #          这条断言存在的全部意义，是兜住「带 `| grep -vE` 的守卫在目标目录缺失时
@@ -813,6 +990,7 @@ fi
 #          包装成拒绝带盘符路径（本机实测 `rm`/`rmdir` 均被 safe-delete 拦下），
 #          而改名在任何 POSIX 环境都成立 —— 判据不该挂在会被环境拦掉的动作上。
 # ---------------------------------------------------------------------------
+if guard_selected ALL; then
 d="$TMP/case13-module-missing"
 scaffold "$d"
 mv "$d/feature-settings" "$d/.feature-settings-renamed"
@@ -834,6 +1012,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 14：全仓出现第 2 处 .setSink 调用 ⇒ 第 16 条（AgentLogStore.setSink 调用点数）
 #          必须报红。setSink 是单槽覆盖式 API：第二个 sink 会静默顶掉第一个，
@@ -847,6 +1026,7 @@ fi
 #          自身执行失败」—— 后者那行也含守卫名，会让 assert_red 假绿（与
 #          case12b / case12d / case13b 同一范式）。
 # ---------------------------------------------------------------------------
+if guard_selected 16; then
 d="$TMP/case14-second-sink"
 scaffold "$d"
 mkdir -p "$d/core-data/src/main/java/com/rickeal/agent/core/data"
@@ -874,6 +1054,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 15：注入 2 处 ViewModel **直构造**（真代码行，非注释）⇒ 第 17 条
 #          （ViewModel 直构造点全仓 ≤ 1）必须报红。骨架默认直构造数为 0（白名单
@@ -888,6 +1069,7 @@ fi
 #          写成只匹配文件名），本 case 会误红。绿面缺失会让第 17 条成为永远红的
 #          僵尸规则（挂着正规路也过不了）。
 # ---------------------------------------------------------------------------
+if guard_selected 17; then
 d="$TMP/case15-second-viewmodel"
 scaffold "$d"
 cat > "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/RogueVm.kt" <<'KT'
@@ -933,6 +1115,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 16：注入超阈的 ChatViewModel.kt（1705 行 > 1600）⇒ 第 18 条
 #          （ChatViewModel.kt 总行数）必须报红。骨架默认只有 5 行（≤1600 绿），
@@ -941,6 +1124,7 @@ fi
 #          判守卫面失效」或「守卫命令自身执行失败」—— 前者同样含守卫名，会让
 #          assert_red 假绿（fixture 没铺对路径时就是这种形态，与 case12b 范式一致）。
 # ---------------------------------------------------------------------------
+if guard_selected 18; then
 d="$TMP/case16-viewmodel-oversize"
 scaffold "$d"
 { echo 'package com.rickeal.agent.feature.chat'
@@ -967,6 +1151,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 17：第 18 条的目标文件 ChatViewModel.kt **缺失**（被改名/移动）⇒ 第 18 条必须
 #          判红，且输出里能看到「文件不存在」这一违规事实本身。
@@ -981,6 +1166,7 @@ fi
 #          已失效）」违规事实行），而不是「守卫命令自身执行失败」—— 后者那行也含守卫名，
 #          会让 assert_red 假绿（与 case12b / case13b / case14b / case15b / case16b 同一范式）。
 # ---------------------------------------------------------------------------
+if guard_selected 18; then
 d="$TMP/case17-chatvm-missing"
 scaffold "$d"
 mv "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt" \
@@ -1001,6 +1187,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 18 / case 19：第 19 条（fulltest.sh --continue 纪律，Wave 49 R-B）两面：
 #   case18 —— 临时把 scripts/fulltest.sh 改名（模拟「纪律文件被删/改名」）⇒ 判红，
@@ -1014,6 +1201,7 @@ fi
 #             命中 ⇒ case19 假 FAIL）。
 #   两面都只在 $TMP 脚手架树内操作（mv / 覆写），绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 19; then
 d="$TMP/case18-fulltest-missing"
 scaffold "$d"
 mv "$d/scripts/fulltest.sh" "$d/scripts/.fulltest.sh.renamed"
@@ -1057,12 +1245,14 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 20 / case 21：第 20 条（ChatRunCoordinator.kt ≤ 1300，Wave 49 R-C）两面：
 #   case20 —— 灌到超 1300 行 ⇒ 判红，断言红来自真命中（输出含「超 1300 行上限」计数行）。
 #   case21 —— 目标文件缺失（mv 改名）⇒ 判红，断言输出含「不存在（被改名/删除？守卫面
 #             已失效）」违规事实行。制造缺失用 mv 且只在 $TMP 内（与 case17 同范式）。
 # ---------------------------------------------------------------------------
+if guard_selected 20; then
 d="$TMP/case20-coordinator-oversize"
 scaffold "$d"
 { echo 'package com.rickeal.agent.feature.chat'
@@ -1108,6 +1298,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 22 / case 23：第 21 条（CapabilitySource.USER 章印唯一写入路径，Wave 49 R-D）两面：
 #   case22 —— 在**另一个生产文件**里再盖一次 USER 章 ⇒ 判红，断言输出含「出现在
@@ -1118,6 +1309,7 @@ fi
 #   且守卫显式 `grep -v "/src/test/"`；生产源码里的**读取/比较**（`== CapabilitySource.USER`）
 #   也不判红 —— 判据只认赋值形态（`capabilitiesSource = CapabilitySource.USER`）。
 # ---------------------------------------------------------------------------
+if guard_selected 21; then
 d="$TMP/case22-user-second-stamp"
 scaffold "$d"
 mkdir -p "$d/feature-models/src/main/java/com/rickeal/agent/feature/models"
@@ -1171,6 +1363,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 24 / case 25：第 22 条（fulltest.sh 含 --summary-only 子命令，Wave 50）两面：
 #   case24 —— 把骨架的 fulltest.sh 覆写成**没有 --summary-only 分派臂**的版本 ⇒ 判红，
@@ -1183,6 +1376,7 @@ fi
 #             会成为永远红的僵尸规则）。
 #   两面都只在 $TMP 脚手架树内覆写，绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 22; then
 d="$TMP/case24-summaryonly-missing"
 scaffold "$d"
 cat > "$d/scripts/fulltest.sh" <<'SH'
@@ -1236,6 +1430,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 26 / case 27 / case 28：第 23 条（fulltest.sh 的 --summary-only 退出码契约，
 # Wave 51）三面 —— 与第 22 条**互补**：#22 钉「分派臂存在」，本条钉「该分支恒 exit 0
@@ -1250,6 +1445,7 @@ fi
 #   钉住判据只认代码位（与 case19 / case24 同一范式：裸 grep 会被注释骗成假绿）。
 #   三面都只在 $TMP 脚手架树内覆写，绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 23; then
 d="$TMP/case26-exit2-unguarded"
 scaffold "$d"
 cat > "$d/scripts/fulltest.sh" <<'SH'
@@ -1360,6 +1556,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 29 / case 30：第 24 条（LiteRtLmEngine.kt fold 收口不变式，Wave 52）两面：
 #   case29 —— 追加第 2 处 **未包 fold** 的 `Message.user(Contents.of(x))` ⇒
@@ -1370,6 +1567,7 @@ fi
 #             沿 #19/#22 教训）：注释位被 `^[0-9]+:[[:space:]]*[*/]` 排除 ⇒ msg_n 不变。
 #   两面都只在 $TMP 脚手架树内追加，绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 24; then
 d="$TMP/case29-fold-unbalanced"
 scaffold "$d"
 cat >> "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
@@ -1413,12 +1611,14 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 31 / case 32：第 25 条（LiteRtLmEngine.kt ≤ 2400，Wave 52）两面：
 #   case31 —— 灌到超 2400 行 ⇒ 判红，断言红来自真命中（输出含「超 2400 行上限」计数行）。
 #   case32 —— 目标文件缺失（mv 改名）⇒ 判红，断言输出含「不存在（被改名/删除？守卫面
 #             已失效）」违规事实行。制造缺失用 mv 且只在 $TMP 内（与 case17/case21 同范式）。
 # ---------------------------------------------------------------------------
+if guard_selected 25; then
 d="$TMP/case31-engine-oversize"
 scaffold "$d"
 { echo 'package com.rickeal.agent.core.engine.local'
@@ -1466,6 +1666,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 33 / case 34：第 26 条（测试基线双向同步，Wave 53）两面：
 #   case33 —— 把 build.yml 的 baseline 改小（3 → 2）⇒ 实数(3) > 基线(2) ⇒「滞后」判红，
@@ -1475,6 +1676,7 @@ fi
 #   两面都只在 $TMP 脚手架树内改（sed / 覆写），绝不碰生产文件。
 #   骨架默认 build.yml `baseline=3` 且恰有 3 条 @Test ⇒ 相等（绿），由 positive case 兜住。
 # ---------------------------------------------------------------------------
+if guard_selected 26; then
 d="$TMP/case33-baseline-lag"
 scaffold "$d"
 sed -i 's/baseline=3/baseline=2/' "$d/.github/workflows/build.yml"
@@ -1530,6 +1732,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 35：第 27 条（A5 台账聚合句守卫，Wave 53）红面 —— 把 README 聚合句的总数
 #         从「累计 3 条」改成「累计 4 条」⇒ 与 §11.0.1 逐条台账（3 条）不等 ⇒ 判红，
@@ -1537,6 +1740,7 @@ fi
 #         骨架默认两份聚合句均与台账（1 ✅ / 1 ⚠️ / 1 ⛔）一致 ⇒ 绿（由 positive case 兜住）。
 #         只在 $TMP 脚手架树内 sed，绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 27; then
 d="$TMP/case35-ledger-aggregate-drift"
 scaffold "$d"
 sed -i 's/累计 3 条/累计 4 条/' "$d/README.md"
@@ -1556,6 +1760,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 36 / case 37 / case 38：第 28 条（LiteRtLmEngine.kt 韧性 store 双写双读接线，
 # Wave 57）三面：
@@ -1578,6 +1783,7 @@ fi
 #   三面都只在 $TMP 脚手架树内覆写 fixture，绝不碰生产文件。
 #   绿面（脚手架原样 → exit 0）同时由 positive case 兜住。
 # ---------------------------------------------------------------------------
+if guard_selected 28; then
 d="$TMP/case36-adopt-call-missing"
 scaffold "$d"
 cat > "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
@@ -1686,6 +1892,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 40 / case 40b：第 28 条判据② 的**独立红面**（W58 修补 A 同步）——
 #   case40 —— 从脚手架 fixture 只删掉 **写点①**（ensureConversation 成功路径）的
@@ -1698,6 +1905,7 @@ fi
 #             违规事实行），而非「守卫命令自身执行失败」（与 case36b / case37b 同一范式）。
 #   两面都只在 $TMP 脚手架树内覆写 fixture，绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 28; then
 d="$TMP/case40-persist-writer1-missing"
 scaffold "$d"
 cat > "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
@@ -1741,6 +1949,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 39 / case 39b / case 39c / case 39d / case 39e：第 29 条（litertlm 版本钉死
 # 0.17.1，W58 治外部审查 F-1 P0）三红一绿：
@@ -1756,6 +1965,7 @@ fi
 #   骨架默认 toml 原样 0.17.1 ⇒ 绿（由 positive case 兜住）。
 #   各面都只在 $TMP 脚手架树内改（sed / mv / 追加），绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 29; then
 d="$TMP/case39-litertlm-bumped"
 scaffold "$d"
 sed -i 's/0\.17\.1/0.18.0/' "$d/gradle/libs.versions.toml"
@@ -1812,6 +2022,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 41 / 41b / 41c：第 30 条（ChatRunCoordinator run 级 model 读点冻结，W59）两面：
 #   case41 —— 从脚手架 fixture 删 1 处 `model = uiState.value.activeModel`（3 → 2）
@@ -1821,6 +2032,7 @@ fi
 #             判据 ==3 的同步关系 —— 漏铺会让正例与绿面一起恒红）。
 #   各面都只在 $TMP 脚手架树内改（sed / 删行），绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 30; then
 d="$TMP/case41-model-readpoint-missing"
 scaffold "$d"
 sed -i '/fun run2/d' "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt"
@@ -1852,6 +2064,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 42 / 42b / 42c / 42d：第 31 条（AgentRunner.kt ≤ 2900，W59 治 P3-α）两面：
 #   case42 —— 向 fixture 灌到超 2900 行（沿 case20 对 ChatRunCoordinator 的追行手法）
@@ -1862,6 +2075,7 @@ fi
 #   各面都只在 $TMP 脚手架树内改（覆写 / mv），绝不碰生产文件。
 #   绿面（write_runner 默认 body=5，远低于阈值）由 positive case 兜住。
 # ---------------------------------------------------------------------------
+if guard_selected 31; then
 d="$TMP/case42-runner-oversize"
 scaffold "$d"
 { echo 'package com.rickeal.agent.core.agent'
@@ -1907,6 +2121,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 43 / 43b / 44 / 44b：第 32 条（LiteRtLmEngineLoader.kt ≤ 900，W60）两面：
 #   case43 —— 向 fixture 灌到超 900 行（沿 case31/case42 追行手法）⇒ 判红；
@@ -1918,6 +2133,7 @@ fi
 #   各面都只在 $TMP 脚手架树内改（覆写 / mv），绝不碰生产文件。
 #   绿面（scaffold fixture 行数远低于 900）由 positive case 兜住。
 # ---------------------------------------------------------------------------
+if guard_selected 32; then
 d="$TMP/case43-loader-oversize"
 scaffold "$d"
 { echo 'package com.rickeal.agent.core.engine.local'
@@ -1963,6 +2179,7 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 45 / 45b / 45c：第 33 条（LiteRtLmEngine 世代门控接线，W60）：
 #   case45 —— 从 scaffold fixture 删 1 处 `handleTemplateRenderFailure(token,`（2 → 1，
@@ -1972,6 +2189,7 @@ fi
 #             铺点与判据的同步关系 —— 漏铺会让正例与绿面一起恒红）。
 #   各面都只在 $TMP 脚手架树内改（sed 删行），绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 33; then
 d="$TMP/case45-gate-callsite-missing"
 scaffold "$d"
 sed -i '/同步下发/d' "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt"
@@ -2003,12 +2221,14 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 46：第 30 条（ChatRunCoordinator run 级 model 读点冻结，W59；W60 加注释位排除）
 #   绿面 —— 只在 **KDoc/注释** 里提 `model = uiState.value.activeModel` ⇒ 必须**仍绿**
 #   （防被注释骗，沿 case30（#24 的 KDoc 绿面）范式）：注释位被
 #   `^[0-9]+:[[:space:]]*[*/]` 排除 ⇒ 计数仍 3。仅 $TMP 内追加，绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 30; then
 d="$TMP/case46-model-kdoc-green"
 scaffold "$d"
 cat >> "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt" <<'KT'
@@ -2029,12 +2249,14 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 47：第 33 条（LiteRtLmEngine 世代门控接线，W60；W61 判据① 加注释位排除）
 #   绿面 —— 只在 **KDoc/注释** 里提 `shouldDropStaleDisposal(token, current)` 调用形态
 #   ⇒ 必须**仍绿**（防被注释骗，沿 case46（#30 的 KDoc 绿面）范式）：注释位被
 #   `^[0-9]+:[[:space:]]*[*/]` 排除 ⇒ 调用点数仍 1。仅 $TMP 内追加，绝不碰生产文件。
 # ---------------------------------------------------------------------------
+if guard_selected 33; then
 d="$TMP/case47-gate-kdoc-green"
 scaffold "$d"
 cat >> "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt" <<'KT'
@@ -2055,11 +2277,13 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 48：第 34 条（knownBrokenOn 互斥 recommended，W63 刀C）红面 —— 同一构造块内
 #   `knownBrokenOn = "…"` 与 `recommended = true` 共存 ⇒ 判红，且输出必须含违规行
 #   本身（预设 label），不能只匹配守卫名（KB：守卫自身执行失败也含守卫名 ⇒ 假 PASS）。
 # ---------------------------------------------------------------------------
+if guard_selected 34; then
 d="$TMP/case48-known-broken-red"
 scaffold "$d"
 cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
@@ -2093,10 +2317,12 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # case 49：第 34 条 fail-closed —— `val knownBrokenOn` 声明被删（字段被整个拆掉）
 #   ⇒ 必须判红「守卫面失效」，不能静默变绿（僵尸规则防线）。
 # ---------------------------------------------------------------------------
+if guard_selected 34; then
 d="$TMP/case49-known-broken-decl-gone"
 scaffold "$d"
 cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
@@ -2120,12 +2346,14 @@ out="$(run_guard "$d")"; rc=$?
 assert_red "case49 knownBrokenOn 声明被删 (第 34 条面失效)" "$rc" "$out" \
   "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）"
 
+fi
 # ---------------------------------------------------------------------------
 # case 50：第 34 条绿面 —— 显式 `knownBrokenOn = null` 与 `recommended = true`
 #   合法共存（null = 未见已知失败，推荐资格保留）⇒ 必须仍绿（防把 null 判成非空）。
 #   （scaffold 的 clean-recommended / explicit-null-recommended / broken-not-recommended
 #   三组合已由 positive case 覆盖绿面；本 case 钉「显式 null 不被误判」这一形态。）
 # ---------------------------------------------------------------------------
+if guard_selected 34; then
 d="$TMP/case50-known-broken-null-green"
 scaffold "$d"
 out="$(run_guard "$d")"; rc=$?
@@ -2138,6 +2366,79 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+fi
+# ---------------------------------------------------------------------------
+# case 51 / 51b / 51c / 51d / 51e：第 35 条（AgentRunnerToolSetup.kt ≤ 400，W64）两面：
+#   case51 —— 向 fixture 灌到超 400 行（沿 case42/case43 追行手法）⇒ 判红；
+#             case51b 断言红来自真命中（输出含「超 400 行上限」计数行），而非
+#             「守卫命令自身执行失败」（后者也含守卫名 ⇒ 会让 assert_red 假绿）。
+#   case51c —— 目标文件缺失（mv 改名，与 case17/case32/case42c/case44 同范式）⇒
+#             fail-closed 判红；case51d 断言输出含「AgentRunnerToolSetup.kt 不存在
+#             （被改名/删除？第 35 条守卫面已失效）」违规事实行。
+#   case51e —— scaffold 原样（AgentRunnerToolSetup.kt 远低于 400 行）⇒ 必须不红
+#             （绿面；独立钉死 scaffold 铺点与 fail-closed 判据的同步关系 —— 漏铺会让
+#             正例与所有绿面一起恒红）。--only 35 会跳过正例，故本条自带绿面。
+#   各面都只在 $TMP 脚手架树内改（覆写 / mv），绝不碰生产文件。
+# ---------------------------------------------------------------------------
+if guard_selected 35; then
+d="$TMP/case51-toolsetup-oversize"
+scaffold "$d"
+{ echo 'package com.rickeal.agent.core.agent'
+  echo ''
+  echo 'class AgentRunnerToolSetup {'
+  local_t=1
+  while [ "$local_t" -le 405 ]; do echo "    val t$local_t: Int = $local_t"; local_t=$((local_t + 1)); done
+  echo '}'
+} > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerToolSetup.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case51 AgentRunnerToolSetup.kt 超行数上限 (第 35 条)" "$rc" "$out" \
+  "AgentRunnerToolSetup.kt 总行数 ≤ 400（core-agent 行数表 #25 家族第 6 员，触顶 = 启动 AgentRunnerToolSetup 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case51b] 第 35 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "超 400 行上限"; then
+  echo "PASS [case51b] 红来自真命中（输出含「超 400 行上限」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case51b] 输出里看不到「超 400 行上限」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case51c-toolsetup-missing"
+scaffold "$d"
+mv "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerToolSetup.kt" \
+   "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/.AgentRunnerToolSetup.kt.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case51c AgentRunnerToolSetup.kt 缺失 (第 35 条守卫面失效)" "$rc" "$out" \
+  "AgentRunnerToolSetup.kt 总行数 ≤ 400（core-agent 行数表 #25 家族第 6 员，触顶 = 启动 AgentRunnerToolSetup 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case51d] 第 35 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "AgentRunnerToolSetup.kt 不存在（被改名/删除？第 35 条守卫面已失效）"; then
+  echo "PASS [case51d] 红来自真命中（输出含「AgentRunnerToolSetup.kt 不存在（被改名/删除？第 35 条守卫面已失效）」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case51d] 输出里看不到「AgentRunnerToolSetup.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case51e-toolsetup-green"
+scaffold "$d"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case51e AgentRunnerToolSetup.kt 行数远低于 400 (第 35 条绿面)] 退出 0"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case51e] scaffold 的 AgentRunnerToolSetup.kt 被第 35 条误红（绿面失守）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
 # ---------------------------------------------------------------------------
 echo "-----------------------------------------"
 echo "自测结果：PASS=$PASS FAIL=$FAIL"
