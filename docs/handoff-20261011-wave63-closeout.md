@@ -24,10 +24,15 @@
 | `6fb0437` | fix(agent) | **刀A（K-2）**：文件级纯函数 `loopFailurePhraseFor(marker)`（思考预算 marker ⇒「思考预算耗尽」，其余/null ⇒「轮内重复循环」）+ 同族 `loopFailureUserMessageFor`（Failed 句式分设、判别同一 marker）。分流覆盖**五落点**：终止日志 / `BreakerKind.StreamLoop` evidence / `AgentEvent.Failed` 消息 / StreamReset 事件 / 轮内日志（后两处为同源顺带）。#12 方法内净增 0（顶层新增）。 |
 | `f9b08e1` | fix(model) | **刀B（K-1 治标 + K-5）**：`THINKING_CHAR_BUDGET=4096` KDoc 补适用区间（标定于 maxTokens=1024：512 token ×≈4 chars ×2 余量；滑条 64..8192；maxTokens ≥4096 时守卫先于 native 触发 = 已知残留）+ 不变式单测（钉 4096 与 `resolveThinkingBudget(0,1024)` 的当量关系）+ `TEXT_RUNAWAY_CHARS` 交叉说明（两流同值不同语义：thinking 有 native 优雅路径兜底、text 撞 maxOutputToken 硬截——**两值不得联动调整**）。 |
 | `6181c8a` | refactor(agent) | **刀F（复审19 首序）**：AgentRunner 方法级首刀 = docs/13 接缝①工具装配簇外提（`useNativeTools`/`allToolSpecs`/`disclosureActive`/`hiddenToolCatalog`/`availableTools`/`registeredToolNames`/`allToolNames` → `AgentRunnerToolSetup.buildToolSetup` + `ToolSetup`），求值顺序保持、逐字节等价、无 emit；`ToolSetupTest` 153 行；**#12 540→492**、#31 2886→2838；`build.yml` baseline 655→**660**（同 commit 双向）。selftest fixture 零影响（#12 自测 case 覆盖确认）。 |
-| `a4225eb` | feat(model) | **刀C（B5）**：`ModelPreset.knownBrokenOn: String?`（KDoc 钉「取值必须来自真实失败证据」+「非空 ⇒ recommended=false」不变量）；三容器回填（E2B-gpu/E4B-gpu = 引擎初始化 NOT_FOUND；MiniCPM-V-4 = 会话创建 Unsupported model type——均按 W60 实测签名）；模型卡常驻红字 + 加载前确认对话框（「仍要尝试」出口保留复验入口，失败语义不变，`rememberSaveable` 纪律同 confirmDelete）；**守卫 #34**（arch-guard + `check-known-broken.py` fail-closed 扫描器）+ selftest case48 红绿面；`ModelPresetsKnownBrokenTest`；baseline 660→**669**（同 commit 双向）。 |
+| `a4225eb` | feat(model) | **刀C（B5）**：`ModelPreset.knownBrokenOn: String?`（KDoc 钉「取值必须来自真实失败证据」+「非空 ⇒ recommended=false」不变量）；三容器回填（E2B-gpu/E4B-gpu = 引擎初始化 NOT_FOUND；MiniCPM-V-4 = 会话创建 Unsupported model type——均按 W60 实测签名）；模型卡常驻红字 + 加载前确认对话框（「仍要尝试」出口保留复验入口，失败语义不变，`rememberSaveable` 纪律同 confirmDelete）；**守卫 #34**（arch-guard + `check-known-broken.py` fail-closed 扫描器）+ selftest case48 红 + case48b + case49 + case50 绿面；`ModelPresetsKnownBrokenTest`；baseline 660→**669**（同 commit 双向）。 |
 | `43dc437` | fix(model) | **刀D+刀E（合并提交，W61 审查修正刀先例）**：刀D = `inferChannelSyntax` 加 R1 分支 → `ChannelSyntax.THINK`（一手证据见 §一.2），推理标识判据外提 `isReasonerMarker` 单一落点；刀E = `GEMMA_4 thinking=false→true`（W62 真机实证推翻保守依据；E4B 按家族外推并如实标注，沿用 image=true 范式）。单测：R1 文件名 → THINK、`qwen2.5`/MiniCPM5/MiniCPM-V/老 gemma → null 不变；⚠️ 测试名纪律：样例名不得含家族关键词（`deepseek-distill-llama` 落 LLAMA 家族 = W61 `inferFamily` 既有边界，测试注释登记）。@Test 669 不变。 |
 | `d37256b` | docs | **一行件包（复审19 建议 7）**：README 分支口径段（B1：`1011`=快照锚点、有意不进触发列表、充当回滚锚点了结 W51 挂账）+ 审查基线勘误（P3-1）+ **档位决策表**（P3-β：能力位订正后全线坍缩二元）+ W60 交接 §五.1 首刀勘误注记（P3-α：以 docs/13 为准）+ `LiteRtLmEngine` K=3 注记「当下 Int.MAX_VALUE」限定语两处（P4-γ；:1277 原文自带限定未动）。 |
-| 【push 后回填】 | docs | 收官交接（本文档）+ README 波次段。 |
+| | workflow | run id | 结论 | 关键 job |
+|---|---|---|---|
+| **Build** | `38127758901` | ✅ success（head `8800b8b`） | Lint (baseline gate) / Assemble Debug (JDK 21) / Unit tests 全 success；Assemble 内实测「架构守卫全部通过」（34 项）+「自测结果：PASS=97 FAIL=0」 |
+| **Release** | `38127758844` | ✅ success（head `8800b8b`） | — |
+
+**上游提交申报**：fine-grained PAT 对 `google-ai-edge` 组织无 issue 写权限（`Resource not accessible by personal access token`）——#3576 补充评论与 gemma-4 GPU NOT_FOUND 新 issue **转用户手动提交**，文案存档 `_w63_upstream_3576_comment.md` / `_w63_upstream_gemma_gpu_issue.md`（仓外）。| | docs | 收官交接（本文档）+ README 波次段。 |
 
 > 分工说明（如实入账）：刀A/B/F 由开发席（柯码成）完成并自验；刀C 文件产出由开发席在 429 截断前完成、提交与 baseline 补齐由主理人代完成（曾出现一次重复提交 `adf4f3d`，已 squash 归一为 `a4225eb`）；刀D/刀E、容器取证、一行件包、真机验证由主理人完成。开发席曾在刀C 阶段回报过不存在 commit hash（`6e19c62`/`b81c761`）——**再次验证「派单后必须 git status 核实实际产出」纪律**。
 
@@ -63,7 +68,7 @@ journal 证据：`_w61_dev/results/w63_e2b_auto_run.jsonl`（E2B AUTO）、`_w63
 
 ## 六、下次接手须知
 
-1. **静态闸门基线（本波后）**：`arch-guard.sh` **34 项**（+#34 knownBrokenOn 互斥）；`arch-guard-selftest.sh` **PASS=95**（case48 红绿两例，93→95；全量本机跑由 CI 侧复核，本地曾因沙箱杀长进程未走完——CI Build job 内 `PASS=95 FAIL=0` 为准）；`fulltest.sh` = 9 模块 tests=**669** failures=1（唯一失败 = core-data `SandboxFileScannerTest` Windows 符号链接，既有且仅 Windows，Linux CI 通过）；`@Test` 严格口径 **669** = baseline；引擎 **2010/2400**；`LiteRtLmEngineLoader.kt` 704；**AgentRunner.kt 2838/2900（余 62）**；**方法级 `executeBodyUnchecked` 492/550（余 58，刀F 拆解）**。
+1. **静态闸门基线（本波后）**：`arch-guard.sh` **34 项**（+#34 knownBrokenOn 互斥）；`arch-guard-selftest.sh` **PASS=97**（+4：case48 红 / case48b / case49 / case50 绿；93→97；**CI Build job 实测 `PASS=97 FAIL=0`**，本地长跑被沙箱中断未走完）；`fulltest.sh` = 9 模块 tests=**669** failures=1（唯一失败 = core-data `SandboxFileScannerTest` Windows 符号链接，既有且仅 Windows，Linux CI 通过）；`@Test` 严格口径 **669** = baseline；引擎 **2010/2400**；`LiteRtLmEngineLoader.kt` 704；**AgentRunner.kt 2838/2900（余 62）**；**方法级 `executeBodyUnchecked` 492/550（余 58，刀F 拆解）**。
 2. 🔴 **「先拆后加」已兑现一次**：AgentRunner 再落新挂账前先看 #12 余量（现 58），余 <20 时启动 docs/13 接缝②（引擎加载重试簇，sealed 改写，中风险）。
 3. 🔴 **R1 容器通道取证方法**（复用）：`_w63_r1_scan.py`（全文件字节扫 + protobuf 偏移上下文 dump）；对其它容器做同类取证时先扫 `channel` 再扫 `<think>`；偏移与上下文形态写入 KDoc 引用。
 4. 🔴 **uiautomator 对模型卡下半区盲**（本波实证）：玻璃卡片（GlassCard）内 backendBasis/knownBroken/加载按钮节点在 dump 中不出现（Compose 自绘 + 网格单元拉伸互覆盖），且卡片高度超过视口时节点整体缺失——**模型卡点按判据只能靠 journal/logcat 或人眼**；截图判读需多模态会话。
@@ -72,4 +77,9 @@ journal 证据：`_w61_dev/results/w63_e2b_auto_run.jsonl`（E2B AUTO）、`_w63
 
 ## 七、CI run id
 
-【push 后回填】
+| workflow | run id | 结论 | 关键 job |
+|---|---|---|---|
+| **Build** | `38127758901` | ✅ success（head `8800b8b`） | Lint (baseline gate) / Assemble Debug (JDK 21) / Unit tests 全 success；Assemble 内实测「架构守卫全部通过」（34 项）+「自测结果：PASS=97 FAIL=0」 |
+| **Release** | `38127758844` | ✅ success（head `8800b8b`） | — |
+
+**上游提交申报**：fine-grained PAT 对 `google-ai-edge` 组织无 issue 写权限（`Resource not accessible by personal access token`）——#3576 补充评论与 gemma-4 GPU NOT_FOUND 新 issue **转用户手动提交**，文案存档 `_w63_upstream_3576_comment.md` / `_w63_upstream_gemma_gpu_issue.md`（仓外）。|

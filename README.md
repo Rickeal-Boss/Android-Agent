@@ -443,7 +443,7 @@ Android-Agent/
 >   - 🔴 **AgentRunner 方法级首刀**（复审19 终稿「先拆后加」首序兑现）：docs/13 接缝①工具装配簇外提 → `AgentRunnerToolSetup.buildToolSetup` + `ToolSetup`（新文件，同文件落点会撞 #31）；求值顺序保持、逐字节等价；**#12 `executeBodyUnchecked` 540→492（余 58）**、#31 2886→2838；`ToolSetupTest` 153 行；baseline 655→660（同 commit 双向）
 >   - ✅ **刀A（深度审查 K-2）**：终态/evidence 的 marker 分流补全——`loopFailurePhraseFor`/`loopFailureUserMessageFor` 纯函数单一落点，覆盖终止日志 / `BreakerKind.StreamLoop` evidence / `Failed` 消息 / StreamReset / 轮内日志**五落点**（「思考预算耗尽」≠「轮内重复循环」全面板）
 >   - ✅ **刀B（K-1 治标 + K-5）**：`THINKING_CHAR_BUDGET=4096` 适用区间 KDoc（标定 maxTokens=1024；≥4096 残留在案）+ 不变式单测 + `TEXT_RUNAWAY_CHARS` 交叉说明（两流同值不同语义，禁联动调整）
->   - ✅ **刀C（B5 knownBroken 最小面）**：`ModelPreset.knownBrokenOn` + 模型卡红字 + 加载前确认对话框（「仍要尝试」出口保留，失败语义不变）+ **守卫 #34**（非空 ⇒ 非推荐，fail-closed 扫描器 + selftest case48/50）+ 三容器按 W60 实测签名回填；selftest **93 → 95**
+>   - ✅ **刀C（B5 knownBroken 最小面）**：`ModelPreset.knownBrokenOn` + 模型卡红字 + 加载前确认对话框（「仍要尝试」出口保留，失败语义不变）+ **守卫 #34**（非空 ⇒ 非推荐，fail-closed 扫描器 + selftest case48/50）+ 三容器按 W60 实测签名回填；selftest **93 → 97**（CI 实测 PASS=97 FAIL=0）
 >   - ✅ **刀D（B3）**：R1 显式 `ChannelSyntax.THINK` —— 一手证据 = 容器字节扫描（`<|channel`/`channel`/`chat_template`/`bos_token` 全 0；`<think>` 恰 1 处 @ 元数据特殊 token 列表 `<｜Assistant｜><think>`）⇒ 无原生通道声明、文本定界 ⇒ 符合显式下发前置；判据单一落点 `isReasonerMarker`
 >   - ✅ **刀E（B4）**：gemma-4 能力位 `thinking=true`（W62 真机实证推翻保守依据；E4B 家族外推如实标注）；**AUTO 档真机实证**：E2B `thinklen=1414` 非空（订正前 AUTO 恒空）
 >   - ✅ **真机批（有线 adb）**：R1 AUTO `thinklen=875` 非空 + 正文零 `<think>` 泄漏（W61 J1 推理腔泄漏消失——通道切分生效）｜拆分后文本 run 回归全绿（docs/13 触发条件④兜底）｜⚠️ knownBroken 对话框点验 = 工具盲区未行使（uiautomator 对卡片下半区零捕获，留用户手验）
