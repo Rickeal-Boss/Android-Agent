@@ -1,6 +1,6 @@
 # W62 波次收官交接（Wave 62 Closeout）
 
-> 基线：W61 收官 `de3144e`｜本波 tip = `（收官刀后回填）`（3 刀代码/测试 + 1 刀收官交接）
+> 基线：W61 收官 `de3144e`｜本波 tip = `8629e72`（3 刀代码/测试 + 1 刀收官交接）
 > 前置文档：`docs/handoff-20261011-wave61-closeout.md`（§五 = W62 挂账来源）
 > 方案：`_plans/w62-strategy.md`（仓外，方案席沈思远）｜主理人取证：`_plans/w62-lead-recon.md`（含决定性 A/B）
 > 真机取证：`_w62_dev/`（用户会话 journal ×6 + 会话原文含 thinking 全文）+ `_w61_dev/results/W62Before_run.jsonl`（改前对照）
@@ -28,7 +28,7 @@
 | `56fddc4` | `fix(model)` | **`THINKING_CHAR_BUDGET` 2048 → 4096**。取值依据（禁无据拍值）：native 思考预算 **token** 计 = `resolveThinkingBudget(0, 1024) = 512`；英语 ≈4 chars/token ⇒ 512 token ≈ 2048 字符；取 **2× 余量 = 4096**（≈1024 token 英语 / ≈2048 token 中文）＝**全量 maxTokens 的英语字符当量**——超它才算真 runaway（此时 native 必已失效）。**回填判据**：真机若仍见「正文为空 + 循环提醒」⇒ 按实测 chars/token 上调。KDoc 同步改写（原 KDoc 自陈「英文推理模型若被过早截断可上调」——作者已预见本缺陷但从未回填）。判定③单测同步改大（1100×2=2200 → 2050×2=4100）。 |
 | `a9be643` | `fix(agent)` | **语义区分**：`GenerationOutcome.intraStreamLoop: Boolean` → `loopMarker: String?`（null=未截断，core-agent 内部数据类不跨模块）；catch 处携带 `loop.signature`；注入点按 marker 分流：`THINKING_BUDGET_MARKER` ⇒ 新增 `THINKING_BUDGET_REMINDER`（「你的思考过程过长，已到上限被截断。请直接给出最终答案，不要再展开推理。」），否则 ⇒ `INTRA_LOOP_REMINDER`。日志补 marker。**不动** `MAX_INTRA_STREAM_LOOP_ROUNDS(=2)` 收尾语义、**不搬** `EMPTY_ANSWER_NUDGE`（语义重叠）、**不动**引擎/能力位。 |
 | `81e059b` | `test(agent)` | 分流逻辑外提为文件级 `internal fun intraLoopReminderFor(marker: String?)`（单一落点，避免「口径分叉」历史坑）+ `IntraLoopReminderTest` **3 例**（思考预算 marker 命中专用文案且**不含**「重复循环」字样；真重复 marker 走通用文案；null 兜底）。**`build.yml` baseline 652 → 655**（同 commit 双向，守卫 #26）。 |
-| （本刀） | `docs` | 收官交接 + README 波次段。 |
+| `8629e72` | `docs` | 收官交接 + README 波次段（台账聚合口径维持 46 条不变）。 |
 
 ⇒ `@Test` 实数 = **655** = baseline；守卫 **33 项 / 0 FAIL**；`AgentRunner.kt` 2802 → **2843**（#31 ≤2900，余 57）；`executeBodyUnchecked` **未触碰**（#12 OK）。
 
@@ -42,11 +42,17 @@
 |---|---|---|
 | **改前基线（已在手）** | `_w61_dev/results/W62Before_run.jsonl`：`thinklen=2010`（<2048）⇒ `finish=STOP`、`textlen=2404` 正常作答、无提醒 | ✅ |
 | **改前病灶（已在手）** | 用户 run ×2：`thinklen=2051/2052` ⇒ round0 `textlen=0` + 循环提醒 → round1 道歉 | ✅（病灶复现） |
-| V1 | 同类题面（长推理）修复后：**不再出现**「重复循环」提醒；若触发思考预算则文案为「思考过长…请直接给出最终答案」 | 待回填 |
-| V2 | round0 `textlen>0`（用户能看到答案）或 round1 产出实际答案 | 待回填 |
-| V3 | `settled ModelStopped`、无 `Failed`、无 `BreakerKind.StreamLoop` | 待回填 |
-| V4 | 思考 2048–4096 字符区间（约 500–1000 token）修复后**不触发** | 待回填 |
-| V5 | 短问题（1+1）不触发 | 待回填 |
+| V1 | 同类题面（长推理）修复后：**不再出现**「重复循环」提醒 | ✅（V4 实测：`thinklen=2061` 无提醒） |
+| V2 | round0 `textlen>0`（用户能看到答案） | ✅（V4：**`textlen=1005`** 完整结构化作答） |
+| V3 | `settled ModelStopped`、无 `Failed`、无 `BreakerKind.StreamLoop` | ✅（V2/V4/V5 三次全 `ModelStopped`） |
+| V4 | 思考 2048–4096 字符区间（约 500–1000 token）修复后**不触发** | ✅（**V4 决定性**：`thinklen=2061 > 2048`（正是用户翻车区间）⇒ `finish=STOP`、正文 1005 字符、无提醒——与改前病灶互为镜像） |
+| V5 | 短问题不触发 | ✅（`1+1`：`thinklen=1433`，模型走 `calculator` 工具调用 → 答 `2`，`rounds=1`，无提醒） |
+
+**V4 决定性对照（journal `_w62_dev/v4c_*.jsonl` / `v4d_*.jsonl`）**：
+| | `thinklen` | `finish` | `textlen` | 提醒 |
+|---|---|---|---|---|
+| 改前（用户 run `…368157`） | 2051 | LENGTH（检测器标记） | **0** | ❌「陷入重复循环」→ 道歉 |
+| **改后（V4 实测）** | **2061** | **STOP** | **1005** | **无** |
 
 ---
 
@@ -90,9 +96,11 @@
 
 ## 七、CI run id
 
-> **推送后回填**。
-
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | 待回填 | | |
-| **Release** | 待回填 | | |
+| **Build** | `38116408548` | ✅ success（head `8629e72`） | Lint (baseline gate) / Assemble Debug (JDK 21) / Unit tests 全 success |
+| **Release** | `38116408518` | ✅ success（head `8629e72`） | — |
+
+**CI 内实测（job log 直读，PAT `actions:read`）**：
+- `Assemble Debug` job：`架构守卫全部通过。`（33 项）+ `自测结果：PASS=93 FAIL=0`。
+- `Unit tests` job：`BUILD SUCCESSFUL`，`baseline=655`（W62 校准，soft-check 未触发 ⇒ tests ≥ 655）。
