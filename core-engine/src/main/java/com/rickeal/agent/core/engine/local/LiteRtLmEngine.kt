@@ -83,7 +83,8 @@ private const val SYSTEM_MERGE_CLOSE = "[/系统设定]"
  * 推导的有限值即可，机制面（[LiteRtLmEngine.generateStream] 开头的闸门 +
  * [LiteRtLmEngine.handleTemplateRenderFailure] 的到限 warn）零改动。
  * bump 前临时 K=3 已定（见 fold 出口前置⑤注释）—— 拍的是**时机**不是真值，
- * 保留「回填真值前不拍值」原义（W59 P3-Ⓑ 补注）。
+ * 保留「回填真值前不拍值」原义（W59 P3-Ⓑ 补注）。⚠️ 当下值 = [Int.MAX_VALUE]
+ * （未回填；K=3 仅是 bump 场景的预留目标值，勿据本行改常量——W63 P4-γ 限定语）。
  */
 private const val TEMPLATE_REBUILD_FUSE_THRESHOLD: Int = Int.MAX_VALUE
 
@@ -1031,7 +1032,7 @@ class LiteRtLmEngine(
         // ⚠️ 当前 K = 保守值（Int.MAX_VALUE = 不熔断），本分支不可达，行为与 W55 一致；
         // 阈值待 W56 毒化 N/M 分布回填（见 [TEMPLATE_REBUILD_FUSE_THRESHOLD] KDoc）。
         // bump 前临时 K=3 已定（见 fold 出口前置⑤注释）—— 保留「回填真值前不拍值」原义
-        //（W59 P3-Ⓑ 补注）。
+        //（W59 P3-Ⓑ 补注）。当下值 = Int.MAX_VALUE（未回填；K=3 仅 bump 场景预留目标值）。
         request.conversationId?.let { cid ->
             // W57：熔断计数与 adopt 读回**共用同一合并语义**（[mergeResilienceState] 的 max
             // 分支）—— 原先此处另写一份 `maxOf(templateRebuildCount, storeCount)`，与

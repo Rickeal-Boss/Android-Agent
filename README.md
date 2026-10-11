@@ -269,6 +269,25 @@ Android-Agent/
 > 「仓库密钥签名正式包 + debug 包」双产物（`push.branches` 同时列了三者）。PR 不触发
 > `release.yml`（PR 门禁走 `build.yml` 的零密钥快速轨）。
 > `improve` 是自 W48 起的主开发分支（云端自 `harness-improve` 的同一提交 `1a0b45a` 新建，W48 接入 CI 触发）。
+> `1011` 是 **2026-10-11 快照锚点分支**（W63 裁决，自 `improve` @ `3ea8ad0` 复制）：**非开发分支、
+> 有意不进 `build.yml` / `release.yml` 触发列表（其上 0 run 属预期）**，开发继续在 `improve`；
+> `1011` 顺带充当「回滚锚点」（了结 W51「内部锚点分支」挂账）。首个 tag 的落点分支
+> 与分支拓扑（canonical / 冻结面）随法务 `termsVersion` 裁决一并在产品治理裁决中定案。
+> ⚠️ 审查基线口径：**W62 代码 diff 基线 = `1da011d`**（W61 tip）；`06505b7` 为 W60 CI 回填
+> 提交，勿作 W62 审查/对账基线（B2 补审 P3-1 勘误）。
+>
+> **🈴 档位决策表（W63 P3-β 治理件）：thinking 验证/复现时 ThinkingMode 怎么设** ——
+>
+> | 模型 | 能力位 `thinking` | 通道来源 | AUTO 档效果 | 验证/复现设定 |
+> |---|---|---|---|---|
+> | gemma-4（E2B/E4B） | **true**（W63 刀E 订正） | `ChannelSyntax.GEMMA` 显式下发 | **思考打开**（AUTO 自愿） | 默认 AUTO 即可；复现 W62 历史病灶（能力位 false 时代）才需 ON |
+> | DeepSeek-R1 系 | true（W61 修复） | `ChannelSyntax.THINK` 显式下发（W63 刀D） | **思考打开** | **AUTO**（能力位生效入口；W61 判据口径不变） |
+> | MiniCPM5 | true | 容器元数据自带（不下发） | 思考打开 | AUTO；OFF 走显式 `enable_thinking=false` |
+> | 其余（gemma-3/3n、Qwen2.5、Phi 等） | false | ——（无思考） | 关闭 | AUTO/ON 均无思考流 |
+>
+> W61 交接「R1 设 AUTO」与 W62 交接「gemma 必须 ON」的分档差异源于**当时 gemma-4 能力位
+> 还是 false**（AUTO 不复现）；刀E 订正后**全线坍缩为二元**：AUTO = 能力位生效入口、
+> ON = 强制打开、OFF = 显式关闭。历史病灶复现仍按各波交接的当时设定。
 >
 > **纯文档改动**：`build.yml` 的 `on.push` / `on.pull_request` 已加 `paths-ignore`
 > （`docs/**`、`**/*.md`、`.github/ISSUE_TEMPLATE/**`），纯文档提交不再触发构建；

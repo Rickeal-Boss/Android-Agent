@@ -100,6 +100,7 @@ APK = W60 工作树构建（`8f5e3b6`，localbuild assembleDebug BUILD SUCCESSFU
 ## 五、挂账（W61 起；权威版见本节 + README）
 
 1. 🔴 **AgentRunner 拆分前置告警（升级）**：真正更紧的是**方法级** `executeBodyUnchecked` **540/550（守卫 #12，余 10）**，非文件级余 98（#31）。**重评触发条件**（满足任一即启动拆分评审）：`executeBodyUnchecked` ≥ 545 行｜`AgentRunner.kt` ≥ 2880 行｜任一 W61+ 挂账明确落 AgentRunner｜真机文本 run 回归批通过。**首刀选型**：优先「近纯函数簇外提」（`buildSystemSections`/`toolCallSignature`/`canonicalizeJson`，零行为风险）打底 → 再 emit 簇；**方法级压力**用 W29-A1 式「`executeBodyUnchecked` 内再外提」，**禁止**改 #12/#31 阈值。
+> ⚠️ **勘误（W63 注，复审19 P3-α）**：上句「首刀选型」列的三候选已被 `docs/13-agentrunner-split-plan.md` §二证明为**层级错判**——三者均已在 `executeBodyUnchecked` 之外，外提对 #12 零帮助。真接缝 = 方法内三簇，首刀 = 接缝①工具装配簇（**执行以 docs/13 为准，勿按本条执行**；W63 刀F 已按 docs/13 落地）。
 2. **守卫 #33 判据① 补注释位排除**（P3-3）：加 `\| grep -vE "^[0-9]+:[[:space:]]*[*/]"` + 1 个 selftest 绿面 case（KDoc 注入调用形态 ⇒ 仍绿）。
 3. **bump 重启监视**：上游 tag 季扫（前置④）+ 前置⑥清单（`docs/12` 十三项）逐项复核后才动 toml（#29 红输出已加指向）。
 4. **多模态 GPU 组合待验**：视觉容器 GPU 后端真机未实测（预设统一禁 GPU 待验证）；`gemma-4-E4B-it-gpu` / `gemma-4-E2B-it-gpu` 待上游修复或 bump。
