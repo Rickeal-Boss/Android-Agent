@@ -509,6 +509,16 @@ class StreamRepetitionDetector(
          * 实证：W62 A/B（同设备 / 同模型 / 同构建）`thinklen=2010`（<2048）正常作答 /
          * `thinklen=2051`（>2048）被误判「循环」⇒ 阈值是刀锋。
          *
+         * 适用区间与已知残留（W63 刀B 注记）：本值是**固定字符常量**，而 native 思考
+         * 预算 = `resolveThinkingBudget(0, maxTokens)` = maxTokens/2 **token**，随
+         * maxTokens 滑条（64..8192，默认 1024）变化 —— 上面的标定只在 **maxTokens=1024**
+         * 下成立（native 512 token ≈ 2048 字符 < 4096 ⇒ native 优雅路径先到）。
+         * maxTokens ≥ 4096（滑条上限 8192）时 native 预算的英语字符当量（≈2×maxTokens
+         * ≥ 8192）反超本值，本守卫将**先于** native 优雅路径硬截（已知残留，暂不拆
+         * 结构，见 W63 handoff）；按 4 chars/token 估算的精确临界在 maxTokens ≳ 2048，
+         * 随语言 chars/token 波动。真机若在默认滑条下复现「守卫先到」，优先核对
+         * maxTokens 是否被调大，而非急着上调本值。
+         *
          * 回填判据：真机若仍见 native **未先优雅收尾**（即仍出现「正文为空 + 循环提醒」），
          * 按实测 chars/token 再上调（把实测值记于此）。
          */
@@ -519,6 +529,13 @@ class StreamRepetitionDetector(
          * 正常代码块 / 列表 / 段落都带 \n 句界，text 流 4096 字符无任何句界只能是
          * 「不出句界的无限铺陈」退化。**可调，真机反馈校准**：量级取 thinking 预算
          * 的两倍（正文比思维链更常出现长列表 / 长代码），流式长代码被误截可上调。
+         *
+         * ⚠️ 与 [THINKING_CHAR_BUDGET] **同值 4096 但语义不同，两值不得联动同步调整**
+         * （W63 刀B 交叉注记）：thinking 流撞预算有 native「预算耗尽 → 强制吐思考
+         * 结束符 → 转回正文生成」的优雅路径兜底，4096 只是防误判的余量；text 流撞的
+         * 是 maxOutputToken 硬截（native 无任何兜底），4096 是**唯一防线**。两个值
+         * 各自独立标定（thinking 侧标定于 maxTokens=1024 的 native 半预算字符当量，
+         * 见其 KDoc），调一个不等于调另一个。
          */
         const val TEXT_RUNAWAY_CHARS = 4096
 
