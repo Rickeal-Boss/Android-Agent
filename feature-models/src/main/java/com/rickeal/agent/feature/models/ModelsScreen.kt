@@ -219,6 +219,7 @@ fun ModelsScreen(
                     backend = state.backend,
                     gpuAllowed = preset?.gpuSupported == true,
                     gpuBasis = preset?.backendBasis.orEmpty(),
+                    knownBrokenOn = preset?.knownBrokenOn,
                     onSelect = { viewModel.onSelect(model.id) },
                     onLoad = { viewModel.onLoad(model.id) },
                     onUnload = viewModel::onUnload,

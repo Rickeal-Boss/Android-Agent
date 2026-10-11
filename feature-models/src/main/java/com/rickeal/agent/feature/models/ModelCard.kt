@@ -71,12 +71,20 @@ fun ModelCard(
     gpuAllowed: Boolean = true,
     /** GPU 禁用/放行的依据（来自预设 backendBasis），展示在选择器下方。 */
     gpuBasis: String = "",
+    /**
+     * 该容器在当前运行时的已知失败签名（来自预设 knownBrokenOn，W63 刀C）。
+     * null = 未见已知失败。非空时：① 卡上常驻一行红字；② 点「加载」先弹确认框，
+     * 确认后才走原加载路径（失败语义不变，只加提示 —— 用户可能想亲自复验上游修复）。
+     */
+    knownBrokenOn: String? = null,
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     // 同 ModelsScreen：卡片在 Lazy 布局里会被回收，且旋转会重建 Activity ——
     // 用 remember 的话确认框会凭空消失。
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    // 已知坏容器的加载确认框（W63 刀C）：与 confirmDelete 同款 saveable 纪律。
+    var confirmBrokenLoad by rememberSaveable { mutableStateOf(false) }
 
     GlassCard(
         modifier = modifier.fillMaxWidth(),
@@ -189,6 +197,16 @@ fun ModelCard(
                     modifier = Modifier.padding(top = 8.dp),
                 )
             }
+            // 已知坏容器硬提示（W63 刀C）：与 GPU 警示同款「常驻展示」取舍 —— 让
+            // 「为什么加载失败」在选择的那一刻就有答案，而不是等加载报错才发现。
+            if (knownBrokenOn != null) {
+                Text(
+                    text = "已知不可用：$knownBrokenOn",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.danger,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
             // NPU 在不支持的设备上是在 native 层崩（用户只看到闪退），所以提前给警告。
             // 注意是"警告"不是"禁用"：8650 这个门槛是估计值，硬拦会误伤能跑的设备。
             if (backend == InferenceBackend.NPU && !DeviceCapability.supportsNpu()) {
@@ -223,7 +241,11 @@ fun ModelCard(
                 } else {
                     GlassButton(
                         text = if (isLoading) "加载中" else "加载",
-                        onClick = onLoad,
+                        // 已知坏容器（W63 刀C）：先弹确认框，确认后才走原加载路径
+                        // （失败语义不变，只加提示 —— 不拦死，留复验上游修复的入口）。
+                        onClick = {
+                            if (knownBrokenOn != null) confirmBrokenLoad = true else onLoad()
+                        },
                         enabled = !isLoading,
                         loading = isLoading,
                         icon = {
@@ -305,6 +327,30 @@ fun ModelCard(
                     modifier = Modifier.padding(top = 10.dp),
                 )
             }
+        }
+    }
+
+    // 已知坏容器的加载确认（W63 刀C）：与 confirmDelete 同构的「拦下 → 讲清 → 用户
+    // 决定」，但有「仍要尝试」出口 —— 这里拦的是「已知的重复失败」，不是授权/安全闸。
+    if (confirmBrokenLoad && knownBrokenOn != null) {
+        LiquidDialog(
+            onDismissRequest = { confirmBrokenLoad = false },
+            title = "已知不可用的模型",
+            actions = { dismiss ->
+                GlassButton(text = "取消", onClick = dismiss, material = GlassMaterial.THIN)
+                GlassButton(text = "仍要尝试", onClick = {
+                    // 原加载路径原样触发（onLoad 即 ModelsViewModel.onLoad）：
+                    // 失败语义完全不变，本对话框只加提示。
+                    onLoad()
+                    dismiss()
+                })
+            },
+        ) {
+            Text(
+                text = "该容器在当前运行时已知不可用：$knownBrokenOn。仍要尝试？",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onGlass,
+            )
         }
     }
 }

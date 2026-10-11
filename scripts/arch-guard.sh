@@ -775,6 +775,23 @@ check "LiteRtLmEngine 世代门控接线（shouldDropStaleDisposal 调用 1；ha
            [ "$g" -eq 1 ] || echo "$E 的 shouldDropStaleDisposal( 调用数($g) != 1：世代门控被删/重复 ⇒ A4 幂等静默失效"
            [ "$c" -eq 2 ] || echo "$E 的 handleTemplateRenderFailure(token,…) 调用数($c) != 2：两调用点（异步回调/同步下发）必须都传 token"'
 
+# 34) knownBrokenOn 与 recommended 互斥（W63 刀C）：`ModelPreset.knownBrokenOn` 驱动
+#     模型卡红字硬提示与加载前确认对话框 —— 它声明「该容器在当前运行时已知不可用」；
+#     `recommended = true` 会进「一键获取模型」首批推荐。两者同真 = 一边报坏一边置顶
+#     推荐的自相矛盾。不变量：knownBrokenOn != null ⇒ recommended == false。
+#     判据（在 ModelPresets.kt 数据上逐 ModelPreset( 构造块检查）：块内同时出现
+#     `knownBrokenOn = "…"` 与 `recommended = true` ⇒ 报红（输出含违规行本身，非仅守卫名）。
+#     fail-closed：文件缺失 / `val knownBrokenOn` 声明被删 / 找不到任何构造块 ⇒ 判红
+#     （守卫面失效必须判红，不静默）。
+#     扫描器按**本脚本所在目录**定位（GUARD_DIR，与第 15 条同款 —— 自测网以
+#     cwd=脚手架 运行本守卫，相对路径会找不到脚本 ⇒ 守卫自身 exit 2 假红）。
+#     ⚠️ 扫描器恒 exit 0、违规打 stdout（check-test-void.py 同款契约）⇒ 不会踩
+#     「python 失败再跑 python3」的双跑双输出。
+check "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）" \
+  bash -c "F=feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt
+           if [ ! -f \"\$F\" ]; then echo \"::error::\$F 不存在（第 34 条守卫面已失效）\"; exit 1; fi
+           python \"$GUARD_DIR/check-known-broken.py\" \"\$F\" || python3 \"$GUARD_DIR/check-known-broken.py\" \"\$F\""
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

@@ -114,6 +114,18 @@ data class ModelPreset(
     val note: String,
     /** GPU 放行/禁用的依据与警示（模型卡展示）。空串 = 无特别说明。 */
     val backendBasis: String = "",
+    /**
+     * 该容器在当前运行时（litertlm 0.17.1）的**已知失败签名**；null = 未见已知失败。
+     *
+     * 取值必须来自**真实失败证据**（真机实测 / 容器取证，出处 = 本文件各条目 note /
+     * backendBasis 的 W43/W60 实测记录），禁止凭推测预填 —— 本字段驱动模型卡红字
+     * 硬提示与加载前确认对话框，标错会把可用模型吓跑。
+     *
+     * 不变量：`knownBrokenOn != null` ⇒ `recommended == false`（已知坏容器不得置顶
+     * 推荐），由 scripts/arch-guard.sh 第 34 条强制。上游修复 + 真机复验通过后**清空
+     * 本字段**即恢复推荐资格（不要只改 recommended 留着红字段）。
+     */
+    val knownBrokenOn: String? = null,
 ) {
     /**
      * 是否放行 GPU 后端（2026-09-26）。**判定源下沉到 [ModelGpuSupport]**（core-model）：
@@ -185,6 +197,8 @@ object ModelPresets {
             sizeBytes = 2008432640,
             recommended = false,
             backendBasis = "官方 GPU 特化变体（ML Drift GPU）——⚠️ 实测不可用（W60：引擎初始化 NOT_FOUND，容器缺 TF_LITE_PREFILL_DECODE signature；W43：输出退化 + CPU 后端 NOT_FOUND），待上游修复后再开放",
+            // W63 刀C：签名取自本条 backendBasis 的 W60 实测记录（engine init NOT_FOUND）。
+            knownBrokenOn = "0.17.1 引擎初始化 NOT_FOUND（容器缺 TF_LITE_PREFILL_DECODE section；W43 另实测输出退化）",
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -216,6 +230,8 @@ object ModelPresets {
             sizeBytes = 2969059328,
             recommended = false,
             backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）——❌ 实测不可用（W60：引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section，model_signature_utils.cc:250），与 E2B·GPU 同源）；⚠️ 视觉能力系 gemma-4 家族外推（同族 E2B-it 已逐容器取证带视觉编码器，E4B 未单独取证）",
+            // W63 刀C：签名取自本条 backendBasis 的 W60 实测记录（同 E2B·GPU 失败面）。
+            knownBrokenOn = "0.17.1 引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section，与 E2B·GPU 同源）",
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -365,6 +381,8 @@ object ModelPresets {
             sizeBytes = 4214021104,
             recommended = false,
             backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU；⚠️ 模板已离线取证数组安全（Wave 53 L2：容器模板对多元素 content 走 is-string 分支并循环吐 <image_soft_token>，非 Qwen2.5 的「+」拼接形态），❌ 端到端不可用（W60：Failed to create conversation config: INVALID_ARGUMENT: Unsupported model type，0.17.1 已知限制）",
+            // W63 刀C：签名取自本条 backendBasis 的 W60 实测记录（会话创建级失败）。
+            knownBrokenOn = "0.17.1 会话创建失败（Unsupported model type，引擎已知限制）",
             mirrors = domesticMirrors("MiniCPM-V-4", "MiniCPM-V-4-int8.litertlm"),
         ),
     )

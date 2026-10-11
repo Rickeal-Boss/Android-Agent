@@ -278,6 +278,41 @@ class LiteRtLmEngineLoader {
     fun load(): Int = 0
 }
 KT
+  # 第 34 条（W63 刀C，knownBrokenOn 互斥 recommended）要求 feature-models 的
+  # ModelPresets.kt 存在且含 `val knownBrokenOn: String?` 声明 ⇒ 骨架必须提供一份
+  # **全合法组合**的最小预设表（推荐项不标坏 / 坏容器不推荐），否则干净树会被
+  # fail-closed 判红（正例失守）。组合覆盖：a = recommended 无 knownBrokenOn（缺省）；
+  # b = knownBrokenOn 非空 + recommended=false；c = 显式 knownBrokenOn=null +
+  # recommended=true（null 与 true 合法共存）。
+  mkdir -p "$root/feature-models/src/main/java/com/rickeal/agent/feature/models"
+  cat > "$root/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+data class ModelPreset(
+    val label: String,
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "clean-recommended",
+            recommended = true,
+        ),
+        ModelPreset(
+            label = "broken-not-recommended",
+            recommended = false,
+            knownBrokenOn = "0.17.1 假签名（fixture）",
+        ),
+        ModelPreset(
+            label = "explicit-null-recommended",
+            recommended = true,
+            knownBrokenOn = null,
+        ),
+    )
+}
+KT
   # 第 26 条（Wave 53，测试基线双向同步）要求 build.yml 声明 `baseline=N` 且与全仓
   # `@Test` 代码位实数**相等** ⇒ 骨架必须提供**一份含匹配 baseline 的 build.yml** +
   # **恰好 N 条 @Test 载体**（否则干净树会被本条误红，正例失守）。
@@ -2016,6 +2051,89 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case47] KDoc 里的门控调用形态被误计入（第 33 条判据① 未排除注释位 ⇒ 会被注释骗）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 48：第 34 条（knownBrokenOn 互斥 recommended，W63 刀C）红面 —— 同一构造块内
+#   `knownBrokenOn = "…"` 与 `recommended = true` 共存 ⇒ 判红，且输出必须含违规行
+#   本身（预设 label），不能只匹配守卫名（KB：守卫自身执行失败也含守卫名 ⇒ 假 PASS）。
+# ---------------------------------------------------------------------------
+d="$TMP/case48-known-broken-red"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+data class ModelPreset(
+    val label: String,
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "broken-but-recommended",
+            recommended = true,
+            knownBrokenOn = "0.17.1 引擎初始化 NOT_FOUND",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case48 knownBrokenOn 与 recommended 同真 (第 34 条)" "$rc" "$out" \
+  "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）"
+if printf '%s\n' "$out" | grep -qF "broken-but-recommended"; then
+  echo "PASS [case48b] 输出含违规预设 label（真命中，非守卫自身故障的假红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case48b] 输出不含违规预设 label（可能是守卫自身故障被判红 ⇒ 假 PASS）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# case 49：第 34 条 fail-closed —— `val knownBrokenOn` 声明被删（字段被整个拆掉）
+#   ⇒ 必须判红「守卫面失效」，不能静默变绿（僵尸规则防线）。
+# ---------------------------------------------------------------------------
+d="$TMP/case49-known-broken-decl-gone"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+data class ModelPreset(
+    val label: String,
+    val recommended: Boolean = false,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "no-field",
+            recommended = true,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case49 knownBrokenOn 声明被删 (第 34 条面失效)" "$rc" "$out" \
+  "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）"
+
+# ---------------------------------------------------------------------------
+# case 50：第 34 条绿面 —— 显式 `knownBrokenOn = null` 与 `recommended = true`
+#   合法共存（null = 未见已知失败，推荐资格保留）⇒ 必须仍绿（防把 null 判成非空）。
+#   （scaffold 的 clean-recommended / explicit-null-recommended / broken-not-recommended
+#   三组合已由 positive case 覆盖绿面；本 case 钉「显式 null 不被误判」这一形态。）
+# ---------------------------------------------------------------------------
+d="$TMP/case50-known-broken-null-green"
+scaffold "$d"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case50 显式 knownBrokenOn=null 与 recommended=true 共存 (第 34 条绿面)] 退出 0"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case50] 显式 null 被误判为非空（第 34 条误红）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
