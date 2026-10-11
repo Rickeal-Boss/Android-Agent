@@ -431,6 +431,20 @@ private const val INTRA_LOOP_REMINDER: String =
         "你刚才的输出陷入重复循环，已被截断。请换一个实质不同的回答。"
 
 /**
+ * 思考预算耗尽（[StreamRepetitionDetector.THINKING_BUDGET_MARKER]）专用提醒（W62）。
+ *
+ * 语义与「重复循环」严格分开：**思考过长 ≠ 内容重复**。原实现两种 verdict 共用
+ * [INTRA_LOOP_REMINDER]（「你刚才的输出陷入重复循环」）⇒ 模型据此**道歉**、用户看不到
+ * 答案（W62 真机定案：gemma 图片问答，thinking 合法长推理被误判为循环）。本文案直陈
+ * 「思考过长，请直接作答」，且在「思考流触发 + 本轮正文为空」时对症 —— 空正文情形由
+ * 措辞「请直接给出最终答案」天然覆盖，**不**复用 [EMPTY_ANSWER_NUDGE]（两者语义重叠，
+ * 搬进来只会加分支复杂度）。
+ */
+private const val THINKING_BUDGET_REMINDER: String =
+    SYSTEM_REMINDER_PREFIX +
+        "你的思考过程过长，已到上限被截断。请直接给出最终答案，不要再展开推理。"
+
+/**
  * 轮内流式重复（StreamRepetitionDetector）连续触发的轮数上限：第 3 次触发即按失败
  * 收尾（对齐 MAX_EMPTY_ANSWER_ROUNDS 的收尾与 journal 语义 —— 先给 N 轮自我纠正
  * 机会，仍复发就是终态，不再空转烧 prefill）。正常轮把计数归零。
@@ -868,7 +882,7 @@ class AgentRunner(
                     policy = policy,
                 ) ?: return
                 val accumulator = generation.accumulator
-                val intraStreamLoop = generation.intraStreamLoop
+                val loopMarker = generation.loopMarker
 
                 // ── 原生工具通道判据的**每轮校验**（Wave 34 复审 P0-2）──────────────
                 // 层3 正向留痕（Wave 52 B2）：在「漂移才 warn」之外，**每 run 落一条 info**，
@@ -963,7 +977,7 @@ class AgentRunner(
                 // 必 return/NextRound」的不变量（原 :802-806 注释）由提取方法的返回值
                 // 结构化保住 —— Proceed 只从 else 连击归零路径返回。
                 when (handlePostStreamSignals(
-                    intraStreamLoop = intraStreamLoop,
+                    loopMarker = loopMarker,
                     policy = policy,
                     accumulator = accumulator,
                     calls = calls,
@@ -1265,10 +1279,16 @@ class AgentRunner(
         }
     }
 
-    /** 单轮生成的产物（Wave 29 A1 Step 1）：accumulator / intraStreamLoop 经返回值带出。 */
+    /** 单轮生成的产物（Wave 29 A1 Step 1）：accumulator / loopMarker 经返回值带出。 */
     private class GenerationOutcome(
         val accumulator: StreamAccumulator,
-        val intraStreamLoop: Boolean,
+        /**
+         * 轮内流式重复检测触发时的 marker（= [StreamRepetitionDetector.Verdict.LoopDetected.repeatedSignature]）；
+         * **null = 本轮未被截断**（原 `intraStreamLoop: Boolean` 的语义等价升格）。W62 改由
+         * marker 携带 verdict 身份，供生成后流程按语义分流提醒文案（思考预算 ≠ 重复循环）。
+         * ⚠️ core-agent 内部数据类，不跨模块（不违反 `internal` 按模块隔离纪律）。
+         */
+        val loopMarker: String?,
         val retried: Boolean,
     )
 
@@ -1436,9 +1456,9 @@ class AgentRunner(
         policy: AgentPolicy,
     ): GenerationOutcome? {
         var accumulator = StreamAccumulator()
-        // 本轮生成是否被轮内重复检测截断：while(true) 重试循环内置位，
-        // 生成后流程消费（处置分支 / finishReason 标记）。
-        var intraStreamLoop = false
+        // 本轮生成是否被轮内重复检测截断：while(true) 重试循环内置位，生成后流程消费
+        // （处置分支按 marker 分流提醒文案）。null = 未被截断；非 null = 触发时的 marker。
+        var loopMarker: String? = null
         // 生成失败同样「清理 + 重试一次」：本地引擎的 native 句柄一旦失效，
         // 缓存里的实例不会自愈，只有换新实例重新 load 才能恢复（对齐官方 gallery 的
         // cleanUpAndReinitialize）。严格只重试一次 —— 坏模型/坏配置重试多少次都一样，
@@ -1493,9 +1513,9 @@ class AgentRunner(
                 // conversationDirty（LiteRtLmEngine.kt:512-521），下一轮自动重建会话，
                 // 属预期 —— 上下文一致性由全量重放保证。
                 AgentLogStore.warn(
-                    "轮内重复检测触发（thinking=${loop.inThinking}），已提前终止本次生成并保留已产出文本"
+                    "轮内重复检测触发（thinking=${loop.inThinking}, marker=${loop.signature}），已提前终止本次生成并保留已产出文本"
                 )
-                intraStreamLoop = true
+                loopMarker = loop.signature
                 break
             } catch (to: TimeoutCancellationException) {
                 // Wave 31 6c：生成超时 ≠ 用户取消。TimeoutCancellationException 是
@@ -1633,7 +1653,7 @@ class AgentRunner(
                 emit(AgentEvent.Retrying("生成失败，已重建引擎并重试本轮"))
             }
         }
-        return GenerationOutcome(accumulator, intraStreamLoop, generationRetried)
+        return GenerationOutcome(accumulator, loopMarker, generationRetried)
     }
 
     /**
@@ -2044,7 +2064,7 @@ class AgentRunner(
      *
      * 两块合并的语义依据（方案 §三 Step 5）：intra 分支所有路径必 return/NextRound
      * （见块内 ⚠️ 不变量原注释），Proceed 只从 else 连击归零路径返回 —— 「执行到
-     * final answer 分支时 intraStreamLoop 恒为 false」的不变量由返回值结构化保住。
+     * final answer 分支时 loopMarker 恒为 null」的不变量由返回值结构化保住。
      *
      * 返回 [PostStreamStep.NextRound] = 原 round++ + continue（注入提醒后重跑本轮）；
      * [PostStreamStep.Terminal] = 原 return（超限按失败收尾，已 emit Failed）；
@@ -2052,7 +2072,7 @@ class AgentRunner(
      * round（轮级 continue 的 round++ 内置位不变式）。
      */
     private suspend fun FlowCollector<AgentEvent>.handlePostStreamSignals(
-        intraStreamLoop: Boolean,
+        loopMarker: String?,
         policy: AgentPolicy,
         accumulator: StreamAccumulator,
         calls: List<ToolCall>,
@@ -2072,11 +2092,11 @@ class AgentRunner(
         // repeat/empty 逻辑叠加产生双重 continue。检测器判了循环的文本不再
         // 进跨轮签名检测（无意义且可能抢占 pendingReminder 单槽）。
         // ⚠️ 不变量：本分支的**所有**路径都是 `return`（超限收尾）或 `continue`
-        // （注入提醒后重跑）⇒ 执行到下方 final answer 分支时 `intraStreamLoop`
-        // 恒为 false。原 `finishReason = if (intraStreamLoop) LENGTH else …` 是
+        // （注入提醒后重跑）⇒ 执行到下方 final answer 分支时 `loopMarker`
+        // 恒为 null。原 `finishReason = if (loopMarker != null) LENGTH else …` 是
         // 死条件（复审3 §4-3），Wave 25 已删 —— 若日后有人去掉这里的 `continue`，
         // 必须同步把三元加回去。
-        if (intraStreamLoop) {
+        if (loopMarker != null) {
             state.intraLoopStreak++
             if (state.intraLoopStreak > MAX_INTRA_STREAM_LOOP_ROUNDS) {
                 AgentLogStore.error(
@@ -2116,12 +2136,19 @@ class AgentRunner(
             journal?.appendMessage(repeatModel)
             // 单槽纪律：已有待注入提醒时不覆盖（同参 > 重复回答 > 零工具）；
             // 随后立刻消费成合成消息，不留到下一轮造成双重注入。
+            // W62 语义分流：思考预算耗尽（thinking_char_budget）≠ 重复循环，按 marker 选文案。
+            val loopReminderText =
+                if (loopMarker == StreamRepetitionDetector.THINKING_BUDGET_MARKER) {
+                    THINKING_BUDGET_REMINDER
+                } else {
+                    INTRA_LOOP_REMINDER
+                }
             if (state.pendingReminder == null) {
-                state.pendingReminder = INTRA_LOOP_REMINDER
+                state.pendingReminder = loopReminderText
             }
             // R2-1（Wave 29 A1 Step 2）：K2 对 var 属性不做 smart-cast，
             // 字段化后需显式兜底（不变量保证 else 分支不触发，行为等价）。
-            val loopReminder = state.pendingReminder ?: INTRA_LOOP_REMINDER.also { state.pendingReminder = it }
+            val loopReminder = state.pendingReminder ?: loopReminderText.also { state.pendingReminder = it }
             state.pendingReminder = null
             val reminderMessage = ChatMessage(
                 id = "reminder:${state.round}:loop",
@@ -2237,7 +2264,7 @@ class AgentRunner(
                 text = cleanText,
                 thinking = accumulator.thinking.takeIf { it.isNotBlank() },
                 // 截断语义由上方的轮内循环分支独占（它恒 continue/return），
-                // 走到这里 intraStreamLoop 必为 false —— 原 `if (intraStreamLoop)`
+                // 走到这里 loopMarker 必为 null —— 原 `if (loopMarker != null)`
                 // 三元是死条件（复审3 §4-3），Wave 25 已删。
                 finishReason = accumulator.finishReason ?: FinishReason.STOP,
             )
