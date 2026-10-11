@@ -123,7 +123,12 @@ object ModelHeuristics {
         //   **家族外推**（模型卡依据 + 同族 E2B 实证），非逐容器实测 —— 勿据本行断言 E4B 已验。
         // - toolCalling：Google Gemma 4 模型卡「Function Calling – Native support for structured
         //   tool use, enabling agentic workflows」。
-        // - thinking：未在 LiteRT-LM 侧查到「思考通道」的可靠依据，按「查不到就不设」保守关闭。
+        // - thinking（W63 刀E 订正：false → true）：W62 真机实证 gemma-4 有 `<|channel>thought`
+        //   思考通道且正常工作（V4 判据：`thinklen=2061` 即切分后的思考流、`finish=STOP`、
+        //   正文 1005 字符完整作答 —— 通道切分由 thoughtChannelSyntax=GEMMA 显式下发保证）。
+        //   原「未在 LiteRT-LM 侧查到可靠依据，按保守关闭」的依据已被一手证据推翻。
+        //   ⚠️ E2B 为真机实证；E4B 变体未单独真机取证（GPU 变体引擎初始化即失败，见预设
+        //   knownBrokenOn），按家族事实外推并如实标注 —— 沿用 image=true 对 E4B 的外推范式。
         // - speculativeDecoding：litert-community 两张模型卡均有独立章节写明
         //   「Speculative decoding is available on CPU and GPU on Mobile and Desktop」。
         // - 后端：模型卡 Android 基准只列 CPU / GPU（NPU 仅出现在 IoT 的独立 NPU 模型上），
@@ -133,7 +138,7 @@ object ModelHeuristics {
             image = true,
             audio = true,
             toolCalling = true,
-            thinking = false,
+            thinking = true,
             speculativeDecoding = lower.contains("e2b") || lower.contains("e4b"),
             preferredBackends = setOf(InferenceBackend.GPU, InferenceBackend.CPU),
         )
@@ -166,11 +171,10 @@ object ModelHeuristics {
         )
 
         // OTHER 分支：无专属家族分支的模型（含 DeepSeek-R1 蒸馏系，见 inferFamily KDoc）。
-        // - thinking（W61 修复）：DeepSeek-R1 系推理模型文件名含 `qwen` 但不含 `qwen3`/`qwen-3`
-        //   ⇒ [inferFamily] 落 OTHER（其 KDoc 已登记该已知误分类）。故 OTHER 分支按**推理标识**
-        //   识别 thinking：`r1` / `reasoner` / （`deepseek` 与 `distill` 合取）。
-        //   ⚠️ 标记纪律：**不得**用裸 `think`（易误伤普通词）；`distill` 单独用也过宽，须与
-        //   `deepseek` 合取；Qwen2.5-1.5B 亦落 OTHER ⇒ 上式**不得**命中 `qwen2.5`（已单测钉住）。
+        // - thinking（W61 修复 / W63 刀D 判据外提）：DeepSeek-R1 系推理模型文件名含 `qwen`
+        //   但不含 `qwen3`/`qwen-3` ⇒ [inferFamily] 落 OTHER ⇒ 按**推理标识**识别 thinking，
+        //   判据单一落点 = [isReasonerMarker]（与 inferChannelSyntax 的 R1 → THINK 分支共用）。
+        //   ⚠️ 标记纪律与边界说明见该函数 KDoc（裸 `think` 禁用；`qwen2.5` 不得命中——已单测钉住）。
         //   ⚠️ 边界：本位的运行时效果**仅经 AUTO 档**（OFF/ON 由用户显式选择，见 LiteRtLmEngine
         //   的 thinkingOn 解析）；另 UI 模型卡「思考」chip 亦读本位。
         else -> ModelCapabilities(
@@ -180,11 +184,23 @@ object ModelHeuristics {
             image = lower.contains("vl") || lower.contains("vision") || lower.contains("minicpm-v"),
             audio = lower.contains("audio") || lower.contains("omni"),
             toolCalling = lower.contains("it") || lower.contains("instruct"),
-            thinking = lower.contains("r1") || lower.contains("reasoner") ||
-                (lower.contains("deepseek") && lower.contains("distill")),
+            thinking = isReasonerMarker(lower),
             preferredBackends = setOf(InferenceBackend.CPU),
         )
     }
+
+    /**
+     * R1 系推理标识（W61 引入 / W63 刀D 外提为共享纯函数）：`r1` ∨ `reasoner` ∨
+     * （`deepseek` ∧ `distill`）。
+     *
+     * ⚠️ 标记纪律（W61 成文）：**不得**用裸 `think`（易误伤普通词）；`distill` 单独用
+     * 也过宽，须与 `deepseek` 合取；Qwen2.5-1.5B 亦落 OTHER ⇒ **不得**命中 `qwen2.5`
+     * （已单测钉住）。**单一落点**：[inferCapabilities]（OTHER 分支 thinking 位）与
+     * [inferChannelSyntax]（R1 → THINK 显式下发）两处共用，防口径分叉。
+     */
+    private fun isReasonerMarker(lower: String): Boolean =
+        lower.contains("r1") || lower.contains("reasoner") ||
+            (lower.contains("deepseek") && lower.contains("distill"))
 
     /**
      * 思考通道语法归类（Wave 49 R-A）。**默认 `null`（信任容器元数据）** —— 只有一手证据证明
@@ -192,19 +208,29 @@ object ModelHeuristics {
      *
      * - **Gemma-4 → [ChannelSyntax.GEMMA]**：W43 `3e08b8f` 真机实锤 —— 不下发时
      *   `<|channel>thought…<channel|>` 原样混进正文 ⇒ 元数据不含该通道 ⇒ 必须显式下发。
+     * - **R1 系（[isReasonerMarker] 命中）→ [ChannelSyntax.THINK]**（W63 刀D）：一手证据 =
+     *   R1 容器字节扫描（`DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm`，
+     *   1.83GB，2026-10-11）：`<|channel` / `channel` / `chat_template` / `bos_token` 全 0 命中；
+     *   `<think>` 恰 1 处 @ offset `0x4067` —— 位于 protobuf 元数据的特殊 token 列表内，形态为
+     *   `<｜Assistant｜><think>`（单个 25 字节字符串，与 `<｜User｜>`、`<｜begin▁of▁sentence｜>`
+     *   等并列）⇒ 容器**无原生通道声明**、思考以 `<think>`/`</think>` 文本定界（助手轮以
+     *   `<｜Assistant｜><think>` 开局）⇒ 符合「元数据不含该通道才显式下发」前置。
+     *   ⚠️ 只对 [isReasonerMarker] 命中者生效 —— **勿扩大面**：MiniCPM5 类容器元数据**自带**
+     *   thought 通道，显式下发会覆盖正确元数据（N1 教训）。
      * - **其余全部 `null`**：含 MiniCPM5（`RM_MiniCPM5-2B.md:106/163`：容器元数据**自带**
      *   `thought` 通道 `<think>`/`</think>`）、未知模型、非思考模型。
      *   ⚠️ **不得为「看起来完整」给 Gemma 字面量** —— 那正是 N1 本体（错误覆盖正确元数据）。
      *
      * ⚠️ 已知误分类（顺带登记，本波不改）：`DeepSeek-R1-Distill-Qwen-1.5B` 文件名含 `qwen` 但不含
-     * `qwen3` ⇒ [inferFamily] 落 `OTHER`。本设计下它归 `null`（信任元数据），比现状（给 Gemma
-     * 字面量覆盖）**反而更正确**；其元数据是否声明思考通道仍需真机验。
+     * `qwen3` ⇒ [inferFamily] 落 `OTHER`（其 KDoc 已登记）。
      *
-     * ⚠️ `lower` 当前未参与判定，**刻意保留**：它是 R-A 回退档的一行落点
-     * （`family == MINICPM && lower.contains("minicpm5") -> ChannelSyntax.THINK`，见设计 §3.2）。
+     * ⚠️ `lower` 参与 R1 判定（[isReasonerMarker]）；R-A 回退档一行落点
+     * （`family == MINICPM && lower.contains("minicpm5") -> ChannelSyntax.THINK`，见设计 §3.2）
+     * 仍保留在 `when` 可达位置。
      */
     private fun inferChannelSyntax(family: ModelFamily, lower: String): ChannelSyntax? = when {
         family == ModelFamily.GEMMA_4 -> ChannelSyntax.GEMMA
+        family == ModelFamily.OTHER && isReasonerMarker(lower) -> ChannelSyntax.THINK
         else -> null
     }
 

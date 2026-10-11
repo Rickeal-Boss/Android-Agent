@@ -80,7 +80,7 @@ class ModelHeuristicsTest {
 
     @Test
     fun `思考通道语法归类 仅Gemma4给字面量`() {
-        // R-A 本体：只有 Gemma-4 有一手泄漏证据（元数据不含该通道）⇒ 显式下发；其余一律 null
+        // R-A 本体：只有「一手证据证明元数据不含该通道」的模型才显式下发；其余一律 null
         //（信任容器元数据）。见 ChannelSyntax / inferChannelSyntax KDoc。
         assertEquals(
             ChannelSyntax.GEMMA,
@@ -90,6 +90,18 @@ class ModelHeuristicsTest {
             ChannelSyntax.GEMMA,
             ModelHeuristics.infer("gemma-4-E4B-it-gpu.litertlm").thoughtChannelSyntax,
         )
+        // W63 刀D：R1 系（推理标识命中）→ THINK —— 一手证据 = 容器字节扫描（<|channel /
+        // channel / chat_template / bos_token 全 0；<think> 恰 1 处 @ 元数据特殊 token 列表，
+        // 形态 <｜Assistant｜><think>）⇒ 元数据不含原生通道声明、思考以文本定界 ⇒ 显式下发。
+        assertEquals(
+            ChannelSyntax.THINK,
+            ModelHeuristics.infer("DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm")
+                .thoughtChannelSyntax,
+        )
+        assertEquals(ChannelSyntax.THINK, ModelHeuristics.infer("some-reasoner-7b.litertlm").thoughtChannelSyntax)
+        // ⚠️ 测试名纪律：R1 样例名不得含家族关键词（`llama` 会落 LLAMA 家族而非 OTHER，
+        // 是 W61 inferFamily 的既有边界）——用 `qwen` 基座名（`qwen` 裸串不命中任何家族分支）。
+        assertEquals(ChannelSyntax.THINK, ModelHeuristics.infer("deepseek-distill-qwen-7b.litertlm").thoughtChannelSyntax)
         // MiniCPM5：元数据自带 <think>/</think> ⇒ null（不下发，避免覆盖正确元数据 = N1 本体）。
         assertNull(ModelHeuristics.infer("MiniCPM5-2B_int4.litertlm").thoughtChannelSyntax)
         // MiniCPM-V 视觉系、未知模型、老 Gemma 3n/3、Qwen、Phi：全部 null。
@@ -97,6 +109,7 @@ class ModelHeuristicsTest {
         assertNull(ModelHeuristics.infer("some-unknown-model.litertlm").thoughtChannelSyntax)
         assertNull(ModelHeuristics.infer("gemma-3n-E2B-it.litertlm").thoughtChannelSyntax)
         assertNull(ModelHeuristics.infer("gemma-3-4b-it.litertlm").thoughtChannelSyntax)
+        // 标记纪律：Qwen2.5（落 OTHER 但非推理标识）不得命中 THINK（W61 纪律，刀D 沿用）。
         assertNull(ModelHeuristics.infer("Qwen2.5-1.5B-Instruct_q8_ekv4096.litertlm").thoughtChannelSyntax)
         assertNull(ModelHeuristics.infer("Phi-4-mini-instruct_q8.litertlm").thoughtChannelSyntax)
     }
