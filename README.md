@@ -439,6 +439,19 @@ Android-Agent/
 >   - ⚠️ **审查席缺席申报**：本波审查席/开发席均因主理人会话 429 配额耗尽未全程参与（开发席完成刀1/2 后由主理人接手刀3/4）；自审 + 独立核验清单见 W62 交接 §四（无独立第二双眼，W63 建议回看本波 diff）。
 >   - **挂账（W63 起，权威版见 `docs/handoff-20261011-wave62-closeout.md` §五）**：🔴 gemma-4 能力位 `thinking=false` 属保守误设（订正**另立项**，需 E2B/E4B 双变体取证）｜🟡 R1 思考通道切分取证（W61 沿袭）｜🟡 AUTO thinking 预算偏小（W61 沿袭）｜🟡 **knownBroken 容器 UI 硬提示（本波再获实证：用户对 `gemma-4-E4B-it-gpu` 连续 4 次 `Failed`）**｜🟡 上游 issue（MiniCPM5 模板↔minijinja + gemma GPU 引擎初始化）｜🟡 evidenceLevel 数据化｜🟡 AgentRunner 首刀（方法级余 10）。
 >   - **台账**：本波**未新增**验收条目（误判修复属行为修正，非验收面扩容）⇒ 聚合口径维持 **46 条** 不变
+> - **W63（2026-10-11）**：**治理 + 引信拆除 + 可见性波——#12 方法级首刀（540→492）+ K-2 终态分流 + knownBroken 硬提示（守卫 #34）+ R1 显式 THINK（容器字节取证）+ gemma-4 能力位订正（AUTO 真机实证）+ 分支拓扑裁决（1011=快照锚点）+ 上游出货**
+>   - 🔴 **AgentRunner 方法级首刀**（复审19 终稿「先拆后加」首序兑现）：docs/13 接缝①工具装配簇外提 → `AgentRunnerToolSetup.buildToolSetup` + `ToolSetup`（新文件，同文件落点会撞 #31）；求值顺序保持、逐字节等价；**#12 `executeBodyUnchecked` 540→492（余 58）**、#31 2886→2838；`ToolSetupTest` 153 行；baseline 655→660（同 commit 双向）
+>   - ✅ **刀A（深度审查 K-2）**：终态/evidence 的 marker 分流补全——`loopFailurePhraseFor`/`loopFailureUserMessageFor` 纯函数单一落点，覆盖终止日志 / `BreakerKind.StreamLoop` evidence / `Failed` 消息 / StreamReset / 轮内日志**五落点**（「思考预算耗尽」≠「轮内重复循环」全面板）
+>   - ✅ **刀B（K-1 治标 + K-5）**：`THINKING_CHAR_BUDGET=4096` 适用区间 KDoc（标定 maxTokens=1024；≥4096 残留在案）+ 不变式单测 + `TEXT_RUNAWAY_CHARS` 交叉说明（两流同值不同语义，禁联动调整）
+>   - ✅ **刀C（B5 knownBroken 最小面）**：`ModelPreset.knownBrokenOn` + 模型卡红字 + 加载前确认对话框（「仍要尝试」出口保留，失败语义不变）+ **守卫 #34**（非空 ⇒ 非推荐，fail-closed 扫描器 + selftest case48/50）+ 三容器按 W60 实测签名回填；selftest **93 → 95**
+>   - ✅ **刀D（B3）**：R1 显式 `ChannelSyntax.THINK` —— 一手证据 = 容器字节扫描（`<|channel`/`channel`/`chat_template`/`bos_token` 全 0；`<think>` 恰 1 处 @ 元数据特殊 token 列表 `<｜Assistant｜><think>`）⇒ 无原生通道声明、文本定界 ⇒ 符合显式下发前置；判据单一落点 `isReasonerMarker`
+>   - ✅ **刀E（B4）**：gemma-4 能力位 `thinking=true`（W62 真机实证推翻保守依据；E4B 家族外推如实标注）；**AUTO 档真机实证**：E2B `thinklen=1414` 非空（订正前 AUTO 恒空）
+>   - ✅ **真机批（有线 adb）**：R1 AUTO `thinklen=875` 非空 + 正文零 `<think>` 泄漏（W61 J1 推理腔泄漏消失——通道切分生效）｜拆分后文本 run 回归全绿（docs/13 触发条件④兜底）｜⚠️ knownBroken 对话框点验 = 工具盲区未行使（uiautomator 对卡片下半区零捕获，留用户手验）
+>   - ✅ **B1 分支拓扑裁决落档**：`1011` = 2026-10-11 快照锚点（非开发分支、有意不进触发列表、充当回滚锚点了结 W51 挂账）｜**一行件包**：档位决策表（P3-β，能力位订正后全线坍缩二元）+ W60 交接首刀勘误注记（P3-α）+ K=3「当下 MAX_VALUE」限定语（P4-γ）+ W62 审查基线勘误（`1da011d`）
+>   - ✅ **上游出货**：`google-ai-edge/LiteRT-LM#3576` 补充评论（Android AAR 路径实证 + 转换期 lint 诉求；官方已复现在案）+ gemma-4 GPU 双变体 NOT_FOUND 新 issue
+>   - **B2 补审恢复**：W62 三刀 PASS 零阻断（3×P3 全处置）｜`build.yml` 基线 **655 → 669**（严格口径实测）｜守卫 **33 → 34** 项｜引擎 2010/2400｜`AgentRunner.kt` 2838/2900｜台账聚合口径维持 46 条
+>   - **挂账（W64 起，权威版见 `docs/handoff-20261011-wave63-closeout.md` §五）**：🔴 K-1 治本（守卫派生化）｜🟡 C-1/C-2 手验回收｜🟡 K 论证件（第 2 次顺延）｜🟡 提醒文案 E4B 复验｜🟡 R1 文本侧预防注记｜🟡 evidenceLevel 全 schema｜🟡 selftest 提速定谳（W64 不再顺延）
+
 > - ⚠️ **真机验收台账：Wave 33 起累计 46 条（其中 39 条 `✅回收` / 5 条 `⚠️部分` / 2 条 `⛔不适用`）**（逐条台账见 [`docs/10-device-acceptance.md`](docs/10-device-acceptance.md) §11.0.1）。**W51 新增回收 4 项**（P1 主组 / 单文本基线 / F1 键盘态 / F3 Snackbar；F2 见上）；**W52 新增回收 1 项**（层3 `useNativeTools` 正向观测面，B2）；**W55 新增回收 2 项**（H-A 毒化 A/B，台账 #37；**B1 长审批停表**，台账 #38）；**W56 新增回收 2 项**（**多模态 L3 端到端真机发图**，台账 #39；**毒化 A/B 防护链**，台账 #40）；**W57 新增回收 2 项**（**多模态 L3 扩容两臂**：异族 `SmolVLM2-500M`，台账 #41；同族 fixB `LFM2.5-VL-1.6B_int4_fixB`，台账 #42）；**W58 新增回收 1 项**（**W58 构建真机冒烟含连续两轮文本**，台账 #43）；**W59 新增 1 项**（**W59 构建冒烟冷启动段**，台账 #44——**W60 已回收行使面**）；**W60 新增回收 3 项**（**W60 构建冒烟 + 13 模型全量功能测试**，台账 #45；**剩 2 容器 L3 图像端到端**，台账 #46；**#44 回收**）；**未覆盖项挂 W52**（通知档B／Gemma 两档／压缩触发重建／记忆磁盘满·只读／W37 UI 手感／lint gate／W38 行为变更／W40 验收面／F4 文字 token 统一）；验收清单与取证命令见 §11。
 
 
