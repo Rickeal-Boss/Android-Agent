@@ -41,12 +41,12 @@ class StreamRepetitionDetectorTest {
         assertEquals(false, loop.inThinking)
     }
 
-    /** 判定③：thinking 累计字符超 2048 → 思考预算截断（inThinking = true）。 */
+    /** 判定③：thinking 累计字符超 4096 → 思考预算截断（inThinking = true）。 */
     @Test
     fun `判定③思考预算超限触发`() {
         val detector = StreamRepetitionDetector()
-        val chunk = "abcdefghij".repeat(110) // 1100 字符，无句界
-        assertOk(detector.observeThinking(chunk), "1100 字符未超预算")
+        val chunk = "abcdefghij".repeat(205) // 2050 字符，无句界
+        assertOk(detector.observeThinking(chunk), "2050 字符未超预算")
         val loop = assertLoop(
             detector.observeThinking(chunk),
             StreamRepetitionDetector.THINKING_BUDGET_MARKER,

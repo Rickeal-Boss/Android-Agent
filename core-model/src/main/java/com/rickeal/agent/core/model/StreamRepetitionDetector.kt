@@ -493,11 +493,26 @@ class StreamRepetitionDetector(
         const val WINDOW_UNIQUE_LIMIT = 2
 
         /**
-         * thinking 流的字符预算。**可调，真机反馈校准**：2048 字符 ≈ maxTokens 1024
-         * 的中文口径（中文字符 ≈ 1 token ≈ 2 字符取整上限）；英文推理模型若被过早
-         * 截断可上调。
+         * thinking 流的字符预算（W62 抬高：2048 → 4096）。**可调，真机反馈校准**。
+         *
+         * 取值依据（禁无据拍值）：native 的思考预算是 **token** 计 ——
+         * `resolveThinkingBudget(0, maxTokens)`（默认 `maxTokens=1024` ⇒ **512 token**，
+         * 即全量输出预算的一半）；英语最坏约 4 chars/token ⇒ 512 token ≈ **2048 字符**。
+         * 本值取 **2× 余量 = 4096 字符**（≈1024 token 英语 / ≈2048 token 中文），语义 =
+         * **全量 maxTokens 的英语字符当量** —— 只有当模型在思考里铺陈出「超过整个输出
+         * 预算的字符量」才算真 runaway，此时 native 预算必然已失效（否则早已优雅收尾）。
+         *
+         * 为什么抬高：原 2048 与 native 半预算（512 token）的字符当量**近重合**（实测
+         * 略低 ~2%），检测器以「硬截 + 误述循环」抢先，抢掉了 native「预算耗尽 → 强制
+         * 吐思考结束符 → 转回正文生成」的优雅路径 ⇒ 用户看不到答案（W62 真机定案）。
+         *
+         * 实证：W62 A/B（同设备 / 同模型 / 同构建）`thinklen=2010`（<2048）正常作答 /
+         * `thinklen=2051`（>2048）被误判「循环」⇒ 阈值是刀锋。
+         *
+         * 回填判据：真机若仍见 native **未先优雅收尾**（即仍出现「正文为空 + 循环提醒」），
+         * 按实测 chars/token 再上调（把实测值记于此）。
          */
-        const val THINKING_CHAR_BUDGET = 2048
+        const val THINKING_CHAR_BUDGET = 4096
 
         /**
          * text 流的正文铺陈预算（判定⑤）。与 [THINKING_CHAR_BUDGET] 同款口径注记：
