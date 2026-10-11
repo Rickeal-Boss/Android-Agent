@@ -30,8 +30,10 @@
 |---|---|---|---|
 | **Build** | `38147778502` | ✅ success（head `d050dc8`） | Lint (baseline gate) / Unit tests / Assemble Debug (JDK 21) 全 success；Assemble 内「Architecture guard」（35 项）+「Architecture guard self-test」两步绿 |
 | **Release** | `38147778527` | ✅ success（head `d050dc8`） | — |
+| **Build**（补强后） | `38149591676` | ✅ success（head `acfe25e`） | 三 job 全 success（含 case49b + #34 前置断言后的全量 selftest，**PASS=103**） |
+| **Release**（补强后） | `38149591576` | ✅ success（head `acfe25e`） | — |
 
-> 分工说明（如实入账）：C1/L-1/L-6 由开发席（柯码成）完成并自验；K-1 治本（含 core-engine 派生函数、检测器参数化、AgentRunner 注入、不变式单测）由开发席第二实例完成；L-4 由开发席实例完成；守卫 #35 + selftest 提速由 CI 席（崔续程）完成；K-1 方案裁决由方案席（沈思远）完成；C2 补审 + W64 全 diff 审查由审查席（严质衡）完成；docs/14 + 上游文案入仓 + README + 本交接由主理人完成。
+> 分工说明（如实入账）：C1/L-1/L-6 由开发席（柯码成）完成并自验；K-1 治本（含 core-engine 派生函数、检测器参数化、AgentRunner 注入、不变式单测）由开发席第二实例完成；L-4 由开发席实例完成；守卫 #35 + selftest 提速 + case49b/#34 补强由 CI 席（崔续程）完成；K-1 方案裁决由方案席（沈思远）完成；C2 补审 + W64 全 diff 审查由审查席（严质衡）完成；docs/14 + 上游文案入仓 + README + 本交接由主理人完成。
 
 ## 三、真机复验（OPPO A13 `13309cc8`，有线 adb，debug 包）
 
@@ -79,5 +81,7 @@ journal 证据：`_w64_dev/results/E2B_AUTO2_run.jsonl`（gemma E2B AUTO）、`_
 |---|---|---|---|
 | **Build** | `38147778502` | ✅ success（head `d050dc8`） | Lint (baseline gate) / Unit tests / Assemble Debug (JDK 21) 全 success；Assemble 内「Architecture guard」（35 项）+「Architecture guard self-test」两步绿 |
 | **Release** | `38147778527` | ✅ success（head `d050dc8`） | — |
+| **Build**（补强后） | `38149591676` | ✅ success（head `acfe25e`） | 三 job 全 success（含 case49b + #34 前置断言后的全量 selftest，**PASS=103**） |
+| **Release**（补强后） | `38149591576` | ✅ success（head `acfe25e`） | — |
 
 **上游提交申报**：fine-grained PAT 对 `google-ai-edge` 组织**无 issue 写权限** ⇒ #3576 补充评论与 gemma-4 GPU NOT_FOUND 新 issue 仍**待用户手动提交**，文案已入仓 `docs/upstream/`（见 `docs/14-user-actions.md` §B）。
