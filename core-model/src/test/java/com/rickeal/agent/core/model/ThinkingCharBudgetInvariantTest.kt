@@ -4,39 +4,44 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * [StreamRepetitionDetector.THINKING_CHAR_BUDGET] 与 native 思考预算的**字符当量不变式**
- * （W63 刀B）。
+ * [StreamRepetitionDetector.THINKING_CHAR_BUDGET] 作为**派生式默认值**的取值钉（W64 K-1 治本）。
  *
- * 推导链（⚠️ `resolveThinkingBudget` 是 core-engine 的 `internal` 纯函数，Kotlin
- * `internal` 按**模块**隔离，core-model 不可见 ⇒ 在可见层面钉常量关系，推导链以注释
- * 写死，断言写死 4096 与其来源）：
- * 1. native 思考预算 = `resolveThinkingBudget(configured = 0, maxTokens = 1024)`
- *    = maxTokens/2 = **512 token**（core-engine `ThinkingBudget.kt`「半预算」语义；
- *    该公式与其单测 `ThinkingBudgetTest` 已在 core-engine 侧钉 512）；
- * 2. 英语最坏约 4 chars/token ⇒ 512 token ≈ 2048 字符；
- * 3. 检测器阈值取 **2× 余量** ⇒ 512 × 4 × 2 = **4096**。
+ * ⚠️ **真正的跨模块单源钉在 core-engine 的 `ThinkingBudgetInvariantTest`**：
+ * ```
+ * StreamRepetitionDetector.THINKING_CHAR_BUDGET == thinkingCharBudgetFor(1024, 0)
+ * ```
+ * core-engine 是**唯一**同时可见 `resolveThinkingBudget` / `thinkingCharBudgetFor` 与
+ * core-model 检测器常量的模块。core-model **不可见** core-engine（零引擎依赖）⇒ 本测试
+ * 只能按下方推导链钉**字面量**，作用退化为「守住 core-model 侧常量不被单独改动」。
  *
- * 目的：将来有人单独动 `THINKING_CHAR_BUDGET`，或动 core-engine 侧「半预算」派生公式、
- * maxTokens 默认值时，本测试会红并把他引回上面的推导链重新标定，而不是静默漂移
- * （同族历史坑：两份口径各自演化 ⇒ 检测/守卫静默失效）。本测试**不**钉
- * [StreamRepetitionDetector.TEXT_RUNAWAY_CHARS] —— 它与 thinking 预算同值 4096 但
- * 语义独立（text 流撞的是 maxOutputToken 硬截、无 native 兜底），两值不得联动同步
- * 调整（见两者 KDoc 的交叉注记），钉在一起反而会诱导联动。
+ * 推导链（W64；禁无据拍值）：
+ * 1. native 思考预算 = `resolveThinkingBudget(0, 1024)` = **512 token**（core-engine 半预算
+ *    语义；该公式与其单测 `ThinkingBudgetTest` 已在 core-engine 侧钉住）；
+ * 2. **实测上界 8.4 chars/token**（W62 真机：2048 字符 ≈244 token）⇒ 取字符当量上界系数
+ *    **C=16**（≈1.9 余量，故障不对称要求向上取）；
+ * 3. 默认值 = 512 × 16 = **8192**（= `thinkingCharBudgetFor(1024, 0)`）。
+ *
+ * 目的：将来有人单独动 `THINKING_CHAR_BUDGET`（或 core-engine 侧「半预算」公式 / 系数 C）
+ * 时，本测试或 core-engine 的不变式测试会红，把他引回上面的推导链重新标定，而非静默漂移
+ * （同族历史坑：两份口径各自演化 ⇒ 检测/守卫静默失效）。
+ *
+ * 本测试**不**钉 [StreamRepetitionDetector.TEXT_RUNAWAY_CHARS] —— 它与 thinking 预算语义
+ * 独立（text 流撞的是 maxOutputToken 硬截、无 native 兜底），两值不得联动调整（见两者
+ * KDoc 的交叉注记），钉在一起反而会诱导联动。
  *
  * 纯 JVM：零协程 / 零 Android 依赖。
  */
 class ThinkingCharBudgetInvariantTest {
 
     @Test
-    fun `思考字符预算钉在 native 半预算的字符当量`() {
-        // 推导链（见类 KDoc）：resolveThinkingBudget(0, 1024) = 512 token × 4 chars/token × 2 余量。
+    fun `思考字符预算默认值等于1024档派生式取值`() {
+        // 推导链（见类 KDoc）：resolveThinkingBudget(0, 1024) = 512 token × C=16 = 8192。
         val nativeThinkingTokens = 512
-        val charsPerToken = 4
-        val margin = 2
+        val charsPerTokenCeil = 16
         assertEquals(
-            nativeThinkingTokens * charsPerToken * margin,
+            nativeThinkingTokens * charsPerTokenCeil,
             StreamRepetitionDetector.THINKING_CHAR_BUDGET,
-            "THINKING_CHAR_BUDGET 必须保持「maxTokens=1024 下 native 半预算（512 token）× 4 chars/token × 2 余量 = 4096」的字符当量；改值前先读 StreamRepetitionDetector KDoc 的适用区间注记与 ThinkingBudget.kt 派生公式",
+            "THINKING_CHAR_BUDGET 必须保持「maxTokens=1024 下 native 半预算（512 token）× 字符当量上界系数 C=16 = 8192」的派生默认值；改值前先读 StreamRepetitionDetector KDoc 与 core-engine ThinkingBudgetInvariantTest（跨模块单源钉）",
         )
     }
 }

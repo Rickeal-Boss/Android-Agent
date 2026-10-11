@@ -99,8 +99,7 @@ class ModelHeuristicsTest {
                 .thoughtChannelSyntax,
         )
         assertEquals(ChannelSyntax.THINK, ModelHeuristics.infer("some-reasoner-7b.litertlm").thoughtChannelSyntax)
-        // ⚠️ 测试名纪律：R1 样例名不得含家族关键词（`llama` 会落 LLAMA 家族而非 OTHER，
-        // 是 W61 inferFamily 的既有边界）——用 `qwen` 基座名（`qwen` 裸串不命中任何家族分支）。
+        // W64：通道判定与家族解耦，llama 家族样例同样命中 THINK（见下用例）。
         assertEquals(ChannelSyntax.THINK, ModelHeuristics.infer("deepseek-distill-qwen-7b.litertlm").thoughtChannelSyntax)
         // MiniCPM5：元数据自带 <think>/</think> ⇒ null（不下发，避免覆盖正确元数据 = N1 本体）。
         assertNull(ModelHeuristics.infer("MiniCPM5-2B_int4.litertlm").thoughtChannelSyntax)
@@ -157,6 +156,25 @@ class ModelHeuristicsTest {
         )
     }
 
+    // --- W63 刀E / W64 P3：gemma-4 能力位 thinking=true（E2B 真机实证，改值后补钉） ---
+
+    @Test
+    fun `gemma4 能力位 thinking 为 true 且家族为 GEMMA_4`() {
+        // W63 刀E 把 gemma-4 的 thinking 由 false 改为 true（ModelHeuristics.kt:141），
+        // 此前无 @Test 钉住该值（审查席 C2 判为 vacuous）—— 本用例钉死。
+        // 依据：E2B 真机实证（W62 V4：thinklen=2061，思考流切分正常）；E4B 未单独真机取证，
+        // 按家族事实外推（见 ModelHeuristics.kt:126-131 KDoc）。通道侧为 GEMMA（**非** THINK），
+        // 已由 `思考通道语法归类` 用例覆盖，此处不重复。
+        val e2b = ModelHeuristics.infer("gemma-4-E2B-it.litertlm")
+        assertEquals(ModelFamily.GEMMA_4, e2b.family)
+        assertEquals(true, e2b.capabilities.thinking)
+
+        // E4B（GPU 变体文件名仍含 gemma-4）走同一 GEMMA_4 分支 ⇒ thinking 亦 true。
+        val e4b = ModelHeuristics.infer("gemma-4-E4B-it-gpu.litertlm")
+        assertEquals(ModelFamily.GEMMA_4, e4b.family)
+        assertEquals(true, e4b.capabilities.thinking)
+    }
+
     // --- W61：OTHER 分支按推理标识识别 thinking（DeepSeek-R1 蒸馏系修复） ---
 
     @Test
@@ -168,6 +186,19 @@ class ModelHeuristicsTest {
         )
         assertEquals(ModelFamily.OTHER, r.family)
         assertEquals(true, r.capabilities.thinking)
+    }
+
+    @Test
+    fun `R1 蒸馏 Llama 家族亦命中 THINK 且 thinking 为 true`() {
+        // W64（C1）组合例：R1-Distill-Llama-8B 文件名含 `llama` ⇒ inferFamily 落 LLAMA 家族。
+        // 修复前 inferChannelSyntax 的 R1 分支带 `family == OTHER` 门控 ⇒ LLAMA 被挡掉 ⇒
+        // 通道返回 null、思考不切分、推理腔泄漏正文（W61 J1 原症状对该容器原样存在）。
+        // 修复后判据唯一 = isReasonerMarker，家族与通道判定解耦：LLAMA 家族同样拿到 THINK。
+        // 同时钉住能力位侧无碍（LLAMA 无专属分支 ⇒ 落 else ⇒ thinking = isReasonerMarker）。
+        val r = ModelHeuristics.infer("deepseek-r1-distill-llama-8b.litertlm")
+        assertEquals(ModelFamily.LLAMA, r.family)
+        assertEquals(true, r.capabilities.thinking)
+        assertEquals(ChannelSyntax.THINK, r.thoughtChannelSyntax)
     }
 
     @Test

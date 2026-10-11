@@ -493,8 +493,8 @@ jobs:
             echo '```text'
             echo "$out"
             echo '```'
-            # 低于基线 soft-check（非阻断）：基线 tests=669（W63 刀C 校准：全仓 @Test 代码位实测 669，由 666 上调；W63 刀C 新增 3 例 —— ModelPreset.knownBrokenOn 登记纪律单测（三坏容器签名非空 / recommended 全查 null / 未登记预设禁推测预填），守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
-            baseline=669
+            # 低于基线 soft-check（非阻断）：基线 tests=678（W64 校准：全仓 @Test 代码位实测 678，由 669 上调 +9；W64 新增 —— W64-A C1 组合例 1（R1-Distill-Llama → THINK + thinking）+ gemma-4 能力位 thinking 断言 1 + K-1 治本 7（core-engine ThinkingBudgetInvariantTest 3 / core-model 检测器默认参数与传参 2 / core-agent loopTruncationNoticeFor 2），守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
+            baseline=678
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

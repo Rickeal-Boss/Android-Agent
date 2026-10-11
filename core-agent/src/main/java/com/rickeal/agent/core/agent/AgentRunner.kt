@@ -5,6 +5,7 @@ import com.rickeal.agent.core.engine.EngineFactory
 import com.rickeal.agent.core.engine.EngineLoadConfig
 import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
+import com.rickeal.agent.core.engine.local.thinkingCharBudgetFor
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.EngineKind
@@ -521,6 +522,25 @@ internal fun loopFailureUserMessageFor(marker: String?): String =
     }
 
 /**
+ * [AgentEvent.StreamReset] 截断提示文案的语义分流（W64 L-6，与 [loopFailurePhraseFor] 同族）。
+ *
+ * 既有拼接 `${loopFailurePhraseFor(marker)}截断（连续第 N 次）` 对思考预算 marker 产出
+ * 「思考预算耗尽**截断**」——「耗尽」与「截断」语义重叠、读感生硬。本函数为该落点提供更顺
+ * 的表达：思考预算 marker ⇒「思考预算已到上限，本轮输出被截断（连续第 N 次）」；其余 marker
+ * （真重复循环）⇒ 沿用既有「{短语}截断（连续第 N 次）」原句（零行为变化）。
+ *
+ * ⚠️ **只服务 StreamReset 落点**：不改 [loopFailurePhraseFor] 的返回值 —— 后者同时服务
+ * 终止日志 / evidence / 轮内日志，面向**终态**（run 结束）；本处是**非终态**（截断 + 注入
+ * 提醒重试），措辞须区分，故单设落点（沿用「单一落点」纪律：marker 只在此判一次）。
+ */
+internal fun loopTruncationNoticeFor(marker: String?, streak: Int): String =
+    if (marker == StreamRepetitionDetector.THINKING_BUDGET_MARKER) {
+        "思考预算已到上限，本轮输出被截断（连续第 $streak 次）"
+    } else {
+        "${loopFailurePhraseFor(marker)}截断（连续第 $streak 次）"
+    }
+
+/**
  * Agent 主循环（架构文档 §4.1 / §4.6）。
  *
  * 工具通道策略：引擎声明支持 `EngineCapabilities.nativeToolChannel` **且**用户在设置里
@@ -845,7 +865,13 @@ class AgentRunner(
                 // 500M 级模型被真机证伪（逐字复述系统提示词），此为层3 输出侧拦截。
                 // echoCorpus 恒非空（兜底含停止条件段），takeIf 仅为语义显式；系统消息
                 // 的发送内容用的是 systemText（逐字节与旧实现一致），两者在此分道。
-                val detector = StreamRepetitionDetector(systemPrompt = echoCorpus.takeIf { it.isNotBlank() })
+                // thinkingCharBudget（W64 K-1 治本）：注入随 maxTokens / 预设伸缩的**派生**
+                // 字符预算（native token 预算 × 字符当量上界系数），使字符守卫恒晚于 native
+                // 优雅路径，消除「固定 4096 与 native 预算不同源 ⇒ 守卫抢跑」的 W62 病灶。
+                val detector = StreamRepetitionDetector(
+                    systemPrompt = echoCorpus.takeIf { it.isNotBlank() },
+                    thinkingCharBudget = thinkingCharBudgetFor(config.maxTokens, config.thinkingTokenBudget),
+                )
                 val generationRequest = GenerationRequest(
                     // 发出去之前做一次配对清洗：压缩可能切掉工具组的一半，这里补上最后一道保险，
                     // 避免 provider 收到「有 tool 结果没 tool_call」而报 400。
@@ -2169,7 +2195,9 @@ class AgentRunner(
             // （复审3 §4-1）。emit 在 round++ 之前，UI 先清、下一轮再从空开始。
             // W63 刀A：截断提示与 warn 日志同样按 marker 分流（非终态，但同属
             // 「轮内截断」口径 —— 思考预算轮不再报「重复循环」）。
-            emit(AgentEvent.StreamReset("${loopFailurePhraseFor(loopMarker)}截断（连续第 ${state.intraLoopStreak} 次）"))
+            // W64 L-6：截断提示单设落点 loopTruncationNoticeFor（消除「思考预算耗尽截断」
+            // 的语义重叠拼串；warn 日志仍走 loopFailurePhraseFor，语义面向终态不变）。
+            emit(AgentEvent.StreamReset(loopTruncationNoticeFor(loopMarker, state.intraLoopStreak)))
             AgentLogStore.warn(
                 "第 ${state.round + 1} 轮${loopFailurePhraseFor(loopMarker)}：丢弃 ${calls.size} 个工具调用并注入提醒（连续第 ${state.intraLoopStreak} 次）"
             )

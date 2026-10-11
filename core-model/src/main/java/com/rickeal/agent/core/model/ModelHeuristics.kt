@@ -197,6 +197,17 @@ object ModelHeuristics {
      * 也过宽，须与 `deepseek` 合取；Qwen2.5-1.5B 亦落 OTHER ⇒ **不得**命中 `qwen2.5`
      * （已单测钉住）。**单一落点**：[inferCapabilities]（OTHER 分支 thinking 位）与
      * [inferChannelSyntax]（R1 → THINK 显式下发）两处共用，防口径分叉。
+     *
+     * W64：通道侧去 family 门控后，两处均以**本函数**为唯一条件（不再叠加 family 门控，
+     * 消除「家族分类学截断通道判定」的口径分叉：此前通道侧叠了 `family == OTHER`，
+     * 使 R1-Distill-**Llama**（落 LLAMA 家族）拿不到 `THINK`）。
+     *
+     * ⚠️ 精确边界（勿写成「两处严格等价」——W64 审查 P3-a 订正）：本判据在能力位侧只作用于
+     * [inferCapabilities] 的 `else` 分支（**无**专属家族分支者，含 LLAMA / PHI / OTHER）；
+     * 有专属分支的家族（GEMMA_4 / QWEN_3 / MINICPM）其 `thinking` 位由各自分支决定，**不**由
+     * 本函数决定。故两处**并非无条件等价**（例：名含 `minicpm` 与 `r1` 时，通道 = THINK，
+     * 而 thinking 位由 MINICPM 分支的 `minicpm5` 判据决定）。实践面安全：真实 MiniCPM5 容器名
+     * 不含推理标识，且其元数据通道同为 `<think>` ⇒ 即便命中亦无「覆盖正确元数据」风险（N1 教训）。
      */
     private fun isReasonerMarker(lower: String): Boolean =
         lower.contains("r1") || lower.contains("reasoner") ||
@@ -208,13 +219,20 @@ object ModelHeuristics {
      *
      * - **Gemma-4 → [ChannelSyntax.GEMMA]**：W43 `3e08b8f` 真机实锤 —— 不下发时
      *   `<|channel>thought…<channel|>` 原样混进正文 ⇒ 元数据不含该通道 ⇒ 必须显式下发。
-     * - **R1 系（[isReasonerMarker] 命中）→ [ChannelSyntax.THINK]**（W63 刀D）：一手证据 =
-     *   R1 容器字节扫描（`DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm`，
+     * - **R1 系（[isReasonerMarker] 命中）→ [ChannelSyntax.THINK]**（W63 刀D；W64 去 family 门控）：
+     *   一手证据 = R1 容器字节扫描（`DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm`，
      *   1.83GB，2026-10-11）：`<|channel` / `channel` / `chat_template` / `bos_token` 全 0 命中；
      *   `<think>` 恰 1 处 @ offset `0x4067` —— 位于 protobuf 元数据的特殊 token 列表内，形态为
      *   `<｜Assistant｜><think>`（单个 25 字节字符串，与 `<｜User｜>`、`<｜begin▁of▁sentence｜>`
      *   等并列）⇒ 容器**无原生通道声明**、思考以 `<think>`/`</think>` 文本定界（助手轮以
      *   `<｜Assistant｜><think>` 开局）⇒ 符合「元数据不含该通道才显式下发」前置。
+     *   ⚠️ **家族外推（W64）**：上述一手证据取自 R1-Distill-**Qwen** 容器；**R1-Distill-Llama**
+     *   （同转换管线，容器**未取得**）按同管线外推适用本分支。取得该容器后须复验，判据沿用
+     *   `_w63_r1_scan.py` 两步法 = 字节扫描 `channel` 全 0 **且** `<think>` 出现在特殊 token 表。
+     *   ⚠️ **判据唯一 = [isReasonerMarker]**（W64 去 family 门控）：此前 R1 分支叠了
+     *   `family == OTHER` 门控，而 [inferFamily] 把文件名含 `llama` 者判为 [ModelFamily.LLAMA]
+     *   （`DeepSeek-R1-Distill-Llama-8B` 即落此家族）⇒ 被门控挡掉 ⇒ 通道不切分、推理腔泄漏正文。
+     *   去门控后家族与通道判定解耦。
      *   ⚠️ 只对 [isReasonerMarker] 命中者生效 —— **勿扩大面**：MiniCPM5 类容器元数据**自带**
      *   thought 通道，显式下发会覆盖正确元数据（N1 教训）。
      * - **其余全部 `null`**：含 MiniCPM5（`RM_MiniCPM5-2B.md:106/163`：容器元数据**自带**
@@ -230,7 +248,10 @@ object ModelHeuristics {
      */
     private fun inferChannelSyntax(family: ModelFamily, lower: String): ChannelSyntax? = when {
         family == ModelFamily.GEMMA_4 -> ChannelSyntax.GEMMA
-        family == ModelFamily.OTHER && isReasonerMarker(lower) -> ChannelSyntax.THINK
+        // W64：去 family 门控 —— [isReasonerMarker] 成为唯一判据（与 inferCapabilities 的
+        // OTHER 分支 thinking 位严格等价）。此前 `family == OTHER && …` 会把 R1-Distill-Llama
+        // （文件名含 `llama` ⇒ 落 LLAMA 家族）挡在门外，导致通道不切分、推理腔泄漏正文。
+        isReasonerMarker(lower) -> ChannelSyntax.THINK
         else -> null
     }
 

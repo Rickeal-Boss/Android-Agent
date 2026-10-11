@@ -41,14 +41,42 @@ class StreamRepetitionDetectorTest {
         assertEquals(false, loop.inThinking)
     }
 
-    /** 判定③：thinking 累计字符超 4096 → 思考预算截断（inThinking = true）。 */
+    /** 判定③：thinking 累计字符超默认预算 → 思考预算截断（inThinking = true）。 */
     @Test
     fun `判定③思考预算超限触发`() {
         val detector = StreamRepetitionDetector()
-        val chunk = "abcdefghij".repeat(205) // 2050 字符，无句界
-        assertOk(detector.observeThinking(chunk), "2050 字符未超预算")
+        val chunk = filler(StreamRepetitionDetector.THINKING_CHAR_BUDGET / 2 + 10) // 无句界
+        assertOk(detector.observeThinking(chunk), "半预算+10 字符未超默认预算")
         val loop = assertLoop(
             detector.observeThinking(chunk),
+            StreamRepetitionDetector.THINKING_BUDGET_MARKER,
+        )
+        assertEquals(true, loop.inThinking)
+    }
+
+    /**
+     * 判定③ 默认参数 = 既有常量（W64 K-1）：不传 `thinkingCharBudget` 时，阈值恒等于
+     * [StreamRepetitionDetector.THINKING_CHAR_BUDGET]（恰好该字符数不触发、+1 触发）。
+     */
+    @Test
+    fun `判定③默认思考预算等于既有常量`() {
+        val budget = StreamRepetitionDetector.THINKING_CHAR_BUDGET
+        val detector = StreamRepetitionDetector()
+        assertOk(detector.observeThinking(filler(budget)), "恰好 $budget 字符未超默认预算")
+        val loop = assertLoop(
+            detector.observeThinking("x"),
+            StreamRepetitionDetector.THINKING_BUDGET_MARKER,
+        )
+        assertEquals(true, loop.inThinking)
+    }
+
+    /** 判定③ 显式传参生效（W64 K-1）：`thinkingCharBudget` 覆盖默认值（恰好 100 不触发、101 触发）。 */
+    @Test
+    fun `判定③显式思考预算参数生效`() {
+        val detector = StreamRepetitionDetector(thinkingCharBudget = 100)
+        assertOk(detector.observeThinking(filler(100)), "恰好 100 字符未超显式预算")
+        val loop = assertLoop(
+            detector.observeThinking("x"),
             StreamRepetitionDetector.THINKING_BUDGET_MARKER,
         )
         assertEquals(true, loop.inThinking)
@@ -305,6 +333,13 @@ class StreamRepetitionDetectorTest {
         assertEquals(expectedMarker, loop.repeatedSignature)
         return loop
     }
+
+    /**
+     * 生成 [n] 个**无句界、无长 run** 的填充字符（'a'..'j' 循环）—— 只可能触发判定③
+     * （thinking 铺陈预算），不会误触判定①～⑨（无终止符、无单字符 run、无回显语料）。
+     */
+    private fun filler(n: Int): String =
+        "abcdefghij".repeat(n / 10) + "abcdefghij".take(n % 10)
 
     private fun assertLoopAny(
         verdict: StreamRepetitionDetector.Verdict,
