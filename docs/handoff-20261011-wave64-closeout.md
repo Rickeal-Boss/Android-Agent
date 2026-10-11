@@ -28,8 +28,8 @@
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | _见 §七_ | _待回填_ | — |
-| **Release** | _见 §七_ | _待回填_ | — |
+| **Build** | `38147778502` | ✅ success（head `d050dc8`） | Lint (baseline gate) / Unit tests / Assemble Debug (JDK 21) 全 success；Assemble 内「Architecture guard」（35 项）+「Architecture guard self-test」两步绿 |
+| **Release** | `38147778527` | ✅ success（head `d050dc8`） | — |
 
 > 分工说明（如实入账）：C1/L-1/L-6 由开发席（柯码成）完成并自验；K-1 治本（含 core-engine 派生函数、检测器参数化、AgentRunner 注入、不变式单测）由开发席第二实例完成；L-4 由开发席实例完成；守卫 #35 + selftest 提速由 CI 席（崔续程）完成；K-1 方案裁决由方案席（沈思远）完成；C2 补审 + W64 全 diff 审查由审查席（严质衡）完成；docs/14 + 上游文案入仓 + README + 本交接由主理人完成。
 
@@ -66,7 +66,7 @@ journal 证据：`_w64_dev/results/E2B_AUTO2_run.jsonl`（gemma E2B AUTO）、`_
 
 ## 六、下次接手须知
 
-1. **静态闸门基线（本波后）**：`arch-guard.sh` **35 项**（+#35 `AgentRunnerToolSetup.kt ≤ 400`）；`arch-guard-selftest.sh` **PASS=102**（97 + case49b/case51 组 5 —— 见 §六.2 实测）；`fulltest.sh` = 9 模块 **tests=678 failures=1**（唯一失败 = core-data `SandboxFileScannerTest` Windows 符号链接，既有且仅 Windows）；`@Test` 严格口径 **678** = baseline；引擎 **2009/2400**；`LiteRtLmEngineLoader.kt` 704；**`AgentRunner.kt` 2866/2900（余 34）**；方法级 `executeBodyUnchecked` **498/550（余 52）**；`AgentRunnerToolSetup.kt` **108/400**。
+1. **静态闸门基线（本波后）**：`arch-guard.sh` **35 项**（+#35 `AgentRunnerToolSetup.kt ≤ 400`；#34 另补扫描器缺失前置断言）；`arch-guard-selftest.sh` **PASS=103**（W63 基线 97 + case49b 1 + case51 组 5；本地全量实测 **102** 为**加 case49b 之前**的读数，case49b 经 `--only 34` 单独实测 PASS=5 含之 ⇒ 全量 103 由 CI 复核）；`fulltest.sh` = 9 模块 **tests=678 failures=1**（唯一失败 = core-data `SandboxFileScannerTest` Windows 符号链接，既有且仅 Windows）；`@Test` 严格口径 **678** = baseline；引擎 **2009/2400**；`LiteRtLmEngineLoader.kt` 704；**`AgentRunner.kt` 2866/2900（余 34）**；方法级 `executeBodyUnchecked` **498/550（余 52）**；`AgentRunnerToolSetup.kt` **108/400**。
 2. 🔴 **selftest 用法**：`bash scripts/arch-guard-selftest.sh`（全量，CI 用）｜`--only 34,35`（子集）｜`--affected`（git 映射，未映射回退全量）｜`--help`。**新增守卫 case 必须同步 `KNOWN_GUARDS`**（否则 `--only <新号>` 报错而非静默零跑）。
 3. 🔴 **K-1 三处单源**：core-engine `THINKING_CHARS_PER_TOKEN_CEIL` / `thinkingCharBudgetFor` ↔ core-model `StreamRepetitionDetector.THINKING_CHAR_BUDGET`（8192）↔ core-agent `AgentRunner` 注入点。**改任一处必须同步另两处并跑 `ThinkingBudgetInvariantTest`**。
 4. 🔴 **真机驱动坐标**：输入框 `(540,1969)`；发送按钮**必须动态 dump `content-desc="发送"` 的 bounds**（键盘弹起与否位置不同）。复用 `_ci-tools/_w64_run2.sh`，勿用写死 `(942,1356)` 的 W61 脚本。
@@ -77,7 +77,7 @@ journal 证据：`_w64_dev/results/E2B_AUTO2_run.jsonl`（gemma E2B AUTO）、`_
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | _待回填_ | _待回填_ | — |
-| **Release** | _待回填_ | _待回填_ | — |
+| **Build** | `38147778502` | ✅ success（head `d050dc8`） | Lint (baseline gate) / Unit tests / Assemble Debug (JDK 21) 全 success；Assemble 内「Architecture guard」（35 项）+「Architecture guard self-test」两步绿 |
+| **Release** | `38147778527` | ✅ success（head `d050dc8`） | — |
 
 **上游提交申报**：fine-grained PAT 对 `google-ai-edge` 组织**无 issue 写权限** ⇒ #3576 补充评论与 gemma-4 GPU NOT_FOUND 新 issue 仍**待用户手动提交**，文案已入仓 `docs/upstream/`（见 `docs/14-user-actions.md` §B）。
