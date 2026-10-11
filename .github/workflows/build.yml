@@ -493,8 +493,8 @@ jobs:
             echo '```text'
             echo "$out"
             echo '```'
-            # 低于基线 soft-check（非阻断）：基线 tests=660（W63 刀B 校准：全仓 @Test 代码位实测 660，由 659 上调；W63 刀B 新增 1 例 —— THINKING_CHAR_BUDGET 与 native 半预算的字符当量不变式单测（512×4×2=4096，推导链见测试类 KDoc），守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
-            baseline=660
+            # 低于基线 soft-check（非阻断）：基线 tests=666（W63 刀F 校准：全仓 @Test 代码位实测 666，由 660 上调；W63 刀F 新增 6 例 —— buildToolSetup 工具装配簇外提单测（三重门 ×3 含 capabilities=null 兜底 / 全量模式 / ON_DEMAND 收窄 / 白名单过滤与空目录退回），守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
+            baseline=666
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then
