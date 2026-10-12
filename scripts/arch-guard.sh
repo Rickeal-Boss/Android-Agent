@@ -889,6 +889,8 @@ check "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族�
 #     （守卫面失效必须判红，不静默 —— 与 #34 同款契约）。
 #     实现用**内联 awk**（沿第 23 条范式），不引第二张手写表 —— 与 ModelPresets.kt 单一数据源。
 #     ⚠️ 块界依赖 8 空格缩进（当前文件实测）；若整体改缩进，块闭不上 ⇒ n==0 ⇒ 判红（fail-closed）。
+#     ⚠️ **新增预设必须沿用 8 空格缩进的 `ModelPreset(` 起、8 空格缩进的 `        ),` 收尾**
+#     （部分块格式漂移可能被掩盖 —— 只有 n==0 全丢才判红，见上条 fail-closed 口径）。
 check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）" \
   bash -c 'f=feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 39 条守卫面已失效）"; exit 1; fi

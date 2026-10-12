@@ -32,7 +32,9 @@ class ModelHealthProbeConfigTest {
         val cfg = InferenceConfig(maxTokens = 8192, thinkingTokenBudget = 2048)
         val out = probeSamplingConfig("gemma-4-E2B-it.litertlm", cfg)
         assertEquals(ModelHealthProbe.PROBE_MAX_TOKENS, out.maxTokens)
-        // 若不复归，2048 > 96 ⇒ 引擎钳到 95 ⇒ 思考吃光 96 token、正文为空。
+        // W66 A4 后探针恒钉 `thinkingTokenBudget = 0` ⇒ 本断言只守 `.coerce()` 的
+        // 「预算 < maxTokens」不变量本身（历史路径「2048 > 96 ⇒ 引擎钳到 95 ⇒ 思考吃光
+        // 96 token、正文为空」已由 A4 的预算归零消除，见下方「探针恒钉思考关闭且预算归零」）。
         assertTrue(out.thinkingTokenBudget < out.maxTokens)
     }
 

@@ -73,6 +73,15 @@
   runtime / 需 repack」⇒ 两个预设升「已下架」属代码侧（`feature-models/.../ModelPresets.kt`
   的 `knownBrokenOn`），由项目按 ③ 判据立项销账，不属用户动作。
 
+> **W66 追加证据（2026-10-13，不改变本条动作，仅加固 issue 正文）**：本项目已实拉
+> `litert-community/gemma-4-E4B-it-litert-lm` 的**单文件** `gemma-4-E4B-it.litertlm`
+> （3,659,530,240 B，section 表含 `tf_lite_prefill_decode` + vision/audio encoder，**无缺失**）
+> 并在 OPPO A13 真机双臂实测：**CPU 臂 ✅ 可用**；**GPU 臂 ⛔ 崩溃**——但根因是
+> `Adreno-GSL: IOCTL_KGSL_GPUOBJ_ALLOC errno 12 Out of memory`（3.66 GB 权重塞不进入门
+> Adreno 显存）→ `Resource deadlock` → `SIGABRT` → 整机重启，**与两个 `-gpu` 特化变体的
+> `NOT_FOUND`/缺 section 失败面是两条不同的路**。⇒ 提交 §B2 issue 时建议**同时附上这条对照**
+> （说明「section 完整 ≠ 设备可跑」，上游可据此判断是否为显存门槛问题）。
+
 ---
 
 ## C. 产品 / 法务裁决（只有用户能拍板）

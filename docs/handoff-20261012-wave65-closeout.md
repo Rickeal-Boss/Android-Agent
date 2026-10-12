@@ -1,5 +1,10 @@
 # W65 波次收官交接（Wave 65 Closeout）
 
+> ⚠️ **W66 勘误（2026-10-12，第十一审 E1a/E1b + 深度审查 N-5，原文已就地订正）**：
+> ① `AgentRunner.kt` 迁移后实测 **2712**（非 2709）、#31 余 **188**（非 191）—— 本文 §一④ / §二 W65-2 / §五.8 / §六.2 四处 + `README.md:459` 一处（`git show` 逐 commit 自 `1cead9f` 起恒 2712）；
+> ② 行数守卫 #25 家族实为 **9 员**，原文 §六.2「八员」**漏 #18 `ChatViewModel.kt`（550/1600）**；且原文把 `ChatRunCoordinator` 的守卫号写成 #18，**实为 #20**（#18 = ChatViewModel）。
+> 根因 = 聚合数字手写、无机械核对 ⇒ W66 已新增 `scripts/line-table.sh`（清单派生自 `arch-guard.sh` 守卫，单源）。
+
 > 基线：W64 收官 `4260cad`（docs tip）/ `acfe25e`（功能 tip）｜本波 tip = 见文末 CI 表
 > 前置文档：`docs/handoff-20261011-wave64-closeout.md`（§五 = W65 挂账来源，顶部有 W65 裁定语勘误）
 > 外部审查（五份，2026-10-12）：W64 深度审查（M-1 半A / M-2 锚#5升blocker / M-3 毒化AB / M-4 映射断言 / M-5 外提 / M-6 销账路径）｜复审20 三线融合（P1-①②③ / P2-①-④ / P4-①②）｜第十审（D1 不可达证明 / D2 纯函数簇迁文件 / D3 ThinkingBudget 无守卫 / D4 head50MB 取证 / D5 K论证件并入bump前置⑤ / D6 提速降级 / D7 docs/14进度指标）｜第十轮 W54-64（新-1 knownBroken激活态 / 新-2 collapse锚）｜横切 v18（X1 自检口径 / X3 Coordinator 余22）
@@ -8,7 +13,7 @@
 
 ## 一、一句话 + 关键现实
 
-**W65 = 治本收口 + 守卫一致性命门 + 零风险拆弹 + 真机补丁臂波**：① **M-1 半A治本**（档案新增 `minThinkingTokenBudget` 轴，R1/MiniCPM5 填 1536，消除「native 预算 1024 vs 档案自述 ≥2048 差 2×」）；② **D1 前半**（K-1 不可达性证明入 KDoc + C 安全窗口 (8.4,16.8) 落档 + 三处同步单）与**后半**（临时 C=2 补丁臂**史上首次行使思考预算真阳性链**）；③ **守卫 #36/#37/#38**（ThinkingBudget / AgentRunnerLoopHelpers / ChatRunRecovery，同波关闭「新文件裸奔」第六次复发）+ **M-4 case53 四方一致性断言**；④ **D2+X3 零行为风险文件迁移**（AgentRunner 2866→2709、Coordinator 1278→1204）；⑤ **D4 取证闭环**（R1-Distill-Llama 容器不存在 ⇒ 外推维持）；⑥ **D5**（K 论证件并入 bump 前置⑤，销独立项）；⑦ docs/12 双锚升级（锚#5 缺失即阻断 P0 + collapse 锚 blocker+bump 首跑判据）+ docs/14 六项销账路径 + X1/M-2/M-6/P4 顺手批；⑧ **审查席 PASS 准予推送，3×P2+4×P3 全部销账**。
+**W65 = 治本收口 + 守卫一致性命门 + 零风险拆弹 + 真机补丁臂波**：① **M-1 半A治本**（档案新增 `minThinkingTokenBudget` 轴，R1/MiniCPM5 填 1536，消除「native 预算 1024 vs 档案自述 ≥2048 差 2×」）；② **D1 前半**（K-1 不可达性证明入 KDoc + C 安全窗口 (8.4,16.8) 落档 + 三处同步单）与**后半**（临时 C=2 补丁臂**史上首次行使思考预算真阳性链**）；③ **守卫 #36/#37/#38**（ThinkingBudget / AgentRunnerLoopHelpers / ChatRunRecovery，同波关闭「新文件裸奔」第六次复发）+ **M-4 case53 四方一致性断言**；④ **D2+X3 零行为风险文件迁移**（AgentRunner 2866→2712、Coordinator 1278→1204）；⑤ **D4 取证闭环**（R1-Distill-Llama 容器不存在 ⇒ 外推维持）；⑥ **D5**（K 论证件并入 bump 前置⑤，销独立项）；⑦ docs/12 双锚升级（锚#5 缺失即阻断 P0 + collapse 锚 blocker+bump 首跑判据）+ docs/14 六项销账路径 + X1/M-2/M-6/P4 顺手批；⑧ **审查席 PASS 准予推送，3×P2+4×P3 全部销账**。
 
 关键现实（动手前必读）：
 1. 🔴 **K-1 挂账 #1 原形态被证明为不可能任务**：阈值 = native token 预算 × C(=16) 字符；健康 native（ThinkingBudgetConstraint 已编入 .so）下思考在 budget token 处被强制结束符截断 ⇒ thinklen ≤ budget×r，超阈需 **r>16** chars/token——实测上界仅 8.4（W62 真机 2048 字符≈244 token）、CJK 1–3、英文 3.5–5 ⇒ **真实文本数学不可达**。挂账重分类为「⛔ 结构不可达（0.17.1 健康 native），bump 场景保活」；C=16 的定位由此精确化 = **native 失效兜底**（失效时超阈需 r>8，8.4 恰好可触发）。
@@ -23,7 +28,7 @@
 | commit | 性质 | 内容 |
 |---|---|---|
 | `W65-1` | fix(model,engine,agent) | **M-1 半A治本 + D1 前半 + 审查销账（代码侧）**：`ModelSamplingProfile.minThinkingTokenBudget` 轴（R1/MiniCPM5 = 1536）+ 构造期 init 不变式 + `appliedTo` 接线（maxOf 下限口径）+ 日志 /think 字段 + evidence 串订正；core-engine `ThinkingBudget.kt` 顶部三处同步单 + `THINKING_CHARS_PER_TOKEN_CEIL` 安全窗口 KDoc；`StreamRepetitionDetector` 结构不可达证明 KDoc；`ModelHealthCriteria` X1 申报；`ModelHeuristics` C1 取证回填；审查销账 P2-1（`ModelHealthProbe` KDoc 申报 + 探针轴断言 1 例）、P2-2（两处 KDoc 条件化）、P3-3（测试 KDoc 措辞）；`build.yml` baseline **678→684**（+6 同 commit 双向） |
-| `W65-2` | refactor(agent,chat) | **D2+X3 零行为风险文件迁移**：`AgentRunner.kt` 顶层纯函数簇 6 个 + 提醒常量族 7 个 → 新文件 `AgentRunnerLoopHelpers.kt`（209 行，private→internal 6 项、SYSTEM_REMINDER_PREFIX 保持 private），2866→**2709**（#31 余 191）；`ChatRunCoordinator.kt` journal 恢复三函数 → 新文件 `ChatRunRecovery.kt`（129 行，facade 委托保形：`maybeOfferRecovery`/`dismissRecovery` 签名与调用点零变更），1278→**1204**（#18 余 96）；顺带订正 `AgentRunner:507`「唯一生效点」陈旧注释（探针是 appliedTo 第三调用点，W49 起失实——随本 commit 的自然落点）；CRLF 纪律保住（i/crlf w/crlf 复验） |
+| `W65-2` | refactor(agent,chat) | **D2+X3 零行为风险文件迁移**：`AgentRunner.kt` 顶层纯函数簇 6 个 + 提醒常量族 7 个 → 新文件 `AgentRunnerLoopHelpers.kt`（209 行，private→internal 6 项、SYSTEM_REMINDER_PREFIX 保持 private），2866→**2712**（#31 余 188）；`ChatRunCoordinator.kt` journal 恢复三函数 → 新文件 `ChatRunRecovery.kt`（129 行，facade 委托保形：`maybeOfferRecovery`/`dismissRecovery` 签名与调用点零变更），1278→**1204**（#20 余 96）；顺带订正 `AgentRunner:507`「唯一生效点」陈旧注释（探针是 appliedTo 第三调用点，W49 起失实——随本 commit 的自然落点）；CRLF 纪律保住（i/crlf w/crlf 复验） |
 | `W65-3` | ci | **守卫 #36/#37/#38**（ThinkingBudget ≤150 / AgentRunnerLoopHelpers ≤400 / ChatRunRecovery ≤400，#25 家族 fail-closed）+ selftest case52 组（5 面）+ case54 组（5 面）+ case55 组（5 面）+ **case53 四方一致性断言**（映射表↔KNOWN_GUARDS↔arch-guard↔case，三提取面 fail-open 防护）+ KNOWN_GUARDS 28→30 守卫号（+36/37/38）与 --affected 映射同步 |
 | `W65-4` | docs | README（M-1 勘误定性订正 + W65 波次段 + 挂账口径新订正）+ `docs/12`（锚 #5 升 P0 缺失即阻断 + collapse 锚 blocker+bump 首跑判据+预案二选一 + 「锚失效的可观测签名」第 7 列）+ `docs/14`（六项销账路径）+ W64 交接 §五裁定语勘误注记 + W63 交接 CI 表头/orphan 行修复 + **本文档** |
 
@@ -81,7 +86,7 @@ journal 证据：`_w65_dev/results/{E2B_PATCHARM,E2B_PATCHARM2,E2B_NORMAL,R1_M1}
 5. 🟡 **knownBroken 激活态重校验**（第十轮 新-1，P2，10 分钟级）：`refresh()` 合并点或 run 触发对 active 模型查 `knownBrokenOn` → 对话页内联提示条（复用模型卡红字），**排在首个 tag 前**（每次预设修订都可能制造「老激活态踩新标记」用户，首发日放大）；也是挂账 #6 的第一消费面。
 6. 🟡 **evidenceLevel 全 schema**（templateSafety/e2eImage/functionalTest + 守卫）；宜紧随 #5。
 7. 🟡 **E4B 容器**：唯一在机变体 knownBroken；上游发布可用 E4B 后补思考双变体复验（§三）。
-8. 🟡 **接缝②仍不启动**：AgentRunner 2709/2900（余 191）、Coordinator 1204/1300（余 96）、`executeBodyUnchecked` 498/550（余 52）——三引信同时松弛；下波落码前复核余量。
+8. 🟡 **接缝②仍不启动**：AgentRunner 2712/2900（余 188）、Coordinator 1204/1300（余 96）、`executeBodyUnchecked` 498/550（余 52）——三引信同时松弛；下波落码前复核余量。
 9. 🟡 沿袭：C-1/C-2 对话框手验（docs/14 §A1，用户 10 秒）｜法务 `termsVersion`（先于 tag）｜0 tags｜main 快照过时｜fulltest 接 CI｜F4 文字 token 统一｜会话删除 UI｜`TokenUsage.estimated`｜bump 双轴季扫（docs/12 13 锚 + #3576 钩子）｜上游出货 B1/B2（用户手动）｜审查 P3-d（测试源集依赖方向成文）。
 
 ---
@@ -89,7 +94,8 @@ journal 证据：`_w65_dev/results/{E2B_PATCHARM,E2B_PATCHARM2,E2B_NORMAL,R1_M1}
 ## 六、下次接手须知
 
 1. **静态闸门基线（本波后）**：`arch-guard.sh` **38 项**（+#36 ThinkingBudget ≤150 / +#37 AgentRunnerLoopHelpers ≤400 / +#38 ChatRunRecovery ≤400，#25 家族 fail-closed）；`arch-guard-selftest.sh` PASS=**103+16=119**（+case52/54/55 三组 15 面 + case53 四方断言；本地全量 ~52min 留 CI，日常 `--only`；**新增守卫 case 必同步 `KNOWN_GUARDS`**）；`fulltest.sh` = 9 模块 **tests=684 failures=1**（唯一失败 = core-data `SandboxFileScannerTest` Windows 符号链接，既有且仅 Windows）；`@Test` 严格口径 **684** = `build.yml` baseline。
-2. **行数表八员**：`AgentRunner.kt` **2709**/2900（#31，余 191）｜`AgentRunnerLoopHelpers.kt` **209**/400（#37）｜`ChatRunCoordinator.kt` **1204**/1300（#18，余 96）｜`ChatRunRecovery.kt` **129**/400（#38）｜`AgentRunnerToolSetup.kt` 108/400（#35）｜`ThinkingBudget.kt` **88**/150（#36）｜`LiteRtLmEngine.kt` 2009/2400（#25）｜`LiteRtLmEngineLoader.kt` 704/900（#32）。
+2. **行数表九员**（W66 勘误：原文「八员」**漏 #18 `ChatViewModel.kt`**；且原文把 `ChatRunCoordinator` 的守卫号写成 #18，**实为 #20** —— 第十一审 E1b 同族发现）：`AgentRunner.kt` **2712**/2900（#31，余 188）｜`AgentRunnerLoopHelpers.kt` **209**/400（#37）｜`ChatRunCoordinator.kt` **1204**/1300（**#20**，余 96）｜`ChatRunRecovery.kt` **129**/400（#38）｜`AgentRunnerToolSetup.kt` 108/400（#35）｜`ThinkingBudget.kt` **88**/150（#36）｜`LiteRtLmEngine.kt` 2009/2400（#25）｜`LiteRtLmEngineLoader.kt` 704/900（#32）｜`ChatViewModel.kt` **550**/1600（**#18**，余 1050）。
+   ⚠️ **本行数字为 W65 tip（`5fb97de` / `3688702`）的冻结帧**；W66 后 AgentRunner = **2773**（B1 +61）、ThinkingBudget = **102**（A5 KDoc +14）。**现行值一律以 `bash scripts/line-table.sh` 的生成物为准**（W66 A2 新增，清单单源派生自 `arch-guard.sh` 的「总行数 ≤」守卫，不再人手誊写 —— 本条正是「聚合数字手写必漂」的复发例）。
 3. 🔴 **K-1 单源链（四处）**：core-engine `THINKING_CHARS_PER_TOKEN_CEIL`/`thinkingCharBudgetFor` ↔ core-model `THINKING_CHAR_BUDGET`(8192 字面量) ↔ `ThinkingBudgetInvariantTest` ↔（W65 新增）轴档案 `minThinkingTokenBudget`。改任一处同步其余 + 跑不变式测试；`ThinkingBudget.kt` 顶部「三处同步单」注释为唯一定期复核点。
 4. 🔴 **补丁臂方法论**（W55 Arm B 纪律）：临时全局改常量 → 真机行使 → 还原 → 重建重装 → 正常态回归 → git status 干净；判据以 journal/logcat 为准（uiautomator 对 Compose bounds 不可靠）；驱动脚本 `_ci-tools/_w65_run.sh`。
 5. 🔴 **CRLF 敏感文件**：`ChatRunCoordinator.kt`（i/crlf w/crlf）禁 `sed -i`（本波实摔翻转，已修复复验）⇒ Edit 工具或 python `newline=''` 字节级替换。

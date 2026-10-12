@@ -34,4 +34,16 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 4. 真机批复核 #3/#9/#10（thought 通道声明、preface 诊断、模板失败路径）；
 5. 全部打勾 + 守卫 #29 期望值同步更新后，方可动 toml 版本行。
 
-—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）。
+### r（chars/token）的测量方法（W66 E5 落档）
+
+锚 #5 与 `THINKING_CHARS_PER_TOKEN_CEIL`（C=16）的**安全窗口 (8.4, 16.8)** 依赖实测 `r_max`，
+而现有两个 r 样本（W62 的 8.4 / W65 补丁臂的 2.0）**分母都是软的** ⇒ **先修尺子再采样**：
+
+1. **native usage 分通道：⛔ 不可用** —— 引擎 `completionTokens` 是内容 **chunk 数**，无 thinking token 数；
+2. **离线 tokenizer 计数（采用）**：真机 journal 的 `message` 行含 `thinking` 字段 ⇒ 抽 thinking 全文 → 模型官方 tokenizer（`transformers`/`sentencepiece`）**离线精确计数** → `r = 字符/token`；
+3. `TokenEstimator.estimate` 仅**旁证**（字符启发式），不得当硬证据。
+
+判定：`r_max ≤ 8.4` ⇒ C=16 冻结；`> 8.4` ⇒ 窗口下界上移、C 重估（四处同步单见
+`core-engine/.../ThinkingBudget.kt` 顶部 + 轴档案 `minThinkingTokenBudget`）。
+
+—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）；W66 A5 追加 r 测量方法。

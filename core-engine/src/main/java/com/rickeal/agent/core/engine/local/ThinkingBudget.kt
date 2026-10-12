@@ -60,6 +60,20 @@ internal fun resolveThinkingBudget(configured: Int, maxTokens: Int): Int {
  * 复测目标（ narrowed，W65）：「确认 r_max 仍 ≤8.4」即可 —— 若是，则窗口 (8.4, 16.8) 内
  * 任意取值结构安全，无需开放式重新标定；只有当 r_max 被真机样本突破时才需重取 C
  * （同步单见本文件顶部注释块）。
+ *
+ * 🔴 **r 的测量方法（W66 E5 落档，先修尺子再采样）** —— 现有两个 r 样本（W62 的 8.4 /
+ * W65 补丁臂的 2.0）**分母都是软的**（W62 的 token 数是推算、W65 的分母用的是预算而非
+ * 实际 thinking token），故第三个样本前必须钉死方法。按可得性排序：
+ *  1. **native usage 分通道：⛔ 不可用** —— 引擎 `completionTokens` 实为内容 **chunk 数**
+ *     （见 `LiteRtLmEngine` 的 usage 计算），**无 thinking 通道 token 数**；
+ *  2. **离线 tokenizer 计数（推荐，本仓采用）**：真机 journal 的 `message` 行经
+ *     `ChatMessage.serializer()` 落盘、**含 `thinking` 字段** ⇒ 从 journal 抽出 thinking
+ *     全文，用模型官方 tokenizer（`transformers` / `sentencepiece`）**离线精确计数**，
+ *     得 `r = thinking 字符数 / thinking token 数`；
+ *  3. **`TokenEstimator.estimate` 估算：仅旁证** —— 字符启发式（英文 3.2 字/token、
+ *     CJK 1 字/token），**不得当硬证据**。
+ * 判定口径：测得 `r_max ≤ 8.4` ⇒ C=16 冻结；`r_max > 8.4`（如中文 markup 密集推理）⇒
+ * 窗口下界上移、C 需重估（同步单见本文件顶部注释块）。
  */
 internal const val THINKING_CHARS_PER_TOKEN_CEIL = 16
 
