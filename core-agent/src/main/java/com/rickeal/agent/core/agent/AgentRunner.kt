@@ -377,6 +377,56 @@ internal fun intraLoopReminderFor(marker: String?): String =
         INTRA_LOOP_REMINDER
     }
 
+/**
+ * N-2 观测式兜底判据（W66 B1，纯函数，可 JVM 单测）。
+ *
+ * ## 解决什么
+ *
+ * W65 起轴档案把 `minThinkingTokenBudget`（R1/MiniCPM5=1536）写入 `thinkingTokenBudget` 后，
+ * 「native 到预算却未从思考切回正文」会让整轮**只有思考、正文为空** ⇒ 用户看到空气泡、
+ * 墙钟熔断。Q1 已裁定：token 计数在现有分层下**无观测面**（[StreamRepetitionDetector] 只有
+ * `totalChars`、引擎 `completionTokens` 是内容 chunk 数且不分通道）⇒ 判据退化为**与 r 无关
+ * 的结构代理**：`thinking 非空 ∧ 正文空 ∧ 无 loopMarker` ⇔ native 未兑现预算承诺。
+ *
+ * ## 为什么这三个合取项互不冗余
+ *
+ *  - **正文空**：本函数只在「无工具调用且无正文」的空答分支被调（调用点已保证 `answer` 空）。
+ *  - **thinking 非空**：区分「native 思考未切正文」与「模型真的什么都没产出」（后者由既有的
+ *    `emptyAnswerStreak` 空输出路径处置，二者语义不同，不合并）。
+ *  - **无 loopMarker**：`loopMarker != null` 时 `handlePostStreamSignals` 恒先
+ *    `NextRound`/`Terminal`（从不 `Proceed`）⇒ 走到本判据时 `loopMarker` 结构性为 null。
+ *    保留该形参是为了让「我方循环截断路径」这一排除项**显式可测**（fail-open 断言），
+ *    而非依赖调用点的隐式不变量。
+ *
+ * ## 单一落点纪律（历史坑「口径分叉」）
+ *
+ * 本 warn 只在这一处判；marker 分流仍只在 [intraLoopReminderFor]。探针路径**不经过**本函数
+ * （探针直调 `engine.generateStream`，见 `ModelHealthProbe.run`）⇒ 天然排除探针 false-positive。
+ *
+ * ## 已知局限（如实标注，不得当硬证据）
+ *
+ * ⚠️ 文案里的 token 只能用 [TokenEstimator.estimate]（**字符启发式**，非 native 真值）⇒
+ * 由此派生的 `r = thinking 字符 / thinking token` 仍是**软样本**（与 E5 同病）。本 warn 是
+ * **诊断信号**，不是硬证据；token 真值须走真机 journal + 离线 tokenizer（W66 C2）。
+ *
+ * @param thinking 本轮思考通道累积文本
+ * @param answer 本轮正文（调用点已保证为空；形参化以便判据自洽与单测）
+ * @param hasLoopMarker 本轮是否带轮内循环 marker（调用点结构性为 false）
+ * @return 命中时返回 warn 文案；不命中返回 `null`（不产日志）
+ */
+internal fun thinkingOnlyEmptyDiagnostic(
+    thinking: String,
+    answer: String,
+    hasLoopMarker: Boolean,
+): String? {
+    if (hasLoopMarker) return null
+    if (answer.isNotBlank()) return null
+    if (thinking.isBlank()) return null
+    val est = TokenEstimator.estimate(thinking)
+    return "N-2 观测（W66 B1）：thinking 非空但正文空 —— native 未从思考切回正文" +
+        "（thinking ${thinking.length} 字符 ≈ $est token；字符估算非 native 真值，仅诊断用）"
+}
+
 // loopFailurePhraseFor 已迁至 AgentRunnerLoopHelpers.kt（W65 D2 零行为风险迁移；internal 不变）。
 
 // loopFailureUserMessageFor 已迁至 AgentRunnerLoopHelpers.kt（W65 D2 零行为风险迁移；internal 不变）。
@@ -2185,6 +2235,17 @@ class AgentRunner(
             // 必然再产出空输出 ⇒ 一路空转到 maxRounds，每轮白烧一次 4B 全量 prefill。
             // 修法：注入一条合成 USER 提醒（ZCode「错误回传给模型修复」语义），
             // 保证下一轮一定有新消息可发；连续超过阈值则按失败收尾，不再烧轮次。
+            //
+            // W66 B1（N-2 观测式兜底，warn-only）：本分支是「无工具调用且无正文」路径，
+            // 若 thinking 非空 ⇒ native 未从思考切回正文（未兑现预算承诺）。判据与单一落点
+            // 纪律见 [thinkingOnlyEmptyDiagnostic]。`hasLoopMarker = false` 是结构性事实：
+            // `loopMarker != null` 时 handlePostStreamSignals 恒先 return（从不 Proceed），
+            // 故走到此处 loopMarker 必为 null。**只观测不改行为**。
+            thinkingOnlyEmptyDiagnostic(
+                thinking = accumulator.thinking,
+                answer = answer,
+                hasLoopMarker = false,
+            )?.let { AgentLogStore.warn(it) }
             state.emptyAnswerStreak++
             if (state.emptyAnswerStreak > MAX_EMPTY_ANSWER_ROUNDS) {
                 AgentLogStore.error(

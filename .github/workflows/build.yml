@@ -493,8 +493,8 @@ jobs:
             echo '```text'
             echo "$out"
             echo '```'
-            # 低于基线 soft-check（非阻断）：基线 tests=684（W65 校准：全仓 @Test 代码位实测 684，由 678 上调 +6；W65 新增 —— W65-A M-1 minThinkingTokenBudget 轴固化单测 5（core-engine ModelSamplingProfileThinkingBudgetTest：下限存活 / appliedTo 抬档 / 不压低用户值 / 构造期拒绝 >=minMaxTokens / 边界 minMaxTokens-1 放行）+ W65 审查销账 P2-1 探针轴预算断言 1（core-engine ModelHealthProbeConfigTest：轴档案探针思考预算被短预算钳到上限减一），守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
-            baseline=684
+            # 低于基线 soft-check（非阻断）：基线 tests=688（W65 校准：全仓 @Test 代码位实测 684，由 678 上调 +6；W65 新增 —— W65-A M-1 minThinkingTokenBudget 轴固化单测 5（core-engine ModelSamplingProfileThinkingBudgetTest：下限存活 / appliedTo 抬档 / 不压低用户值 / 构造期拒绝 >=minMaxTokens / 边界 minMaxTokens-1 放行）+ W65 审查销账 P2-1 探针轴预算断言 1（core-engine ModelHealthProbeConfigTest：轴档案探针思考预算被短预算钳到上限减一）。W66 B1 新增 N-2 观测式兜底单测 4（core-agent ThinkingOnlyEmptyDiagnosticTest：命中 / thinking 空 / 正文非空 / 带 loopMarker 四态），由 684 上调 688；W66 A4 将 ModelHealthProbeConfigTest 的「轴档案思考预算被钳」断言**反向改钉**为「探针恒钉 thinking=OFF 且预算归零」（用例数不变）。守卫 #26 双向同步）。低于即打 ⚠️，绝不让 job 变红。
+            baseline=688
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then
