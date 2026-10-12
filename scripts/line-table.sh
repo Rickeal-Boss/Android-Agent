@@ -18,7 +18,9 @@
 #
 # 用法：
 #   scripts/line-table.sh            # 输出 markdown 表（stdout）
-#   scripts/line-table.sh --check    # 自证：派生行数 == 守卫条数、每文件存在；
+#   scripts/line-table.sh --check    # 自证：①派生行数 == 守卫条数；②每文件存在；
+#                                     # ③第二独立提取面（编号注释头）与 check 行**等数**（防措辞漂移）；
+#                                     # ④派生行数 ≥ 冻结下限 MIN_ROWS（防整族删除 / 缩面）；
 #                                     # 通过时把 OK 打到 stderr（不污染 markdown）
 #
 # 退出码：0 = 正常 / --check 通过；非 0 = 派生失败 / 格式漂移 / --check 不符。
@@ -42,12 +44,25 @@ case "${1:-}" in
   *)         echo "::error::未知参数：$1（可用：--check / --help）" >&2; exit 2 ;;
 esac
 
+# 行数守卫家族的**冻结下限**（W66 深审 D4 修补）：arch-guard.sh 里「总行数 ≤」家族当前 9 员
+# （#18/#20/#25/#31/#32/#35/#36/#37/#38）。为什么需要一个写死的下限：--check 旧判据只比
+# `n_rows == ${#guard_lines[@]}`，而两者**同源于同一 grep** ⇒ 整条守卫（注释头 + check 实现）
+# 被删除时两侧一起减一、仍恒等 ⇒ **永远绿**（fail-open）。下限把「家族被整族删 / 缩面」变成
+# 显式判红。**新增行数守卫时可上调本值；删守卫须同步下调并说明理由** —— 这条硬编码是「防缩面」
+# 的代价，刻意保留（与 arch-guard.sh「守卫面失效必须判红」同款契约）。
+MIN_ROWS=9
+
 # ---- 单源派生：抓 arch-guard.sh 的「总行数 ≤」守卫描述行 ----
 # 每个守卫形态（两行）：
 #   check "<文件> 总行数 ≤ <阈值>（…）" \
 #     bash -c 'f=<仓库相对路径>
 # 故：行号取自 `check "..."` 行，仓库相对路径取自其**下一行**的 `f=`。
 mapfile -t guard_lines < <(grep -nE '总行数 ≤' "$GUARD")
+
+# 第二独立提取面（W66 深审 D4）：抓守卫**编号注释头** `# <N>) <File>.kt 总行数上限`。
+# 与上面的 `check "…总行数 ≤…"` 行**互相独立**（一个抓 check 描述行、一个抓注释头）：
+# 两面必须等数 —— 只改 / 删其中一面（措辞漂移、漏改注释）⇒ --check 判红。
+mapfile -t header_lines < <(grep -nE '^# [0-9]+\) .*\.kt 总行数上限' "$GUARD")
 
 if [ "${#guard_lines[@]}" -eq 0 ]; then
   echo "::error::未从 $GUARD 派生出任何「总行数 ≤」守卫（提取正则漂移？禁 fail-open）" >&2
@@ -98,8 +113,20 @@ if [ "$CHECK" -eq 1 ]; then
     echo "::error::line-table --check 失败：派生行数($n_rows) != 守卫条数(${#guard_lines[@]})" >&2
     exit 1
   fi
+  # D4 修补①：第二独立提取面交叉核对 —— check 描述行派生的行数必须等于编号注释头派生的条数。
+  # 旧判据只比 n_rows 与同源的 guard_lines 长度 ⇒ 改措辞 / 删单面都恒绿；此处把两面不一致变红。
+  if [ "$n_rows" -ne "${#header_lines[@]}" ]; then
+    echo "::error::line-table --check 失败：check 行派生数($n_rows) != 注释头派生数(${#header_lines[@]}) —— 两面不一致（措辞漂移 / 单面漏改）" >&2
+    exit 1
+  fi
+  # D4 修补②：冻结下限 —— 整条守卫（注释头 + check 实现）被删除时，上面两面会**一起**减一、
+  # 仍恒等 ⇒ 需要下限兜住「整族删除 / 缩面」（禁 fail-open）。
+  if [ "$n_rows" -lt "$MIN_ROWS" ]; then
+    echo "::error::line-table --check 失败：派生行数($n_rows) < 冻结下限($MIN_ROWS) —— 行数守卫家族被整族删除 / 缩面" >&2
+    exit 1
+  fi
   # OK 打到 stderr，保持 stdout 为纯净 markdown
-  echo "[line-table] OK：$n_rows 行，全部由 wc -l 实测派生自 arch-guard.sh（自证通过）" >&2
+  echo "[line-table] OK：$n_rows 行，双提取面（check 行 == 注释头）一致且 ≥ 冻结下限 $MIN_ROWS，全部由 wc -l 实测派生自 arch-guard.sh（自证通过）" >&2
 fi
 
 exit "$bad"

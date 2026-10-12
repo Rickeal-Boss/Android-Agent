@@ -483,8 +483,9 @@ KT
   # recommended=true（null 与 true 合法共存）。
   # 第 39 条（W66 B3，evidenceLevel 全 schema）另要求：存在 `val evidenceLevel` 声明 +
   # **每个构造块显式赋值 evidenceLevel ∈ {MEASURED,UPSTREAM,UNVERIFIED}**，且 MEASURED
-  # 块内须含 `W##` 波次实测锚点 ⇒ 骨架三条预设分别用 MEASURED（带 W60 锚点）与 UPSTREAM
-  # （无需锚点），并铺 enum 声明。漏铺任一 ⇒ 干净树被本条 fail-closed 判红（正例失守）。
+  # 块的 `backendBasis`/`note` 赋值行内须含 `W##` 波次实测锚点（注释/label 里的 W## **不算**，
+  # W66 深审 D2）⇒ 骨架三条预设分别用 MEASURED（锚点写在 `note` 里）与 UPSTREAM（无需锚点），
+  # 并铺 enum 声明 + `note` 字段。漏铺任一 ⇒ 干净树被本条 fail-closed 判红（正例失守）。
   mkdir -p "$root/feature-models/src/main/java/com/rickeal/agent/feature/models"
   cat > "$root/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
 package com.rickeal.agent.feature.models
@@ -496,6 +497,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
 )
 
 object ModelPresets {
@@ -504,7 +506,7 @@ object ModelPresets {
             label = "clean-recommended",
             recommended = true,
             evidenceLevel = EvidenceLevel.MEASURED,
-            // W60 实测（fixture 锚点）：MEASURED 合法需块内出现 W## 波次标记。
+            note = "W60 实测（fixture 锚点）：MEASURED 合法需 backendBasis/note 内出现 W## 波次标记。",
         ),
         ModelPreset(
             label = "broken-not-recommended",
@@ -2793,8 +2795,8 @@ KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case57 MEASURED 无本仓取证锚点 (第 39 条反推测预填)" "$rc" "$out" \
   "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
-if printf '%s\n' "$out" | grep -qF "但块内无本仓取证锚点"; then
-  echo "PASS [case57b] 红来自真命中（输出含「MEASURED 但块内无本仓取证锚点」事实行）"
+if printf '%s\n' "$out" | grep -qF "但 backendBasis/note 内无本仓取证锚点"; then
+  echo "PASS [case57b] 红来自真命中（输出含「MEASURED 但 backendBasis/note 内无本仓取证锚点」事实行）"
   PASS=$((PASS + 1))
 else
   echo "FAIL [case57b] 输出不含 MEASURED 无锚点事实行（判据可疑）"
@@ -2864,6 +2866,124 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case60] scaffold 的 ModelPresets.kt 被第 39 条误红（绿面失守 —— 铺点与判据未同步）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# case 61 / 61b / 62 / 62b / 63 / 63b：第 39 条（W66 深审 D1–D3 修补）—— 三个 fail-open 面：
+#   D1 fail-open：旧判据只认「`ModelPreset(` 独占一行」，单行 `ModelPreset(…),` 整块被跳过。
+#     case61 —— 单行块**缺** evidenceLevel ⇒ 必须判红（旧判据整块跳过 ⇒ 假绿）；
+#     case61b 断言红来自真命中（输出含「缺 evidenceLevel 赋值」+ 违规 label）。
+#   D2 fail-open：旧判据 `$0 ~ /W[0-9][0-9]/` 扫整块 ⇒ `label`/注释里写个 `W99` 就能骗过锚点。
+#     case62 —— MEASURED 块的 W99 **只在 label / 注释里**、backendBasis/note 内无锚点 ⇒ 必须判红；
+#     case62b 断言红来自真命中（输出含「但 backendBasis/note 内无本仓取证锚点」事实行）。
+#   D3 fail-open：旧判据块尾写死 8 空格 ⇒ 缩进漂移块闭不上、与下一块粘连，缺字段的块被吞。
+#     case63 —— 漂移块（12 空格缩进，缺 evidenceLevel）后接合规块（8 空格）⇒ 漂移块必须判红；
+#     case63b 断言未粘连（输出含漂移块 label、不含合规块 label）。
+#   各面都只在 $TMP 脚手架树内覆写 ModelPresets.kt，绝不碰生产文件。
+d="$TMP/case61-singleline-missing"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val recommended: Boolean = false,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(label = "single-line-missing", recommended = false),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case61 单行 ModelPreset 缺 evidenceLevel 赋值 (第 39 条 D1)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+if printf '%s\n' "$out" | grep -qF "缺 evidenceLevel 赋值" && printf '%s\n' "$out" | grep -qF "single-line-missing"; then
+  echo "PASS [case61b] 红来自真命中（单行块被识别 + 输出含违规 label）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case61b] 单行块未被识别（D1 fail-open 未修）或输出不含违规 label"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case62-anchor-in-label"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val recommended: Boolean = false,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "W99-in-label-only",
+            recommended = false,
+            evidenceLevel = EvidenceLevel.MEASURED,
+            // W99 只在注释里：不算锚点（W66 深审 D2 修复面）。
+            note = "本条文本内无本仓锚点",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case62 MEASURED 锚点只在 label/注释 (第 39 条 D2)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+if printf '%s\n' "$out" | grep -qF "但 backendBasis/note 内无本仓取证锚点" && printf '%s\n' "$out" | grep -qF "W99-in-label-only"; then
+  echo "PASS [case62b] 红来自真命中（label/注释里的 W99 未被当锚点）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case62b] label/注释里的 W99 被误当锚点（D2 fail-open 未修）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case63-indent-drift-merge"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val recommended: Boolean = false,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+            ModelPreset(
+                label = "drifted-missing",
+                recommended = false,
+            ),
+        ModelPreset(
+            label = "canonical-ok",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case63 缩进漂移块缺 evidenceLevel 未被吞 (第 39 条 D3)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+if printf '%s\n' "$out" | grep -qF "drifted-missing" && ! printf '%s\n' "$out" | grep -qF "canonical-ok"; then
+  echo "PASS [case63b] 漂移块被独立结算（含缺字段块 label、不含合规块 label ⇒ 未粘连）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case63b] 缩进漂移块与合规块粘连（D3 fail-open 未修）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
