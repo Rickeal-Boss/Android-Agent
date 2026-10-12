@@ -877,6 +877,39 @@ check "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族�
            n=$(wc -l < "$f")
            [ "$n" -le 400 ] || echo "ChatRunRecovery.kt 当前 $n 行，超 400 行上限（触顶 = 启动 ChatRunRecovery 拆分评审，非改阈值）"'
 
+# 39) evidenceLevel 全 schema（W66 B3，Q6「预设证据数据化」）：`ModelPreset.evidenceLevel`
+#     声明每条预设结论有多少**仓内可查**的证据支撑（语义见 ModelPresets.kt 的 EvidenceLevel
+#     KDoc）。本条把「禁推测预填」（ModelPresets.kt 字段 KDoc 明文）从纪律升级为机械判据。
+#     判据（逐 ModelPreset( 构造块；块界 = 8 空格缩进的 `ModelPreset(` 行 → 8 空格缩进的 `),` 行）：
+#       ① 块内缺 `evidenceLevel = …` 赋值 ⇒ 判红（全 schema：不允许未标注的预设）；
+#       ② 值不在枚举三态 {MEASURED, UPSTREAM, UNVERIFIED} 内 ⇒ 判红（防拼写/未知等级）；
+#       ③ 值 == MEASURED 但块内无 `W##` 波次实测锚点 ⇒ 判红（MEASURED 声明「本仓实测」，
+#          必须能在同一块的 backendBasis/note 里指出是哪一波实测 —— 防「没测过却说测过」）。
+#     fail-closed：文件缺失 / `val evidenceLevel` 声明被删 / 未找到任何构造块 ⇒ 判红
+#     （守卫面失效必须判红，不静默 —— 与 #34 同款契约）。
+#     实现用**内联 awk**（沿第 23 条范式），不引第二张手写表 —— 与 ModelPresets.kt 单一数据源。
+#     ⚠️ 块界依赖 8 空格缩进（当前文件实测）；若整体改缩进，块闭不上 ⇒ n==0 ⇒ 判红（fail-closed）。
+check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）" \
+  bash -c 'f=feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 39 条守卫面已失效）"; exit 1; fi
+           grep -q "val evidenceLevel" "$f" || { echo "::error::$f 缺 val evidenceLevel 声明（字段被删 = 第 39 条守卫面已失效）"; exit 1; }
+           awk "
+             /^[[:space:]]*ModelPreset\([[:space:]]*\$/ { inblk=1; start=NR; lbl=\"\"; ev=\"\"; anchor=0; next }
+             inblk && /^        \),[[:space:]]*\$/ {
+               inblk=0; n++
+               if (ev == \"\") printf \"%s:%d 预设「%s」缺 evidenceLevel 赋值（全 schema 要求每条预设显式标注）\n\", FILENAME, start, lbl
+               else if (ev !~ /^(MEASURED|UPSTREAM|UNVERIFIED)\$/) printf \"%s:%d 预设「%s」evidenceLevel=%s 非法（须 MEASURED/UPSTREAM/UNVERIFIED）\n\", FILENAME, start, lbl, ev
+               else if (ev == \"MEASURED\" && !anchor) printf \"%s:%d 预设「%s」evidenceLevel=MEASURED 但块内无本仓取证锚点（W## 波次实测）—— 疑推测预填\n\", FILENAME, start, lbl
+               next
+             }
+             inblk {
+               if (\$0 ~ /^[[:space:]]*label = \"/) { lbl=\$0; sub(/^[[:space:]]*label = \"/, \"\", lbl); sub(/\".*/, \"\", lbl) }
+               if (\$0 ~ /^[[:space:]]*evidenceLevel = /) { ev=\$0; sub(/^[[:space:]]*evidenceLevel = /, \"\", ev); sub(/[,].*/, \"\", ev); sub(/.*\./, \"\", ev); gsub(/[[:space:]]/, \"\", ev) }
+               if (\$0 ~ /W[0-9][0-9]/) anchor=1
+             }
+             END { if (n == 0) printf \"%s 未找到任何 ModelPreset( 构造块（守卫面失效，按违规处理）\n\", FILENAME }
+           " "$f"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

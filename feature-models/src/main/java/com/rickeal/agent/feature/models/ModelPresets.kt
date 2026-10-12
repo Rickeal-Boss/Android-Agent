@@ -95,6 +95,32 @@ data class ModelPresetMirror(
     val url: String,
 )
 
+/**
+ * 预设证据等级（W66 B3，Q6「预设证据数据化」）：声明该预设的可用性 / 后端结论有多少
+ * **仓内可查**的证据支撑。取值必须能从本条预设的 `backendBasis` / `note` 文本**直接读出**，
+ * 禁止凭推测预填（与 [ModelPreset.knownBrokenOn] 同款硬前置）。
+ *
+ *  - [MEASURED]：**本仓**真机 / 离线取证有记录 —— 锚点 = `backendBasis` / `note` 内出现
+ *    `W##` 波次实测标记（W43/W56/W57/W60 等）。**由守卫 #39 机械强制**：声明 MEASURED 但
+ *    块内无 `W##` 锚点 ⇒ 判红（防「推测预填」把没测过的说成测过）。
+ *  - [UPSTREAM]：仅**上游文档 / 官方基准**佐证（官方 README / 官方 GPU 基准 / Gallery
+ *    allowlist），本仓**未**实测。例：GPU 行只有官方桌面基准、无 Android 验证 ⇒ 仅 CPU。
+ *  - [UNVERIFIED]：仓内查不到证据（不得猜）。**新预设默认此级**，补证据后升级。
+ *
+ * ⚠️ 本字段**不参与**内存闸门 / GPU 放行判定（那些由 `requiredRamBytes` / [ModelGpuSupport]
+ * 驱动）；它只作「结论的可信度标注」，供模型卡展示与后续校准定位证据源。
+ */
+enum class EvidenceLevel {
+    /** 本仓真机 / 离线取证有记录（`backendBasis` / `note` 含 `W##` 波次实测锚点）。 */
+    MEASURED,
+
+    /** 仅上游文档 / 官方基准佐证，本仓未实测。 */
+    UPSTREAM,
+
+    /** 仓内无证据（禁推测；新预设默认此级）。 */
+    UNVERIFIED,
+}
+
 data class ModelPreset(
     val label: String,
     val url: String,
@@ -126,6 +152,14 @@ data class ModelPreset(
      * 本字段**即恢复推荐资格（不要只改 recommended 留着红字段）。
      */
     val knownBrokenOn: String? = null,
+    /**
+     * 本条预设结论的**证据等级**（W66 B3，Q6）：见 [EvidenceLevel]。
+     *
+     * 取值必须从本条的 `backendBasis` / `note` 文本读出，**禁止推测预填**；查不到证据留
+     * [EvidenceLevel.UNVERIFIED]。`ModelPresets.all` 里**每条预设都必须显式赋值**
+     * （守卫 #39「全 schema」强制：缺赋值 / 未知等级 / MEASURED 无 `W##` 锚点 ⇒ 判红）。
+     */
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
 ) {
     /**
      * 是否放行 GPU 后端（2026-09-26）。**判定源下沉到 [ModelGpuSupport]**（core-model）：
@@ -199,6 +233,7 @@ object ModelPresets {
             backendBasis = "官方 GPU 特化变体（ML Drift GPU）——⚠️ 实测不可用（W60：引擎初始化 NOT_FOUND，容器缺 TF_LITE_PREFILL_DECODE signature；W43：输出退化 + CPU 后端 NOT_FOUND），待上游修复后再开放",
             // W63 刀C：签名取自本条 backendBasis 的 W60 实测记录（engine init NOT_FOUND）。
             knownBrokenOn = "0.17.1 引擎初始化 NOT_FOUND（容器缺 TF_LITE_PREFILL_DECODE section；W43 另实测输出退化）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -214,6 +249,7 @@ object ModelPresets {
             sizeBytes = 2588147712,
             recommended = true,
             backendBasis = "CPU 特化变体（实测通过）；GPU 变体不可用（W60 引擎初始化 NOT_FOUND / W43 输出退化），勿用",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it.litertlm"),
         ),
         ModelPreset(
@@ -232,6 +268,7 @@ object ModelPresets {
             backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）——❌ 实测不可用（W60：引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section，model_signature_utils.cc:250），与 E2B·GPU 同源）；⚠️ 视觉能力系 gemma-4 家族外推（同族 E2B-it 已逐容器取证带视觉编码器，E4B 未单独取证）",
             // W63 刀C：签名取自本条 backendBasis 的 W60 实测记录（同 E2B·GPU 失败面）。
             knownBrokenOn = "0.17.1 引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section，与 E2B·GPU 同源）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -247,6 +284,7 @@ object ModelPresets {
             // 标多了就失去「替用户做决定」的意义。
             recommended = false,
             backendBasis = "官方 README 仅有桌面 GPU 基准（macOS Metal），无 Android GPU 验证 → 仅 CPU",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
             mirrors = domesticMirrors(
                 "Qwen2.5-1.5B-Instruct",
                 "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -263,6 +301,7 @@ object ModelPresets {
             sizeBytes = 1833451520,
             recommended = false,
             backendBasis = "官方 README 无 Android GPU 验证 → 仅 CPU",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
             mirrors = domesticMirrors(
                 "DeepSeek-R1-Distill-Qwen-1.5B",
                 "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -282,6 +321,10 @@ object ModelPresets {
                 "要求 litert-lm ≥ 0.16 —— 2026-09-26 运行时已升 0.17.1 满足 → GPU 放行。" +
                 "⚠️ 真机为首次验证，加载/速度异常请反馈。" +
                 "⚠️ 原生工具通道在本容器不可用（模板 tojson(ensure_ascii=…) 与 litertlm 0.17.1 内嵌 minijinja 2.14.0 不兼容，生成期报 too many arguments；已由「证伪 + 回退文本协议」自愈）；文本协议路径不受影响",
+            // 证据等级 = UPSTREAM：GPU 放行依据是**官方 Galaxy S26 OpenCL 实测**（上游基准），
+            // 本条的 backendBasis/note 内**无本仓 W## 波次实测锚点**；「真机为首次验证」是待反馈
+            // 项，不是已记录的取证结果 ⇒ 按「证据来源 = 上游」如实标 UPSTREAM，不硬升 MEASURED。
+            evidenceLevel = EvidenceLevel.UPSTREAM,
             mirrors = domesticMirrors("MiniCPM5-2B", "MiniCPM5-2B_int4.litertlm"),
         ),
         ModelPreset(
@@ -295,6 +338,7 @@ object ModelPresets {
             sizeBytes = 3910090752,
             recommended = false,
             backendBasis = "官方 README 的 GPU 行无显存数据（N/A），无 Android GPU 验证 → 仅 CPU",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
             mirrors = domesticMirrors(
                 "Phi-4-mini-instruct",
                 "Phi-4-mini-instruct_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -311,6 +355,7 @@ object ModelPresets {
             sizeBytes = 563549568,
             recommended = false,
             backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ **端到端图片输入已真机验证（W56 L3：OPPO A13 + 0.17.1，发图会话建成、0 模板失败、内容判别相符——仅覆盖本容器，同族其余容器不外推）**；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("LFM2.5-VL-450M", "LFM2.5-VL-450M_int8.litertlm"),
         ),
         // ── 视觉多模态批（2026-09-24 增补）：端侧 VL 帕累托前沿，500M/2B/1.6B/3B/8B 五档。
@@ -326,6 +371,7 @@ object ModelPresets {
             sizeBytes = 360822960,
             recommended = false,
             backendBasis = "官方在 Galaxy S26（litert-lm 0.15）验证 Android GPU 可生成；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证。⚠️ 文本对话能力弱（360M 解码器，为图像输入设计）：纯文本对话建议 Qwen2.5-1.5B 或 DeepSeek-R1；✅ 端到端图片输入已真机验证（W57 L3：台账 #41，异族/同族 fixB 双通过，0 模板失败 + 内容判别命中——仅覆盖本容器，同族其余容器不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("SmolVLM2-500M", "SmolVLM2-500M.litertlm"),
         ),
         ModelPreset(
@@ -339,6 +385,7 @@ object ModelPresets {
             sizeBytes = 1783424544,
             recommended = false,
             backendBasis = "官方在 Pixel 8a（视觉 GPU + 解码 CPU）与 Galaxy S26（0.15）验证；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W60 L3：台账 #46，红/黄/数字 37 三锚点命中，0 模板失败——仅覆盖本容器，同族不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）；⚠️ W55 已推翻 W53「Qwen 系同源 ⇒ 风险最高」的假设——其模板与 `Qwen2.5-1.5B` 的 `+` 拼接形态**不同**（同家族 ≠ 同模板）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("Qwen2-VL-2B", "Qwen2-VL-2B.litertlm"),
         ),
         ModelPreset(
@@ -354,6 +401,7 @@ object ModelPresets {
             sizeBytes = 1298139472,
             recommended = false,
             backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W57 L3：台账 #42，异族/同族 fixB 双通过，0 模板失败 + 内容判别命中——仅覆盖本容器，同族其余容器不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("LFM2.5-VL-1.6B", "LFM2.5-VL-1.6B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -368,6 +416,7 @@ object ModelPresets {
             sizeBytes = 2352023888,
             recommended = false,
             backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W60 L3：台账 #46，红/黄/数字 37 三锚点命中，中文回答，0 模板失败——仅覆盖本容器，同族不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("LFM2.5-VL-3B", "LFM2.5-VL-3B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -383,6 +432,7 @@ object ModelPresets {
             backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU；⚠️ 模板已离线取证数组安全（Wave 53 L2：容器模板对多元素 content 走 is-string 分支并循环吐 <image_soft_token>，非 Qwen2.5 的「+」拼接形态），❌ 端到端不可用（W60：Failed to create conversation config: INVALID_ARGUMENT: Unsupported model type，0.17.1 已知限制）",
             // W63 刀C：签名取自本条 backendBasis 的 W60 实测记录（会话创建级失败）。
             knownBrokenOn = "0.17.1 会话创建失败（Unsupported model type，引擎已知限制）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("MiniCPM-V-4", "MiniCPM-V-4-int8.litertlm"),
         ),
     )

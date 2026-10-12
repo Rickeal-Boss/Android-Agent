@@ -67,7 +67,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -101,7 +101,7 @@ affected_guards_for_file() {
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerToolSetup.kt) echo "35" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerLoopHelpers.kt) echo "37" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt)          echo "13" ;;
-    feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt) echo "34" ;;
+    feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt) echo "34 39" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt)    echo "18" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt) echo "20 30" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt) echo "38" ;;
@@ -481,14 +481,21 @@ KT
   # fail-closed 判红（正例失守）。组合覆盖：a = recommended 无 knownBrokenOn（缺省）；
   # b = knownBrokenOn 非空 + recommended=false；c = 显式 knownBrokenOn=null +
   # recommended=true（null 与 true 合法共存）。
+  # 第 39 条（W66 B3，evidenceLevel 全 schema）另要求：存在 `val evidenceLevel` 声明 +
+  # **每个构造块显式赋值 evidenceLevel ∈ {MEASURED,UPSTREAM,UNVERIFIED}**，且 MEASURED
+  # 块内须含 `W##` 波次实测锚点 ⇒ 骨架三条预设分别用 MEASURED（带 W60 锚点）与 UPSTREAM
+  # （无需锚点），并铺 enum 声明。漏铺任一 ⇒ 干净树被本条 fail-closed 判红（正例失守）。
   mkdir -p "$root/feature-models/src/main/java/com/rickeal/agent/feature/models"
   cat > "$root/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
 package com.rickeal.agent.feature.models
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
 )
 
 object ModelPresets {
@@ -496,16 +503,20 @@ object ModelPresets {
         ModelPreset(
             label = "clean-recommended",
             recommended = true,
+            evidenceLevel = EvidenceLevel.MEASURED,
+            // W60 实测（fixture 锚点）：MEASURED 合法需块内出现 W## 波次标记。
         ),
         ModelPreset(
             label = "broken-not-recommended",
             recommended = false,
             knownBrokenOn = "0.17.1 假签名（fixture）",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
         ),
         ModelPreset(
             label = "explicit-null-recommended",
             recommended = true,
             knownBrokenOn = null,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
         ),
     )
 }
@@ -2707,6 +2718,152 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case55e] scaffold 的 ChatRunRecovery.kt 被第 38 条误红（绿面失守）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case 56 / 56b / 57 / 58 / 59 / 59b / 60：第 39 条（evidenceLevel 全 schema，W66 B3）四面：
+#   case56 —— 构造块缺 `evidenceLevel = …` 赋值 ⇒ 判红（全 schema 面）；case56b 断言红来自
+#             真命中（输出含违规预设 label + 「缺 evidenceLevel 赋值」事实行）。
+#   case57 —— `evidenceLevel = MEASURED` 但块内无 `W##` 锚点 ⇒ 判红（**反推测预填**核心面：
+#             MEASURED 声明本仓实测，必须能指出是哪一波）。
+#   case58 —— `evidenceLevel = BOGUS`（未知等级）⇒ 判红（防拼写/未知枚举）。
+#   case59 —— `val evidenceLevel` 声明被删 ⇒ fail-closed 判红；case59b 断言红来自真命中
+#             （输出含「缺 val evidenceLevel 声明」逐字行，而非「守卫自身执行失败」假红）。
+#   case60 —— scaffold 原样（三块 evidenceLevel 合法：MEASURED 带 W60 锚点 / UPSTREAM）⇒
+#             必须不红（绿面；独立钉死 scaffold 铺点与 fail-closed 判据的同步关系）。
+#   各面都只在 $TMP 脚手架树内覆写 ModelPresets.kt，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+if guard_selected 39; then
+d="$TMP/case56-evidence-missing"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "missing-level",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case56 构造块缺 evidenceLevel 赋值 (第 39 条)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+if printf '%s\n' "$out" | grep -qF "缺 evidenceLevel 赋值" && printf '%s\n' "$out" | grep -qF "missing-level"; then
+  echo "PASS [case56b] 红来自真命中（输出含违规预设 label + 「缺 evidenceLevel 赋值」事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case56b] 输出不含「缺 evidenceLevel 赋值」+ 违规 label（可能是守卫自身故障假红）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case57-measured-no-anchor"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "measured-no-anchor",
+            evidenceLevel = EvidenceLevel.MEASURED,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case57 MEASURED 无本仓取证锚点 (第 39 条反推测预填)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+if printf '%s\n' "$out" | grep -qF "但块内无本仓取证锚点"; then
+  echo "PASS [case57b] 红来自真命中（输出含「MEASURED 但块内无本仓取证锚点」事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case57b] 输出不含 MEASURED 无锚点事实行（判据可疑）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case58-evidence-illegal"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "bogus-level",
+            evidenceLevel = EvidenceLevel.BOGUS,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case58 evidenceLevel 未知等级 (第 39 条)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+
+d="$TMP/case59-evidence-decl-gone"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+data class ModelPreset(
+    val label: String,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "no-decl",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case59 evidenceLevel 声明被删 (第 39 条面失效)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+if printf '%s\n' "$out" | grep -qF "缺 val evidenceLevel 声明（字段被删 = 第 39 条守卫面已失效）"; then
+  echo "PASS [case59b] 红来自真命中（输出含「缺 val evidenceLevel 声明」逐字违规行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case59b] 输出里看不到「缺 val evidenceLevel 声明」逐字违规行（可能守卫自身故障假红）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case60-evidence-green"
+scaffold "$d"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case60 scaffold 三块 evidenceLevel 合法 (第 39 条绿面)] 退出 0"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case60] scaffold 的 ModelPresets.kt 被第 39 条误红（绿面失守 —— 铺点与判据未同步）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
