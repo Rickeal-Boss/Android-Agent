@@ -29,8 +29,8 @@
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | 待回填 | — | — |
-| **Release** | 待回填 | — | — |
+| **Build** | `38244498789` | ✅ success（head `5fb97de`） | 三 job 全 success（Assemble 内 arch-guard 38 项 + 全量 selftest） |
+| **Release** | `38244498971` | ✅ success（head `5fb97de`） | — |
 
 > 分工说明（如实入账）：W65-1、D1 KDoc、X1、审查销账由开发席第一实例（柯码成）完成并自验（编译+定向单测+core-model 全量 160/0）；W65-2 迁移由开发席第二实例完成并自验（编译+core-agent/feature-chat 253 测试 0 失败），文件名更名（AgentRunnerEvidence→LoopHelpers）与 X3 归属订正由主理人执行；W65-3 由 CI 席（崔续程）完成，主理人独立复跑 38/38 与 11/0 核实；R1-Llama 容器取证（D4）由取证代理完成（只读取证，结论经主理人回填 KDoc）；真机批、README、docs/12/14、两处交接勘误、build.yml、W64/W63 勘误、本文档由主理人完成；全量 diff 审查由审查席（严质衡）完成。
 
@@ -100,7 +100,7 @@ journal 证据：`_w65_dev/results/{E2B_PATCHARM,E2B_PATCHARM2,E2B_NORMAL,R1_M1}
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | 待回填 | — | — |
-| **Release** | 待回填 | — | — |
+| **Build** | `38244498789` | ✅ success（head `5fb97de`） | Lint (baseline gate) / Unit tests / Assemble Debug (JDK 21) 全 success；Assemble 内「Architecture guard」（38 项）+「Architecture guard self-test」两步绿 |
+| **Release** | `38244498971` | ✅ success（head `5fb97de`） | — |
 
 **上游提交申报（沿袭）**：fine-grained PAT 对 `google-ai-edge` 组织无 issue 写权限 ⇒ #3576 补充评论与 gemma-4 GPU NOT_FOUND 新 issue 仍待用户手动提交，文案入仓 `docs/upstream/`（见 `docs/14-user-actions.md` §B）。
