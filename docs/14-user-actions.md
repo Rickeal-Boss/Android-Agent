@@ -26,6 +26,10 @@
   4. 点「取消」则**不加载**。
 - **③ 销账判据**：以上 4 点全中 ⇒ 告诉项目「A1 通过」+ 设备型号。任一点不符 ⇒ 回报哪一步 +
   截图（截图判读需多模态会话）。
+- **完成后销账于**：`docs/14-user-actions.md` §A1「状态」行（⬜→✅ + 日期/结论）+ `README.md`
+  波次段 W65 挂账行「🟡 C-1/C-2 knownBroken 对话框手验回收」条（现 `:468`，README 编辑会致行号
+  漂移、按条名锚定，删除该条）+ `docs/handoff-20261011-wave64-closeout.md:61` §五第 3 条（同条
+  删除；§五权威版 = 最新波次交接，随波次滚动）。
 - **为什么只有用户能做**：`uiautomator dump` 对玻璃卡片（`GlassCard`）下半区**零捕获**
   （Compose 自绘节点 + 网格单元拉伸互覆盖），自动化工具点不到、dump 里也不出现该节点
   （W63 §六.4 实证）。逻辑正确性已由单测 + 守卫 #34 兜底，**缺的只是人眼确认**。
@@ -48,6 +52,10 @@
 - **② 预期看到什么**：评论成功挂在该 issue 下（含 Android 0.17.1 AAR 路径实证 + `minijinja_template.rs`
   单参 `tojson` 根因钉点 + 转换期模板 lint 诉求）。
 - **③ 销账判据**：评论 URL 回贴本页 ⇒ 项目把「upstream 响应监视」挂进 bump 季扫。
+- **完成后销账于**：`docs/upstream/3576-minicpm5-tojson-comment.md:3`「状态」字段（⬜ 待用户手动
+  提交 → ✅ 已提交 + 评论 URL）+ `docs/14-user-actions.md` §B1「状态」行（⬜→✅ + URL 回贴）+
+  `docs/12-litertlm-0171-anchors.md` §复核流程（`:29`）追加「跟踪 #3576 issue 状态」一行
+  （bump 季扫跟踪项，锚 #13 同源）。
 
 ### B2. gemma-4 GPU 双变体 `NOT_FOUND` 新 issue
 
@@ -60,6 +68,10 @@
   以及「CPU 变体同设备正常」的对照。
 - **③ 销账判据**：issue URL 回贴本页。上游回复「需特定 runtime 版本 / 需 repack」时，
   据此决定是否把这两个预设从「已知坏」升为「已下架」。
+- **完成后销账于**：`docs/upstream/gemma4-gpu-notfound-issue.md:3`「状态」字段（⬜→✅ 已创建 +
+  issue URL）+ `docs/14-user-actions.md` §B2「状态」行（⬜→✅ + URL 回贴）；上游若回复「需特定
+  runtime / 需 repack」⇒ 两个预设升「已下架」属代码侧（`feature-models/.../ModelPresets.kt`
+  的 `knownBrokenOn`），由项目按 ③ 判据立项销账，不属用户动作。
 
 ---
 
@@ -73,6 +85,10 @@
 - **② 预期看到什么**：`core-data/.../LegalDocuments.kt` 的 4 处 `TODO(legal)` 可清；
   `SettingsRepository` 的 `is_tos_accepted` / `is_gemma_terms_accepted` 改为带版本号。
 - **③ 销账判据**：给出裁决结论 + 正式文本 + 托管 URL ⇒ 项目立项实现。
+- **完成后销账于**：`README.md:483` 挂账台账「**`termsVersion`（法务条款版本化）**」行整行移入
+  同文档 `:492`「已裁定（不再是挂账）」小节 + `docs/14-user-actions.md` §C1「状态」行
+  （⬜→✅ + 裁决结论）+ `docs/handoff-20261011-wave64-closeout.md:67` §五沿袭行剔除「法务
+  `termsVersion`」（README 波次段沿袭句同步剔除）。
 - **风险提示**：反序（先换文本、后做版本化）会让**当天所有老用户**命中 `true` 而被视为
   「已同意新条款」，首启门禁与法律页开关被直接跳过（合规事故），且事后无法反推用户当年
   同意的是哪一版（README 挂账台账 `termsVersion` 行）。
@@ -84,6 +100,10 @@
   「canonical 分支」是谁；`1011`（2026-10-11 快照锚点）是否冻结为只读锚点。
 - **② 预期看到什么**：`git tag` 非空；`1011` 定位成文（W63 已把它定为「快照锚点 + 回滚锚点」）。
 - **③ 销账判据**：给出 tag 名 + 落点分支 + canonical 裁决 ⇒ 项目补 tag 与 README 口径。
+- **完成后销账于**：`docs/14-user-actions.md` §C2「状态」行（⬜→✅ + tag 名/落点/canonical）+
+  `README.md:274` 分支口径段「首个 tag 的落点分支…」句按裁决结论落定 + `README.md:450`
+  W63 波次段 B1 落档条补 tag 名 + `docs/handoff-20261011-wave64-closeout.md:67` §五沿袭行
+  更新「0 tags」状态。
 - **前置**：C1（`termsVersion`）必须先落地（法务文本未定稿前不打 release tag）。
 
 ### C3. 会话删除 UI 立项
@@ -92,6 +112,9 @@
 - **① 做什么**：裁定是否立项「会话删除 UI」（激活既有 `delete` 卫生位）。
 - **② 预期看到什么**：立项后项目在会话列表加删除入口 + 级联清理 journal/持久化。
 - **③ 销账判据**：给出「立项 / 不立项」结论。
+- **完成后销账于**：`docs/14-user-actions.md` §C3「状态」行（⬜→✅ + 结论）+
+  `docs/handoff-20261011-wave64-closeout.md:67` §五沿袭行剔除「会话删除 UI」（README 波次段
+  沿袭句同步）；若「立项」⇒ 另立波次挂账并进 README 路线图（M8 打磨段）后再销。
 
 ---
 

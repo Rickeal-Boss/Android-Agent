@@ -55,6 +55,8 @@ journal 证据：`_w64_dev/results/E2B_AUTO2_run.jsonl`（gemma E2B AUTO）、`_
 - **W64 自查闸门**：`arch-guard` **35 项全 OK**（0 error）；`fulltest` 9 模块 **tests=678 failures=1**（唯一失败 = core-data `SandboxFileScannerTest` Windows 符号链接，**既有且仅 Windows**）；`selftest` 见 §六.1；`@Test` 严格口径 **678** = `build.yml` baseline。
 
 ## 五、挂账（W65 起；权威版见本节 + README）
+> 📌 **W65 裁定语勘误（2026-10-12，权威版已转 W65 closeout）**：①《K-1 真机绑定判据》经第十审 D1 不可达性证明重分类 —— 健康 native 下超阈需 r>16 chars/token（实测上界 8.4）⇒ **数学不可达**，改按「⛔ 结构不可达（0.17.1）+ bump 保活」留档；真阳性链由临时 C=2 补丁臂行使（模型直答腿 ⛔），剩项 = C 复测确认 r_max ≤8.4。②《C1 容器取证》已闭环：HF 385 仓库 + ModelScope 7 变体名 404 ⇒ **容器不存在 ⇒ 外推维持**，等上游复验升格。以下为 W64 收官时原文，保留存档。
+
 
 1. 🔴 **K-1 真机绑定判据未行使**：需构造 `thinklen > 阈值`（gemma >8192 / R1 >16384 字符）的长推理样本，验证「native 先优雅收尾、守卫不触发」；**并据此复测系数 C**（≥2 样本：长英文 + 长中文）——C 现值 16 系单样本外推。
 2. 🔴 **C1 的 R1-Distill-Llama 容器取证**：设备在机 13 模型无此件 ⇒ C1 对 LLAMA 家族属同管线外推；取得容器后按 `_w63_r1_scan.py` 两步法复验（`channel` 字节全 0 ∧ `<think>` 在特殊 token 表）。
