@@ -2,6 +2,7 @@ package com.rickeal.agent.core.engine.local
 
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.SamplingParams
+import com.rickeal.agent.core.model.ThinkingMode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -52,15 +53,17 @@ class ModelHealthProbeConfigTest {
     }
 
     /**
-     * W65 M-1 轴对探针的已知取舍（申报钉住）：轴档案（R1/MiniCPM5，minThinkingTokenBudget=1536）
-     * 的思考预算被 `appliedTo` 写入后被 PROBE_MAX_TOKENS=96 钳到 95 ⇒ 探针正文样本采集失效
-     * （预览恒空），但判据 C 两通道合并保证不误判 BAD（见 probeSamplingConfig KDoc 申报）。
-     * 本条把这个行为差异钉成显式事实，防止「探针与生产预算口径分叉」静默演化。
+     * W66 A4 反向改钉（替换 W65「轴档案思考预算被钳到上限减一」）：探针恒钉
+     * `thinking = ThinkingMode.OFF` 且 `thinkingTokenBudget = 0`，**与模型档案无关**
+     * （R1/MiniCPM5 的 minThinkingTokenBudget=1536 不再传播）⇒ 轴值吃光预算、正文恒空的老
+     * 取舍被消除，判据 A/B 的采样面从「空正文 vacuous」恢复为真实正文。
+     * 该「恒 OFF」是判据 A/B 采样面不再 vacuous 的离线锚。
      */
     @Test
-    fun 轴档案探针思考预算被短预算钳到上限减一() {
+    fun 探针恒钉思考关闭且预算归零() {
         val out = probeSamplingConfig("MiniCPM5-2B_int4.litertlm", InferenceConfig())
-        assertEquals(1536.coerceAtMost(ModelHealthProbe.PROBE_MAX_TOKENS - 1), out.thinkingTokenBudget)
+        assertEquals(ThinkingMode.OFF, out.thinking)
+        assertEquals(0, out.thinkingTokenBudget)
         assertTrue(out.thinkingTokenBudget < out.maxTokens, "探针思考预算必须 < maxTokens（coerce 不变量）")
     }
 }

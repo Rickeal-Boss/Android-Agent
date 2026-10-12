@@ -11,6 +11,7 @@ import com.rickeal.agent.core.model.ModelHealthCriteria
 import com.rickeal.agent.core.model.ModelHealthVerdict
 import com.rickeal.agent.core.model.ModelSamplingProfiles
 import com.rickeal.agent.core.model.Role
+import com.rickeal.agent.core.model.ThinkingMode
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
@@ -235,7 +236,7 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
 }
 
 /**
- * 探针采样配置（Wave 49 E1）——三步，顺序不可换：
+ * 探针采样配置（Wave 49 E1；W66 A4 钉 OFF）——四步，顺序不可换：
  *
  * 1. **过模型档案**（[ModelSamplingProfiles.appliedTo]，与 AgentRunner 组装 `InferenceConfig`
  *    后同一汇聚点）：温度 / topK / topP / repPen 钳进该模型安全区间、`contextLength` 按 KV
@@ -245,23 +246,41 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
  *    优先于档案的 `minMaxTokens`（档案的 2048 是为「思考型模型交出答案」设的；探针不需要
  *    完整答案，且放大到 2048 会撑爆 [ModelHealthProbe.PROBE_TURN_TIMEOUT_MS] /
  *    [ModelHealthProbe.PROBE_TOTAL_TIMEOUT_MS]）。
- * 3. **`.coerce()` 重新归一**：`InferenceConfig` 的不变量是 `thinkingTokenBudget < maxTokens`
+ * 3. **钉 `thinking = ThinkingMode.OFF` 且 `thinkingTokenBudget = 0`（W66 A4）**：见下方
+ *    「探针使命」。
+ * 4. **`.coerce()` 重新归一**：`InferenceConfig` 的不变量是 `thinkingTokenBudget < maxTokens`
  *    （见其 KDoc 与 `coerce`）。第 2 步把 `maxTokens` 改小后若不复归，用户设的
  *    `thinkingTokenBudget`（如 2048）会 **> maxTokens**，引擎侧 `resolveThinkingBudget` 只能钳到
- *    `maxTokens-1` ⇒ **思考吃光 96 token、正文为空**（这正是「思考型模型被误判」的机制之一；
- *    另一层由判据 C 的**两通道合并**口径兜住，见 [ModelHealthCriteria.evaluateSplit]）。
+ *    `maxTokens-1` ⇒ **思考吃光 96 token、正文为空**（这正是「思考型模型被误判」的机制之一）。
+ *    钉 OFF + 预算归零后此风险从根上消除（预算 `0` 合法且恒 `< maxTokens`）。
  *
- * ⚠️ **W65 M-1 轴对本探针的影响（申报，非缺陷）**：`appliedTo` 现会把档案的
- * `minThinkingTokenBudget`（R1/MiniCPM5 = 1536）写进 `thinkingTokenBudget`，再被第 2/3 步
- * 钉 `maxTokens=96` 后钳到 **95**（占 96 的 99%）⇒ 这三个模型的探针正文样本采集实质失效
- * （预览恒「（空）」，见 [ProbeOutcome.sample] 既有 KDoc）。**判定机器安全性不变**：判据 C
- * 判两通道合并、判据 A/B 只判正文重复结构 ⇒ 不会把好容器误判 BAD（方向 = 探针对思考流更
- * 宽容，与生产路径的预算差异由 `ModelHealthProbeConfigTest` 钉住）。这是「探针短预算 × 轴
- * 下限」的已知取舍：探针使命是**成本受控的健康快照**，不是生产预算复现。
+ * ## 探针使命（W66 A4 重写，替换 W65 M-1 取舍申报）
+ *
+ * 探针使命 = **成本受控的健康快照**，不是生产预算复现。此前 `appliedTo` 会把轴档案
+ * （R1/MiniCPM5）的 `minThinkingTokenBudget`（1536）写进 `thinkingTokenBudget`，再被钉
+ * `maxTokens=96` 后钳到 **95**（占 96 的 99%）⇒ 思考吃光预算、探针**正文恒空**；判据 A（保留
+ * token）/ B（重复类）**只判正文**（[ModelHealthCriteria.evaluateSplit]）⇒ 采样面 **vacuous**
+ * （判据没被行使，仅判据 C 两通道合并兜底不误判 BAD）。
+ *
+ * 本波钉 `thinking = OFF`（`thinkingTokenBudget = 0`）后：
+ *  - `appliedTo` 写入的轴值不再传播（第 3 步覆盖）⇒ **正文预览从空恢复为真实正文**；
+ *  - 判据 A/B 从「空正文 vacuous」恢复为**真实采样**；判据 C 口径（两通道合并）不变；
+ *  - 探针恒 OFF 由 `ModelHealthProbeConfigTest` 钉住（离线锚，防口径静默回退）。
+ *
+ * ⚠️ **效果模型依赖（待真机抽验，W66 C1）**：`ThinkingMode.OFF` 的落地 = 引擎下发
+ * `extraContext["enable_thinking"] = false` 且不设 `ThinkingConfig`（见 `LiteRtLmEngine` 生成
+ * 路径）。该键**是否真停思考取决于模型容器的 chat template 是否认它** —— MiniCPM5 认
+ * （RM_MiniCPM5-2B.md:107「false switches to direct answers」）、gemma 的 thought 通道按
+ * **模型身份**声明（[thoughtChannelDefsFor]，与 config 无关）、**R1 未证** ⇒ 须**真机抽验
+ * R1 / MiniCPM5**。若某模型仍思考，则 OFF 对其无收益，如实记 `⛔`。
  *
  * 独立成 `internal` 顶层函数以便 JVM 单测（探针本体依赖引擎，不能 JVM 跑）。
  */
 internal fun probeSamplingConfig(fileName: String?, config: InferenceConfig): InferenceConfig =
     ModelSamplingProfiles.appliedTo(fileName, config)
-        .copy(maxTokens = ModelHealthProbe.PROBE_MAX_TOKENS)
+        .copy(
+            maxTokens = ModelHealthProbe.PROBE_MAX_TOKENS,
+            thinking = ThinkingMode.OFF,
+            thinkingTokenBudget = 0,
+        )
         .coerce()
