@@ -251,6 +251,14 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
  *    `maxTokens-1` ⇒ **思考吃光 96 token、正文为空**（这正是「思考型模型被误判」的机制之一；
  *    另一层由判据 C 的**两通道合并**口径兜住，见 [ModelHealthCriteria.evaluateSplit]）。
  *
+ * ⚠️ **W65 M-1 轴对本探针的影响（申报，非缺陷）**：`appliedTo` 现会把档案的
+ * `minThinkingTokenBudget`（R1/MiniCPM5 = 1536）写进 `thinkingTokenBudget`，再被第 2/3 步
+ * 钉 `maxTokens=96` 后钳到 **95**（占 96 的 99%）⇒ 这三个模型的探针正文样本采集实质失效
+ * （预览恒「（空）」，见 [ProbeOutcome.sample] 既有 KDoc）。**判定机器安全性不变**：判据 C
+ * 判两通道合并、判据 A/B 只判正文重复结构 ⇒ 不会把好容器误判 BAD（方向 = 探针对思考流更
+ * 宽容，与生产路径的预算差异由 `ModelHealthProbeConfigTest` 钉住）。这是「探针短预算 × 轴
+ * 下限」的已知取舍：探针使命是**成本受控的健康快照**，不是生产预算复现。
+ *
  * 独立成 `internal` 顶层函数以便 JVM 单测（探针本体依赖引擎，不能 JVM 跑）。
  */
 internal fun probeSamplingConfig(fileName: String?, config: InferenceConfig): InferenceConfig =

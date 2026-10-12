@@ -538,6 +538,18 @@ class StreamRepetitionDetector(
          * 实证：W62 A/B（同设备 / 同模型 / 同构建）`thinklen=2010`（<2048）正常作答 /
          * `thinklen=2051`（>2048）被误判「循环」⇒ 阈值是刀锋。
          *
+         * **结构不可达证明**（W65 D1 前半，原挂账「真机构造 thinklen>阈值」据此重分类为
+         * ⛔ 结构不可达（0.17.1 健康 native），而非待办缺陷）：阈值 = native token 预算 × C(=16)
+         * 字符。**健康 native**（`ThinkingBudgetConstraint` 已编入 .so）下思考在 budget
+         * token 处被强制结束符截断 ⇒ `thinklen ≤ budget × r`，超阈需 `r > 16` chars/token ——
+         * 而实测上界仅 8.4（W62 真机 2048 字符 ≈244 token），CJK 1–3、英文 3.5–5 ⇒ **真实
+         * 文本数学不可达**（守卫在健康 native 上永不触发，这正是「不误触发」的设计意图）；
+         * **native 失效**（bump 删符号 / .so 缺编）时思考可吃满 maxTokens，超阈需 `r > 8` ⇒
+         * 字符密集 profile 恰好可触发。⚠️ **轴档案条件化**（W65 M-1）：`configured > 0` 的档案
+         * （R1/MiniCPM5 = 1536，maxTokens=2048）失效兜底阈 = C×budget/maxTokens ⇒ `r > 12`
+         * ⇒ 高于实测 r_max 8.4，兜底面收窄（余量由锚 #5 墙钟兜底承担）；半预算档仍为 `r > 8`。
+         * 结论：判定③的定位 = **native 失效兜底，bump 场景保活**。
+         *
          * **可调、真机反馈校准**：系数 C 冻结前须真机 ≥2 样本复测（英文 + 中文各一）；
          * 真机若仍见 native **未先优雅收尾**（即仍出现「正文为空 + 循环提醒」），按实测
          * chars/token 再上调 C（把实测值记于 core-engine `THINKING_CHARS_PER_TOKEN_CEIL`）。

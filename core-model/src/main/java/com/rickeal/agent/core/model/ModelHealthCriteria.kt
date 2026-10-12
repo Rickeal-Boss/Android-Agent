@@ -277,6 +277,10 @@ object ModelHealthCriteria {
             hits += CriterionHit(ID_EMPTY_OUTPUT, CriterionSeverity.HARD, "输出无任何字母/数字字符")
         }
         // detector：句级/字符级循环（判定①②④⑤⑦⑧；**只判正文**）—— 复用实例，零复制阈值。
+        // X1 申报（外部审查 v18「10.7× 口径差」观察，W65 关闭）：本实例的 thinkingCharBudget
+        // 用默认 8192 从未行使 —— thinking 样本从不喂入本 detector（thinking 形参只用于
+        // 判据 C 的两通道空输出合并判定）⇒ 默认值与 AgentRunner 派生值之间无口径分叉，
+        // 判定为 ⛔vacuous 而非缺陷，故不加参数改签名。
         val verdict = StreamRepetitionDetector(systemPrompt = null).observeText(text)
         if (verdict is StreamRepetitionDetector.Verdict.LoopDetected) {
             hits += CriterionHit(

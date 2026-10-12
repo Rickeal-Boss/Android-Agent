@@ -1,6 +1,17 @@
 package com.rickeal.agent.core.engine.local
 
 /**
+ * ⚠️ **改 `THINKING_CHARS_PER_TOKEN_CEIL`（C）三处同步单**（W65 D1 前半落档，禁单点演化）：
+ * 改 C 的取值须同步以下两处，并跑 `ThinkingBudgetInvariantTest`（跨模块单源靠它钉住）：
+ *  1. core-model `StreamRepetitionDetector.THINKING_CHAR_BUDGET`：**字面量 8192** =
+ *     本模块 `thinkingCharBudgetFor(maxTokens = 1024, configured = 0)` 的取值
+ *     （core-model 不可见 core-engine，只能写字面量，相等由不变式测试钉住）；
+ *  2. core-engine `ThinkingBudgetInvariantTest`：「检测器默认值等于派生式在1024档的取值」
+ *     与「字符守卫严格晚于 native 预算的实测字符当量」两条断言（后者内含实测上界 8.4）。
+ * 改任一处必须同步另两处 —— 同族历史坑：两处口径各自演化 ⇒ 检测静默失效。
+ */
+
+/**
  * 从配置派生 thinking 通道的**生效**预算（上游 litertlm 0.17.1
  * `ThinkingConfig.thinkingTokenBudget`，native 硬约束）。
  *
@@ -32,8 +43,23 @@ internal fun resolveThinkingBudget(configured: Int, maxTokens: Int): Int {
  * - **实测上界 8.4 chars/token**（W62 真机事故：2048 字符 ≈ 244 token，见 `README.md` W62 段）；
  * - ×≈1.9 余量 ⇒ 取整 **16**；
  * - **故障不对称**：系数取小 ⇒ 字符守卫早于 native 抢跑（= W62 病灶：native 优雅路径被硬截）；
- *   取大 ⇒ 退化为纯兜底（native 先优雅收尾）⇒ 必须**向上**取；
- * - ⚠️ 冻结前须真机 ≥2 样本复测（英文 + 中文各一），把实测值记于此。
+ *   取大 ⇒ 退化为纯兜底（native 先优雅收尾）⇒ 必须**向上**取。
+ *
+ * **安全窗口**（W65 D1 前半）：`C ∈ (r_max, 2×r_max) = (8.4, 16.8)`，其中 r_max =
+ * 真实文本 chars/token 实测上界 8.4：
+ *  - **下界**（C > 8.4）：健康 native 下阈值 = budget×C > budget×r_max ≥ thinklen
+ *    ⇒ 守卫数学不可达，不误触发（W62 病灶防线）；
+ *  - **上界**（C < 16.8）：native 失效（bump 删符号 / .so 缺编）时思考可吃满 maxTokens，
+ *    超阈需 r > C/2 = 8 —— 字符密集 profile（r≈8）恰好仍可触发 ⇒ 兜底能力不失；
+ *    ⚠️ **轴档案条件化**（W65 M-1）：`configured > 0`（R1/MiniCPM5 = 1536，maxTokens=2048）时
+ *    失效兜底阈 = C×budget/maxTokens ⇒ r > 16×1536/2048 = **12** —— 高于 W62 实测 r_max 8.4
+ *    ⇒「判定③ = native 失效兜底」对三个轴档案**条件性收窄**（W62 同型样本在新预算档不再触发
+ *    思考判据，由锚 #5 墙钟兜底承担）。半预算档（configured=0）不受影响，仍为 r > 8；
+ *  - **C=16 贴上界**：故障不对称下的刻意选择 —— 取小 = 抢跑误伤，取大 = 纯兜底（可接受）。
+ *
+ * 复测目标（ narrowed，W65）：「确认 r_max 仍 ≤8.4」即可 —— 若是，则窗口 (8.4, 16.8) 内
+ * 任意取值结构安全，无需开放式重新标定；只有当 r_max 被真机样本突破时才需重取 C
+ * （同步单见本文件顶部注释块）。
  */
 internal const val THINKING_CHARS_PER_TOKEN_CEIL = 16
 

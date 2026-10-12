@@ -32,6 +32,9 @@ package com.rickeal.agent.core.model
  *    而非改写（Qwen2.5 官方 1.1，用户想更狠可以拉到 1.3，但默认 1.0 会被抬到 1.1）；
  *  - maxTokens → max(用户值, [minMaxTokens])：思考模型的思维链被截断就交不出答案
  *    （MiniCPM5 README 原话：truncated mid-thought it produces no final answer at all）；
+ *  - thinkingTokenBudget → max(用户值, [minThinkingTokenBudget])：思考模型的思维链被
+ *    native 半预算掐断就交不出答案（R1 / MiniCPM5 官方口径「思维链需完整」的机器可执行化，
+ *    W65 M-1 治本；仅在 [minThinkingTokenBudget] > 0 时干预）；
  *  - contextLength → min(用户值, [maxContextLength])：`.litertlm` 的 KV 预算是转换时
  *    定死的（ekv4096 文件 / metadata max_num_tokens=4096），配置调得再大也是白给，
  *    只会让上层压缩器塞进超出预算的历史。
@@ -55,11 +58,37 @@ data class ModelSamplingProfile(
     val recommendedRepetitionPenalty: Float = 1.0f,
     /** 最大输出 token 下限（思考模型 >0）。0 = 不干预。 */
     val minMaxTokens: Int = 0,
+    /**
+     * thinking token 预算下限（W65 M-1 治本：`minMaxTokens` 只保证 maxTokens 档位，
+     * 不保证其中分给思维链的那一份）。
+     *
+     * **语义**：`0` = 不干预，thinking 预算沿用「半预算」自动语义（`configured = 0` 时
+     * `resolveThinkingBudget` 取 `maxTokens / 2`）；`> 0` = 该模型思考 token 预算下限，
+     * [appliedTo][ModelSamplingProfiles.appliedTo] 取
+     * `maxOf(config.thinkingTokenBudget, 本值)`（与 [recommendedRepetitionPenalty] /
+     * [minMaxTokens] 同为「下限」口径，绝不压低用户显式设的更大预算）。
+     *
+     * **可达性与余量**：结果受 `resolveThinkingBudget` 的 `1..maxTokens-1` 钳制（thinking
+     * + 正文共享 `maxOutputToken`，必须给正文留余量），故本值必须 `< minMaxTokens` 才能在
+     * 用户不动滑条时存活 —— 由构造期不变式（下方 `init`）fail-fast 保证（免逐档案枚举校验）。
+     * 设了本值的档案，其派生守卫（`thinkingCharBudgetFor`）随之等比伸缩。
+     */
+    val minThinkingTokenBudget: Int = 0,
     /** 运行时 KV 预算上限（上下文裁剪预算不得超过）。 */
     val maxContextLength: Int,
     /** 数值出处。改任何数字都必须同步更新这条证据。 */
     val evidence: String,
-)
+) {
+    init {
+        // 下限必须可达（< minMaxTokens 才可能钳制定额存活）且必须给正文留余量；
+        // 构造期 fail-fast，避免非法档案枚举散落到运行时才炸（W65 M-1）。
+        val thinkingCeiling = (minMaxTokens - 1).coerceAtLeast(0)
+        require(minThinkingTokenBudget in 0..thinkingCeiling) {
+            "minThinkingTokenBudget($minThinkingTokenBudget) 必须在 0..$thinkingCeiling 之间" +
+                "（思考预算必须可达且必须给正文留余量；minMaxTokens=$minMaxTokens）"
+        }
+    }
+}
 
 object ModelSamplingProfiles {
 
@@ -103,7 +132,9 @@ object ModelSamplingProfiles {
 
         // DeepSeek-R1-Distill-Qwen-1.5B：官方模型卡明示「0.5–0.7（推荐 0.6），贪心会
         // 重复循环、应避免」。上下文 ekv4096；思维链必须完整 → maxTokens 下限 2048
-        //（1.5B 蒸馏版思维链通常 1~3k token，1024 默认值会被拦腰截断）。
+        //（1.5B 蒸馏版思维链通常 1~3k token，1024 默认值会被拦腰截断）；W65 M-1：
+        // thinking 预算下限 1536（半预算 1024 与「≥2048 需求」差 2×，显式抬下限补口，
+        // 正文余 ≥512）。
         "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm" -> ModelSamplingProfile(
             recommendedTemperature = 0.6f,
             temperatureRange = 0.5f..0.7f,
@@ -111,14 +142,18 @@ object ModelSamplingProfiles {
             maxTopK = 100,
             recommendedTopP = 0.95f,
             minMaxTokens = 2048,
+            minThinkingTokenBudget = 1536,
             maxContextLength = 4096,
             evidence = "官方模型卡：temp 0.5–0.7（rec 0.6）/ topP 0.95，明确警告贪心循环；" +
-                "ekv4096 KV 预算；思维链需 ≥2048 token 预算",
+                "ekv4096 KV 预算；思维链需完整 ⇒ 预算下限：maxTokens≥2048 且 " +
+                "thinking≥1536 token（minMaxTokens=2048 档，正文余 ≥512）",
         )
 
         // MiniCPM5-2B：转换仓 README 明示「OpenBMB recommends temperature 1.0, top_p 0.95」；
         // 原生上下文 131k 但 litertlm 元数据 max_num_tokens=4096（KV 预算）→ 封顶 4096；
-        // 思考模式「truncated mid-thought it produces no final answer at all」→ ≥2048。
+        // 思考模式「truncated mid-thought it produces no final answer at all」→ ≥2048；
+        // W65 M-1：thinking 预算下限 1536（半预算 1024 与「≥2048 需求」差 2×，显式抬
+        // 下限补口，正文余 ≥512）。
         "MiniCPM5-2B_int4.litertlm",
         "MiniCPM5-2B_int8.litertlm",
         -> ModelSamplingProfile(
@@ -128,9 +163,11 @@ object ModelSamplingProfiles {
             maxTopK = 128,
             recommendedTopP = 0.95f,
             minMaxTokens = 2048,
+            minThinkingTokenBudget = 1536,
             maxContextLength = 4096,
             evidence = "litert-community README：OpenBMB 建议 temp1.0/topP0.95；" +
-                "原生 131k 但 litertlm 元数据 max_num_tokens=4096；思考 run 需 ≥2048 token",
+                "原生 131k 但 litertlm 元数据 max_num_tokens=4096；思考 run 需完整 ⇒ " +
+                "预算下限：maxTokens≥2048 且 thinking≥1536 token（minMaxTokens=2048 档，正文余 ≥512）",
         )
 
         // Phi-4-mini：官方 generation_config 为空、模型卡示例用贪心（基准口径）。
@@ -217,6 +254,9 @@ object ModelSamplingProfiles {
         val clamped = config.copy(
             sampling = clampedSampling,
             maxTokens = maxOf(config.maxTokens, profile.minMaxTokens),
+            // W65 M-1：thinking 预算下限随 maxTokens 抬升同批写入（先抬 maxTokens 再设本值，
+            // .coerce() 会按归一后 maxTokens 把上限收到 maxTokens-1，顺序安全）。
+            thinkingTokenBudget = maxOf(config.thinkingTokenBudget, profile.minThinkingTokenBudget),
             contextLength = minOf(config.contextLength, profile.maxContextLength),
         ).coerce()
         if (clamped != config) {
@@ -225,7 +265,8 @@ object ModelSamplingProfiles {
                 "模型采样档案生效：${fileName ?: "?"} → temp ${clamped.sampling.temperature}" +
                     "/topK ${clamped.sampling.topK}/topP ${clamped.sampling.topP}$topPNote" +
                     "/repPen ${clamped.sampling.repetitionPenalty}" +
-                    "/maxTok ${clamped.maxTokens}/ctx ${clamped.contextLength}（${profile.evidence}）"
+                    "/maxTok ${clamped.maxTokens}/think ${clamped.thinkingTokenBudget}" +
+                    "/ctx ${clamped.contextLength}（${profile.evidence}）"
             )
         }
         return clamped

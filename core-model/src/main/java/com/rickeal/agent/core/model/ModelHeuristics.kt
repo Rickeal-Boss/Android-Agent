@@ -229,6 +229,11 @@ object ModelHeuristics {
      *   ⚠️ **家族外推（W64）**：上述一手证据取自 R1-Distill-**Qwen** 容器；**R1-Distill-Llama**
      *   （同转换管线，容器**未取得**）按同管线外推适用本分支。取得该容器后须复验，判据沿用
      *   `_w63_r1_scan.py` 两步法 = 字节扫描 `channel` 全 0 **且** `<think>` 出现在特殊 token 表。
+     *   📌 **W65 取证回填（挂账 #2 闭环）**：HF `litert-community` 全量（2026-10-12，385 个
+     *   仓库快照）+ ModelScope 镜像**均无** R1-Distill-Llama 的 litertlm 转换件（7 个变体名
+     *   候选逐一 404、页面/API 检索 0 命中）⇒ **容器不存在 ⇒ 外推维持**（去门控的修复对
+     *   LLAMA 家族的意义不在「已发布容器」而在「文件名级判据与家族解耦」）；上游发布后按
+     *   上述两步法复验升格。
      *   ⚠️ **判据唯一 = [isReasonerMarker]**（W64 去 family 门控）：此前 R1 分支叠了
      *   `family == OTHER` 门控，而 [inferFamily] 把文件名含 `llama` 者判为 [ModelFamily.LLAMA]
      *   （`DeepSeek-R1-Distill-Llama-8B` 即落此家族）⇒ 被门控挡掉 ⇒ 通道不切分、推理腔泄漏正文。
