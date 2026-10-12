@@ -28,7 +28,7 @@
 | `2cdfdde` | style(chat,design) | **A3 E2 CRLF 根除**：`.gitattributes` 追加 `*.kt text eol=lf`；`git add --renormalize` 点名 3 路径（`ChatRunCoordinator.kt` / `ChatViewModel.kt` / `LiquidGlassModifier.kt`），2066/2066 行纯 EOL 重写；`i/crlf` **5 → 2**（剩 README + W65 交接，故意保留）。**未用 `sed -i`**（本仓 W65 实摔点） |
 | `97da923` | fix(engine) | **A4 E3 探针确定性**：`probeSamplingConfig` 由 `appliedTo(...).copy(maxTokens=96)` 改为 `.copy(maxTokens=96, thinking=ThinkingMode.OFF, thinkingTokenBudget=0)`；KDoc 重写（原「轴被钳到 95」取舍已消除 + **申报 OFF 是模型依赖、待真机抽验**）；`ModelHealthProbeConfigTest` 原「轴档案钳到上限减一」**反向改钉**为「探针恒钉 OFF 且预算归零」 |
 | `0d335e1` | feat(agent) | **B1 N-2 观测式兜底**：纯函数 `thinkingOnlyEmptyDiagnostic(thinking, answer, hasLoopMarker)`（判据 = thinking 非空 ∧ 正文空 ∧ 无 loopMarker）+ **单一落点**调用（空答分支 `emptyAnswerStreak++` 之前，`?.let { AgentLogStore.warn(it) }`，**只观测不改行为**）+ 4 例单测；`build.yml` baseline **684 → 688**（同 commit 双向） |
-| `a033bdc` | feat(models) | **B3 evidenceLevel 全 schema + 守卫 #39**：`enum EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }` + `ModelPreset.evidenceLevel`（13 条逐条显式赋值 = **9 MEASURED + 4 UPSTREAM**，证据全部取自各条既有 `backendBasis`/`note` 文本，**禁推测预填**）；守卫 #39（内联 awk，沿 #23 范式）①缺赋值 ②未知等级 ③MEASURED 无 `W##` 锚点 ⇒ 判红，fail-closed；selftest 新增 **case56/57/58/59/60 五面**（含 56b/57b/59b fail-open 前置断言）+ `KNOWN_GUARDS`(+39) + 映射表 `ModelPresets.kt → "34 39"` |
+| `a033bdc` | feat(models) | **B3 evidenceLevel 全 schema + 守卫 #39**：`enum EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }` + `ModelPreset.evidenceLevel`（13 条逐条显式赋值 = **9 MEASURED + 4 UPSTREAM**，证据全部取自各条既有 `backendBasis`/`note` 文本，**禁推测预填**）；守卫 #39（内联 awk，沿 #23 范式）①缺赋值 ②未知等级 ③MEASURED 无 `W##` 锚点 ⇒ 判红，fail-closed；selftest 新增 **8 面 case56/56b/57/57b/58/59/59b/60**（含 56b/57b/59b fail-open 前置断言）+ `KNOWN_GUARDS`(+39) + 映射表 `ModelPresets.kt → "34 39"` |
 | `<docs>` | docs | **A1 勘误**（`README.md:459` + W65 交接 §一④/§二/§五.8/§六.2 四处 2709→2712、191→188 + 顶部勘误注记 + #18→#20 守卫号订正 + §六.2 补「W65 冻结帧 / 现行值以 `line-table.sh` 为准」）+ **A2 `scripts/line-table.sh`**（清单**单源派生**自 `arch-guard.sh` 的「总行数 ≤」守卫，9 员齐全含 ChatViewModel，`--check` 自证）+ **A5 E5 r 测量方法学**（`ThinkingBudget.kt` KDoc 88→102 行 + `docs/12` 复核流程）+ **A6 E4 落档**（README 挂账台账行）+ **审查 P2/P3 销账**（`ModelHealthProbeConfigTest:35` 过时注释改述、`arch-guard.sh #39` KDoc 补缩进纪律、§六.2 冻结帧注记）|
 
 | workflow | run id | 结论 | 关键 job |
@@ -85,7 +85,8 @@ GPU 崩溃链（设备侧持久日志）：`sampler_factory.cc:408 OpenCL sample
 
 ## 四、审查对账
 
-- **审查席（严质衡）独立深审 PASS，准予推送，无 P0/P1**：A3 用 **CR-strip 后 hash-object 相等**证明 3 个 `.kt` **零内容变化**（比肉眼更硬）；B1 **单一落点**（全仓 grep 仅 1 处生产调用）+ `hasLoopMarker` 恒 false 的论证经 `handlePostStreamSignals` 全路径核对成立；B3 **自建 harness 独立复现守卫 #39 的「四红一绿」**（MEASURED 去锚点 / 未知等级 / 缺赋值 / 块界破坏全判红；删声明 → 真跑 arch-guard 报 `::error::`）⇒ fail-closed 成立；架构铁律（`AppContainer` 零改动、core-agent 无 litertlm import、零 Operit 引用、`check-test-void.py` exit 0）全绿；`arch-guard` **39 项全 OK**、`@Test` **688 == baseline 688**。
+- **审查席（严质衡）独立深审 PASS，准予推送，无 P0/P1**：A3 用 **CR-strip 后 hash-object 相等**证明 3 个 `.kt` **零内容变化**（比肉眼更硬）；B1 **单一落点**（全仓 grep 仅 1 处生产调用）+ `hasLoopMarker` 恒 false 的论证经 `handlePostStreamSignals` 全路径核对成立；B3 **自建 harness 独立复现守卫 #39 的「四红一绿」**（MEASURED 去锚点 / 未知等级 / 缺赋值 / 删声明 → 真跑 arch-guard 报 `::error::`）⇒ 那四个面 fail-closed 成立；架构铁律（`AppContainer` 零改动、core-agent 无 litertlm import、零 Operit 引用、`check-test-void.py` exit 0）全绿；`arch-guard` **39 项全 OK**、`@Test` **688 == baseline 688**。
+  > ⚠️ **W66 深审订正（见 §八）**：首轮审查席曾称「**块界破坏全判红**」——**该断言经深审证伪**：块尾缩进漂移会致**块合并**（fail-open）。守卫 #39 实有三处 fail-open（单行构造被跳过 / 锚点可来自 `label` / 缩进漂移合并），已在 §八 修复。
 - **B3 一处判断题经审查席独立裁定**：MiniCPM5 标 **`UPSTREAM`** 正确（其 GPU 放行依据在 `ModelGpuSupport` 注释里明写为上游 Galaxy S26 基准，本条文本内无本仓 `W##` 锚点；硬标 MEASURED 会被 #39 判红）。附注：字段语义是「**本条文本内**的锚点」而非「本仓是否测过该模型」—— 如需反映 W44/48/49 真机史，须先回填本条目文本再升级（**本波不改**）。
 - **1×P2 销账**：文档行数值漂移（§六.2 是 W65 冻结帧 2712/88，tip 实测 2773/102）⇒ §六.2 补「冻结帧 + 现行值以 `scripts/line-table.sh` 生成物为准」。
 - **3×P3 全部处置**：`ModelHealthProbeConfigTest:35` 过时注释改述；`arch-guard.sh #39` KDoc 补「新增预设须沿用 8 空格缩进」；3 个归一 `.kt` 的工作树副本仍 w/crlf（**无害**：index/HEAD 已 LF、`eol=lf` 属性保证下次 add 仍存 LF）。
@@ -107,7 +108,7 @@ GPU 崩溃链（设备侧持久日志）：`sampler_factory.cc:408 OpenCL sample
 
 ## 六、下次接手须知
 
-1. **静态闸门基线（本波后）**：`arch-guard.sh` **39 项**（+#39 evidenceLevel 全 schema，#25 家族 9 员不变）；`arch-guard-selftest.sh` PASS=**119 + case56–60 五面**（**新增守卫 case 必同步 `KNOWN_GUARDS`/映射表/`META_CASES`**）；`fulltest.sh`（**仓内 `scripts/fulltest.sh`**，非 `_ci-tools/`）= 9 模块；`@Test` 严格口径 **688** = `build.yml:497 baseline`。
+1. **静态闸门基线（本波后）**：`arch-guard.sh` **39 项**（+#39 evidenceLevel 全 schema，#25 家族 9 员不变）；`arch-guard-selftest.sh` **PASS=127 FAIL=0**（= W65 的 119 + 本波 8 面 case56/56b/57/57b/58/59/59b/60；**新增守卫 case 必同步 `KNOWN_GUARDS`/映射表/`META_CASES`**）；`fulltest.sh`（**仓内 `scripts/fulltest.sh`**，非 `_ci-tools/`）= 9 模块；`@Test` 严格口径 **688** = `build.yml:497 baseline`。
 2. **行数表九员**（**现行值一律以 `bash scripts/line-table.sh` 生成物为准**，勿手写）：ChatViewModel 550/1600｜ChatRunCoordinator 1204/1300｜LiteRtLmEngine 2009/2400｜AgentRunner **2773**/2900（余 127）｜LiteRtLmEngineLoader 704/900｜AgentRunnerToolSetup 108/400｜ThinkingBudget **102**/150（余 48）｜AgentRunnerLoopHelpers 209/400｜ChatRunRecovery 129/400。
 3. 🔴 **K-1 单源链（四处）**：core-engine `THINKING_CHARS_PER_TOKEN_CEIL`/`thinkingCharBudgetFor` ↔ core-model `THINKING_CHAR_BUDGET`(8192) ↔ `ThinkingBudgetInvariantTest` ↔ 轴档案 `minThinkingTokenBudget`。**r 测量方法学**（W66 A5）已落 `ThinkingBudget.kt` KDoc + `docs/12`。
 4. 🔴 **`.gitattributes` 已钉 `*.kt text eol=lf`** ⇒ CRLF 陷阱类在 git 层根除；`README.md` / `docs/*.md` 仍是 CRLF（**故意**），编辑它们**不要用 `sed -i`**（会翻转 EOL，Edit 工具安全）。
@@ -120,5 +121,47 @@ GPU 崩溃链（设备侧持久日志）：`sampler_factory.cc:408 OpenCL sample
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | 待回填 | — | Lint (baseline gate) / Unit tests / Assemble Debug (JDK 21)；Assemble 内「Architecture guard」（39 项）+「Architecture guard self-test」 |
-| **Release** | 待回填 | — | — |
+| **Build** | `38287704452` | ✅ success（head `ce7e5bc`） | 三 job 全 success：Lint (baseline gate) / Assemble Debug (JDK 21) / Unit tests；Assemble 内「Architecture guard」（**39 项 OK**）+「Architecture guard self-test」（**PASS=127 FAIL=0**） |
+| **Release** | `38287704537` | ✅ success（head `ce7e5bc`） | — |
+
+> 计数口径：`arch-guard` **39 项**（本地三方独立复跑 + CI 日志 `OK` 行数 = 39 三方一致）；`selftest` **PASS=127 FAIL=0**（= W65 的 119 + 本波 **8 面**：case56 / 56b / 57 / 57b / 58 / 59 / 59b / 60 —— ⚠️ 本波过程中曾误记为「五面」，以 CI 日志实测 127 为准）；`@Test` **688** == `build.yml baseline`。
+
+---
+
+## 八、推送后深度审查与修复（W66 深审，2026-10-13）
+
+> 两轮独立深审：**主理人自审** + **独立对抗式复审**（fresh eyes，专设「找问题」指令）。范围 `3688702..ce7e5bc`。**P0 = 0**；发现 **1×P1 + 8×P2 + 4×P3**，**全部由主理人独立复现**（不采信报告），修复后逐项验收。
+
+### 8.1 确认缺陷（均经独立复现）
+
+| # | 级别 | 缺陷 | 复现判据 |
+|---|---|---|---|
+| **D1** | P1 | `ModelPreset.evidenceLevel` **无任何消费方**（`ModelCard` 只展示 `backendBasis`/`knownBrokenOn`），却未入 README「🟡 已实现未接线」台账；字段 KDoc 自称「供模型卡展示」 | 全仓 grep：仅 `ModelPresets.kt` 声明 + 13 赋值 |
+| **D2** | P2 | **守卫 #39 跳过单行构造**（fail-open）：`ModelPreset(label=…, …)` 写一行且无 `evidenceLevel` ⇒ 守卫报 **OK**、夹具从未被点名 | 插单行夹具 → `arch-guard` **exit 0** |
+| **D3** | P2 | **守卫 #39 锚点可来自 `label`**（反推测预填失效）：抹掉块内 `W43/W60`、仅 `label` 写 `W99` ⇒ 仍报 **OK** | 构造后 `arch-guard` **exit 0** |
+| **D4** | P2 | **守卫 #39 块尾缩进漂移致块合并**（fail-open）⇒ **首轮审查席「块界破坏全判红」被证伪** | 对抗席夹具 `fx_indent_drift` |
+| **D5** | P2 | **`line-table.sh --check` 是自洽检查、非漂移检测**：删掉 #38 守卫整块仍报 `OK：8 行` / exit 0 ⇒ 「守卫增删自动跟随」属过度声称 | 删 #38 块 → **exit 0** |
+| **D6** | P2 | **A4 KDoc 过度声称**：无条件断言「正文预览从空恢复为真实正文」，而真机 **R1 仍空 ⛔** | KDoc vs 真机 C1 判据 |
+| **D7** | P2 | **判据 C 的「新误判 BAD」面未申报**（OFF 下两通道皆空 ⇒ C 新命中 HARD） | 机制推演（未复现，申报缺口） |
+| **D8** | P2 | **selftest 面数记错**：写「五面」，实为 **8 面** | CI 日志 `PASS=127` |
+| **D9** | P2 | **`UPSTREAM` 枚举定义与赋值口径分叉**（定义为「本仓未实测」，但 MiniCPM5 标 UPSTREAM 却另有 W44/47/48/49 真机史） | 枚举 KDoc vs 赋值 |
+| **D10** | P3×4 | A4 遗漏 `ProbeOutcome.sample` KDoc 归因；`ModelHealthProbeConfigTest` 一条断言成 **vacuous**；B1 第 4 例测生产不可达分支；B1 单测钉文案特征词 | `:87-88` / `:30-39` / `:52-58` |
+
+### 8.2 修复与验收
+
+| 缺陷 | 修复 | 我的独立验收 |
+|---|---|---|
+| D2/D3/D4 | `scripts/arch-guard.sh` 守卫 #39 awk 重写：①块识别兼容**单行构造**（必须校验，不得跳过）②锚点**只认块内 `backendBasis`/`note` 赋值行**③块界改「**同缩进**」收尾（`^[[:space:]]+\)[,]` 且缩进 == 起始行）＋未收尾又遇新块 ⇒ **先结算上一块** | 三项夹具**全部判红**：D1 夹具 → `exit 1` + 点名 `FIXTURE-single-line:222`；D2 夹具 → `exit 1` + 「MEASURED 但 backendBasis/note 内无本仓取证锚点」 |
+| D5 | `scripts/line-table.sh --check` 加**第二独立提取面**（守卫编号注释头 `# <N>) <File>.kt 总行数上限`）与 check 行**等数交叉核对** + **冻结下限 `MIN_ROWS=9`** | 基线 `exit 0`（9 行、双面一致）；**删 #38 守卫块 ⇒ `exit 1`**（两面不一致）✅ |
+| D1/D9 | `ModelPresets.kt` 枚举 KDoc：**订正「供模型卡展示」过度声称**、明确「UPSTREAM = 本条文本内无锚点，**≠ 本仓从未测过该模型**」、标注接线状态；`README.md` **挂账台账新增该条** | 逐字核对 |
+| D6/D7/D10 | `ModelHealthProbe.kt`：A4 收益**条件化**（只对认 `enable_thinking=false` 的容器）+ **回填真机结果（R1 ⛔）** + 补判据 C 申报 + 订正 `ProbeOutcome.sample` 归因 | 逐字核对 |
+| D8 | 交接 §一/§六.1/§七 + README 数字面：**五面 → 8 面 / PASS=127**；回填 CI run id | 逐字核对 |
+| D4 过度声称 | 交接 §四 补「深审订正」注记 | 逐字核对 |
+
+**修复 commit**：`d4847c5`（`ci:`，只含 3 个脚本：`arch-guard.sh` / `arch-guard-selftest.sh` / `line-table.sh`）+ 本收官文档 commit。selftest 新增 **case61/61b/62/62b/63/63b**（守卫 #39 的三个 fail-open 面各配「红来自真命中事实行」断言）⇒ `--only 39` **PASS=14 FAIL=0**。
+
+### 8.3 遗留（W67）
+
+- **D7 的理论面**：OFF 下「两通道皆空 ⇒ 判据 C 新命中 BAD」在仓内 3 个 thinking 模型上均有证据不落入；**其余容器未逐一验证** ⇒ 已申报，留 W67 随新容器取证。
+- **D10 的 vacuous 断言**：`ModelHealthProbeConfigTest` 中「`.coerce()` 归一思考预算」一条在 A4 后**不再被行使**（预算恒 0）⇒ 保留为 `coerce` 不变量锚，**四态标 ⛔vacuous**，留 W67 决定是否改钉。
+- **审查期工作树纪律**：本轮深审期间工作树被并行改动（主理人补文档）⇒ 教训：**深审必须钉 HEAD 快照**（`git show <sha>:<file>`），否则报告基线漂移。

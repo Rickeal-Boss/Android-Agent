@@ -85,8 +85,11 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
              *
              * 判据的通道适用范围见 [ModelHealthCriteria.evaluateSplit]；本字段只作 UI 预览，
              * 与判据输入（正文 + 思考）**不完全等同**（思考通道不进本字段）。
-             * ⚠️ 思考型模型在 [PROBE_MAX_TOKENS] 短预算下正文可能为空 ⇒ 预览显「（空）」，
-             * 但 verdict 可为 PASS（空输出判据 C 判的是**两通道合并**，见 evaluateSplit）。
+             * ⚠️ **正文可能为空 ⇒ 预览显「（空）」**，但 verdict 可为 PASS（空输出判据 C 判的是
+             * **两通道合并**，见 evaluateSplit）。**W66 A4 起空预览的成因已变**：不再是「轴值被
+             * 短预算钳到 95」，而是**该容器不认 `enable_thinking=false`**（真机实证：
+             * `DeepSeek-R1-Distill-Qwen-1.5B` 仍思考 ⇒ 思考吃满 [PROBE_MAX_TOKENS]、正文空；
+             * `MiniCPM5-2B` / `gemma-4-E2B-it` 认 ⇒ 正文非空）。详见 [probeSamplingConfig] KDoc。
              */
             val sample: String,
             val elapsedMs: Long,
@@ -262,17 +265,28 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
  * token）/ B（重复类）**只判正文**（[ModelHealthCriteria.evaluateSplit]）⇒ 采样面 **vacuous**
  * （判据没被行使，仅判据 C 两通道合并兜底不误判 BAD）。
  *
- * 本波钉 `thinking = OFF`（`thinkingTokenBudget = 0`）后：
+ * 本波钉 `thinking = OFF`（`thinkingTokenBudget = 0`）后，**对认 `enable_thinking=false` 的容器**：
  *  - `appliedTo` 写入的轴值不再传播（第 3 步覆盖）⇒ **正文预览从空恢复为真实正文**；
  *  - 判据 A/B 从「空正文 vacuous」恢复为**真实采样**；判据 C 口径（两通道合并）不变；
  *  - 探针恒 OFF 由 `ModelHealthProbeConfigTest` 钉住（离线锚，防口径静默回退）。
  *
- * ⚠️ **效果模型依赖（待真机抽验，W66 C1）**：`ThinkingMode.OFF` 的落地 = 引擎下发
+ * ⚠️ **上列收益是条件性的，不是全称**（W66 C1 真机实证，勿读作「所有模型都恢复」）：
+ * `MiniCPM5-2B_int4` / `gemma-4-E2B-it` 探针正文**恢复非空** ✅；`DeepSeek-R1-Distill-Qwen-1.5B`
+ * 探针正文**仍为空** ⛔（其容器忽略 `enable_thinking=false`，思考仍吃满 96 token）。⇒ 对 R1 类容器
+ * 本改动**无收益**（判据 A/B 采样面仍 vacuous），判据 C 两通道合并口径保证不误判 BAD。
+ *
+ * ⚠️ **须申报的理论面（未复现，无仓内证据）**：若某容器在 `thinking=OFF` 下**两通道皆空**（改前因
+ * `ThinkingConfig(true,…)` 强制出思考而不空），则判据 C（`isEffectivelyEmpty(text) && isEffectivelyEmpty(thinking)`
+ * ⇒ HARD/BAD）会**新命中**。仓内 3 个 thinking 模型（R1/MiniCPM5/gemma）均有证据显示不落入该面；
+ * 其余容器**未逐一验证** ⇒ 该面不静默、留此申报。
+ *
+ * ⚠️ **效果模型依赖（W66 C1 真机已抽验，结论见上）**：`ThinkingMode.OFF` 的落地 = 引擎下发
  * `extraContext["enable_thinking"] = false` 且不设 `ThinkingConfig`（见 `LiteRtLmEngine` 生成
  * 路径）。该键**是否真停思考取决于模型容器的 chat template 是否认它** —— MiniCPM5 认
- * （RM_MiniCPM5-2B.md:107「false switches to direct answers」）、gemma 的 thought 通道按
- * **模型身份**声明（[thoughtChannelDefsFor]，与 config 无关）、**R1 未证** ⇒ 须**真机抽验
- * R1 / MiniCPM5**。若某模型仍思考，则 OFF 对其无收益，如实记 `⛔`。
+ * （RM_MiniCPM5-2B.md:107「false switches to direct answers」，**真机正文已恢复非空 ✅**）、
+ * gemma 的 thought 通道按**模型身份**声明（[thoughtChannelDefsFor]，与 config 无关，**真机正文非空 ✅**）、
+ * **R1 ⛔**（真机正文仍空 ⇒ 该容器不认此键）。⇒ 本改动的收益**逐模型成立与否须看真机**，
+ * 不得据 MiniCPM5/gemma 外推到 R1 类容器。
  *
  * 独立成 `internal` 顶层函数以便 JVM 单测（探针本体依赖引擎，不能 JVM 跑）。
  */

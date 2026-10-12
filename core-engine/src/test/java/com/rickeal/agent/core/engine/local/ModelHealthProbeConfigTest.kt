@@ -26,7 +26,14 @@ class ModelHealthProbeConfigTest {
         assertEquals(0.3f, out.sampling.temperature)
     }
 
-    /** 钉 `maxTokens` 后必须**重新归一** `thinkingTokenBudget`（不变量 `< maxTokens`）。 */
+    /**
+     * 钉 `maxTokens` 后必须**重新归一** `thinkingTokenBudget`（不变量 `< maxTokens`）。
+     *
+     * ⚠️ **W66 深审 D10：本条断言已 ⛔vacuous**（判据未被行使）—— A4 起 `probeSamplingConfig`
+     * 恒把 `thinkingTokenBudget` copy 成 **0**，`.coerce()` 对它的归一分支**不再可达**，
+     * `0 < 96` 恒真。保留它作为 `coerce` 不变量的**文档锚**（不是行为判据）；W67 决定是否改钉
+     * 别的量（如断言「入参 2048 被 0 覆盖」）。
+     */
     @Test
     fun 探针配置钉maxTokens并归一思考预算() {
         val cfg = InferenceConfig(maxTokens = 8192, thinkingTokenBudget = 2048)

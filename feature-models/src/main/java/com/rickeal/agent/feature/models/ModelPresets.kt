@@ -100,21 +100,30 @@ data class ModelPresetMirror(
  * **仓内可查**的证据支撑。取值必须能从本条预设的 `backendBasis` / `note` 文本**直接读出**，
  * 禁止凭推测预填（与 [ModelPreset.knownBrokenOn] 同款硬前置）。
  *
- *  - [MEASURED]：**本仓**真机 / 离线取证有记录 —— 锚点 = `backendBasis` / `note` 内出现
- *    `W##` 波次实测标记（W43/W56/W57/W60 等）。**由守卫 #39 机械强制**：声明 MEASURED 但
- *    块内无 `W##` 锚点 ⇒ 判红（防「推测预填」把没测过的说成测过）。
- *  - [UPSTREAM]：仅**上游文档 / 官方基准**佐证（官方 README / 官方 GPU 基准 / Gallery
- *    allowlist），本仓**未**实测。例：GPU 行只有官方桌面基准、无 Android 验证 ⇒ 仅 CPU。
- *  - [UNVERIFIED]：仓内查不到证据（不得猜）。**新预设默认此级**，补证据后升级。
+ *  - [MEASURED]：**本条文本内**有本仓真机 / 离线取证记录 —— 锚点 = 本条 `backendBasis` /
+ *    `note` 内出现 `W##` 波次实测标记（W43/W56/W57/W60 等）。**由守卫 #39 机械强制**：声明
+ *    MEASURED 但本条文本内无 `W##` 锚点 ⇒ 判红（防「推测预填」把没测过的说成测过）。
+ *  - [UPSTREAM]：**本条文本内**无本仓实测锚点，依据来自上游文档 / 官方基准（官方 README /
+ *    官方 GPU 基准 / Gallery allowlist）。例：GPU 行只有官方桌面基准、无 Android 验证 ⇒ 仅 CPU。
+ *    ⚠️ **语义边界（勿误读）**：本等级**只说明「本条文本内没有本仓锚点」**，**不等于「本仓从未
+ *    测过该模型」** —— 例：`MiniCPM5-2B_int4` 标 UPSTREAM（其 GPU 放行依据是上游 Galaxy S26
+ *    基准），但该模型在本仓另有 W44/W47/W48/W49 真机史，只是**未写进本条文本**。要把这类条目
+ *    升为 MEASURED，须**先把锚点回填进本条 `backendBasis`/`note`**（本字段度量的是「文本内的
+ *    证据」，不是「仓库的测试历史」）。
+ *  - [UNVERIFIED]：本条文本内查不到证据（不得猜）。**新预设默认此级**，补证据后升级。
  *
  * ⚠️ 本字段**不参与**内存闸门 / GPU 放行判定（那些由 `requiredRamBytes` / [ModelGpuSupport]
- * 驱动）；它只作「结论的可信度标注」，供模型卡展示与后续校准定位证据源。
+ * 驱动）；它只作「结论的可信度标注」。
+ * ⚠️ **接线状态（W66 深审 P1 申报，勿当已交付功能）**：本字段目前**只做数据化 + 守卫**，
+ * **尚无 UI 消费方**（`ModelCard` 展示的是 `backendBasis` / `knownBrokenOn`，不含本字段）
+ * ⇒ 属「🟡 已实现未接线」，已登记 README 挂账台账（重启前提 = 模型卡展示 evidenceLevel）。
  */
 enum class EvidenceLevel {
-    /** 本仓真机 / 离线取证有记录（`backendBasis` / `note` 含 `W##` 波次实测锚点）。 */
+    /** 本条 `backendBasis` / `note` 含 `W##` 波次实测锚点（本仓真机 / 离线取证有记录）。 */
     MEASURED,
 
-    /** 仅上游文档 / 官方基准佐证，本仓未实测。 */
+    /** 本条文本内无本仓锚点，依据来自上游文档 / 官方基准（≠ 本仓从未测过该模型）。 */
+
     UPSTREAM,
 
     /** 仓内无证据（禁推测；新预设默认此级）。 */
