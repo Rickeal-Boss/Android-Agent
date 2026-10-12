@@ -812,6 +812,71 @@ check "AgentRunnerToolSetup.kt 总行数 ≤ 400（core-agent 行数表 #25 家�
            n=$(wc -l < "$f")
            [ "$n" -le 400 ] || echo "AgentRunnerToolSetup.kt 当前 $n 行，超 400 行上限（触顶 = 启动 AgentRunnerToolSetup 拆分评审，非改阈值）"'
 
+# 36) ThinkingBudget.kt 总行数上限（W65）：#25 家族第 7 员
+#     （#18 ChatViewModel 1600 / #20 ChatRunCoordinator 1300 / #25 LiteRtLmEngine 2400 /
+#     #31 AgentRunner 2900 / #32 LiteRtLmEngineLoader 900 / #35 AgentRunnerToolSetup 400 /
+#     #36 ThinkingBudget 150）。
+#     ⚠️ **为何补（外部审查 D3）：这是本仓第五次「新文件零守卫」** —— W64 K-1 治本把
+#     `THINKING_CHARS_PER_TOKEN_CEIL = 16` 常量与两条派生函数（resolveThinkingBudget /
+#     thinkingCharBudgetFor）落成 core-engine 新文件 ThinkingBudget.kt（W65 收稿时 88 行：62 生产 + 26 KDoc 增量）。它是
+#     「thinking 空转防线」字符当量系数的**单源锚点**（W62 病灶的治本面），却零守卫命中 ——
+#     同波落地的 AgentRunnerToolSetup.kt 已获 #35，两个新文件待遇不一致。若不补，又会重演
+#     「新文件无人守、日后长成下一个 god-file」的循环（W59 Loader 裸奔 → W60 补 #32；
+#     W64 ToolSetup 拆分 → 同波补 #35；家族精神 = 新文件落地同波补守，不再欠账）。
+#     阈值推导：现 88 行 ⇒ 150 ≈ 88 × 1.7。按本文件结构定位（**常量 + 纯函数**锚点件，
+#     非装配类）取显著低于 #35 的 400：每条新增派生公式（含 KDoc）≈ 30-60 行 ⇒ 150 留约
+#     2-3 个身位；且现行 88 行中约 56 行是 KDoc（wc -l 计注释 ⇒ 实际代码增长余量更宽）。
+#     同时远低于 god-file 量级 —— 本件不该长到装配类文件的规模（触顶即拆，见下）。
+#     ⚠️ **触顶不是改数字，是启动 ThinkingBudget 拆分评审**（与
+#     #18/#20/#25/#31/#32/#35 同款「只许缩不许涨」精神）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "ThinkingBudget.kt 总行数 ≤ 150（core-engine 行数表 #25 家族第 7 员，触顶 = 启动 ThinkingBudget 拆分评审，非改阈值）" \
+  bash -c 'f=core-engine/src/main/java/com/rickeal/agent/core/engine/local/ThinkingBudget.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 36 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 150 ] || echo "ThinkingBudget.kt 当前 $n 行，超 150 行上限（触顶 = 启动 ThinkingBudget 拆分评审，非改阈值）"'
+
+# 37) AgentRunnerLoopHelpers.kt 总行数上限（W65）：#25 家族第 8 员
+#     （#18 ChatViewModel 1600 / #20 ChatRunCoordinator 1300 / #25 LiteRtLmEngine 2400 /
+#     #31 AgentRunner 2900 / #32 LiteRtLmEngineLoader 900 / #35 AgentRunnerToolSetup 400 /
+#     #36 ThinkingBudget 150 / #37 AgentRunnerLoopHelpers 400）。
+#     ⚠️ **为何补（外部审查 D3 纪律，本仓第六次「新文件裸奔」复发点的当波补守）** —— W65
+#     结构批从 AgentRunner.kt 拆出循环辅助簇 AgentRunnerLoopHelpers.kt（现 209 行）。家族前四次
+#     教训（W59 Loader 裸奔 → W60 补 #32；W64 ToolSetup 拆分 → 同波补 #35；W64 K-1 落
+#     ThinkingBudget → W65 补 #36）表明：拆分/新落地文件若不同波补文件级守卫，就会重演
+#     「无人守、日后长成下一个 god-file」的循环。故本波在迁移落地的同一波补上，不再欠账。
+#     阈值推导：现 209 行 ⇒ 400 ≈ 209 × 1.9，与 #35 ToolSetup 同档 —— 同族装配/簇文件，
+#     给「循环辅助簇」后续外提（docs/13 接缝候选）留足空间，同时远低于 god-file 量级。
+#     ⚠️ 本条**只钉新文件**；AgentRunner.kt 本身仍归 #31（≤ 2900），互不替代。
+#     ⚠️ **触顶不是改数字，是启动 AgentRunnerLoopHelpers 拆分评审**（与
+#     #18/#20/#25/#31/#32/#35/#36 同款「只许缩不许涨」精神）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "AgentRunnerLoopHelpers.kt 总行数 ≤ 400（core-agent 行数表 #25 家族第 8 员，触顶 = 启动 AgentRunnerLoopHelpers 拆分评审，非改阈值）" \
+  bash -c 'f=core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerLoopHelpers.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 37 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 400 ] || echo "AgentRunnerLoopHelpers.kt 当前 $n 行，超 400 行上限（触顶 = 启动 AgentRunnerLoopHelpers 拆分评审，非改阈值）"'
+
+# 38) ChatRunRecovery.kt 总行数上限（W65）：#25 家族第 9 员
+#     （#18 ChatViewModel 1600 / #20 ChatRunCoordinator 1300 / #25 LiteRtLmEngine 2400 /
+#     #31 AgentRunner 2900 / #32 LiteRtLmEngineLoader 900 / #35 AgentRunnerToolSetup 400 /
+#     #36 ThinkingBudget 150 / #37 AgentRunnerLoopHelpers 400 / #38 ChatRunRecovery 400）。
+#     ⚠️ **为何补（外部审查 D3 纪律，与 #37 同波）** —— W65 结构批从 ChatRunCoordinator.kt
+#     拆出 run 恢复/重建路径 ChatRunRecovery.kt（现 129 行）。恢复路径分支多（中断/异常/
+#     journal 重放），是新文件里最容易悄悄长囤的一类；不同波补守即重演「新文件裸奔」循环
+#     （家族前四次教训见 #37 注释）。
+#     阈值推导：现 129 行 ⇒ 400 ≈ 129 × 3.1；与 #35/#37 取同档 400 保持同族一致性
+#     （恢复类分支增长面大，同档而非更紧），同时远低于 god-file 量级。
+#     ⚠️ 本条**只钉新文件**；ChatRunCoordinator.kt 本身仍归 #20（≤ 1300），互不替代。
+#     ⚠️ **触顶不是改数字，是启动 ChatRunRecovery 拆分评审**（与
+#     #18/#20/#25/#31/#32/#35/#36/#37 同款「只许缩不许涨」精神）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族第 9 员，触顶 = 启动 ChatRunRecovery 拆分评审，非改阈值）" \
+  bash -c 'f=feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 38 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 400 ] || echo "ChatRunRecovery.kt 当前 $n 行，超 400 行上限（触顶 = 启动 ChatRunRecovery 拆分评审，非改阈值）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

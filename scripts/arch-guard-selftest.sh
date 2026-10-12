@@ -67,7 +67,17 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38"
+
+# 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
+# ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
+#    放进 KNOWN_GUARDS 会被 case53 的「KNOWN_GUARDS↔arch-guard 双向一致」断言判红。
+#    新增自洽性 case 时同步追加本表（否则 --only <新号> 报错而非静默零跑）。
+META_CASES="53"
+# 本波自洽性 case 的编号（case53 块用 `guard_selected $META_CASE` 变量形态引用自己，
+# 使下方 case53 的静态提取面 —— `guard_selected +[0-9]` 模式 —— 不会把它算进
+# 「有 case 的守卫号」集合）。新增自洽性 case 时与 META_CASES 同步。
+META_CASE=53
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -85,13 +95,16 @@ affected_guards_for_file() {
   case "$1" in
     scripts/*)                                                                    echo FULL ;;
     core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngine.kt)       echo "24 25 28 33" ;;
+    core-engine/src/main/java/com/rickeal/agent/core/engine/local/ThinkingBudget.kt)      echo "36" ;;
     core-engine/src/main/java/com/rickeal/agent/core/engine/local/LiteRtLmEngineLoader.kt) echo "32" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunner.kt)          echo "12 31" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerToolSetup.kt) echo "35" ;;
+    core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerLoopHelpers.kt) echo "37" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt)          echo "13" ;;
     feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt) echo "34" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt)    echo "18" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt) echo "20 30" ;;
+    feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt) echo "38" ;;
     .github/workflows/build.yml)                                                   echo "22 23 26" ;;
     core-model/*)                                                                  echo "3 15 26" ;;
     *)                                                                             echo FULL ;;
@@ -141,11 +154,12 @@ EOF
 [ "$AFFECTED" -eq 1 ] && resolve_affected
 
 # 校验 --only / --affected 选出的守卫编号都是已知的（防拼错后静默零跑）。
+# META_CASES 里的自洽性 case 号一并放行（它们的违例是「自测网自身漂移」，见 case53）。
 if [ -n "$ONLY_SET" ]; then
   for g in ${ONLY_SET//,/ }; do
-    case " $KNOWN_GUARDS " in
+    case " $KNOWN_GUARDS $META_CASES " in
       *" $g "*) ;;
-      *) echo "::error::--only 含未知守卫编号：$g（已知：$KNOWN_GUARDS）" >&2; exit 2 ;;
+      *) echo "::error::--only 含未知守卫编号：$g（已知守卫：$KNOWN_GUARDS；自洽性 case：$META_CASES）" >&2; exit 2 ;;
     esac
   done
 fi
@@ -261,6 +275,16 @@ class ChatRunCoordinator {
     fun run1() = AgentRequest(model = uiState.value.activeModel)
     fun run2() = AgentRequest(model = uiState.value.activeModel)
     fun run3() = AgentRequest(model = uiState.value.activeModel)
+}
+KT
+  # 第 38 条（W65，ChatRunRecovery.kt ≤ 400）为 fail-closed：文件缺失即红 ⇒ 骨架必须提供
+  # 它，否则正例 + 所有绿面 case 会被本条误红（漏铺 ⇒ 全红）。给一个远低于 400 行的最小
+  # 文件（与 #20 同款同目录铺点；不含 `XxxViewModel(` 形态 ⇒ 不误触第 17 条直构造守卫）。
+  cat > "$root/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt" <<'KT'
+package com.rickeal.agent.feature.chat
+
+class ChatRunRecovery {
+    fun shouldReplay(journalHasEntry: Boolean): Boolean = journalHasEntry
 }
 KT
   # 第 21 条（Wave 49 R-D）要求生产源码里存在**唯一**的 USER 章印点 ⇒ 骨架必须提供它
@@ -415,6 +439,22 @@ class LiteRtLmEngineLoader {
     fun load(): Int = 0
 }
 KT
+  # 第 36 条（W65，ThinkingBudget.kt ≤ 150）同为 fail-closed：文件缺失即红 ⇒ 骨架必须提供
+  # 它，否则正例 + 所有绿面 case 会被本条误红（漏铺 ⇒ 全红）。fixture 用与生产同款形态的
+  # 常量 + 两条派生函数（真实代码行，非注释）；行数远低于 150。
+  cat > "$root/core-engine/src/main/java/com/rickeal/agent/core/engine/local/ThinkingBudget.kt" <<'KT'
+package com.rickeal.agent.core.engine.local
+
+internal fun resolveThinkingBudget(configured: Int, maxTokens: Int): Int {
+    val budget = if (configured > 0) configured else (maxTokens / 2).coerceAtLeast(1)
+    return budget.coerceIn(1, (maxTokens - 1).coerceAtLeast(1))
+}
+
+internal const val THINKING_CHARS_PER_TOKEN_CEIL = 16
+
+fun thinkingCharBudgetFor(maxTokens: Int, configuredThinkingBudget: Int = 0): Int =
+    resolveThinkingBudget(configuredThinkingBudget, maxTokens) * THINKING_CHARS_PER_TOKEN_CEIL
+KT
   # 第 35 条（W64，AgentRunnerToolSetup.kt ≤ 400）为 fail-closed：文件缺失即红 ⇒
   # 骨架必须提供它，否则正例 + 所有绿面 case 会被本条误红（守卫假绿陷阱的镜像：
   # 漏铺 ⇒ 全红）。给一个远低于 400 行的最小文件。
@@ -423,6 +463,16 @@ package com.rickeal.agent.core.agent
 
 class AgentRunnerToolSetup {
     fun setup(): Int = 0
+}
+KT
+  # 第 37 条（W65，AgentRunnerLoopHelpers.kt ≤ 400）同为 fail-closed：文件缺失即红 ⇒
+  # 骨架必须提供它，否则正例 + 所有绿面 case 会被本条误红（漏铺 ⇒ 全红）。给一个远低于
+  # 400 行的最小文件（与 #35 同款同目录铺点）。
+  cat > "$root/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerLoopHelpers.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+class AgentRunnerLoopHelpers {
+    fun nextDelay(attempt: Int): Long = 100L * (attempt + 1)
 }
 KT
   # 第 34 条（W63 刀C，knownBrokenOn 互斥 recommended）要求 feature-models 的
@@ -2450,6 +2500,280 @@ else
   echo "FAIL [case51e] scaffold 的 AgentRunnerToolSetup.kt 被第 35 条误红（绿面失守）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case 52 / 52b / 52c / 52d / 52e：第 36 条（ThinkingBudget.kt ≤ 150，W65，外部审查 D3）两面：
+#   case52 —— 向 fixture 灌到超 150 行（沿 case42/case43/case51 追行手法）⇒ 判红；
+#             case52b 断言红来自真命中（输出含「超 150 行上限」计数行），而非
+#             「守卫命令自身执行失败」（后者也含守卫名 ⇒ 会让 assert_red 假绿）。
+#   case52c —— 目标文件缺失（mv 改名，与 case17/case32/case42c/case44/case51c 同范式）⇒
+#             fail-closed 判红；case52d 断言输出含「ThinkingBudget.kt 不存在
+#             （被改名/删除？第 36 条守卫面已失效）」违规事实行。
+#   case52e —— scaffold 原样（ThinkingBudget.kt 远低于 150 行）⇒ 必须不红（绿面；
+#             scaffold 为该 fail-closed 守卫铺的点与判据的同步关系由本条钉死）。
+#   各面都只在 $TMP 脚手架树内改（覆写 / mv），绝不碰生产文件。
+# ---------------------------------------------------------------------------
+if guard_selected 36; then
+d="$TMP/case52-thinkingbudget-oversize"
+scaffold "$d"
+{ echo 'package com.rickeal.agent.core.engine.local'
+  echo ''
+  echo 'class ThinkingBudget {'
+  tb_i=1
+  while [ "$tb_i" -le 155 ]; do echo "    val t$tb_i: Int = $tb_i"; tb_i=$((tb_i + 1)); done
+  echo '}'
+} > "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/ThinkingBudget.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case52 ThinkingBudget.kt 超行数上限 (第 36 条)" "$rc" "$out" \
+  "ThinkingBudget.kt 总行数 ≤ 150（core-engine 行数表 #25 家族第 7 员，触顶 = 启动 ThinkingBudget 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case52b] 第 36 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "超 150 行上限"; then
+  echo "PASS [case52b] 红来自真命中（输出含「超 150 行上限」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case52b] 输出里看不到「超 150 行上限」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case52c-thinkingbudget-missing"
+scaffold "$d"
+mv "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/ThinkingBudget.kt" \
+   "$d/core-engine/src/main/java/com/rickeal/agent/core/engine/local/.ThinkingBudget.kt.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case52c ThinkingBudget.kt 缺失 (第 36 条守卫面失效)" "$rc" "$out" \
+  "ThinkingBudget.kt 总行数 ≤ 150（core-engine 行数表 #25 家族第 7 员，触顶 = 启动 ThinkingBudget 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case52d] 第 36 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "ThinkingBudget.kt 不存在（被改名/删除？第 36 条守卫面已失效）"; then
+  echo "PASS [case52d] 红来自真命中（输出含「ThinkingBudget.kt 不存在（被改名/删除？第 36 条守卫面已失效）」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case52d] 输出里看不到「ThinkingBudget.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case52e-thinkingbudget-green"
+scaffold "$d"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case52e ThinkingBudget.kt 行数远低于 150 (第 36 条绿面)] 退出 0"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case52e] scaffold 的 ThinkingBudget.kt 被第 36 条误红（绿面失守）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case 54 / 54b / 54c / 54d / 54e：第 37 条（AgentRunnerLoopHelpers.kt ≤ 400，W65，
+#     外部审查 D3 纪律 —— 结构批新文件拆出同波补守）两面（照 case52 组五面范式）：
+#   case54 —— 向 fixture 灌到超 400 行 ⇒ 判红；case54b 断言红来自真命中（输出含
+#             「超 400 行上限」计数行），而非「守卫命令自身执行失败」假绿。
+#   case54c —— 目标文件缺失（mv 改名）⇒ fail-closed 判红；case54d 断言输出含
+#             「AgentRunnerLoopHelpers.kt 不存在（被改名/删除？第 37 条守卫面已失效）」。
+#   case54e —— scaffold 原样（远低于 400 行）⇒ 必须不红（绿面）。
+#   各面都只在 $TMP 脚手架树内改（覆写 / mv），绝不碰生产文件。
+# ---------------------------------------------------------------------------
+if guard_selected 37; then
+d="$TMP/case54-loophelpers-oversize"
+scaffold "$d"
+{ echo 'package com.rickeal.agent.core.agent'
+  echo ''
+  echo 'class AgentRunnerLoopHelpers {'
+  tb_i=1
+  while [ "$tb_i" -le 405 ]; do echo "    val t$tb_i: Int = $tb_i"; tb_i=$((tb_i + 1)); done
+  echo '}'
+} > "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerLoopHelpers.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case54 AgentRunnerLoopHelpers.kt 超行数上限 (第 37 条)" "$rc" "$out" \
+  "AgentRunnerLoopHelpers.kt 总行数 ≤ 400（core-agent 行数表 #25 家族第 8 员，触顶 = 启动 AgentRunnerLoopHelpers 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case54b] 第 37 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "超 400 行上限"; then
+  echo "PASS [case54b] 红来自真命中（输出含「超 400 行上限」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case54b] 输出里看不到「超 400 行上限」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case54c-loophelpers-missing"
+scaffold "$d"
+mv "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerLoopHelpers.kt" \
+   "$d/core-agent/src/main/java/com/rickeal/agent/core/agent/.AgentRunnerLoopHelpers.kt.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case54c AgentRunnerLoopHelpers.kt 缺失 (第 37 条守卫面失效)" "$rc" "$out" \
+  "AgentRunnerLoopHelpers.kt 总行数 ≤ 400（core-agent 行数表 #25 家族第 8 员，触顶 = 启动 AgentRunnerLoopHelpers 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case54d] 第 37 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "AgentRunnerLoopHelpers.kt 不存在（被改名/删除？第 37 条守卫面已失效）"; then
+  echo "PASS [case54d] 红来自真命中（输出含「AgentRunnerLoopHelpers.kt 不存在（被改名/删除？第 37 条守卫面已失效）」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case54d] 输出里看不到「AgentRunnerLoopHelpers.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case54e-loophelpers-green"
+scaffold "$d"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case54e AgentRunnerLoopHelpers.kt 行数远低于 400 (第 37 条绿面)] 退出 0"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case54e] scaffold 的 AgentRunnerLoopHelpers.kt 被第 37 条误红（绿面失守）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case 55 / 55b / 55c / 55d / 55e：第 38 条（ChatRunRecovery.kt ≤ 400，W65，
+#     外部审查 D3 纪律 —— 结构批新文件拆出同波补守）两面（照 case52 组五面范式）：
+#   case55 —— 向 fixture 灌到超 400 行 ⇒ 判红；case55b 断言红来自真命中（输出含
+#             「超 400 行上限」计数行），而非「守卫命令自身执行失败」假绿。
+#   case55c —— 目标文件缺失（mv 改名）⇒ fail-closed 判红；case55d 断言输出含
+#             「ChatRunRecovery.kt 不存在（被改名/删除？第 38 条守卫面已失效）」。
+#   case55e —— scaffold 原样（远低于 400 行）⇒ 必须不红（绿面）。
+#   各面都只在 $TMP 脚手架树内改（覆写 / mv），绝不碰生产文件。
+# ---------------------------------------------------------------------------
+if guard_selected 38; then
+d="$TMP/case55-recovery-oversize"
+scaffold "$d"
+{ echo 'package com.rickeal.agent.feature.chat'
+  echo ''
+  echo 'class ChatRunRecovery {'
+  tb_i=1
+  while [ "$tb_i" -le 405 ]; do echo "    val t$tb_i: Int = $tb_i"; tb_i=$((tb_i + 1)); done
+  echo '}'
+} > "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case55 ChatRunRecovery.kt 超行数上限 (第 38 条)" "$rc" "$out" \
+  "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族第 9 员，触顶 = 启动 ChatRunRecovery 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case55b] 第 38 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "超 400 行上限"; then
+  echo "PASS [case55b] 红来自真命中（输出含「超 400 行上限」计数行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case55b] 输出里看不到「超 400 行上限」计数行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case55c-recovery-missing"
+scaffold "$d"
+mv "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt" \
+   "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/.ChatRunRecovery.kt.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case55c ChatRunRecovery.kt 缺失 (第 38 条守卫面失效)" "$rc" "$out" \
+  "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族第 9 员，触顶 = 启动 ChatRunRecovery 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "守卫命令自身执行失败"; then
+  echo "FAIL [case55d] 第 38 条报的是「守卫命令自身执行失败」而非真命中（本 case 假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+elif printf '%s\n' "$out" | grep -qF "ChatRunRecovery.kt 不存在（被改名/删除？第 38 条守卫面已失效）"; then
+  echo "PASS [case55d] 红来自真命中（输出含「ChatRunRecovery.kt 不存在（被改名/删除？第 38 条守卫面已失效）」违规事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case55d] 输出里看不到「ChatRunRecovery.kt 不存在」违规事实行，判据可疑"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case55e-recovery-green"
+scaffold "$d"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case55e ChatRunRecovery.kt 行数远低于 400 (第 38 条绿面)] 退出 0"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case55e] scaffold 的 ChatRunRecovery.kt 被第 38 条误红（绿面失守）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case53：映射表 / KNOWN_GUARDS / arch-guard.sh / case 四方一致性断言（外部审查 M-4）
+#   —— 自测网自身防「静默少跑」。**自洽性 case**（不对应任何 arch-guard 守卫；之所以用
+#   `guard_selected $META_CASE` 变量形态而非字面量：本 case 的静态提取面（下方
+#   `guard_selected +[0-9]` 模式）不得把它自己算进「有 case 的守卫号」集合 ——
+#   它不是守卫号，放进 KNOWN_GUARDS 反而会被本条断言自己的双向判据判红）。
+#   违例场景（M-4 原始口子）：--affected 的「文件 → 守卫号」映射表与 KNOWN_GUARDS 都是
+#   手写表；已映射文件新增守卫号时两张表都不会报错 ⇒ --only/--affected 口径**静默少跑**。
+#   本断言把漂移变成显式判红（与 arch-guard「stdout 非空即判红」契约同款：违例非空 +
+#   FAIL 计数 ⇒ 本脚本退出码非 0）：
+#     ① 映射表（affected_guards_for_file 内 echo 的每个守卫号）必须在 arch-guard.sh
+#        有定义（判据 = 编号注释 `# <N>)` 形态；**勿裸 grep 数字** —— 数字会撞注释 /
+#        错误信息里的其它计数，假绿）；
+#     ② KNOWN_GUARDS 的每个号必须同样有定义（反向：手写表漂移进已删守卫）；
+#     ③ 每个有 selftest case 的守卫号（本文件中 `guard_selected <数字…>` 出现）必须在
+#        KNOWN_GUARDS（新增 case 忘同步 ⇒ --only <新号> 报错而非静默零跑 —— 有意设计，
+#        同步义务在新增方，本断言负责把「忘了」变成红）。
+#   fail-open 防护：三个提取面（映射表 / case 集合 / KNOWN_GUARDS）任一**提取为空**即
+#   判红（提取正则会因文件改名/重构失效，静默空集 = 假绿，禁）。
+# ---------------------------------------------------------------------------
+if guard_selected $META_CASE; then
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+# ① 映射表守卫号集合（只取 affected_guards_for_file 函数体内 echo 的纯数字串；
+#    `echo FULL` 等非数字形态天然落空）。
+map_guards="$(sed -n '/^affected_guards_for_file()/,/^}/p' "$SELF" \
+              | grep -oE 'echo "[0-9][0-9 ]*"' | grep -oE '[0-9]+' | sort -un | paste -sd' ' -)"
+# ③ 有 selftest case 的守卫号集合（`guard_selected <数字>` 调用形态；`guard_selected ALL`
+#    与 `guard_selected $META_CASE` 都不含数字 ⇒ 天然排除，与定义处注释互为印证）。
+case_guards="$(grep -oE 'guard_selected +[0-9][0-9 ]*' "$SELF" \
+               | grep -oE '[0-9]+' | sort -un | paste -sd' ' -)"
+viol=""
+# fail-open 防护先行：提取面本身失效必须判红，绝不静默当「没有违例」。
+[ -z "$map_guards" ]   && viol="$viol
+[映射表] affected_guards_for_file 未提取到任何守卫号（提取正则/函数形态漂移 ⇒ 禁 fail-open）"
+[ -z "$case_guards" ]  && viol="$viol
+[case] 未提取到任何 guard_selected <数字> case（提取正则漂移 ⇒ 禁 fail-open）"
+[ -z "$KNOWN_GUARDS" ] && viol="$viol
+[KNOWN_GUARDS] 表为空（有人清空了它 ⇒ 禁 fail-open）"
+# 定义存在性判据（① + ② 共用）：arch-guard.sh 的编号注释 `# <N>)`。
+guard_defined() { grep -qE "^# $1\)" "$GUARD"; }
+for g in $map_guards; do
+  guard_defined "$g" || viol="$viol
+[映射表] 守卫 #$g 在 arch-guard.sh 无编号注释定义（# $g) 缺失 ⇒ --affected 会静默少跑"
+done
+for g in $KNOWN_GUARDS; do
+  guard_defined "$g" || viol="$viol
+[KNOWN_GUARDS] 守卫 #$g 在 arch-guard.sh 无编号注释定义（手写表漂移进已删/冒名守卫）"
+done
+for g in $case_guards; do
+  case " $KNOWN_GUARDS " in
+    *" $g "*) ;;
+    *) viol="$viol
+[case↔KNOWN_GUARDS] 守卫 #$g 有 selftest case 但不在 KNOWN_GUARDS（新增 case 忘同步 ⇒ --only $g 报错而非静默零跑）" ;;
+  esac
+done
+if [ -n "$viol" ]; then
+  echo "FAIL [case53 映射表↔arch-guard↔KNOWN_GUARDS↔case 四方一致性] 发现违例："
+  printf '%s\n' "$viol" | sed '/^[[:space:]]*$/d;s/^/    | /'
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS [case53 四方一致] 映射表 $(printf '%s\n' "$map_guards" | wc -w) 号 / KNOWN_GUARDS $(printf '%s\n' "$KNOWN_GUARDS" | wc -w) 号 / case $(printf '%s\n' "$case_guards" | wc -w) 号，全部互为子集且 arch-guard.sh 有定义"
+  PASS=$((PASS + 1))
 fi
 
 fi
