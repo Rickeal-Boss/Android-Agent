@@ -108,7 +108,7 @@ GPU 崩溃链（设备侧持久日志）：`sampler_factory.cc:408 OpenCL sample
 
 ## 六、下次接手须知
 
-1. **静态闸门基线（本波后）**：`arch-guard.sh` **39 项**（+#39 evidenceLevel 全 schema，#25 家族 9 员不变）；`arch-guard-selftest.sh` **PASS=127 FAIL=0**（= W65 的 119 + 本波 8 面 case56/56b/57/57b/58/59/59b/60；**新增守卫 case 必同步 `KNOWN_GUARDS`/映射表/`META_CASES`**）；`fulltest.sh`（**仓内 `scripts/fulltest.sh`**，非 `_ci-tools/`）= 9 模块；`@Test` 严格口径 **688** = `build.yml:497 baseline`。
+1. **静态闸门基线（本波后）**：`arch-guard.sh` **39 项**（+#39 evidenceLevel 全 schema，#25 家族 9 员不变）；`arch-guard-selftest.sh` **PASS=133 FAIL=0**（= W65 的 119 + 本波 8 面 case56/56b/57/57b/58/59/59b/60 + 深审 6 面 case61/61b/62/62b/63/63b；**新增守卫 case 必同步 `KNOWN_GUARDS`/映射表/`META_CASES`**）；`fulltest.sh`（**仓内 `scripts/fulltest.sh`**，非 `_ci-tools/`）= 9 模块；`@Test` 严格口径 **688** = `build.yml:497 baseline`。
 2. **行数表九员**（**现行值一律以 `bash scripts/line-table.sh` 生成物为准**，勿手写）：ChatViewModel 550/1600｜ChatRunCoordinator 1204/1300｜LiteRtLmEngine 2009/2400｜AgentRunner **2773**/2900（余 127）｜LiteRtLmEngineLoader 704/900｜AgentRunnerToolSetup 108/400｜ThinkingBudget **102**/150（余 48）｜AgentRunnerLoopHelpers 209/400｜ChatRunRecovery 129/400。
 3. 🔴 **K-1 单源链（四处）**：core-engine `THINKING_CHARS_PER_TOKEN_CEIL`/`thinkingCharBudgetFor` ↔ core-model `THINKING_CHAR_BUDGET`(8192) ↔ `ThinkingBudgetInvariantTest` ↔ 轴档案 `minThinkingTokenBudget`。**r 测量方法学**（W66 A5）已落 `ThinkingBudget.kt` KDoc + `docs/12`。
 4. 🔴 **`.gitattributes` 已钉 `*.kt text eol=lf`** ⇒ CRLF 陷阱类在 git 层根除；`README.md` / `docs/*.md` 仍是 CRLF（**故意**），编辑它们**不要用 `sed -i`**（会翻转 EOL，Edit 工具安全）。
@@ -124,7 +124,14 @@ GPU 崩溃链（设备侧持久日志）：`sampler_factory.cc:408 OpenCL sample
 | **Build** | `38287704452` | ✅ success（head `ce7e5bc`） | 三 job 全 success：Lint (baseline gate) / Assemble Debug (JDK 21) / Unit tests；Assemble 内「Architecture guard」（**39 项 OK**）+「Architecture guard self-test」（**PASS=127 FAIL=0**） |
 | **Release** | `38287704537` | ✅ success（head `ce7e5bc`） | — |
 
-> 计数口径：`arch-guard` **39 项**（本地三方独立复跑 + CI 日志 `OK` 行数 = 39 三方一致）；`selftest` **PASS=127 FAIL=0**（= W65 的 119 + 本波 **8 面**：case56 / 56b / 57 / 57b / 58 / 59 / 59b / 60 —— ⚠️ 本波过程中曾误记为「五面」，以 CI 日志实测 127 为准）；`@Test` **688** == `build.yml baseline`。
+**深审修复后（§八，head `e77c60d`）**：
+
+| workflow | run id | 结论 | 关键 job |
+|---|---|---|---|
+| **Build** | `38293828752` | ✅ success（head `e77c60d`） | 三 job 全 success；Assemble 内「Architecture guard」（**39 项 OK**）+「Architecture guard self-test」（**PASS=133 FAIL=0** = 127 + 深审新增 6 面 case61/61b/62/62b/63/63b） |
+| **Release** | `38293828744` | ✅ success（head `e77c60d`） | — |
+
+> 计数口径：`arch-guard` **39 项**（本地三方独立复跑 + CI 日志 `OK` 行数 = 39 三方一致）；`selftest` **PASS=127 FAIL=0**（= W65 的 119 + 本波 **8 面**：case56 / 56b / 57 / 57b / 58 / 59 / 59b / 60 —— ⚠️ 本波过程中曾误记为「五面」，以 CI 日志实测 127 为准）；深审修复后 **PASS=133**（+6 面）。`@Test` **688** == `build.yml baseline`。
 
 ---
 
@@ -158,7 +165,7 @@ GPU 崩溃链（设备侧持久日志）：`sampler_factory.cc:408 OpenCL sample
 | D8 | 交接 §一/§六.1/§七 + README 数字面：**五面 → 8 面 / PASS=127**；回填 CI run id | 逐字核对 |
 | D4 过度声称 | 交接 §四 补「深审订正」注记 | 逐字核对 |
 
-**修复 commit**：`d4847c5`（`ci:`，只含 3 个脚本：`arch-guard.sh` / `arch-guard-selftest.sh` / `line-table.sh`）+ 本收官文档 commit。selftest 新增 **case61/61b/62/62b/63/63b**（守卫 #39 的三个 fail-open 面各配「红来自真命中事实行」断言）⇒ `--only 39` **PASS=14 FAIL=0**。
+**修复 commit**：`d4847c5`（`ci:`，只含 3 个脚本：`arch-guard.sh` / `arch-guard-selftest.sh` / `line-table.sh`）+ `e77c60d`（`docs:`，文档/KDoc 销账）。selftest 新增 **case61/61b/62/62b/63/63b**（守卫 #39 的三个 fail-open 面各配「红来自真命中事实行」断言）⇒ 本地 `--only 39` **PASS=14 FAIL=0**，CI 全量 **PASS=133 FAIL=0**（@ `e77c60d`，见 §七）。
 
 ### 8.3 遗留（W67）
 
