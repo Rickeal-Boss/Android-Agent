@@ -13,12 +13,13 @@ import kotlin.test.assertTrue
  * （[StreamRepetitionDetector.THINKING_CHAR_BUDGET]）的模块 ⇒ 跨模块「单源」关系只能在此钉。
  *
  * 两条不变式：
- * 1. **晚于 native**：`thinkingCharBudgetFor(m, 0) > resolveThinkingBudget(0, m) * 8.4`
- *    （8.4 = 实测上界 chars/token，W62 真机：2048 字符 ≈244 token）—— 字符守卫必须晚于
- *    native 优雅路径（预算耗尽 ⇒ 强制吐思考结束符 ⇒ 转回正文生成），否则重现 W62
- *    「守卫抢跑、合法长推理被误判循环」病灶；
+ * 1. **晚于 native**：`thinkingCharBudgetFor(m, 0) > resolveThinkingBudget(0, m) * 5.06`
+ *    （5.06 = W67 离线重测的实测上界 chars/token —— W62 历史声称的 8.4 系口径伪影已证伪：
+ *    同样本 2051 字符用 gemma 官方 tokenizer 计 469 token，r=4.37；W62/W65/W66 三波 31 样本
+ *    全量计数 r_max=5.06）—— 字符守卫必须晚于 native 优雅路径（预算耗尽 ⇒ 强制吐思考结束符
+ *    ⇒ 转回正文生成），否则重现 W62「守卫抢跑、合法长推理被误判循环」病灶；
  * 2. **默认值单源**：`StreamRepetitionDetector.THINKING_CHAR_BUDGET == thinkingCharBudgetFor(1024, 0)`
- *    —— core-model 不可见 core-engine，只能取字面量 8192，其与派生式相等由此钉住
+ *    —— core-model 不可见 core-engine，只能取字面量 4608，其与派生式相等由此钉住
  *    （单源靠测试保证，勿让两处各自演化）。
  *
  * 纯 JVM：零协程 / 零 Android / 零 native。断言收尾一律用返回 `Unit` 的函数
@@ -33,8 +34,8 @@ import kotlin.test.assertTrue
  */
 class ThinkingBudgetInvariantTest {
 
-    /** 实测上界：W62 真机 2048 字符 ≈244 token（见 `README.md` W62 段）。 */
-    private val measuredCharsPerTokenCeil = 8.4
+    /** 实测上界：W67 离线重测 r_max = 5.06（W62/W65/W66 三波 31 样本官方 tokenizer 精确计数）。 */
+    private val measuredCharsPerTokenCeil = 5.06
 
     /** 不变式 1：滑条全域（64..8192 步进 64），字符守卫恒严格大于 native 的实测字符当量。 */
     @Test

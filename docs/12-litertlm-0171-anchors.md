@@ -16,7 +16,7 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 | 2 | `Contents.toJson()` 恒返回 JSON 数组 | W51 javap 实锤 / W55 Probe.java 实跑 | `Contents.of("x").toJson()` = `[{"type":"text","text":"x"}]`（0.17.1 Java 层不存在标量 content 通道） | 若新版引入标量通道，前置④的「重启条件②」成立（app 侧标量通道评估另立，勿顺手做） | — | ☐ |
 | 3 | `ConversationConfig.channels` 覆盖（thought 通道声明随会话下发） | W43 真机实锤 / W48 按模型选 def | 引擎所有 ConversationConfig 构造点恒显式传 `channels`；缺省时依赖容器元数据自决（MiniCPM5 思维链泄漏形态） | 确认新版 channels 参数与解析行为不变；`front()` 语义（见 #4）不漂移 | — | ☐ |
 | 4 | thinking 预算只认 `channels.front()` | W47 | `ThinkingConfig` + 通道声明共同生效；非 front 通道不进预算口径 | 确认 `ThinkingConfig.thinkingTokenBudget` 参数仍在且口径不变 | — | ☐ |
-| 5 | `ThinkingBudgetConstraint` 已编入 `.so` | W47（0.17.1 AAR 字节级证实） | 到预算强制吐出 thinking 结束符转入正文（真机 222s 空转的根治面） | **缺失即阻断（P0）**：解包新版 AAR 核对符号仍存在；缺失 ⇒ bump 阻断（不再只是「核对项」）。**升级理由**（W64 K-1 治本后）：字符守卫（`thinkingCharBudgetFor` 派生阈值）已退化为 native 失效**兜底**——maxTokens 滑条越大，native 预算越高、字符守卫越不可达 ⇒ thinking 空转防线**单点依赖 native**；bump 后符号缺失 = 只剩墙钟兜底，W47 222s 空转回归面完整复现。 | thinking 空转（`thinking` 流不结束、无 thinking 结束符转入正文）+ 墙钟兜底触发 | ☐ |
+| 5 | `ThinkingBudgetConstraint` 已编入 `.so` | W47（0.17.1 AAR 字节级证实） | 到预算强制吐出 thinking 结束符转入正文（真机 222s 空转的根治面） | **缺失即阻断（P0）**：解包新版 AAR 核对符号仍存在；缺失 ⇒ bump 阻断（不再只是「核对项」）。**升级理由**（W64 K-1 治本后）：字符守卫（`thinkingCharBudgetFor` 派生阈值）已退化为 native 失效**兜底**——maxTokens 滑条越大，native 预算越高、字符守卫越不可达 ⇒ thinking 空转防线**单点依赖 native**；bump 后符号缺失 = 只剩墙钟兜底，W47 222s 空转回归面完整复现。**锚适用条件**（W67 B1 订正后）：健康 native 下守卫阈 = 预算×C(=9) > 预算×实测 r_max(5.06) ⇒ 判定③数学不可达（纯兜底定位）；native 失效时半预算档兜底阈 r > 4.5（实测英文思维链 4.5–5.1 可达）、轴档案档（1536/2048）r > 6.75（条件性收窄，由墙钟 + N-2 warn 承担）。⚠️ **OFF 档不适用本锚的「晚于 native」论证**：`ThinkingMode.OFF` 引擎恒不下发 ThinkingConfig，对不服从 `enable_thinking=false` 的显式通道模型（R1 类）thinking 无预算无守卫（best-effort 第三态，W67 F1 选项 B 申报）。 | thinking 空转（`thinking` 流不结束、无 thinking 结束符转入正文）+ 墙钟兜底触发 | ☐ |
 | 6 | `RepetitionPenaltyConfig` 为逐消息参数 | W20（0.17.1 起真实生效） | `sendMessageAsync` 逐消息传参；默认 1.0 = 不惩罚；NPU 后端不传 | 确认逐消息参数签名仍在（若被挪进 ConversationConfig = 会话级固化，调参即时生效语义破坏） | — | ☐ |
 | 7 | `automaticToolCalling` 默认 true（红线） | W34 | native 自行执行工具会完全绕过 AgentRunner 审批/沙箱/熔断管线；本仓所有构造点显式写 false，`DeclaredOnlyTool.execute()` 恒抛（物理保险） | 确认默认值未翻转、参数名未改；若上游改默认，本仓显式 false 仍须逐构造点核对 | — | ☐ |
 | 8 | `ToolProvider` 抽象方法名带模块混淆后缀 | W34 题 A | 0.17.1 实测：应用侧**无法覆写**，只能走 `tool(OpenApiTool)` 工厂（见 NativeToolBridge 注释） | 确认 `tool(OpenApiTool)` 工厂仍在；若抽象方法可覆写了，探针与注册路径须重新评估 | — | ☐ |
@@ -34,16 +34,39 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 4. 真机批复核 #3/#9/#10（thought 通道声明、preface 诊断、模板失败路径）；
 5. 全部打勾 + 守卫 #29 期望值同步更新后，方可动 toml 版本行。
 
-### r（chars/token）的测量方法（W66 E5 落档）
+### r（chars/token）的离线重测结论（W66 E5 立方法、W67 B1 首次全量执行）
 
-锚 #5 与 `THINKING_CHARS_PER_TOKEN_CEIL`（C=16）的**安全窗口 (8.4, 16.8)** 依赖实测 `r_max`，
-而现有两个 r 样本（W62 的 8.4 / W65 补丁臂的 2.0）**分母都是软的** ⇒ **先修尺子再采样**：
+锚 #5 与 `THINKING_CHARS_PER_TOKEN_CEIL`（C=9）的**安全窗口 (5.06, 10.11)** 由 W67 B1 离线重测
+定案（脚本 `_ci-tools/_w67_r_retest.py`，仓外 CI 工具；W62/W65/W66 三波 journal 全量扫描、
+禁挑样本；W66 E5 落档 4 值被逐位复现 ⇒ 尺子自证）：
 
+| 样本群 | 字符 | token | r |
+|---|---|---|---|
+| W62 事故样本（gemma-4-E2B-it，2051 字符误判轮） | 2051 | **469** | **4.37** |
+| W62 同轮对照组（2010 字符正常作答轮） | 2010 | 495 | 4.06 |
+| W62 边界样（2061 字符 V4 决定性） | 2061 | 512 | 4.03 |
+| gemma-4-E4B-it（W65 CPU 臂） | 177 | 35 | **5.06 ← r_max** |
+| R1 中文思维链（W66 E5，Qwen tokenizer） | 1926/720/520/505 | 1042/318/268/330 | 1.53–2.26 |
+
+**定案一：W62 的 8.4 系口径伪影（证伪）**。README W62 段「2048 字符 ≈ 244 token」的 244
+不可能为 thinking token 数 —— 引擎 `completionTokens` 实为**内容 chunk 数**且 thinking chunk
+根本不计入（`LiteRtLmEngine` usage 计算）；同样本官方 tokenizer 重测 2051 字符 = 469 token。
+两种 tokenizer（gemma 官方 / Qwen 对照 464）下 r≈4.2–4.4，8.4 均不成立；244 的确切来历
+在现存工件中不可考（W62 logcat 仅存 1 行、journal 不含 usage），但不影响定案。
+**定案二：真 r_max = 5.06**（31 样本全量；≥500 字符主样本段 4.53；语言构成主导：R1 中文
+思维链 1.35–2.26、gemma 英文思维链 3.0–5.06）⇒ **C 16 → 9**、`THINKING_CHAR_BUDGET`
+8192 → 4608、窗口 (8.4, 16.8) → (5.06, 10.11)；半预算兜底阈 r > 4.5（恢复可达），轴档案档
+r > 6.75（条件性收窄申报）。四处单源链（core-engine 常量 / core-model 字面量 / 双不变式
+测试 / KDoc 推导段）同批同步。
+
+方法学纪律（沿用）：
 1. **native usage 分通道：⛔ 不可用** —— 引擎 `completionTokens` 是内容 **chunk 数**，无 thinking token 数；
-2. **离线 tokenizer 计数（采用）**：真机 journal 的 `message` 行含 `thinking` 字段 ⇒ 抽 thinking 全文 → 模型官方 tokenizer（`transformers`/`sentencepiece`）**离线精确计数** → `r = 字符/token`；
+2. **离线 tokenizer 计数（硬证据）**：journal 的 `message` 行含 `thinking` 字段 ⇒ 抽 thinking 全文 → 模型官方 tokenizer（gemma 侧 / Qwen 侧各一份）**离线精确计数** → `r = 字符/token`；W67 起以 `_ci-tools/_w67_r_retest.py` 为执行面；
 3. `TokenEstimator.estimate` 仅**旁证**（字符启发式），不得当硬证据。
 
-判定：`r_max ≤ 8.4` ⇒ C=16 冻结；`> 8.4` ⇒ 窗口下界上移、C 重估（四处同步单见
-`core-engine/.../ThinkingBudget.kt` 顶部 + 轴档案 `minThinkingTokenBudget`）。
+⚠️ **偏差申报（W67）**：MiniCPM5 唯一样本（W66 `c1_minicpm5_load`，375 字符）本仓无官方
+tokenizer 资产 ⇒ 标 SKIP 不计入（不拿异族 tokenizer 凑数）；样本仍以英文题面 run 为主
+（`adb input text` 非 ASCII NPE），但思维链语言中英混在（journal 实证），r 的语言构成效应
+已在结论表内按 CJK 占比分列。
 
-—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）；W66 A5 追加 r 测量方法。
+—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）；W66 A5 追加 r 测量方法；W67 B1 回填重测结论。

@@ -90,7 +90,7 @@ class StreamRepetitionDetector(
     systemPrompt: String? = null,
     /**
      * thinking 流铺陈预算（判定③）的字符阈值。默认 [THINKING_CHAR_BUDGET]（= 派生式
-     * `thinkingCharBudgetFor(1024, 0)` 的字面取值，8192）。**真实 run 由 `AgentRunner`
+     * `thinkingCharBudgetFor(1024, 0)` 的字面取值，4608）。**真实 run 由 `AgentRunner`
      * 注入**随 maxTokens 滑条 / 预设伸缩的派生字符当量（W64 K-1 治本）—— 使守卫恒晚于
      * native 优雅路径，不再是与 native 预算不同源的固定常量。
      *
@@ -505,50 +505,67 @@ class StreamRepetitionDetector(
         const val WINDOW_UNIQUE_LIMIT = 2
 
         /**
-         * thinking 流的字符预算**默认值**（判定③；W64 K-1 治本：固定常量 → 派生化兜底）。
+         * thinking 流的字符预算**默认值**（判定③；W64 K-1 治本：固定常量 → 派生化兜底；
+         * W67 B1 按离线重测重新标定 8192 → 4608）。
          *
          * **语义**：本值 = 派生式 `thinkingCharBudgetFor(maxTokens = 1024, configured = 0)`
-         * = `resolveThinkingBudget(0, 1024)`（**512 token**）× 字符当量上界系数 16
-         * = **8192** —— 即「maxTokens=1024（native 半预算 512 token）在 C=16 下的派生取值」。
+         * = `resolveThinkingBudget(0, 1024)`（**512 token**）× 字符当量上界系数 9
+         * = **4608** —— 即「maxTokens=1024（native 半预算 512 token）在 C=9 下的派生取值」。
          * **真实 run 由 `AgentRunner` 注入**随 maxTokens / 预设伸缩的派生值（见构造函数
          * [thinkingCharBudget]）；本常量仅作**默认值 / 兜底**（未注入的调用点，如
          * `ModelHealthCriteria` —— 它只调 [observeText]，本字段对其不生效）。
          *
          * ⚠️ **单源靠测试保证**：core-model **不可见** core-engine（零引擎依赖）⇒ 本处无法
-         * 调用 `thinkingCharBudgetFor`，只能写字面量 8192。**两处相等**
+         * 调用 `thinkingCharBudgetFor`，只能写字面量 4608。**两处相等**
          * （`THINKING_CHAR_BUDGET == thinkingCharBudgetFor(1024, 0)`）由 core-engine 的
          * `ThinkingBudgetInvariantTest` 钉住（该模块是唯一同时可见派生函数与本常量的模块）；
          * **勿让两处各自演化**（同族历史坑：两份口径各自演化 ⇒ 检测静默失效）。
          *
-         * 取值依据（禁无据拍值）：
-         *  - native 思考预算是 **token** 计；**实测上界 8.4 chars/token**（W62 真机：
-         *    2048 字符 ≈ 244 token，见 `README.md` W62 段）；
-         *  - 取字符当量上界系数 **C=16**（≈1.9 余量）⇒ 512 token × 16 = 8192 字符；
+         * 取值依据（禁无据拍值，W67 B1 重测结论）：
+         *  - native 思考预算是 **token** 计；**实测 r_max = 5.06 chars/token**（W67 离线重测：
+         *    W62/W65/W66 三波 31 样本官方 tokenizer 精确计数，禁挑样本；W66 E5 落档值被逐位
+         *    复现 ⇒ 尺子可信）。历史声称的「W62 实测上界 8.4」系**口径伪影**（2048 字符
+         *    ≈ 244 token 的 244 不可能为 thinking token 数：引擎 completionTokens 实为内容
+         *    chunk 数且不计 thinking；同样本重测 2051 字符 = 469 token，r = 4.37）；
+         *  - 取字符当量上界系数 **C=9**（≈1.78× 实测上界，安全窗口 (5.06, 10.11) 上部带余量
+         *    取值，故障不对称要求向上取）⇒ 512 token × 9 = 4608 字符；
          *  - **故障不对称**：C 取小 ⇒ 守卫早于 native 抢跑（= W62 病灶）；C 取大 ⇒ 退化为
-         *    纯兜底 ⇒ 必须向上取。不变式 = 本值恒 > native 预算 token 数 × 8.4。
+         *    纯兜底 ⇒ 必须向上取。不变式 = 本值恒 > native 预算 token 数 × 5.06。
          *
          * 为什么从固定 4096 改为派生兜底（W62 病灶的**结构性根因**）：固定字符常量与随
          * maxTokens 变化的 native token 预算**不同源**。`minMaxTokens=2048` 的 **MiniCPM5 /
          * R1** 两个思考预设，在用户**不动滑条**时 maxTokens 即为 2048 ⇒ native 思考预算
-         * = 1024 token（≈8600 英文字符当量，按 8.4 折算）；旧固定 4096 字符守卫会在 native
-         * **尚未耗尽（预算尚余约 52%）**时提前抢跑 —— 这正是 W62「合法长推理被误判循环」
+         * = 1024 token（≈4500 英文字符当量，按 W67 实测 r≈4.4 折算）；旧固定 4096 字符守卫会在
+         * native **尚未耗尽（预算尚余约 9%）**时提前抢跑 —— 这正是 W62「合法长推理被误判循环」
          * 的结构性根因。本波以**派生化**消除：守卫随 native 预算同步伸缩，恒晚于 native
          * 优雅路径（预算耗尽 ⇒ 强制吐思考结束符 ⇒ 转回正文生成）。
          *
          * 实证：W62 A/B（同设备 / 同模型 / 同构建）`thinklen=2010`（<2048）正常作答 /
          * `thinklen=2051`（>2048）被误判「循环」⇒ 阈值是刀锋。
          *
-         * **结构不可达证明**（W65 D1 前半，原挂账「真机构造 thinklen>阈值」据此重分类为
-         * ⛔ 结构不可达（0.17.1 健康 native），而非待办缺陷）：阈值 = native token 预算 × C(=16)
-         * 字符。**健康 native**（`ThinkingBudgetConstraint` 已编入 .so）下思考在 budget
-         * token 处被强制结束符截断 ⇒ `thinklen ≤ budget × r`，超阈需 `r > 16` chars/token ——
-         * 而实测上界仅 8.4（W62 真机 2048 字符 ≈244 token），CJK 1–3、英文 3.5–5 ⇒ **真实
-         * 文本数学不可达**（守卫在健康 native 上永不触发，这正是「不误触发」的设计意图）；
-         * **native 失效**（bump 删符号 / .so 缺编）时思考可吃满 maxTokens，超阈需 `r > 8` ⇒
-         * 字符密集 profile 恰好可触发。⚠️ **轴档案条件化**（W65 M-1）：`configured > 0` 的档案
-         * （R1/MiniCPM5 = 1536，maxTokens=2048）失效兜底阈 = C×budget/maxTokens ⇒ `r > 12`
-         * ⇒ 高于实测 r_max 8.4，兜底面收窄（余量由锚 #5 墙钟兜底承担）；半预算档仍为 `r > 8`。
+         * **结构不可达证明**（W65 D1 前半立、W67 B1 按实测重标定；原挂账「真机构造
+         * thinklen>阈值」据此重分类为 ⛔ 结构不可达（0.17.1 健康 native），而非待办缺陷）：
+         * 阈值 = native token 预算 × C(=9) 字符。**健康 native**
+         * （`ThinkingBudgetConstraint` 已编入 .so）下思考在 budget token 处被强制结束符
+         * 截断 ⇒ `thinklen ≤ budget × r`，超阈需 `r > 9` chars/token ——
+         * 而 W67 实测上界仅 5.06（R1 中文思维链 1.35–2.26、gemma 英文思维链 3.0–5.06）⇒
+         * **真实文本数学不可达**（守卫在健康 native 上永不触发，这正是「不误触发」的设计意图）；
+         * **native 失效**（bump 删符号 / .so 缺编）时思考可吃满 maxTokens，超阈需 `r > 4.5` ⇒
+         * 实测英文思维链 profile（r≈4.5–5.1）恰好可触发。⚠️ **轴档案条件化**（W65 M-1）：
+         * `configured > 0` 的档案（R1/MiniCPM5 = 1536，maxTokens=2048）失效兜底阈 =
+         * C×budget/maxTokens ⇒ `r > 6.75` ⇒ 高于实测 r_max 5.06，兜底面收窄（余量由锚 #5
+         * 墙钟 + N-2 warn 兜底承担）；半预算档仍为 `r > 4.5`。
          * 结论：判定③的定位 = **native 失效兜底，bump 场景保活**。
+         *
+         * ⚠️ **本证明的适用前提 = ThinkingConfig 已下发**（W67 B1 F1 裁决回填）：上式以
+         * `thinkingOn = true`（引擎随会话下发 ThinkingConfig）为前提。`ThinkingMode.OFF` 档
+         * 引擎恒不下发预算（`LiteRtLmEngine` generateStream：thinkingOn == false ⇒ 构造
+         * null）⇒ 无 native 预算可「晚于」；对服从 `enable_thinking=false` 的模型 thinking
+         * 不产生、无影响，但对**不服从**该开关的显式通道模型（DeepSeek-R1 类，W66 §3.2
+         * 探针实证）thinking 仍全量输出且无任何预算/守卫约束（轴档案值虽写入 InferenceConfig，
+         * OFF 档引擎不下发 ⇒ 到不了模型）⇒ 该第三态为 **best-effort 申报**（W67 F1 选项 B，
+         * 零行为改动），唯一探测面 = N-2 warn（`thinkingOnlyEmptyDiagnostic`，`AgentRunner`
+         * 空答分支唯一落点）+ 锚 #5 墙钟。
          *
          * **可调、真机反馈校准**：系数 C 冻结前须真机 ≥2 样本复测（英文 + 中文各一）；
          * 真机若仍见 native **未先优雅收尾**（即仍出现「正文为空 + 循环提醒」），按实测
@@ -556,7 +573,7 @@ class StreamRepetitionDetector(
          *
          * ⚠️ 与 [TEXT_RUNAWAY_CHARS]（text 流，**另一条流**）**不得联动**：见其 KDoc 交叉注记。
          */
-        const val THINKING_CHAR_BUDGET = 8192
+        const val THINKING_CHAR_BUDGET = 4608
 
         /**
          * text 流的正文铺陈预算（判定⑤）。与 [THINKING_CHAR_BUDGET] 同款口径注记：
@@ -566,7 +583,7 @@ class StreamRepetitionDetector(
          *
          * ⚠️ 与 [THINKING_CHAR_BUDGET] **语义不同、数值亦已分道，两值不得联动同步调整**
          * （W64 K-1 交叉注记，订正 W63 刀B 的「同值 4096」原注记）：thinking 侧已改为
-         * **随 native 预算派生**的默认 8192（撞预算有 native「预算耗尽 → 强制吐思考
+         * **随 native 预算派生**的默认 4608（撞预算有 native「预算耗尽 → 强制吐思考
          * 结束符 → 转回正文生成」的优雅路径兜底）；text 流撞的是 maxOutputToken 硬截
          * （native **无任何兜底**），4096 是**唯一防线**。两值各自独立标定，调一个不等于
          * 调另一个 —— 原「同值 4096」的说法已随 thinking 派生化失效，不得据此联动。

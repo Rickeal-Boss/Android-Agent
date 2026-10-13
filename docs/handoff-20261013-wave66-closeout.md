@@ -96,6 +96,11 @@ GPU 崩溃链（设备侧持久日志）：`sampler_factory.cc:408 OpenCL sample
 
 ## 五、挂账（W67 起；权威版见本节 + README）
 
+> ⚠️ **W67 勘误注记（2026-10-13，本波回填）**：本交接两处数字已被 W67 修正，引用时以 W67 为准：
+> ① **§五.6 / §六.2 的 `executeBodyUnchecked` 「498/550（余 52）」→ 实测 501/550（余 49）** —— 498 系虚低 3（`1cead9f` 迁移 commit 的函数体内注释扩写净 +3 未随波更新，W65/W66 两波照抄；复审21 P3-② 独立复算 `AgentRunner.kt:546`→`:1047`）；`scripts/line-table.sh` 已增**方法级条目**（#12 余量自此机械生成，不再手写）。
+> ② **§五.4「C 复测收尾：r_max≈2.26 ≤ 8.4 ⇒ C=16 冻结」已被推翻** —— W67 B1 用离线 tokenizer 全量重测 W62/W65/W66 三波 31 样本（W66 E5 落档 4 值逐位复现）：W62 的 8.4 系**口径伪影**（「2048 字符≈244 token」的 244 = 内容 chunk 数，非 thinking token），实测 **r_max = 5.06** ⇒ **C 16 → 9、窗口 (8.4,16.8) → (5.06,10.11)、`THINKING_CHAR_BUDGET` 8192 → 4608**（四处单源链同批同步）。
+> ③ §五.5 knownBroken 激活态「须先迁 core-model」在 W67 按第十二审 F2 拆两刀执行（迁移刀 + 功能刀）。
+
 1. 🔴 **bump 首跑判据**（沿袭）：docs/12 collapse 锚 blocker + 锚 #5 缺失即阻断 P0；**未升级验证前不要 bump**。
 2. 🟡 **E4B 单文件预设化（本波新增，CPU 臂已 ✅）**：`gemma-4-E4B-it.litertlm` 真机 CPU 可用（`ModelStopped` / thinking 177 / 正文非空 / 零 NOT_FOUND），但**尚未入 `ModelPresets`**（用户只能手动 push + 扫描登记）。**入预设的前置 = 实测峰值内存**（`dumpsys meminfo` 于 run 中采样）才能填 `requiredRamBytes` / `memBasis` —— **禁推测预填**（与 B3 同一条纪律）。⚠️ 注意 `-gpu` 特化变体仍 knownBroken，新条目须与它们**区分**（本条目是 CPU 单文件，GPU 路径在 A13 上物理不可用）。
 3. 🟡 **gemma-4 GPU 用户故事仍未解（E4 GPU 臂 ⛔ 但原因=设备显存）**：单文件 GPU 在 A13 上因 `errno 12 OOM` 崩溃 ⇒ **换更高显存设备可复测**；上游 `-gpu` 特化变体的 `NOT_FOUND` 失败面**本波未触及** ⇒ docs/14 §B2 的 issue 仍应提交（证据链可加「单文件 GPU 在入门 Adreno 上 OOM」这一条对照）。
