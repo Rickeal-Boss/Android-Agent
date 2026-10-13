@@ -49,6 +49,16 @@ object TextToolProtocol {
     private val toolCallTagRegex = Regex("<tool_call>[\\s\\S]*?</tool_call>")
 
     /**
+     * 围栏语言标记 `json`（**大小写不敏感**，W67 B0 修）。
+     *
+     * 历史病灶：`extractBlocks` 曾用 `removePrefix("json")`（大小写敏感）——部分转换件模板
+     * 产大写/混合大小写标记（` ```JSON ` / ` ```Json `）时标记剥不掉，`tryParseJson` 对残留串
+     * 失败 ⇒ **工具调用整体丢弃**；且 `strip()` 侧同一判据也认不出该块 ⇒ 围栏原文泄漏进
+     * 用户可见正文与会话历史（协议回显小径复活）。`\b` 边界保证 `json5` 一类不被误剥。
+     */
+    private val fenceLangMarkerRegex = Regex("^json\\b", RegexOption.IGNORE_CASE)
+
+    /**
      * 解析文本协议。
      *
      * @param registeredToolNames 当前**真正可执行**的工具名集合。只有名字落在集合里的调用才会
@@ -126,7 +136,7 @@ object TextToolProtocol {
             val fenceEnd = text.indexOf("```", fenceStart + 3)
             if (fenceEnd < 0) break
             val inner = text.substring(fenceStart + 3, fenceEnd)
-            out.add(inner.trim().removePrefix("json").trim())
+            out.add(fenceLangMarkerRegex.replace(inner.trim(), "").trim())
             cursor = fenceEnd + 3
         }
         val tag = Regex("<tool_call>([\\s\\S]*?)</tool_call>")

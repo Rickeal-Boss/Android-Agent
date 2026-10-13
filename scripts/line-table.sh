@@ -103,9 +103,38 @@ for entry in "${guard_lines[@]}"; do
   n_rows=$((n_rows + 1))
 done
 
+# ---- 方法级条目（W67 B0，复审21 P3-②）：#12 executeBodyUnchecked ≤ 550 行 ----
+# 为什么单列：文件级九员之外，真压力其实是**方法级** #12（`AgentRunner` 文件级余 127 尚宽，
+# 但 `executeBodyUnchecked` 方法级余量最紧）。此前该值靠人手誊写 ⇒ W65/W66 两波照抄「余 52」
+# （实测 501/550 余 49，虚低 3，复审21 P3-② 独立复算 :546→:1047）。本条目令方法级引信余量
+# **机械生成**，与 #12 守卫共享同一份「目标文件 + 方法名 + 阈值 + 长度口径」。
+# 单源：阈值 / 文件 / 方法名全部派生自 arch-guard.sh 的 #12 check 描述行；长度口径与守卫
+# #12 逐字同款（起始 = `fun FlowCollector<AgentEvent>.executeBodyUnchecked` 行；终止 = 其后
+# 首个「行首 4 空格 + 非注释（首字符字母或 @）+ 含 ` fun `」的方法边界行）。
+m_line="$(grep -nE 'executeBodyUnchecked ≤ [0-9]+ 行' "$GUARD" | head -1)"
+m_bad=0
+if [ -n "$m_line" ]; then
+  m_lineno="${m_line%%:*}"
+  m_thr="$(printf '%s' "$m_line" | grep -oE '≤ [0-9]+ 行' | grep -oE '[0-9]+')"
+  m_path="$(sed -n "$((m_lineno + 1))p" "$GUARD" | sed -nE 's/^[^f]*f=//p')"
+  m_s="$(grep -n "fun FlowCollector<AgentEvent>.executeBodyUnchecked" "$ROOT/$m_path" 2>/dev/null | head -1 | cut -d: -f1)"
+  m_e="$(awk -v s="$m_s" 'NR>s && /^    [a-zA-Z@]/ && /(^|[ ])fun /{print NR; exit}' "$ROOT/$m_path" 2>/dev/null)"
+  if [ -n "$m_thr" ] && [ -n "$m_path" ] && [ -n "$m_s" ] && [ -n "$m_e" ]; then
+    m_cur=$(( m_e - m_s ))
+    m_margin=$(( m_thr - m_cur ))
+    printf '| `%s`（**方法级** `executeBodyUnchecked`） | %s | %s | %s |\n' "$m_path" "$m_cur" "$m_thr" "$m_margin"
+  else
+    echo "::error::方法级行数条目解析失败（#12：thr='$m_thr' path='$m_path' s='$m_s' e='$m_e'）—— 守卫面失效" >&2
+    m_bad=1
+  fi
+else
+  echo "::error::未从 $GUARD 派生出方法级 #12 守卫（executeBodyUnchecked ≤ N 行）—— 提取正则漂移 / 守卫被删，禁 fail-open" >&2
+  m_bad=1
+fi
+
 # ---- --check 自证：行数齐全 + 无解析失败 ----
 if [ "$CHECK" -eq 1 ]; then
-  if [ "$bad" -ne 0 ]; then
+  if [ "$bad" -ne 0 ] || [ "$m_bad" -ne 0 ]; then
     echo "::error::line-table --check 失败：存在解析失败 / 文件缺失的守卫（见上）" >&2
     exit 1
   fi
@@ -126,7 +155,8 @@ if [ "$CHECK" -eq 1 ]; then
     exit 1
   fi
   # OK 打到 stderr，保持 stdout 为纯净 markdown
-  echo "[line-table] OK：$n_rows 行，双提取面（check 行 == 注释头）一致且 ≥ 冻结下限 $MIN_ROWS，全部由 wc -l 实测派生自 arch-guard.sh（自证通过）" >&2
+  echo "[line-table] OK：$n_rows 行（文件级）+ 1 行（方法级 #12），双提取面（check 行 == 注释头）一致且 ≥ 冻结下限 $MIN_ROWS，全部由 wc -l 实测派生自 arch-guard.sh（自证通过）" >&2
 fi
 
+if [ "$m_bad" -ne 0 ]; then exit 1; fi
 exit "$bad"

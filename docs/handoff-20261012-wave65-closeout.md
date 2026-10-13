@@ -86,7 +86,7 @@ journal 证据：`_w65_dev/results/{E2B_PATCHARM,E2B_PATCHARM2,E2B_NORMAL,R1_M1}
 5. 🟡 **knownBroken 激活态重校验**（第十轮 新-1，P2，10 分钟级）：`refresh()` 合并点或 run 触发对 active 模型查 `knownBrokenOn` → 对话页内联提示条（复用模型卡红字），**排在首个 tag 前**（每次预设修订都可能制造「老激活态踩新标记」用户，首发日放大）；也是挂账 #6 的第一消费面。
 6. 🟡 **evidenceLevel 全 schema**（templateSafety/e2eImage/functionalTest + 守卫）；宜紧随 #5。
 7. 🟡 **E4B 容器**：唯一在机变体 knownBroken；上游发布可用 E4B 后补思考双变体复验（§三）。
-8. 🟡 **接缝②仍不启动**：AgentRunner 2712/2900（余 188）、Coordinator 1204/1300（余 96）、`executeBodyUnchecked` 498/550（余 52）——三引信同时松弛；下波落码前复核余量。
+8. 🟡 **接缝②仍不启动**：AgentRunner 2712/2900（余 188）、Coordinator 1204/1300（余 96）、`executeBodyUnchecked` 498/550（余 52——**W67 勘误：实测 501/550（余 49）**，498 系 `1cead9f` 迁移净 +3 未随波更新；见 W66 交接 §五 W67 勘误注记 + `scripts/line-table.sh` 方法级条目）——三引信同时松弛；下波落码前复核余量。
 9. 🟡 沿袭：C-1/C-2 对话框手验（docs/14 §A1，用户 10 秒）｜法务 `termsVersion`（先于 tag）｜0 tags｜main 快照过时｜fulltest 接 CI｜F4 文字 token 统一｜会话删除 UI｜`TokenUsage.estimated`｜bump 双轴季扫（docs/12 13 锚 + #3576 钩子）｜上游出货 B1/B2（用户手动）｜审查 P3-d（测试源集依赖方向成文）。
 
 ---

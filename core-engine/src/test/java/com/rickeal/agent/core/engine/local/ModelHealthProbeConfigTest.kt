@@ -27,22 +27,24 @@ class ModelHealthProbeConfigTest {
     }
 
     /**
-     * 钉 `maxTokens` 后必须**重新归一** `thinkingTokenBudget`（不变量 `< maxTokens`）。
+     * 钉 `maxTokens` 后思考预算必须被 A4 的归零覆盖（**W67 B0 D10 改钉：原 vacuous 断言已替换**）。
      *
-     * ⚠️ **W66 深审 D10：本条断言已 ⛔vacuous**（判据未被行使）—— A4 起 `probeSamplingConfig`
-     * 恒把 `thinkingTokenBudget` copy 成 **0**，`.coerce()` 对它的归一分支**不再可达**，
-     * `0 < 96` 恒真。保留它作为 `coerce` 不变量的**文档锚**（不是行为判据）；W67 决定是否改钉
-     * 别的量（如断言「入参 2048 被 0 覆盖」）。
+     * 历史：W66 深审 D10 指出本条原断言 `out.thinkingTokenBudget < out.maxTokens` 在 A4 后
+     * ⛔vacuous —— `probeSamplingConfig` 恒把 `thinkingTokenBudget` copy 成 0，`.coerce()`
+     * 归一分支不再可达，`0 < 96` 恒真、判据未被行使。W67 B0 改钉为**被行使**的行为判据：
+     * 入参 `thinkingTokenBudget = 2048` 必须被覆盖为 **0**（若有人撤掉 A4 的 copy 归零，
+     * 本断言立即红）——不再是文档锚，而是真判据。
      */
     @Test
-    fun 探针配置钉maxTokens并归一思考预算() {
+    fun 探针配置钉maxTokens并覆盖入参思考预算为0() {
         val cfg = InferenceConfig(maxTokens = 8192, thinkingTokenBudget = 2048)
         val out = probeSamplingConfig("gemma-4-E2B-it.litertlm", cfg)
         assertEquals(ModelHealthProbe.PROBE_MAX_TOKENS, out.maxTokens)
-        // W66 A4 后探针恒钉 `thinkingTokenBudget = 0` ⇒ 本断言只守 `.coerce()` 的
-        // 「预算 < maxTokens」不变量本身（历史路径「2048 > 96 ⇒ 引擎钳到 95 ⇒ 思考吃光
-        // 96 token、正文为空」已由 A4 的预算归零消除，见下方「探针恒钉思考关闭且预算归零」）。
-        assertTrue(out.thinkingTokenBudget < out.maxTokens)
+        assertEquals(
+            0,
+            out.thinkingTokenBudget,
+            "A4 起探针必须把入参思考预算（此处 2048）覆盖为 0 —— 撤掉该归零即红（W67 B0 D10 改钉，非 vacuous）",
+        )
     }
 
     /** 未命中档案的模型：采样原值透传，但仍钉 `maxTokens`（成本上界与档案无关）。 */

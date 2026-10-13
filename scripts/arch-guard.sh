@@ -897,25 +897,86 @@ check "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族�
 #        块闭不上、与下一块粘连，缺字段的块被静默吞掉）。收尾行 = `^[[:space:]]+\)[,]` 且其
 #        缩进 == 起始 `ModelPreset(` 行缩进 —— 嵌套多行调用（`domesticMirrors(…),`）的更深
 #        缩进收尾行**不会**误闭块；若上一块未正常收尾就遇到新 `ModelPreset(` ⇒ 先按违规结算上一块。
+#     ⚠️ **W67 B0 再收紧①（复审21 P2-① 独立复现的残留 fail-open）**：块识别**前剥行内注释**
+#        （awk `strip_comment`，字符串字面量内的 `//` 不动）—— 单行构造 + 行尾注释
+#        `ModelPreset(...), // 注释` 不被单行块正则命中（行尾不是 `)`）、无多行块开启、
+#        无块收尾 ⇒ **整块逃逸校验**。修补后该形态被块识别覆盖（selftest case61c 钉触发面）。
+#     ⚠️ **W67 B0 再收紧②（复审21 P3-①）**：锚点判定只认**字符串字面量段**（`has_anchor` /
+#        `field_lit`）—— `W##` 必须出现在 `backendBasis` / `note` 赋值行的**引号内**；行尾
+#        注释（`note = "..." // W99`）里的 `W##` **不算**锚点（旧多行判据 `$0 ~ /W[0-9][0-9]/`
+#        扫整行 ⇒ 注释里写个 W99 就能骗过 MEASURED 校验）。
 #     ⚠️ **新增预设：多行块沿用与相邻块一致的缩进；单行块也必须显式写 `evidenceLevel`。**
 check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）" \
   bash -c 'f=feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 39 条守卫面已失效）"; exit 1; fi
            grep -q "val evidenceLevel" "$f" || { echo "::error::$f 缺 val evidenceLevel 声明（字段被删 = 第 39 条守卫面已失效）"; exit 1; }
            awk "
+             # W67 B0 修补（复审21 P2-① / P3-①）—— 两处收紧，触发面由 selftest case61c 钉住：
+             # ① strip_comment：块识别前剥行内注释。单行构造 + 行尾注释（ModelPreset(...), // 注释）
+             #    不被单行块正则命中、无多行块开启、无块收尾 ⇒ 旧实现整块逃逸。字符串字面量内
+             #    的 // 不动（url 直链等），转义引号不误切。
+             function strip_comment(s,   i, c, instr, esc) {
+               instr = 0; esc = 0
+               for (i = 1; i <= length(s); i++) {
+                 c = substr(s, i, 1)
+                 if (esc) { esc = 0; continue }
+                 if (c == \"\\\\\") { esc = 1; continue }
+                 if (c == \"\\\"\") { instr = !instr; continue }
+                 if (!instr && c == \"/\" && substr(s, i + 1, 1) == \"/\") return substr(s, 1, i - 1)
+               }
+               return s
+             }
+             # ② 锚点判定截取字符串字面量段：W## 必须落在 backendBasis / note 赋值行的引号内；
+             #    行尾注释 / 拼接段 / 其它位置的 W99 不算锚点。strlit = 取第 n 个字面量内容。
+             function strlit(s, n,   i, c, cnt, inlit, out, esc) {
+               cnt = 0; inlit = 0; out = \"\"; esc = 0
+               for (i = 1; i <= length(s); i++) {
+                 c = substr(s, i, 1)
+                 if (esc) { if (inlit && cnt == n) out = out c; esc = 0; continue }
+                 if (c == \"\\\\\") { if (inlit && cnt == n) out = out c; esc = 1; continue }
+                 if (c == \"\\\"\") {
+                   if (!inlit) { cnt++; inlit = 1 } else { inlit = 0; if (cnt == n) return out }
+                   continue
+                 }
+                 if (inlit && cnt == n) out = out c
+               }
+               return out
+             }
+             # field_lit：取 s 中 <fld> = \"...\" 的字面量段；只认具名实参位（行首或逗号之后），
+             # 防字符串内容里嵌的 note = 假字段误判（与 label 里写 W99 同型骗面的补丁）。
+             function field_lit(s, fld,   base, rel, pos, rest, prev) {
+               base = 0
+               while (1) {
+                 rel = index(substr(s, base + 1), fld)
+                 if (rel == 0) return \"\"
+                 pos = base + rel
+                 prev = (pos == 1) ? \" \" : substr(s, pos - 1, 1)
+                 if (prev !~ /[A-Za-z0-9_\".]/) {
+                   rest = substr(s, pos + length(fld))
+                   if (rest ~ /^[[:space:]]*=/) return strlit(rest, 1)
+                 }
+                 base = pos
+               }
+             }
+             function has_anchor(s) {
+               if (field_lit(s, \"backendBasis\") ~ /W[0-9][0-9]/) return 1
+               if (field_lit(s, \"note\") ~ /W[0-9][0-9]/) return 1
+               return 0
+             }
              function emit() {
                n++
                if (ev == \"\") printf \"%s:%d 预设「%s」缺 evidenceLevel 赋值（全 schema 要求每条预设显式标注）\n\", FILENAME, start, lbl
                else if (ev !~ /^(MEASURED|UPSTREAM|UNVERIFIED)\$/) printf \"%s:%d 预设「%s」evidenceLevel=%s 非法（须 MEASURED/UPSTREAM/UNVERIFIED）\n\", FILENAME, start, lbl, ev
                else if (ev == \"MEASURED\" && !anchor) printf \"%s:%d 预设「%s」evidenceLevel=MEASURED 但 backendBasis/note 内无本仓取证锚点（W## 波次实测）—— 疑推测预填\n\", FILENAME, start, lbl
              }
+             { \$0 = strip_comment(\$0) }
              /^[[:space:]]*ModelPreset\(.*\)[[:space:]]*,?[[:space:]]*\$/ {
                if (inblk) { inblk=0; emit() }
                start=NR; lbl=\"\"; ev=\"\"; anchor=0
                s=\$0
                if (match(s, /label[[:space:]]*=[[:space:]]*\"[^\"]*\"/)) { lbl=substr(s, RSTART, RLENGTH); sub(/^[^\"]*\"/, \"\", lbl); sub(/\"\$/, \"\", lbl) }
                if (match(s, /evidenceLevel[[:space:]]*=[[:space:]]*[A-Za-z.]+/)) { ev=substr(s, RSTART, RLENGTH); sub(/^[^.]*\./, \"\", ev) }
-               if (s ~ /(backendBasis|note)[[:space:]]*=[[:space:]]*\"[^\"]*W[0-9][0-9]/) anchor=1
+               if (has_anchor(s)) anchor=1
                emit()
                next
              }
@@ -932,7 +993,7 @@ check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓�
              inblk {
                if (\$0 ~ /^[[:space:]]*label[[:space:]]*=[[:space:]]*\"/) { lbl=\$0; sub(/^[[:space:]]*label[[:space:]]*=[[:space:]]*\"/, \"\", lbl); sub(/\".*/, \"\", lbl) }
                if (\$0 ~ /^[[:space:]]*evidenceLevel[[:space:]]*=[[:space:]]*/) { ev=\$0; sub(/^[[:space:]]*evidenceLevel[[:space:]]*=[[:space:]]*/, \"\", ev); sub(/[,].*/, \"\", ev); sub(/.*[.]/, \"\", ev); gsub(/[[:space:]]/, \"\", ev) }
-               if (\$0 ~ /^[[:space:]]*(backendBasis|note)[[:space:]]*=[[:space:]]*\"/ && \$0 ~ /W[0-9][0-9]/) anchor=1
+               if (has_anchor(\$0)) anchor=1
              }
              END {
                if (inblk) { inblk=0; emit() }

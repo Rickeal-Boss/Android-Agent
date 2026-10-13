@@ -2870,13 +2870,20 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-# case 61 / 61b / 62 / 62b / 63 / 63b：第 39 条（W66 深审 D1–D3 修补）—— 三个 fail-open 面：
+# case 61 / 61b / 61c / 62 / 62b / 63 / 63b：第 39 条（W66 深审 D1–D3 修补 + W67 B0 复审21
+#   P2-① / P3-① 再收紧）—— 四个 fail-open 面：
 #   D1 fail-open：旧判据只认「`ModelPreset(` 独占一行」，单行 `ModelPreset(…),` 整块被跳过。
 #     case61 —— 单行块**缺** evidenceLevel ⇒ 必须判红（旧判据整块跳过 ⇒ 假绿）；
 #     case61b 断言红来自真命中（输出含「缺 evidenceLevel 赋值」+ 违规 label）。
 #   D2 fail-open：旧判据 `$0 ~ /W[0-9][0-9]/` 扫整块 ⇒ `label`/注释里写个 `W99` 就能骗过锚点。
 #     case62 —— MEASURED 块的 W99 **只在 label / 注释里**、backendBasis/note 内无锚点 ⇒ 必须判红；
 #     case62b 断言红来自真命中（输出含「但 backendBasis/note 内无本仓取证锚点」事实行）。
+#   W67 B0 fail-open（复审21 P2-① 独立复现）：单行构造 + **行尾注释**
+#     `ModelPreset(...), // 注释` 不被单行块正则命中（行尾不是 `)`）、无多行块开启、无块收尾
+#     ⇒ 整块逃逸。case61c —— 一枚双杀两形态（块逃逸 + 尾注释里的 W99 不算锚点，P3-①）：
+#     单行 + 尾注释块、MEASURED、note 字面量内无 W##、尾注释含 W99 ⇒ 必须判红且红来自
+#     「MEASURED 但 backendBasis/note 内无本仓取证锚点」事实行（块被识别 + 注释 W99 未被
+#     当锚点，二者缺一即 FAIL）。
 #   D3 fail-open：旧判据块尾写死 8 空格 ⇒ 缩进漂移块闭不上、与下一块粘连，缺字段的块被吞。
 #     case63 —— 漂移块（12 空格缩进，缺 evidenceLevel）后接合规块（8 空格）⇒ 漂移块必须判红；
 #     case63b 断言未粘连（输出含漂移块 label、不含合规块 label）。
@@ -2908,6 +2915,42 @@ if printf '%s\n' "$out" | grep -qF "缺 evidenceLevel 赋值" && printf '%s\n' "
   PASS=$((PASS + 1))
 else
   echo "FAIL [case61b] 单行块未被识别（D1 fail-open 未修）或输出不含违规 label"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case61c-singleline-trailing-comment"
+scaffold "$d"
+cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val recommended: Boolean = false,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val knownBrokenOn: String? = null,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "compliant-anchor",
+            evidenceLevel = EvidenceLevel.MEASURED,
+            note = "W60 真机实测通过",
+        ),
+        ModelPreset(label = "trailing-comment-escape", evidenceLevel = EvidenceLevel.MEASURED, note = "本条文本内无本仓锚点"), // W99 只在行尾注释里：不算锚点
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s\n' "$out" | grep -qF "但 backendBasis/note 内无本仓取证锚点" && printf '%s\n' "$out" | grep -qF "trailing-comment-escape"; then
+  echo "PASS [case61c] 红来自真命中（单行+尾注释块被识别 + 尾注释 W99 未被当锚点，复审21 P2-①/P3-①）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case61c] 单行+尾注释形态仍整块逃逸（P2-① fail-open 未修）或尾注释 W99 被误当锚点（P3-① 未修，红非真命中）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

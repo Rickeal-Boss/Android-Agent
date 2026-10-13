@@ -2,6 +2,7 @@ package com.rickeal.agent.core.agent
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * 文本协议三态解析（[TextToolProtocol]）真值表。
@@ -252,6 +253,26 @@ class TextToolProtocolTest {
     @Test
     fun `空串 strip 原样返回`() {
         assertEquals("", TextToolProtocol.strip(""))
+    }
+
+    // ── 围栏语言标记大小写不敏感（W67 B0，复审21 遗留：`removePrefix("json")` 大小写敏感）──
+
+    @Test
+    fun `大写 JSON 围栏内标准调用被解析为 Calls`() {
+        // 部分转换件模板产大写语言标记；旧实现 removePrefix("json") 剥不掉 ⇒ 调用整体丢弃。
+        val text = "```JSON\n{\"tool\": \"calc\", \"arguments\": {\"x\": 1}}```"
+        val result = TextToolProtocol.parse(text, registered)
+        assertTrue(result is ProtocolResult.Calls, "大写 JSON 围栏必须被识别为协议块，实得 $result")
+        assertEquals(1, (result as ProtocolResult.Calls).calls.size)
+    }
+
+    @Test
+    fun `混合大小写 Json 围栏被解析且原文不泄漏进正文`() {
+        val text = "先算一下：```Json\n{\"tool\": \"calc\"}```"
+        // 解析侧：协议块被识别（大写剥离生效）。
+        assertTrue(TextToolProtocol.parse(text, registered) is ProtocolResult.Calls)
+        // 展示侧：同一判据认得出该块 ⇒ 剥离后不把围栏原文泄漏进用户可见正文/会话历史。
+        assertEquals("先算一下：", TextToolProtocol.strip(text))
     }
 
     // ── 不变量 ───────────────────────────────────────────────────────────────
