@@ -98,5 +98,7 @@
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | 待回填 | — | — |
-| **Release** | 待回填 | — | — |
+| **Build** | `38348809838` | ✅ success（head `c60abf3`） | 三 job 全 success：Lint (baseline gate) / Assemble Debug (JDK 21) / Unit tests；Assemble 内「架构守卫全部通过」（39 项）+「自测结果：**PASS=134 FAIL=0**」（= W66 的 133 + case61c）；Unit tests baseline=**690** 无低基线告警 |
+| **Release** | `38348809828` | ✅ success（head `c60abf3`） | — |
+
+> 计数口径：`arch-guard` 39 项（本地三方复跑 + CI「架构守卫全部通过」）；`selftest` **PASS=134**（CI 日志实测，本地 `--only 39`=15 / `--only 34,39`=20）；`@Test` **690** == `build.yml baseline`（#26 双向，CI baseline=690 无告警）。
