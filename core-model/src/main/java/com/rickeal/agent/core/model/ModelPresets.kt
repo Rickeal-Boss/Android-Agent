@@ -216,6 +216,17 @@ object ModelPresets {
     private const val BASIS_CPU =
         "W×1.05(CPU)+KV@4096+O，×1.25 安全余量"
 
+    /**
+     * E4B 单文件（CPU）**实测**内存口径（W67 B4，禁推测预填）。
+     *
+     * 两点采样（`dumpsys meminfo`，OPPO A13 `13309cc8`，MemTotal 11.8GB）：
+     * 加载后静置 PSS ≈ **5.66 GiB** / 生成峰值 PSS ≈ **5.66 GiB**（RSS ≈ 5.05 GiB，
+     * swap ≈ 1.0 GiB）—— 两点几乎相等 = 3.41 GiB 权重主导（KV@4096 增量小）。
+     * `requiredRamBytes` = 峰值 × 既有安全系数 1.25 ≈ **7.1 GiB**。
+     */
+    private const val BASIS_CPU_E4B_MEASURED =
+        "W67 实测峰值 ×1.25（A13 13309cc8：静置 PSS 5.66GiB / 生成峰值 PSS 5.66GiB，RSS 5.05GiB，swap≈1.0GiB）"
+
     val all: List<ModelPreset> = listOf(
         ModelPreset(
             label = "Gemma 4 E2B · GPU",
@@ -277,6 +288,20 @@ object ModelPresets {
             knownBrokenOn = "0.17.1 引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section，与 E2B·GPU 同源）",
             evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
+        ),
+        ModelPreset(
+            label = "Gemma 4 E4B · CPU（单文件）",
+            url = "$BASE/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
+            sizeText = "3.41 GB",
+            ramText = "≥ 7.1 GB",
+            requiredRamBytes = (7.1 * GB).toLong(),
+            memBasis = BASIS_CPU_E4B_MEASURED,
+            note = "旗舰质量（单文件 CPU 变体，非 -gpu 特化）：实测可用，但权重 3.41GB、CPU 首字约 29s —— 仅建议 12GB 以上内存机型",
+            sizeBytes = 3659530240,
+            recommended = false,
+            backendBasis = "单文件（**非** `-gpu` 特化变体）；✅ 本仓真机取证：W66 真机 CPU 臂（`ModelStopped` / thinking 177 / 正文 OK / 零 `NOT_FOUND` / 零 FATAL）+ W67 真机复验（in 1365 / out 1，零 FATAL）；⚠️ **不得入 `ModelGpuSupport` 白名单** —— 同文件 GPU 路径在 A13 入门 Adreno 上 OOM（`IOCTL_KGSL_GPUOBJ_ALLOC errno 12` → `Resource deadlock` → SIGABRT → 整机重启，W66 §3.1），须高显存设备复测通过后才议",
+            evidenceLevel = EvidenceLevel.MEASURED,
+            mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it.litertlm"),
         ),
         ModelPreset(
             label = "Qwen2.5 1.5B · q8",
