@@ -3,6 +3,7 @@ package com.rickeal.agent.feature.models
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelFamily
+import com.rickeal.agent.core.model.ModelPreset
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull

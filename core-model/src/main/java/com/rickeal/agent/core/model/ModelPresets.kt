@@ -1,6 +1,4 @@
-package com.rickeal.agent.feature.models
-
-import com.rickeal.agent.core.model.ModelGpuSupport
+package com.rickeal.agent.core.model
 
 /**
  * 内置模型预设：**只收录 Google 官方 `litert-community` 组织下真实存在的文件**，

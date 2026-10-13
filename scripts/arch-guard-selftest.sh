@@ -101,7 +101,7 @@ affected_guards_for_file() {
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerToolSetup.kt) echo "35" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerLoopHelpers.kt) echo "37" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt)          echo "13" ;;
-    feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt) echo "34 39" ;;
+    core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt) echo "34 39" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt)    echo "18" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt) echo "20 30" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt) echo "38" ;;
@@ -237,6 +237,9 @@ scaffold() {
            "$root"/core-agent "$root"/core-data \
            "$root"/feature-chat "$root"/feature-models "$root"/feature-settings \
            "$root"/app/src/main
+  # W67 B2 迁移刀：ModelPresets 已从 feature-models 迁到 core-model（与 ModelGpuSupport 同层）
+  # ⇒ #34/#39 的夹具写盘路径改为 core-model 嵌套目录，须在此统一铺出该目录。
+  mkdir -p "$root/core-model/src/main/java/com/rickeal/agent/core/model"
   cat > "$root/app/src/main/AndroidManifest.xml" <<'XML'
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
@@ -487,8 +490,8 @@ KT
   # W66 深审 D2）⇒ 骨架三条预设分别用 MEASURED（锚点写在 `note` 里）与 UPSTREAM（无需锚点），
   # 并铺 enum 声明 + `note` 字段。漏铺任一 ⇒ 干净树被本条 fail-closed 判红（正例失守）。
   mkdir -p "$root/feature-models/src/main/java/com/rickeal/agent/feature/models"
-  cat > "$root/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+  cat > "$root/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 
@@ -1377,7 +1380,7 @@ d="$TMP/case22-user-second-stamp"
 scaffold "$d"
 mkdir -p "$d/feature-models/src/main/java/com/rickeal/agent/feature/models"
 cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/RogueCaps.kt" <<'KT'
-package com.rickeal.agent.feature.models
+package com.rickeal.agent.core.model
 
 fun rogueStamp(d: Any) = d.let {
     it.copy(
@@ -2349,8 +2352,8 @@ fi
 if guard_selected 34; then
 d="$TMP/case48-known-broken-red"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 data class ModelPreset(
     val label: String,
@@ -2388,8 +2391,8 @@ fi
 if guard_selected 34; then
 d="$TMP/case49-known-broken-decl-gone"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 data class ModelPreset(
     val label: String,
@@ -2741,8 +2744,8 @@ fi
 if guard_selected 39; then
 d="$TMP/case56-evidence-missing"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 
@@ -2773,8 +2776,8 @@ fi
 
 d="$TMP/case57-measured-no-anchor"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 
@@ -2806,8 +2809,8 @@ fi
 
 d="$TMP/case58-evidence-illegal"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 
@@ -2831,8 +2834,8 @@ assert_red "case58 evidenceLevel 未知等级 (第 39 条)" "$rc" "$out" \
 
 d="$TMP/case59-evidence-decl-gone"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 data class ModelPreset(
     val label: String,
@@ -2890,8 +2893,8 @@ fi
 #   各面都只在 $TMP 脚手架树内覆写 ModelPresets.kt，绝不碰生产文件。
 d="$TMP/case61-singleline-missing"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 
@@ -2921,8 +2924,8 @@ fi
 
 d="$TMP/case61c-singleline-trailing-comment"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 
@@ -2957,8 +2960,8 @@ fi
 
 d="$TMP/case62-anchor-in-label"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 
@@ -2995,8 +2998,8 @@ fi
 
 d="$TMP/case63-indent-drift-merge"
 scaffold "$d"
-cat > "$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt" <<'KT'
-package com.rickeal.agent.feature.models
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 

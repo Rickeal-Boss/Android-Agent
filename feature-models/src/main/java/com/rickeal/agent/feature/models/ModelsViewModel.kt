@@ -15,6 +15,8 @@ import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.ModelCapabilities
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelFamily
+import com.rickeal.agent.core.model.ModelPreset
+import com.rickeal.agent.core.model.ModelPresets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow

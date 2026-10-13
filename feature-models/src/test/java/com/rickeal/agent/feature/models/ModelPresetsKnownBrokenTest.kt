@@ -1,5 +1,7 @@
 package com.rickeal.agent.feature.models
 
+import com.rickeal.agent.core.model.ModelPreset
+import com.rickeal.agent.core.model.ModelPresets
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull

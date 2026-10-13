@@ -788,7 +788,7 @@ check "LiteRtLmEngine 世代门控接线（shouldDropStaleDisposal 调用 1；ha
 #     ⚠️ 扫描器恒 exit 0、违规打 stdout（check-test-void.py 同款契约）⇒ 不会踩
 #     「python 失败再跑 python3」的双跑双输出。
 check "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）" \
-  bash -c "F=feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt
+  bash -c "F=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
            if [ ! -f \"\$F\" ]; then echo \"::error::\$F 不存在（第 34 条守卫面已失效）\"; exit 1; fi
            if [ ! -f \"$GUARD_DIR/check-known-broken.py\" ]; then echo \"::error::check-known-broken.py 不存在（第 34 条守卫面已失效）\"; exit 1; fi
            python \"$GUARD_DIR/check-known-broken.py\" \"\$F\" || python3 \"$GUARD_DIR/check-known-broken.py\" \"\$F\""
@@ -907,7 +907,7 @@ check "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族�
 #        扫整行 ⇒ 注释里写个 W99 就能骗过 MEASURED 校验）。
 #     ⚠️ **新增预设：多行块沿用与相邻块一致的缩进；单行块也必须显式写 `evidenceLevel`。**
 check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）" \
-  bash -c 'f=feature-models/src/main/java/com/rickeal/agent/feature/models/ModelPresets.kt
+  bash -c 'f=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 39 条守卫面已失效）"; exit 1; fi
            grep -q "val evidenceLevel" "$f" || { echo "::error::$f 缺 val evidenceLevel 声明（字段被删 = 第 39 条守卫面已失效）"; exit 1; }
            awk "
