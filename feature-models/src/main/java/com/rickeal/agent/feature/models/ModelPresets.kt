@@ -292,8 +292,8 @@ object ModelPresets {
             // 注意：recommended 只允许两项（MiniCPM5 主推 + Gemma 4 E2B·GPU 备选），
             // 标多了就失去「替用户做决定」的意义。
             recommended = false,
-            backendBasis = "官方 README 仅有桌面 GPU 基准（macOS Metal），无 Android GPU 验证 → 仅 CPU",
-            evidenceLevel = EvidenceLevel.UPSTREAM,
+            backendBasis = "官方 README 仅有桌面 GPU 基准（macOS Metal），无 Android GPU 验证 → 仅 CPU；✅ W60 真机普查（台账 #45，题面 Say OK 正常：round0 原生工具调用 → round1 收尾，原生通道行使，13 模型零 FATAL）；W61 J3 复验（TOOL_CALLS 收尾全通过）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors(
                 "Qwen2.5-1.5B-Instruct",
                 "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -309,8 +309,8 @@ object ModelPresets {
             note = "会先「想一想」再回答，适合体验思考过程",
             sizeBytes = 1833451520,
             recommended = false,
-            backendBasis = "官方 README 无 Android GPU 验证 → 仅 CPU",
-            evidenceLevel = EvidenceLevel.UPSTREAM,
+            backendBasis = "官方 README 无 Android GPU 验证 → 仅 CPU；✅ W60 真机普查（台账 #45：13 模型题面 Say OK，DeepSeek-R1 属「2 个自愈」之一——2 次重复提醒后收尾，零 FATAL）；W61 J1 真机（R1+AUTO：capabilities.thinking/thinkingOn 修复生效）；W66 §3.2 探针（OFF 档正文空 ⛔ 如实记录）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors(
                 "DeepSeek-R1-Distill-Qwen-1.5B",
                 "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -326,14 +326,15 @@ object ModelPresets {
             note = "体积小、中文强，支持思考模式与工具调用（OpenBMB 官方端侧主力）",
             sizeBytes = 1553670064,
             recommended = true,
-            backendBasis = "官方 Galaxy S26 OpenCL 全委托实测（逐节点零拒绝，GPU/CPU 双验证）；" +
+            backendBasis = "官方 Galaxy S26 OpenCL 全委托实测（逐节点零拒绝，GPU/CPU 双验证）；✅ 本仓真机取证：W60 真机普查（台账 #45：题面 Say OK 正常——首下发 1 次模板失败→自愈重建→重试成功，自愈链真机行使，零 FATAL）；W48/W49 台账 #13 真机（`thinking` 非空 472、正文无 `<think>`，N1 切分根修回归）；W66 §3.2 探针正文恢复非空。" +
                 "要求 litert-lm ≥ 0.16 —— 2026-09-26 运行时已升 0.17.1 满足 → GPU 放行。" +
                 "⚠️ 真机为首次验证，加载/速度异常请反馈。" +
                 "⚠️ 原生工具通道在本容器不可用（模板 tojson(ensure_ascii=…) 与 litertlm 0.17.1 内嵌 minijinja 2.14.0 不兼容，生成期报 too many arguments；已由「证伪 + 回退文本协议」自愈）；文本协议路径不受影响",
-            // 证据等级 = UPSTREAM：GPU 放行依据是**官方 Galaxy S26 OpenCL 实测**（上游基准），
-            // 本条的 backendBasis/note 内**无本仓 W## 波次实测锚点**；「真机为首次验证」是待反馈
-            // 项，不是已记录的取证结果 ⇒ 按「证据来源 = 上游」如实标 UPSTREAM，不硬升 MEASURED。
-            evidenceLevel = EvidenceLevel.UPSTREAM,
+            // 证据等级 = MEASURED（W67 B3 回填）：GPU 放行依据仍是**官方 Galaxy S26 OpenCL 实测**
+            // （上游基准），但本条文本内已补入**本仓 W## 真机锚点**（W60 台账 #45 / W48·W49 台账 #13 /
+            // W66 §3.2 探针）⇒ 按「本条文本内有无锚点」口径（W66 深审 D9）升 MEASURED。
+            // ⚠️ 字段语义 = 本条文本内锚点，≠ 本仓是否测过该模型。
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("MiniCPM5-2B", "MiniCPM5-2B_int4.litertlm"),
         ),
         ModelPreset(
@@ -346,8 +347,8 @@ object ModelPresets {
             note = "推理与代码能力强，但体积大，仅建议 12GB 内存机型",
             sizeBytes = 3910090752,
             recommended = false,
-            backendBasis = "官方 README 的 GPU 行无显存数据（N/A），无 Android GPU 验证 → 仅 CPU",
-            evidenceLevel = EvidenceLevel.UPSTREAM,
+            backendBasis = "官方 README 的 GPU 行无显存数据（N/A），无 Android GPU 验证 → 仅 CPU；✅ W60 真机普查（台账 #45：13 模型题面 Say OK 正常，Phi-4-mini 属「8 个正常」之一——`记忆已更新，任务停止。`，零 FATAL）",
+            evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors(
                 "Phi-4-mini-instruct",
                 "Phi-4-mini-instruct_multi-prefill-seq_q8_ekv4096.litertlm",
