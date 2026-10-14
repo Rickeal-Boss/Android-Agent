@@ -70,4 +70,51 @@ class ModelPresetsKnownBrokenTest {
             )
         }
     }
+
+    /* ─────────── 坑1：判定键 = 下载文件名精确匹配（W68 B1）───────────
+     *
+     * `ModelPresets.findByFileName`（`url.substringAfterLast('/') == name`，**精确相等**）
+     * 是激活态重校验（W68 B2）与加载前内存闸门共用的判定键。本组钉住「禁 contains /
+     * startsWith 等模糊键」：
+     *  - E4B 家族：`gemma-4-E4B-it-gpu.litertlm`（已知坏）与 `gemma-4-E4B-it.litertlm`
+     *    （单文件，CPU 可用）**只差一个 `-gpu` 段**，模糊键必互窜（把可用模型判成坏）；
+     *  - 自定义/重名落盘（`name-1.ext`）与未知文件名一律 `null`（白名单语义的对称面）。
+     *
+     * 反证（已跑，见 W68 B2 回报）：把匹配临时退化为去扩展名的**双向 contains**
+     * （`presetBase.contains(query) || query.contains(presetBase)`）⇒ ①②两断言判红，
+     * 证明断言真敏感；随后还原。
+     */
+
+    @Test
+    fun `坑1 家族不串 E4B 单文件不得命中 gpu 变体的 broken 判定`() {
+        // 先证兄弟条目确实带坏签名（否则本条断言 vacuous：删了 gpu 条目也能「绿」）。
+        assertNotNull(
+            ModelPresets.findByFileName("gemma-4-E4B-it-gpu.litertlm")?.knownBrokenOn,
+            "gemma-4-E4B-it-gpu.litertlm 必须仍登记 knownBrokenOn（本断言的对照面）",
+        )
+        assertNull(
+            ModelPresets.findByFileName("gemma-4-E4B-it.litertlm")?.knownBrokenOn,
+            "E4B 单文件（CPU 可用）不得命中 -gpu 变体的 broken 判定（判定键必须精确匹配，禁 contains）",
+        )
+    }
+
+    @Test
+    fun `坑1 自定义导入或重名落盘文件名不得命中任何 broken 判定`() {
+        assertNull(
+            ModelPresets.findByFileName("gemma-4-E4B-it-gpu-1.litertlm")?.knownBrokenOn,
+            "重名落盘（name-1.ext）/ SAF 导入的自定义文件不得命中任何 broken 判定",
+        )
+        assertNull(
+            ModelPresets.findByFileName("MiniCPM-V-4-int8-2.litertlm")?.knownBrokenOn,
+            "重名落盘的已知坏容器副本同样不得命中（判定键是完整文件名，不是前缀）",
+        )
+    }
+
+    @Test
+    fun `坑1 非 preset 文件名不得命中任何 broken 判定`() {
+        assertNull(
+            ModelPresets.findByFileName("totally-unknown-model.litertlm")?.knownBrokenOn,
+            "未知文件名 ⇒ findByFileName 返回 null ⇒ knownBrokenOn 为 null（不提示）",
+        )
+    }
 }

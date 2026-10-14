@@ -10,6 +10,7 @@ import com.rickeal.agent.core.model.CapabilitySource
 import com.rickeal.agent.core.model.ModelCapabilities
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelHeuristics
+import com.rickeal.agent.core.model.ModelPresets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -61,6 +63,22 @@ private val FOREIGN_ARCH_TOKENS = setOf(
     "gguf",
     "onnx",
 )
+
+/**
+ * 「active 模型描述子 → 其预设已知坏签名」的派生只读映射（W68 B1，纯函数、可 JVM 单测）。
+ *
+ * 抽成顶层函数是为了让 `core-data` 的单测能在**不构造 Android `Context`** 的前提下
+ * 钉住这条派生链（[ModelRepository] 需要 `Context`，纯 JVM 测不了其成员流）。
+ * 生产路径 [ModelRepository.activeModelKnownBroken] 直接调用本函数 —— 测试覆盖的是
+ * **真实生产组合子**，不是镜像。
+ *
+ * 匹配键 = [ModelPresets.findByFileName]（**精确文件名相等**，坑1）；描述子为 null /
+ * 文件名为空 / 查不到预设 ⇒ `null`。
+ */
+internal fun activeModelKnownBrokenFlow(active: Flow<ModelDescriptor?>): Flow<String?> =
+    active.map { descriptor ->
+        descriptor?.fileName?.let { ModelPresets.findByFileName(it)?.knownBrokenOn }
+    }
 
 /**
  * 本地模型清单。
@@ -223,6 +241,26 @@ class ModelRepository(
             if (id == null) null else list.firstOrNull { it.id == id }
         }
     }
+
+    /**
+     * 观察「当前选中模型的已知坏签名」（W68 B1，第十二审 R-2/R-3 的数据面）。
+     *
+     * 语义：`observeActiveModel()` 描述子的 `fileName` 经 [ModelPresets.findByFileName]
+     * **精确匹配**（禁 `contains` / `startsWith` —— 同族 `-gpu` 变体会互窜，见
+     * `ModelPresetsKnownBrokenTest` 的坑1三断言）反查预设 ⇒ 取 `knownBrokenOn`。
+     * 无匹配（SAF 导入 / 重名落盘 / 非 preset）/ active 为 null ⇒ 发射 `null`。
+     *
+     * ## 设计约束（复审22 设计约束 + 预裁量⑦，勿改）
+     *
+     * - **单一数据源**：对话页**只收集本流**、不自行查预设表 —— 判定键收敛在一处，
+     *   不会出现「UI 一套匹配、引擎一套匹配」的漂移。
+     * - **运行时只读不回写**：本流是**派生只读**（由 `observeActiveModel()` + 只读预设表
+     *   派生），不暴露任何 `MutableStateFlow`、不写预设表。回写预设表 = 绕过守卫 #39
+     *   的 MEASURED 锚点纪律（波次实测锚点会被运行时值污染）。
+     * - **对话页仅在 run 发起时消费**（B2）：本流本身不驱动任何「进会话即红」的 UI。
+     */
+    val activeModelKnownBroken: Flow<String?>
+        get() = activeModelKnownBrokenFlow(observeActiveModel())
 
     /**
      * 持久化用户对某模型能力位的显式编辑。
