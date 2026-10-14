@@ -1,6 +1,6 @@
 # docs/12 — litertlm 0.17.1 行为锚定面清单（bump 前置⑥）
 
-> 本清单 = **bump 前置⑥**（W59 A5 成文，第六审 §3 A5 十二项为底稿；**W61 增补锚 #13 ⇒ 十三项**）。
+> 本清单 = **bump 前置⑥**（W59 A5 成文，第六审 §3 A5 十二项为底稿；**W61 增补锚 #13 ⇒ 十三项**；**W68 B3 增补锚 #14 ⇒ 十四项**）。
 > **复核纪律：逐项复核完成后在本表「打勾」列标记，全部打勾之前不得动 `gradle/libs.versions.toml` 的 litertlm 版本行**（守卫 #29 钉版本取值、红输出指向本清单）。
 > 文档头不写本仓引擎源码行号（上游源码坐标为外部锚，可保留）；本清单只做「bump 复核面」的枚举，行为语义的完整论证见各定案波次的交接稿与源码内注释。
 
@@ -8,7 +8,7 @@
 
 litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0 起「1 元素 text 数组 → string」收敛点被删且无等价替代（tag `b2f686e2e` 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸。除该 P0 级阻断外，0.17.1 上还钉着一批**依赖上游实现细节**的行为锚 —— bump 时任何一项漂移都可能产生「编译能过、真机静默回归」的故障面。本清单把它们收拢为一处，作为 bump 评审的**机械复核单**。
 
-## 锚定面清单（13 项）
+## 锚定面清单（14 项）
 
 | # | 锚定项 | 定案波次 | 依据（本仓锚 / 外部锚） | bump 复核要点 | 锚失效的可观测签名 | 打勾 |
 |---|---|---|---|---|---|---|
@@ -25,6 +25,7 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 | 11 | `ConversationConfig.systemInstruction` 类型为 `Contents?` | P0-A / W48（0.17.1 起，旧版是 `String?`） | 引擎侧 `systemText?.let { Contents.of(it) }`；传裸 String 编译不过（编译期即拦） | 确认类型未回退；若改回 String 或换类型，构造点编译错 = 有意识动作化 | — | ☐ |
 | 12 | 模板引擎 = minijinja 2.14.0 | —（外部锚：上游 minijinja 版本，无本仓定案波次） | v0.17.1 上游模板引擎版本（外部 Cargo 锚；W50-W55 离线复现所用行为基线） | 核对新版依赖的 minijinja 是否仍 2.14.0；升级需重跑「content 为数组必炸」离线复现，确认 `+` 报错语义未变 | — | ☐ |
 | 13 | 容器模板可含 minijinja 2.14.0 **不支持的 filter 参数** | W61 定案 | 实证 = MiniCPM5 容器 `chat_template` 第 6 行 `{{- tool \| tojson(ensure_ascii=False) }}`（在 `{%- if tools %}` 块内，即**原生工具通道**分支；`:160` 同款）；依据 = v0.17.1 `runtime/components/rust/minijinja_template.rs:142`（`fn tojson(value: minijinja::Value)` **单参**）+ `:187`（`env.add_filter("tojson", tojson)`）+ 离线复现（PyPI minijinja 2.14.0）⇒ TypeError: unexpected keyword argument 'ensure_ascii'（**同因**：单参 filter 收到关键字参数；Rust 内嵌版同因报 `too many arguments (in template:6)`）+ 真机日志（`原生工具通道：生成期模板渲染失败 … 已证伪本通道`） | 核对新版内嵌 minijinja 版本与 **filter 签名集**（`tojson` 等）；**若新版放宽 `tojson` 参数**（接受关键字参数）⇒ 本容器原生工具通道可用性需真机复验（「探针通过、生成期炸」的探针保真度缺口随之消失）。⚠️ 该失败面**仅在模板语句所在分支被行使时到达**（MiniCPM5 在 `tools` 非空的原生工具通道），与 fold / `requires_typed_content` 无关（W61 双源定案，勿按第七审 §3.1 补前置注记） | — | ☐ |
+| 14 | `knownBrokenOn` / GPU 白名单的**运行时时效**（结论会集体过期） | W68 B3（第十二审 R-1） | 机器可读字段 = `ModelPreset.appliesToRuntime`（三条已知坏条目均 = `"0.17.1"`；GPU 白名单 `ModelGpuSupport.gpuVerifiedFileNames` 同属「某运行时 / 设备下的结论」）。单测覆盖见 `feature-models` `ModelPresetsKnownBrokenTest`（时效定语 ⇒ 必有坏结论、无坏结论禁预填）。 | **bump 后必须逐条复审**：上游若修复了容器（`引擎初始化 NOT_FOUND` / `Unsupported model type` / 输出退化等）⇒ **清空对应 `knownBrokenOn`**（并恢复推荐资格，勿只改 `recommended` 留红字段）—— 否则红字硬提示会把已修好的可用模型吓跑；`gpuVerifiedFileNames` 同理须复跑真机验证后逐个放行（**不得**因 bump 就顺手放行）。⚠️ 该字段当前**不参与**任何判定（GPU 放行 / 内存闸门 / 激活态重校验只看 `knownBrokenOn` 与 `ModelGpuSupport`），只作复审锚。 | 已修好的容器仍按旧结论报「已知不可用」（用户被吓跑）；白名单未随运行时/设备变化复审 | ☐ |
 
 ## 复核流程
 
@@ -32,7 +33,8 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 2. 解包 AAR 核对 #5 `.so` 符号、#6/#7/#11 Java API 签名；
 3. 离线复现 #2/#12/#13（minijinja 行为基线 + filter 签名集：`tojson(ensure_ascii=…)` 是否仍因**关键字参数**报错 —— PyPI 版 `TypeError: unexpected keyword argument` / Rust 内嵌版 `too many arguments`）；
 4. 真机批复核 #3/#9/#10（thought 通道声明、preface 诊断、模板失败路径）；
-5. 全部打勾 + 守卫 #29 期望值同步更新后，方可动 toml 版本行。
+5. **复审锚 #14**（W68 B3 增补）：逐条核对 `ModelPreset.appliesToRuntime`（现全 = `"0.17.1"`）——上游已修容器 ⇒ 清空对应 `knownBrokenOn`（恢复推荐资格）；`ModelGpuSupport.gpuVerifiedFileNames` 须**复跑真机验证**后逐个放行（勿顺手放行）；
+6. 全部打勾 + 守卫 #29 期望值同步更新后，方可动 toml 版本行。
 
 ### r（chars/token）的离线重测结论（W66 E5 立方法、W67 B1 首次全量执行）
 
@@ -72,4 +74,4 @@ tokenizer 资产 ⇒ 标 SKIP 不计入（不拿异族 tokenizer 凑数）；样
 
 **薄窗口落档（W68 C2，复检 Q-3）**：native 失效兜底（判定③）的实际覆盖 = **半预算档 × r ∈ (4.5, 5.06)，宽仅 0.56**；轴档案档（1536/2048）兜底阈 **r > 6.75 > r_max 5.06 ⇒ 对 CJK 密集文本实际失守**——由锚 #5 墙钟（:39）+ N-2 warn 承担，链条闭合、可接受。KDoc「实测英文思维链 profile（r≈4.5–5.1）恰好可触发」的「恰好」二字正说明窗口极窄，特此落档备查。**落点选 docs/12 而非 `ThinkingBudget.kt`**：该文件 128/150 余 22 为全表最紧引信（G5），本段长文不入（W68 负面清单同款纪律）。
 
-—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）；W66 A5 追加 r 测量方法；W67 B1 回填重测结论。
+—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）；W66 A5 追加 r 测量方法；W67 B1 回填重测结论；W68 B3 增补锚 #14（knownBroken / GPU 白名单运行时时效复审）。

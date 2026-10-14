@@ -356,4 +356,43 @@ class BottleneckReportTest {
         assertTrue(text.contains("（无工具调用记录）"))
         assertTrue(text.contains("（无）"))
     }
+
+    // ── N-2 归因补强（W68 B3，R-5）────────────────────────────────────────────
+
+    @Test
+    fun `N-2 观测出现过时诊断卡补归因行`() {
+        val report = buildBottleneckReport(
+            task = "t",
+            rounds = 2,
+            elapsedMillis = 30_000L,
+            ledger = ledgerWith(BreakerKind.WallClockBudget),
+            registeredToolNames = emptySet(),
+            thinkingOnlyEmptyObserved = true,
+        )
+        // 归因行以「建议：」前缀渲染（与其它建议同族）；只加文本、不改判定。
+        assertTrue(
+            report.suggestions.any { it.contains("不服从思考开关") },
+            "本 run 出现过 N-2 观测 ⇒ 诊断卡应补「疑似不服从思考开关」归因行：${report.suggestions}",
+        )
+        assertTrue(
+            report.render().contains("建议：该模型疑似不服从思考开关（OFF 档仍思考）"),
+            "归因行须落到 render 文本：${report.render()}",
+        )
+    }
+
+    @Test
+    fun `N-2 观测未出现时不补归因行`() {
+        val report = buildBottleneckReport(
+            task = "t",
+            rounds = 2,
+            elapsedMillis = 30_000L,
+            ledger = ledgerWith(BreakerKind.WallClockBudget),
+            registeredToolNames = emptySet(),
+            // 默认 false ⇒ 既有调用点零行为变化。
+        )
+        assertTrue(
+            report.suggestions.none { it.contains("不服从思考开关") },
+            "未出现 N-2 观测不得补归因行：${report.suggestions}",
+        )
+    }
 }

@@ -34,6 +34,10 @@ class ConversationRepository(
      * 预埋的卫生位，**不是**用户可见修复。启用时点：待「删除会话 UI」立项上线
      * （A1 产品面裁决后激活）；在此之前本钩子休眠，**不撤**（撤 = 未来重接线成本）。
      *（W59 H-3 处置成文）
+     * ⚠️ **W68-D（休眠状态成文，2026-10）**：会话删除 UI 归 W68 C3 议程裁决
+     * （docs/14 / 决策清单一页纸）。**C3 过会 ⇒ 删除 UI 立项即激活本钩子**；未过 ⇒
+     * 维持休眠，挂账 W68-05 保留并标注「等 C3」。本波**不激活**删除 UI（不新增任何
+     * 生产调用点，`onConversationDeleted` 仍为默认空实现）。
      */
     private val onConversationDeleted: (String) -> Unit = {},
 ) {

@@ -176,6 +176,31 @@ data class ModelPreset(
      */
     val knownBrokenOn: String? = null,
     /**
+     * 该「已知坏」结论**适用的运行时版本**（W68 B3，第十二审 R-1 时效字段，可机读）。
+     *
+     * ## 为什么需要它（时效性）
+     *
+     * `knownBrokenOn` 是**某一次运行时下的实测结论**（如「0.17.1 引擎初始化 NOT_FOUND」）。
+     * 上游 litertlm bump 后，被修的容器可能**集体过期** —— 届时这些「已知坏」不再是事实，
+     * 若还照旧红字硬提示，会把已被上游修好的可用模型吓跑。本字段把「结论针对哪个运行时」
+     * 从 note 自由文本里**提出来变成机器可读**，供 bump 后机械复审（复核锚见
+     * `docs/12-litertlm-0171-anchors.md` 的「knownBroken / GPU 白名单过期复审」条目）。
+     *
+     * ## 取值与不变量
+     *
+     * - 取值 = litertlm 版本串（与 `gradle/libs.versions.toml` 的 `litertlm` 行、守卫 #29
+     *   期望值**同源**；当前 `"0.17.1"`）。**不引入第二处版本常量** —— bump 时由守卫 #29
+     *   兜底提示同步。
+     * - 不变量：`appliesToRuntime != null` ⇒ `knownBrokenOn != null`（时效字段是「坏结论的
+     *   定语」，无坏结论却标适用版本无意义 —— 由 `ModelPresetsKnownBrokenTest` 机械查验）。
+     * - `knownBrokenOn == null` 的条目本字段恒 `null`（禁预填）。
+     *
+     * ⚠️ **本字段当前不参与判定**（GPU 放行 / 内存闸门 / 激活态重校验均只看 `knownBrokenOn`
+     * 与 [ModelGpuSupport]）；它只作「结论的时效标注」，bump 后据以**人工/机械复审**是否清空
+     * 已过期的 `knownBrokenOn`。
+     */
+    val appliesToRuntime: String? = null,
+    /**
      * 本条预设结论的**证据等级**（W66 B3，Q6）：见 [EvidenceLevel]。
      *
      * 取值必须从本条的 `backendBasis` / `note` 文本读出，**禁止推测预填**；查不到证据留
@@ -267,6 +292,9 @@ object ModelPresets {
             backendBasis = "官方 GPU 特化变体（ML Drift GPU）——⚠️ 实测不可用（W60：引擎初始化 NOT_FOUND，容器缺 TF_LITE_PREFILL_DECODE signature；W43：输出退化 + CPU 后端 NOT_FOUND），待上游修复后再开放",
             // W63 刀C：签名取自本条 backendBasis 的 W60 实测记录（engine init NOT_FOUND）。
             knownBrokenOn = "0.17.1 引擎初始化 NOT_FOUND（容器缺 TF_LITE_PREFILL_DECODE section；W43 另实测输出退化）",
+            // W68 B3（R-1 时效）：该坏结论只对 0.17.1 成立；bump 后按 docs/12 锚「knownBroken
+            // 过期复审」复核是否清空（上游若修复容器即恢复可用）。
+            appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it-gpu.litertlm"),
         ),
@@ -302,6 +330,8 @@ object ModelPresets {
             backendBasis = "官方 GPU 特化变体（README 含 Galaxy S26 Ultra GPU 基准）——❌ 实测不可用（W60：引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section，model_signature_utils.cc:250），与 E2B·GPU 同源）；⚠️ 视觉能力系 gemma-4 家族外推（同族 E2B-it 已逐容器取证带视觉编码器，E4B 未单独取证）",
             // W63 刀C：签名取自本条 backendBasis 的 W60 实测记录（同 E2B·GPU 失败面）。
             knownBrokenOn = "0.17.1 引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section，与 E2B·GPU 同源）",
+            // W68 B3（R-1 时效）：同 E2B·GPU —— 只对 0.17.1 成立，bump 后按 docs/12 锚复审。
+            appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
         ),
@@ -485,6 +515,8 @@ object ModelPresets {
             backendBasis = "官方 README 无 Android GPU 验证章节 → 仅 CPU；⚠️ 模板已离线取证数组安全（Wave 53 L2：容器模板对多元素 content 走 is-string 分支并循环吐 <image_soft_token>，非 Qwen2.5 的「+」拼接形态），❌ 端到端不可用（W60：Failed to create conversation config: INVALID_ARGUMENT: Unsupported model type，0.17.1 已知限制）",
             // W63 刀C：签名取自本条 backendBasis 的 W60 实测记录（会话创建级失败）。
             knownBrokenOn = "0.17.1 会话创建失败（Unsupported model type，引擎已知限制）",
+            // W68 B3（R-1 时效）：只对 0.17.1 成立（上游支持该 model type 后即过期），bump 后按 docs/12 锚复审。
+            appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.MEASURED,
             mirrors = domesticMirrors("MiniCPM-V-4", "MiniCPM-V-4-int8.litertlm"),
         ),

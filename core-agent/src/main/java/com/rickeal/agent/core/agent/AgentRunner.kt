@@ -1283,6 +1283,10 @@ class AgentRunner(
         var noToolStreak = 0
         // 连续空输出轮数（见下方 answer.isBlank 分支：端侧增量水印下裸 continue 会空转）。
         var emptyAnswerStreak = 0
+        // N-2 观测命中标记（W68 B3，R-5 归因补强）：本 run 是否出现过
+        // `thinkingOnlyEmptyDiagnostic` 命中（thinking 非空但正文空 ⇒ native 未从思考切回
+        // 正文）。**只作诊断卡归因文本的输入，不参与任何判定**（零行为）。run 内局部状态。
+        var thinkingOnlyEmptyObserved = false
         // 轮内流式重复连续触发的轮数：正常轮归零，超过 MAX_INTRA_STREAM_LOOP_ROUNDS
         // 按失败收尾（语义对齐 emptyAnswerStreak）。run 内局部状态，随协程消亡。
         var intraLoopStreak = 0
@@ -2245,7 +2249,12 @@ class AgentRunner(
                 thinking = accumulator.thinking,
                 answer = answer,
                 hasLoopMarker = false,
-            )?.let { AgentLogStore.warn(it) }
+            )?.let { warn ->
+                // W68 B3（R-5）：命中即置本 run 标记 —— 熔断/轮次耗尽终态装配诊断卡时
+                // 据此补一行归因（「该模型疑似不服从思考开关」）。**只置标记不改行为**。
+                state.thinkingOnlyEmptyObserved = true
+                AgentLogStore.warn(warn)
+            }
             state.emptyAnswerStreak++
             if (state.emptyAnswerStreak > MAX_EMPTY_ANSWER_ROUNDS) {
                 AgentLogStore.error(
@@ -2432,6 +2441,11 @@ class AgentRunner(
             ledger = state.breaker,
             registeredToolNames = registeredToolNames,
             engineCause = engineCause,
+            // W68 B3（R-5 归因补强，零行为）：本 run 出现过 N-2 观测（thinking 非空但正文空）
+            // ⇒ 诊断卡补一行归因「该模型疑似不服从思考开关（OFF 档仍思考）」。只加文本，
+            // 不改判定。经本单一装配点透传 ⇒ 所有装配诊断卡的终态路径（熔断 / 轮次耗尽 /
+            // 空输出）一致受益。
+            thinkingOnlyEmptyObserved = state.thinkingOnlyEmptyObserved,
         )
 
     /**

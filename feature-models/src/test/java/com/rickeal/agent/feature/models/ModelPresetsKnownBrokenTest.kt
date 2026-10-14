@@ -3,6 +3,7 @@ package com.rickeal.agent.feature.models
 import com.rickeal.agent.core.model.ModelPreset
 import com.rickeal.agent.core.model.ModelPresets
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -116,5 +117,56 @@ class ModelPresetsKnownBrokenTest {
             ModelPresets.findByFileName("totally-unknown-model.litertlm")?.knownBrokenOn,
             "未知文件名 ⇒ findByFileName 返回 null ⇒ knownBrokenOn 为 null（不提示）",
         )
+    }
+
+    /* ─────────── R-1 时效字段 appliesToRuntime（W68 B3）───────────
+     *
+     * `knownBrokenOn` 是「某运行时下的实测结论」；`appliesToRuntime` 把「针对哪个运行时」
+     * 提成机器可读字段，供 bump 后机械复审（docs/12 的 knownBroken 过期复审锚）。本组钉：
+     *  - 三个已知坏条目都标了适用运行时（= 当前 pin 的 0.17.1）；
+     *  - 不变量：有坏结论才有时效定语（appliesToRuntime != null ⇒ knownBrokenOn != null）；
+     *  - 禁预填：无坏结论的条目不得标适用运行时。
+     */
+
+    @Test
+    fun `三个已知坏条目均标注适用运行时 0_17_1`() {
+        val brokenFiles = listOf(
+            "gemma-4-E2B-it-gpu.litertlm",
+            "gemma-4-E4B-it-gpu.litertlm",
+            "MiniCPM-V-4-int8.litertlm",
+        )
+        for (name in brokenFiles) {
+            val preset = ModelPresets.findByFileName(name)
+            assertNotNull(preset, "预设表必须收录 $name")
+            assertEquals(
+                "0.17.1",
+                preset.appliesToRuntime,
+                "$name 的 knownBrokenOn 必须标注适用运行时（bump 后据以复审是否过期），实际：${preset.appliesToRuntime}",
+            )
+        }
+    }
+
+    @Test
+    fun `appliesToRuntime 非空必有 knownBrokenOn`() {
+        for (preset in ModelPresets.all) {
+            if (preset.appliesToRuntime != null) {
+                assertNotNull(
+                    preset.knownBrokenOn,
+                    "「${preset.label}」标了 appliesToRuntime 却无 knownBrokenOn（时效定语无坏结论可修饰 = 非法组合）",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `无 knownBrokenOn 的条目不得标 appliesToRuntime（禁预填）`() {
+        for (preset in ModelPresets.all) {
+            if (preset.knownBrokenOn == null) {
+                assertNull(
+                    preset.appliesToRuntime,
+                    "「${preset.label}」无 knownBrokenOn，不得预填 appliesToRuntime",
+                )
+            }
+        }
     }
 }

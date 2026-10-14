@@ -81,6 +81,16 @@ private fun budgetTail(terminator: Trip?): String? = when (terminator?.kind) {
 }
 
 /**
+ * N-2 归因补强收尾（W68 B3，第十二审 R-5，编译期常量、零行为）。
+ *
+ * 当本 run 出现过 N-2 观测（`thinkingOnlyEmptyDiagnostic` 命中：thinking 非空但正文空 ⇒
+ * native 未从思考切回正文），诊断卡补一行**归因** —— 这类容器往往**不服从思考开关**
+ * （OFF 档仍思考），是「空正文 / 墙钟熔断」的根因线索。**只加文本，不改判定**。
+ */
+private const val N2_ATTRIBUTION_LINE =
+    "该模型疑似不服从思考开关（OFF 档仍思考）"
+
+/**
  * 卡点归因 = 优先级 if 链（方案 §2.5 归因表，纯函数可单测）：
  * DenialCircuit trip → PermissionDenied；未注册工具线索 → ToolUnavailable；
  * 输出退化族 trip → ModelDegraded；预算族 trip → BudgetExhausted；
@@ -176,6 +186,12 @@ fun buildBottleneckReport(
     ledger: BreakerLedger,
     registeredToolNames: Set<String>,
     engineCause: Throwable? = null,
+    /**
+     * W68 B3（R-5）：本 run 是否出现过 N-2 观测（thinking 非空但正文空）。true ⇒ 建议区
+     * 补一条归因（[N2_ATTRIBUTION_LINE]，编译期常量）。**只加文本，不改判定**；默认 false
+     * ⇒ 既有调用点零行为变化。
+     */
+    thinkingOnlyEmptyObserved: Boolean = false,
 ): BottleneckReport {
     val lastToolError = ledger.lastFailureError()
     val blocker = resolveBlocker(ledger.trips, engineCause, lastToolError)
@@ -202,6 +218,8 @@ fun buildBottleneckReport(
         suggestions = buildList {
             add(suggestion)
             if (blocker == Blocker.BudgetExhausted) budgetTail(ledger.terminator())?.let(::add)
+            // W68 B3（R-5 归因补强）：本 run 出现过 N-2 观测 ⇒ 补一行「疑似不服从思考开关」。
+            if (thinkingOnlyEmptyObserved) add(N2_ATTRIBUTION_LINE)
         },
     )
 }
