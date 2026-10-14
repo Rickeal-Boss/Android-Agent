@@ -120,6 +120,15 @@ internal class ChatRunCoordinator(
     /** token 账本观察作业（Wave 31 流2）：把发送侧估算镜像进 [ChatUiState.sentTokensEstimate]。 */
     private var ledgerJob: Job? = null
 
+    /**
+     * 「激活态重校验」提示频控闸（W68 B2）：**每会话至多一次**。
+     *
+     * run 起点（[collectRunWithPerfWindow]，三条 run 路径的共享入口）消费一次；
+     * 换会话（[resetForNewConversation]）复位。这样 knownBroken 激活用户不会被每轮 run
+     * 反复骚扰，也不会「进会话就红」（触发时机 = run 发起，非 UI collect）。
+     */
+    private val activationWarningGate = ActivationWarningGate()
+
     /** token 缓冲收敛进状态流（120ms 一次）。缓冲排空循环自然退出，不常驻。 */
     private fun ensureFlushLoop() {
         if (flushJob?.isActive == true) return
@@ -224,6 +233,32 @@ internal class ChatRunCoordinator(
                 uiState.update { it.copy(sentTokensEstimate = snap.sentTokens.takeIf { v -> v > 0L }) }
             }
         }
+    }
+
+    /**
+     * run 起点「激活态重校验」提示（W68 B2）。
+     *
+     * 判据式与文案见 [activationWarningFor]：`(fileName ∈ knownBrokenOn) OR
+     * (backend == GPU ∧ fileName ∉ gpuVerifiedFileNames)`。命中且本会话尚未提示过 ⇒
+     * 落一条 warn 日志（真机判据以应用日志为准）+ 把提示态写进 [ChatUiState.activeModelWarning]
+     * （Compose 侧只渲染）。
+     *
+     * 与模型库页加载前确认框（`ModelCard.confirmBrokenLoad`）**互斥**：本函数只产生对话页
+     * 「激活态告知」，**不弹任何对话框、不拦 run**（用户仍可继续，只是被告知可能失败）。
+     * 同一 run 至多一种提示形态 —— 两语义分属不同页面/时机，不叠成双弹。
+     */
+    private fun maybeAnnounceActivationWarning() {
+        val state = uiState.value
+        val notice = activationWarningFor(
+            fileName = state.activeModel?.fileName,
+            knownBrokenOn = state.activeModelKnownBroken,
+            backend = state.config.backend,
+        ) ?: return
+        if (!activationWarningGate.consumeOnce()) return
+        // 落日志：真机端到端判据以 journal/应用日志事实行为准（uiautomator dump 对 Compose
+        // 的 bounds 不可靠，见知识库真机取证纪律）。
+        AgentLogStore.warn("激活态重校验提示：$notice")
+        uiState.update { it.copy(activeModelWarning = notice) }
     }
 
     /**
@@ -849,6 +884,10 @@ internal class ChatRunCoordinator(
         // token 账本观察（Wave 31 流2）：与 run 窗口同起，把发送侧估算镜像进 UI 状态。
         // 放在这个共享入口 = 三条 run 路径（onSend / onSendFrom / onRecover）一次接线。
         observeTokenLedger(cid)
+        // 激活态重校验（W68 B2）：**run 发起时**按判据式决定是否提示一次（本方法是三条
+        // run 路径的共享起点，故一处接线覆盖全部）。刻意不放 UI collect 时 —— 避免进会话
+        // 就红、离开就忘的噪声。频控 = 每会话至多一次（activationWarningGate）。
+        maybeAnnounceActivationWarning()
         container.perfMonitorManager.acquire("chat-run:$cid")
         try {
             container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
@@ -1192,6 +1231,8 @@ internal class ChatRunCoordinator(
         persistState = persistState.beginRun()
         // 熔断救援缓冲（Wave 47 项2）与 persistState 同一清零点（新会话）。
         salvageText = ""
+        // 激活态重校验频控（W68 B2）：换会话复位 —— 新会话可再提示一次（每会话至多一次）。
+        activationWarningGate.reset()
         // 会话销毁 = 授权作用域消失：审批缓存全清（key 含 cid 本就隔离，这里保超额清）。
         container.toolApprovalCache.revokeAll(null)
         resetStreaming(role = null, isStreaming = false)

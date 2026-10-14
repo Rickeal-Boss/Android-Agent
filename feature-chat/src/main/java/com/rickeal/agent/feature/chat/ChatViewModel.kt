@@ -16,8 +16,10 @@ import com.rickeal.agent.core.engine.EngineSessionDiagnostics
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.EngineKind
+import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.InferenceConfig
 import com.rickeal.agent.core.model.ModelDescriptor
+import com.rickeal.agent.core.model.ModelGpuSupport
 import com.rickeal.agent.core.model.ModelSamplingProfiles
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.SamplingParams
@@ -117,6 +119,28 @@ data class ChatUiState(
     val disclosureMode: ToolDisclosureMode = ToolDisclosureMode.FULL,
     val availableModels: List<ModelDescriptor> = emptyList(),
     val activeModel: ModelDescriptor? = null,
+    /**
+     * 当前激活模型的**已知坏签名**（W68 B1 数据面镜像）。
+     *
+     * 由 `ModelRepository.activeModelKnownBroken`（core-data 派生只读流）收集而来 ——
+     * 对话页**只收集不查预设表**，判定键（`ModelPresets.findByFileName` 精确匹配）
+     * 收敛在 core-data 一处。`null` = 无已知坏签名 / 无激活模型 / 非 preset 文件。
+     * 本字段本身**不驱动 UI**；run 发起时由 [activeModelWarning] 按判据式决定是否提示。
+     */
+    val activeModelKnownBroken: String? = null,
+    /**
+     * 对话页「激活态重校验」提示（W68 B2）。非空 = 渲染一张可关闭的警示卡。
+     *
+     * 判据式（写死）：`(fileName ∈ knownBrokenOn) OR (backend == GPU ∧ fileName ∉
+     * gpuVerifiedFileNames)`（见 [activationWarningFor]）。**触发时机 = run 发起时**
+     * （不是 UI collect 时 —— 避免进会话就红、离开就忘的噪声）；**频控 = 每会话至多一次**
+     * （[ActivationWarningGate]），用户关闭后当次会话不再现，换会话复位。
+     *
+     * 与模型库页的加载前确认框（`ModelCard.confirmBrokenLoad`）**互斥**：那是「加载前拦截」
+     * （模型库页、可取消加载），本字段是「激活态告知」（对话页、不拦 run）—— 两语义不得
+     * 叠成双弹；同一 run 至多一种提示形态（真机判据见 §五.2 ①）。
+     */
+    val activeModelWarning: String? = null,
     val isGenerating: Boolean = false,
     val error: String? = null,
     /**
@@ -272,6 +296,14 @@ class ChatViewModel(
                 _uiState.update { it.copy(activeModel = container.modelRepository.find(id)) }
             }
         }
+        // 激活模型的已知坏签名（W68 B1 数据面）：core-data 派生只读流 —— 对话页**只收集
+        // 不查预设表**。判定键（精确文件名匹配）收敛在 core-data；本页只在 run 发起时按
+        // 判据式决定是否提示（见 ChatRunCoordinator）。
+        viewModelScope.launch {
+            container.modelRepository.activeModelKnownBroken.collect { broken ->
+                _uiState.update { it.copy(activeModelKnownBroken = broken) }
+            }
+        }
         // 引擎会话诊断（Wave 33）：观察 LlmEngine.sessionDiagnostics 并透传进 UI 状态。
         // 默认同源：engineFactory.create 按 kind 缓存（DefaultEngineFactory），拿到的就是
         // AgentRunner 实际生成用的同一实例；但 AgentRunner.rebuildEngine 的 evict+create
@@ -417,6 +449,14 @@ class ChatViewModel(
         _uiState.update { it.copy(notice = null) }
     }
 
+    /**
+     * 关闭「激活态重校验」提示（W68 B2）。提示**每会话至多一次**（频控在
+     * [ChatRunCoordinator.activationWarningGate]），关闭后当次会话不再现；换会话复位。
+     */
+    fun onDismissActiveModelWarning() {
+        _uiState.update { it.copy(activeModelWarning = null) }
+    }
+
     /** 用户对当前授权请求做出裁决（授权卡按钮）。 */
     fun onApprovalResult(approved: Boolean) {
         val pending = _uiState.value.pendingApproval ?: return
@@ -523,6 +563,70 @@ internal fun chatAgentPolicy(config: InferenceConfig, model: ModelDescriptor?): 
             null
         },
     )
+}
+
+/**
+ * 「激活态重校验」提示判据式（W68 B2，第十二审 R-2/R-3，纯函数可 JVM 单测）。
+ *
+ * 判据（写死）：`(fileName ∈ knownBrokenOn) OR (backend == GPU ∧ fileName ∉ gpuVerifiedFileNames)`。
+ *
+ *  - 第一子句：`knownBrokenOn` 由 core-data 的 `activeModelKnownBroken`（`fileName` 经
+ *    `ModelPresets.findByFileName` **精确匹配**预设后取 `knownBrokenOn`）**预解析**传入 ⇒
+ *    非 null 即等价于「该 fileName 命中已知坏签名」。文案必须**原样携带** `knownBrokenOn`
+ *    条件词（不得丢语义 —— 用户据此判断是哪一种已知失败）。
+ *  - 第二子句：覆盖「文件维度健康但 GPU backend 不可用」面（W66 E4B-GPU 整机重启教训）——
+ *    同一文件在 CPU 路径健康、在 GPU 路径却可能 OOM/崩溃；白名单 `gpuVerifiedFileNames`
+ *    现恰 4 件（`ModelGpuSupport.kt`）。
+ *
+ * 返回 `null` = 无提示（正常路径零 UI 变化）；非 null = 上屏提示文案（含「仍可继续，
+ * 但可能失败」类语义，**不拦 run** —— 与加载前确认框的「拦下」语义刻意区分）。
+ *
+ * @param fileName 激活模型下载文件名（判定键）；null = 无激活模型。
+ * @param knownBrokenOn core-data 预解析的已知坏签名；null = 该文件无已知坏签名。
+ * @param backend 激活模型本次 run 的计算后端（`InferenceConfig.backend`）。
+ */
+internal fun activationWarningFor(
+    fileName: String?,
+    knownBrokenOn: String?,
+    backend: InferenceBackend,
+): String? {
+    val knownBrokenClause = knownBrokenOn != null
+    val gpuClause = backend == InferenceBackend.GPU &&
+        fileName != null &&
+        !ModelGpuSupport.isGpuVerified(fileName)
+    if (!knownBrokenClause && !gpuClause) return null
+    val reason = when {
+        knownBrokenClause && gpuClause ->
+            "已知不可用：$knownBrokenOn；且该文件未列入 GPU 白名单，GPU 路径未经验证"
+        knownBrokenClause -> "已知不可用：$knownBrokenOn"
+        else -> "该文件未列入 GPU 白名单，GPU 路径未经验证（可能崩溃）"
+    }
+    return "$reason。仍可继续，但可能失败。"
+}
+
+/**
+ * 「每会话至多一次」频控闸（W68 B2，纯逻辑可 JVM 单测）。
+ *
+ * 语义：一个会话内提示**至多出现一次**（[consumeOnce] 首次返回 true 后恒 false），
+ * 用户是否关闭都不再重复；[reset] 只在**换会话**时调用（新会话可再提示一次）。
+ * 这样 knownBroken 激活用户不会被每轮 run 反复骚扰（第十二审 R-2 频控要求）。
+ *
+ * 生命周期由 [ChatRunCoordinator] 持有：换会话（`resetForNewConversation`）复位。
+ */
+internal class ActivationWarningGate {
+    private var shown = false
+
+    /** 本会话是否还应展示提示：首次返回 true 并锁定「已展示」，此后恒 false。 */
+    fun consumeOnce(): Boolean {
+        if (shown) return false
+        shown = true
+        return true
+    }
+
+    /** 新会话复位（换会话后可再次提示）。 */
+    fun reset() {
+        shown = false
+    }
 }
 
 /**

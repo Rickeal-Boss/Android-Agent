@@ -397,6 +397,39 @@ fun ChatScreen(
                 }
             }
 
+            // ── 激活态重校验卡（W68 B2）：run 发起时对「已知坏 / GPU 未验证」的激活模型
+            //    做一次告知（不拦 run，可关闭）。红字与模型卡 knownBrokenOn 提示同族。
+            //    与模型库页的加载前确认框（ModelCard.confirmBrokenLoad）**互斥** —— 那是
+            //    「加载前拦截」（可取消加载），本卡是「激活态告知」（run 照跑）—— 不叠成双弹。
+            val activationWarning = state.activeModelWarning
+            if (activationWarning != null) {
+                GlassCard(
+                    material = GlassMaterial.THICK,
+                    cornerRadius = tokens.radiusMd,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = activationWarning,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.danger,
+                            modifier = Modifier.weight(1f),
+                        )
+                        GlassIconButton(
+                            icon = Icons.Filled.Close,
+                            contentDescription = "关闭提示",
+                            onClick = viewModel::onDismissActiveModelWarning,
+                            contentColor = colors.onGlassSubtle,
+                            iconSize = 16.dp,
+                        )
+                    }
+                }
+            }
+
             // ── 崩溃恢复卡（ZCode Journal 语义的可见面）────────────────────
             val recovery = state.recovery
             if (recovery != null && !state.isGenerating) {
