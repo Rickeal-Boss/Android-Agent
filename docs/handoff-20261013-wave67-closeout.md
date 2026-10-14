@@ -30,7 +30,7 @@
 | commit | 性质 | 内容 |
 |---|---|---|
 | `5c7c1a9` | fix(ci) | **B0**：守卫 #39 两处收紧（`strip_comment` 剥行内注释 + `field_lit/has_anchor` 锚点只认字面量段）+ case61c 一夹具双杀两形态；`line-table.sh` 增**首个方法级条目** #12（501/550 余 49，单源派生）；`TextToolProtocol` 围栏标记剥离 ignoreCase + 2 测；`ModelHealthProbeConfigTest` D10 vacuous 断言改钉；README/交接文档勘误组（#12 501 / W62 2008 / N-1 1.33×）；`build.yml` baseline 688→690 |
-| `0141f11` | fix(engine,model) | **B1**：C 16→9、窗口 (5.06,10.11)、`THINKING_CHAR_BUDGET` 8192→4608、双不变式测试断言 8.4→5.06、KDoc 推导段全文重算；F1 第三态 best-effort 申报 + 适用前提补注；docs/12 增「定案一」；W66 交接 §五 W67 勘误注记 |
+| `0141f11` | fix(engine,model) | **B1**：C 16→9、窗口 (5.06,10.11)、`THINKING_CHAR_BUDGET` 8192→4608、双不变式测试断言 8.4→5.06、KDoc 推导段全文重算；F1 第三态 best-effort 申报 + 适用前提补注；docs/12 增「定案一」；W66 交接 §五 W67 勘误注记②③（勘误归属订正（复审22 P4①）：注记① #12「498→501/550 余 49」实为 **B0** 文档勘误组件，数字源出 B0 的 line-table 方法级条目；②③ 为 B1 件） |
 | `d5b304d` | docs(models) | **B3**：4 条 UPSTREAM → MEASURED（Qwen2.5 / R1 / MiniCPM5 / Phi-4-mini，锚点全部取自 W60 台账 #45 等本仓记录） |
 | `6825ab6` | refactor(model) | **B2 迁移刀**：ModelPresets 迁 core-model（package + 5 消费方 import + 守卫 #34/#39 路径 + 12 处 selftest 夹具路径 + scaffold 铺目录） |
 | `bfcba77` | feat(models) | **B4**：E4B 单文件预设入册（meminfo 双点实测 7.1 GiB + GPU 白名单排除 + 与两个 -gpu 变体三处可分辨） |

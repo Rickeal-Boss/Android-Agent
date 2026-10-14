@@ -63,6 +63,7 @@ r > 6.75（条件性收窄申报）。四处单源链（core-engine 常量 / cor
 1. **native usage 分通道：⛔ 不可用** —— 引擎 `completionTokens` 是内容 **chunk 数**，无 thinking token 数；
 2. **离线 tokenizer 计数（硬证据）**：journal 的 `message` 行含 `thinking` 字段 ⇒ 抽 thinking 全文 → 模型官方 tokenizer（gemma 侧 / Qwen 侧各一份）**离线精确计数** → `r = 字符/token`；W67 起以 `_ci-tools/_w67_r_retest.py` 为执行面；
 3. `TokenEstimator.estimate` 仅**旁证**（字符启发式），不得当硬证据。
+4. **判例六（W68 C1 成文，复审22 P3-②）：非纯数字 token —— 码点级定谳**。凡以「token 数」为分母的结论，引用前先做码点级核验：该数字是**真 tokenizer 输出**、**引擎 usage 字段**、还是**chunk/帧计数**——三者不可混用（8.4 伪影即混用案：244 是 chunk 数）。核验方法 = 同样本用官方 tokenizer 离线重计，两路不一即假。
 
 ⚠️ **偏差申报（W67）**：MiniCPM5 唯一样本（W66 `c1_minicpm5_load`，375 字符）本仓无官方
 tokenizer 资产 ⇒ 标 SKIP 不计入（不拿异族 tokenizer 凑数）；样本仍以英文题面 run 为主

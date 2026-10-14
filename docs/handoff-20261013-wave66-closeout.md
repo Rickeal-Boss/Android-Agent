@@ -15,7 +15,7 @@
 1. 🔴 **第十一审 E2 前提失实（源码为准）**：报告称 `ChatRunCoordinator` 是「唯一 i/crlf 孤岛」——**实测 5 个 i/crlf**（3 个 `.kt`：`ChatRunCoordinator` / `ChatViewModel` / `LiquidGlassModifier` + `README.md` + W65 交接）。`core.autocrlf=false`、全仓 279 个 `.kt` 仅此 3 个 CRLF ⇒ 修法范围重定为「3 个 `.kt` + `*.kt` 属性」，**不动 `*.md`**（加了会把大文档整篇重写）。
 2. 🔴 **W65 交接另有 2 处错（本波顺手订正）**：①「行数表**八员**」**漏 #18 `ChatViewModel.kt`（550/1600）** ⇒ 实为 **9 员**；②把 `ChatRunCoordinator` 的守卫号写成 **#18**，**实为 #20**（#18 = ChatViewModel）。根因 = 聚合数字手写无机械核对 ⇒ E1b 工具化。
 3. 🔴 **E4 结论分两半，勿混为一谈**：单文件 `gemma-4-E4B-it.litertlm`（3,659,530,240 B）**CPU 臂真机 ✅ 可用**；**GPU 臂 ⛔ 但原因是设备显存物理不足**（A13 入门 Adreno：`IOCTL_KGSL_GPUOBJ_ALLOC errno 12 OOM` → `Resource deadlock` → `SIGABRT` → **整机重启**），**不是**容器 section 缺失。两个 `-gpu` 特化变体的 knownBroken 根因（`NOT_FOUND` / 缺 section）是**另一条**失败面，**本波未改变其状态**。
-4. 🟡 **C2 r 复测：r_max ≈ 2.26 ≤ 8.4 ⇒ C=16 冻结**（窗口 (8.4,16.8) 不动）。⚠️ 偏差须申报：题面为**英文**（`adb input text` 对非 ASCII 直接 NPE ⇒ **中文题面无法注入**），但模型思维链仍为中文（App 中文系统提示词驱动）⇒ 「中文 thinking 样本」成立、「中文题面」降级。
+4. 🟡 **C2 r 复测：r_max ≈ 2.26 ≤ 8.4 ⇒ C=16 冻结**（窗口 (8.4,16.8) 不动）。⚠️ **W67 勘误（2026-10-13）：本条已被推翻**——W67 B1 用离线 tokenizer 全量重测三波 31 样本得 **r_max = 5.06**（W62 的 8.4 系 chunk 口径伪影）⇒ **C 16 → 9、窗口 (5.06,10.11)、`THINKING_CHAR_BUDGET` 8192 → 4608**（四处单源链同批同步，复审22 P3-③ 点名本行）；引用以 W67 为准，详见本交接 §五 W67 勘误注记②。原偏差申报仍有效：题面为**英文**（`adb input text` 对非 ASCII 直接 NPE ⇒ **中文题面无法注入**），但模型思维链仍为中文（App 中文系统提示词驱动）⇒ 「中文 thinking 样本」成立、「中文题面」降级。
 5. 🟡 **挂账 #5（knownBroken 激活态重校验）本波未做，且报告落点被证不可行**：`core-data` 依赖链不可见 `feature-models` 的 `ModelPresets`（`knownBrokenOn` 定义处），`feature-chat` 亦不可见 ⇒ 报告建议的 `ModelRepository.refresh()` 落点**物理不可达**；可行落点须先把登记迁到 core-model（跨 4 模块），绑 tag 前置波。
 6. 🟡 **docs/14 勾选仍 0/6**（六项全部用户侧；本波新增 A1 的「E4B 单文件预设化」候选销账路径见 §五）。
 
@@ -102,9 +102,9 @@ GPU 崩溃链（设备侧持久日志）：`sampler_factory.cc:408 OpenCL sample
 > ③ §五.5 knownBroken 激活态「须先迁 core-model」在 W67 按第十二审 F2 拆两刀执行（迁移刀 + 功能刀）。
 
 1. 🔴 **bump 首跑判据**（沿袭）：docs/12 collapse 锚 blocker + 锚 #5 缺失即阻断 P0；**未升级验证前不要 bump**。
-2. 🟡 **E4B 单文件预设化（本波新增，CPU 臂已 ✅）**：`gemma-4-E4B-it.litertlm` 真机 CPU 可用（`ModelStopped` / thinking 177 / 正文非空 / 零 NOT_FOUND），但**尚未入 `ModelPresets`**（用户只能手动 push + 扫描登记）。**入预设的前置 = 实测峰值内存**（`dumpsys meminfo` 于 run 中采样）才能填 `requiredRamBytes` / `memBasis` —— **禁推测预填**（与 B3 同一条纪律）。⚠️ 注意 `-gpu` 特化变体仍 knownBroken，新条目须与它们**区分**（本条目是 CPU 单文件，GPU 路径在 A13 上物理不可用）。
+2. 🟡 **E4B 单文件预设化（本波新增，CPU 臂已 ✅）**：`gemma-4-E4B-it.litertlm` 真机 CPU 可用（`ModelStopped` / thinking 177 / 正文非空 / 零 NOT_FOUND），但**尚未入 `ModelPresets`**（用户只能手动 push + 扫描登记）。**入预设的前置 = 实测峰值内存**（`dumpsys meminfo` 于 run 中采样）才能填 `requiredRamBytes` / `memBasis` —— **禁推测预填**（与 B3 同一条纪律）。⚠️ 注意 `-gpu` 特化变体仍 knownBroken，新条目须与它们**区分**（本条目是 CPU 单文件，GPU 路径在 A13 上物理不可用）。✅ **W68 文档刀补注（可选注记，复审22 P4-③）：本项已于 W67 B4 销账**——E4B 单文件入册（`ModelPresets.kt:292-305`：`requiredRamBytes` 7.1GiB 实测峰值 PSS 5.66GiB×1.25 / `memBasis = BASIS_CPU_E4B_MEASURED` / GPU 白名单排除 / 与两个 `-gpu` 变体三处可分辨；真机复验 in 1365/out 1 零 FATAL）。
 3. 🟡 **gemma-4 GPU 用户故事仍未解（E4 GPU 臂 ⛔ 但原因=设备显存）**：单文件 GPU 在 A13 上因 `errno 12 OOM` 崩溃 ⇒ **换更高显存设备可复测**；上游 `-gpu` 特化变体的 `NOT_FOUND` 失败面**本波未触及** ⇒ docs/14 §B2 的 issue 仍应提交（证据链可加「单文件 GPU 在入门 Adreno 上 OOM」这一条对照）。
-4. 🟡 **C 复测收尾**：r_max ≈ 2.26 ≤ 8.4 ⇒ C=16 冻结；「中文题面」降级为英文题面（中文注入不可行，见 §3.4）。
+4. 🟡 **C 复测收尾**：r_max ≈ 2.26 ≤ 8.4 ⇒ C=16 冻结；「中文题面」降级为英文题面（中文注入不可行，见 §3.4）。⚠️ **W67 勘误（2026-10-13）：本挂账行已被推翻，勿按旧值执行**——W67 B1 离线重测得 **r_max = 5.06**（W62 的 8.4 系口径伪影：244 = 内容 chunk 数非 thinking token）⇒ **C 16 → 9、窗口 (5.06,10.11)、8192 → 4608**；引用以 W67 为准（复审22 P3-③：接手者按挂账行执行会直接用旧值 ⇒ 就地勘误）。
 5. 🟡 **挂账 #5 knownBroken 激活态重校验（落点订正）**：报告建议的 `ModelRepository.refresh()` **物理不可达**（模块依赖）⇒ 须先把登记迁到 core-model（与 `ModelGpuSupport` 同层同范式），跨 core-model/feature-models/core-design/feature-chat 四模块；**绑 tag 前置波**。
 6. 🟡 **接缝②仍不启动**：AgentRunner **2773**/2900（余 127）、Coordinator 1204/1300（余 96）、`executeBodyUnchecked` 498/550（余 52）。
 7. 🟡 沿袭：C-1/C-2 对话框手验（docs/14 §A1，用户 10 秒）｜法务 `termsVersion`（先于 tag）｜0 tags｜main 快照过时｜fulltest 接 CI｜F4 文字 token 统一｜会话删除 UI｜`TokenUsage.estimated`｜bump 双轴季扫｜上游出货 B1/B2（用户手动）｜审查 P3-d。
