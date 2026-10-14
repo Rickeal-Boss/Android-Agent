@@ -57,7 +57,7 @@ package com.rickeal.agent.core.model
  *     `ModelsViewModel.estimateRequiredRamBytes` 用同一条式子但**没有 KV 项**，于是系统性
  *     偏乐观，由调用方把尾部余量从 `1.25` 换成 `1.41`（常量
  *     `ModelsViewModel.NO_PRESET_KV_COMPENSATION`）。它不是随手定的：令
- *     `(W·f+O)·c = (W·f+KV+O)·1.25` 得 `c = 1.25 × (1 + KV/(W·f+O))`，按下面 13 条反算右边，
+ *     `(W·f+O)·c = (W·f+KV+O)·1.25` 得 `c = 1.25 × (1 + KV/(W·f+O))`，按下面各条反算右边，
  *     最大缺口仍出现在 E2B·GPU（KV 0.318 / 底 2.562）≈ **1.4052**（2026-09-24 增补的
  *     5 条视觉预设最高只到 1.4033·MiniCPM-V-4，未越界），向上取整即 1.41。
  *   - **这个余量只作用于无预设那一支**：有预设时预设才是权威值（`maxOf(preset, 估算)`，
@@ -517,7 +517,7 @@ object ModelPresets {
      *
      * 为什么需要它：加载前的内存闸门（`ModelsViewModel.onLoad`）手上只有一个
      * [com.rickeal.agent.core.model.ModelDescriptor]，**没有 URL**，拿不到 [ModelPreset.requiredRamBytes]。
-     * 下载链路里文件名就是 URL 的末段（`onDownloadFromUrl` 的 `fileName` 派生），而 13 个预设的
+     * 下载链路里文件名就是 URL 的末段（`onDownloadFromUrl` 的 `fileName` 派生），而 14 个预设的
      * 文件名只含 `[A-Za-z0-9._-]`，不会被 `ModelDownloader.sanitizeFileName` 改写，所以能稳定匹配。
      *
      * **查不到是正常情况，不是错误**：SAF 导入的用户自定义文件、以及因重名被 DownloadManager

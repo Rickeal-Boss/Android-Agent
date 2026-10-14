@@ -606,7 +606,7 @@ private fun ModelDownloadCard(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(modifier = Modifier.height(tokens.gapSm))
-            // 预设选择入口（Wave 12 需求）：此前是全部预设的横向滚动 chips，13 个预设
+            // 预设选择入口（Wave 12 需求）：此前是全部预设的横向滚动 chips，14 个预设
             // 挤在一行里只能拖动盲扫、无法全览。改为收进 [PresetSelectDialog] 纵向滚动
             // 全览，这里只留一个入口行展示当前选择。选中归回用 findByUrl：镜像直链
             // 也能落到所属预设（Wave 6 的 ownsUrl 兼容口径）。

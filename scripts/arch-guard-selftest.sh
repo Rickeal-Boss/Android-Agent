@@ -3226,6 +3226,156 @@ else
 fi
 
 fi
+# ---------------------------------------------------------------------------
+# case 69 / 69b / 69c：W68 A3-R1 —— 第 41 条三处硬化（严质衡 A2/A3 复审 f1/f8/f6 实测）。
+#   case69 —— 豁免令牌裸子串匹配：note 是否定句提及「档案豁免」（无 W## 锚点）⇒
+#             方向A 必须判红（令牌 + W## 同现才豁免），红含预设 label + 缺失文件名；
+#   case69b —— note 里提到的文件名给孤儿臂假锚定：预设 note 写「曾用名 ghost-arm.litertlm」
+#             ⇒ 该名不得进入预设名单 ⇒ 档案臂 ghost-arm 仍判孤儿（方向B 红，红含该文件名）；
+#   case69c —— 括号换行形态（`ModelPreset` 与 `(` 分行）漏档预设 ⇒ 方向A 判红
+#             （旧判据要求 `(` 同行 ⇒ 整块静默逃逸）。
+#   三面均只覆写脚手架树内 ModelPresets.kt；url 锚定骨架档案臂以隔离方向B 噪声。
+# ---------------------------------------------------------------------------
+if guard_selected 41; then
+d="$TMP/case69-negated-exempt-token"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "anchor-ok",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
+            note = "锚定骨架档案臂",
+        ),
+        ModelPreset(
+            label = "leaky",
+            url = "https://x/leaky-model.litertlm",
+            note = "亦不适用「档案豁免」流程（此句只是在解释政策，并非申请豁免）",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case69 否定句豁免令牌不生效 (第 41 条方向A)" "$rc" "$out" \
+  "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）"
+if printf '%s\n' "$out" | grep -qF "leaky" && printf '%s\n' "$out" | grep -qF "leaky-model.litertlm"; then
+  echo "PASS [case69b] 红来自真命中（含预设 label leaky + 缺失文件名 leaky-model.litertlm）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case69b] 方向A 判红但输出不含预设 label / 缺失文件名（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 41; then
+d="$TMP/case69c-note-name-no-anchor"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "anchor-ok",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
+            note = "锚定骨架档案臂；曾用名 ghost-arm.litertlm（迁移前旧文件名）",
+        ),
+    )
+}
+KT
+# 覆写档案表：加一条孤儿臂 ghost-arm.litertlm（预设表无此名；note 里提到的名字不得锚定它）
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelSamplingProfiles.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+object ModelSamplingProfiles {
+    fun forFileName(fileName: String?): ModelSamplingProfile? = when (fileName) {
+        "fixture-preset.litertlm" -> ModelSamplingProfile(
+            recommendedTemperature = 0.7f,
+            temperatureRange = 0.3f..1.2f,
+            recommendedTopK = 40,
+            maxTopK = 128,
+            maxContextLength = 4096,
+            evidence = "fixture：骨架档案臂，与 anchor-ok URL 同名",
+        )
+        "ghost-arm.litertlm" -> ModelSamplingProfile(
+            recommendedTemperature = 0.7f,
+            temperatureRange = 0.3f..1.2f,
+            recommendedTopK = 40,
+            maxTopK = 128,
+            maxContextLength = 4096,
+            evidence = "fixture：孤儿臂（预设 note 里提到过该名 ⇒ 不得据此锚定）",
+        )
+        else -> null
+    }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qF "ghost-arm.litertlm"; then
+  echo "PASS [case69d] 孤儿臂仍判红（note 里的文件名未假锚定，红含 ghost-arm.litertlm）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case69d] 孤儿档案臂被 note 文本假锚定（A3-R1 方向B 硬化失效）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 41; then
+d="$TMP/case69e-paren-newline-escape"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "anchor-ok",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
+            note = "锚定骨架档案臂",
+        ),
+        ModelPreset
+        (
+            label = "escape",
+            url = "https://x/no-profile-2.litertlm",
+            note = "括号换行形态漏档",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case69e 括号换行形态漏档 (第 41 条方向A)" "$rc" "$out" \
+  "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）"
+if printf '%s\n' "$out" | grep -qF "no-profile-2.litertlm"; then
+  echo "PASS [case69f] 红来自真命中（含括号换行块的缺失文件名 no-profile-2.litertlm）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case69f] 方向A 判红但输出不含缺失文件名（括号换行块仍逃逸？）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
 d="$TMP/case62-anchor-in-label"
 scaffold "$d"
 cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'

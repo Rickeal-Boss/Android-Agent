@@ -18,28 +18,37 @@
 
 用法：python scripts/check-preset-profile-parity.py <ModelPresets.kt> <ModelSamplingProfiles.kt>
 
-判据（W68 A3，主理人预裁量⑦）：
-  - 方向A（硬）：每个 ModelPreset( 构造块提取到的 `.litertlm` 文件名（url / mirrors
-    具名实参位，块解析与第 34 条同款）必须命中 `forFileName` 的某个 `when` 臂 ⇒ 缺 ⇒
-    红，**除非**该预设 `note` 含显式豁免理由（字面量「档案豁免」—— 机械可判，防下一
-    条新预设静默漏档）。
+判据（W68 A3，主理人预裁量⑦；W68 A3-R1 硬化 = 严质衡 A2/A3 复审 3 重要面）：
+  - 方向A（硬）：每个 ModelPreset( 构造块提取到的 `.litertlm` 文件名（**只取 url /
+    mirrors / domesticMirrors 具名实参位所在行**，W68 A3-R1 修：note/backendBasis 散文里
+    提到的文件名不再计入）必须命中 `forFileName` 的某个 `when` 臂 ⇒ 缺 ⇒ 红，**除非**
+    该预设 `note` 同时含豁免令牌「档案豁免」**与** `W##` 波次锚点（W68 A3-R1 修：裸子串
+    匹配会让否定句/解释性提及也获得豁免）。
     无任何 `.litertlm` 文件名的块（无 URL 的 fixture/桩）跳过：无可检查项。
   - 方向B（硬）：`forFileName` 的每个 `when` **臂**至少有一个文件名命中某预设 ⇒ 全臂
     无对应预设 ⇒ 红（孤儿档案）。臂内其余文件名视为**同族别名**（如
     `MiniCPM5-2B_int4/int8` 同臂两档，Wave 20 起有意登记；int4 有预设即锚定该臂）。
+  - 块开启判据（W68 A3-R1，与 #34/#39 同款）：`ModelPreset(` 同行（形态A/B 空白容忍）
+    **或** `ModelPreset` 独占一行且下一非空行以 `(` 开头（括号换行形态）。
 """
 import re
 import sys
 import traceback
 
-# ---- ModelPresets.kt 块解析（与 check-known-broken.py 第 34 条同款，W68 A1 双修后判据）----
+# ---- ModelPresets.kt 块解析（与 check-known-broken.py 第 34 条同款，W68 A1/A1-R1/A3-R1 判据）----
 SINGLE_LINE = re.compile(r'^[ \t]*ModelPreset[ \t]*\(.*\)[ \t]*,?[ \t]*$')
 MULTI_OPEN = re.compile(r'^[ \t]*ModelPreset[ \t]*\(')
+# W68 A3-R1：括号换行形态（`ModelPreset` 独占一行，`(` 在下一非空行）——严质衡 A2/A3
+#   复审 f6 实测的静默逃逸面；开启时须前瞻下一非空行是否以 `(` 开头。
+OPEN_HEAD = re.compile(r'^[ \t]*ModelPreset[ \t]*$')
+NEXT_PAREN = re.compile(r'^[ \t]*\(')
 BLOCK_CLOSE = re.compile(r'^([ \t]+)\)[,]?[ \t]*$')
 # 块内具名实参位（前字符非 [A-Za-z0-9_".]，与第 39 条 field_lit 同语义）
 LABEL = re.compile(r'(?<![A-Za-z0-9_".])label[ \t]*=[ \t]*"([^"]*)"')
 NOTE = re.compile(r'(?<![A-Za-z0-9_".])note[ \t]*=[ \t]*"([^"]*)"')
-# 块内任意位置的 .litertlm 文件名（url 主源 + domesticMirrors 两路镜像均覆盖）
+# W68 A3-R1：文件名只从 url / mirrors / domesticMirrors 具名实参位所在行提取
+#   （修 f8/f2：note/backendBasis 散文里提到的文件名造成孤儿臂假锚定 / 合法预设假红）
+URL_FIELD = re.compile(r'(?<![A-Za-z0-9_".])(url|mirrors|domesticMirrors)[ \t]*[=(]')
 LITERTLM_NAME = re.compile(r'([A-Za-z0-9._-]+\.litertlm)')
 
 # ---- ModelSamplingProfiles.kt 档案臂解析 ----
@@ -47,7 +56,18 @@ WHEN_OPEN = re.compile(r'=\s*when\s*\(\s*fileName\s*\)\s*\{')
 ARM_NAME = re.compile(r'"([A-Za-z0-9._-]+\.litertlm)"')
 
 # 方向A 显式豁免令牌（写进预设 note 才放行，机械可判）
+# W68 A3-R1：令牌须与 `W##` 波次锚点同现（防否定句 / 解释性提及「档案豁免」四字即豁免）
 EXEMPT_TOKEN = "档案豁免"
+ANCHOR = re.compile(r'W[0-9][0-9]')
+
+
+def exempted(note):
+    """方向A 豁免判据：note 同时含令牌「档案豁免」与 `W##` 波次锚点（W68 A3-R1）。
+
+    已知边界（如实申报）：不解析否定语义 —— 若一句话里同时出现「档案豁免」与 `W##`
+    且是否定句，仍会放行；该组合属刻意构巧，现役 note 零命中。
+    """
+    return EXEMPT_TOKEN in note and ANCHOR.search(note) is not None
 
 
 def strip_comment(s):
@@ -69,8 +89,51 @@ def strip_comment(s):
     return s
 
 
+def blank_strlits(s):
+    """字符串字面量内容置空、引号保留（与 check-known-broken.py 同款，W68 A1-R1）。
+
+    用于**定位**具名实参位（url/mirrors）而不被字符串内容里的同款字样骗到。
+    """
+    res = []
+    instr = False
+    esc = False
+    for ch in s:
+        if esc:
+            res.append(' ' if instr else ch)
+            esc = False
+            continue
+        if ch == '\\':
+            res.append(ch)
+            esc = True
+            continue
+        if ch == '"':
+            instr = not instr
+            res.append(ch)
+            continue
+        res.append(' ' if instr else ch)
+    return ''.join(res)
+
+
+def opens_block(lines, i):
+    """行 i 是否开启一个 ModelPreset 构造块（W68 A3-R1：含括号换行形态）。
+
+    形态A/B：`ModelPreset(` 同行（可选空白）；括号换行：`ModelPreset` 独占一行且
+    下一**非空**行以 `(` 开头。
+    """
+    s = strip_comment(lines[i])
+    if MULTI_OPEN.match(s):
+        return True
+    if OPEN_HEAD.match(s):
+        for j in range(i + 1, len(lines)):
+            nxt = strip_comment(lines[j])
+            if not nxt.strip():
+                continue
+            return bool(NEXT_PAREN.match(nxt))
+    return False
+
+
 def split_preset_blocks(lines):
-    """ModelPreset 构造块切分（第 34 条同款：统一开启判据 + 同缩进 `),` 收尾）。"""
+    """ModelPreset 构造块切分（第 34 条同款 + W68 A3-R1 括号换行形态）。"""
     blocks = []
     inblk = False
     start = -1
@@ -84,7 +147,7 @@ def split_preset_blocks(lines):
         s = strip_comment(raw)
         ind_now = len(s) - len(s.lstrip(' \t'))
         if not inblk:
-            if MULTI_OPEN.match(s):
+            if opens_block(lines, i):
                 inblk = True
                 start = i
                 ind = ind_now
@@ -94,7 +157,7 @@ def split_preset_blocks(lines):
                     inblk = False
                 continue
             continue
-        if SINGLE_LINE.match(s) or MULTI_OPEN.match(s):
+        if SINGLE_LINE.match(s) or opens_block(lines, i):
             settle()
             start = i
             ind = ind_now
@@ -189,15 +252,18 @@ def main(argv):
         note = next((m.group(1) for m in (NOTE.search(raw) for raw in block) if m), "")
         names = []
         for raw in block:
-            names.extend(LITERTLM_NAME.findall(raw))
+            # W68 A3-R1：只在 url / mirrors / domesticMirrors 具名实参位所在行提取文件名
+            # （具名位用 blank_strlits 定位 ⇒ note 散文里的同款字样不骗人；文件名取自原行）
+            if URL_FIELD.search(blank_strlits(raw)):
+                names.extend(LITERTLM_NAME.findall(raw))
         if not names:
             continue  # 无 URL 的块（fixture/桩）无可检查项
         preset_names.update(names)
         missing = [n for n in names if n not in profile_names]
-        if missing and EXEMPT_TOKEN not in note:
+        if missing and not exempted(note):
             print(
                 "%s:%d 预设「%s」文件名 %s 无 ModelSamplingProfiles 档案分支 —— "
-                "新预设漏档 = 采样/上下文钳制静默缺席（第 41 条方向A；确需豁免请在 note 写明「%s」+ 理由）"
+                "新预设漏档 = 采样/上下文钳制静默缺席（第 41 条方向A；确需豁免请在 note 写明「%s」+ 理由 + W## 波次锚点）"
                 % (preset_path, s + 1, label, "、".join(missing), EXEMPT_TOKEN)
             )
 

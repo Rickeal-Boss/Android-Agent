@@ -64,6 +64,10 @@ import traceback
 # 旧判据 `^ModelPreset\($`（trim 后严式）只认「(` 独占一行」⇒ 形态A/B 整块逃逸。
 SINGLE_LINE = re.compile(r'^[ \t]*ModelPreset[ \t]*\(.*\)[ \t]*,?[ \t]*$')
 MULTI_OPEN = re.compile(r'^[ \t]*ModelPreset[ \t]*\(')
+# W68 A3-R1：括号换行形态（`ModelPreset` 独占一行、`(` 在下一非空行）——与 #39/#41 同步
+#   （严质衡 A2/A3 复审 f6：旧判据要求 `(` 同行 ⇒ 该形态整块静默逃逸）。
+OPEN_HEAD = re.compile(r'^[ \t]*ModelPreset[ \t]*$')
+NEXT_PAREN = re.compile(r'^[ \t]*\(')
 # 块收尾：同缩进的 `),` 行（缩进 == 起点行缩进，第 39 条同款机制）。
 # W68 A1-R1 声明（严质衡复审 P2：两处与第 39 条 awk 的良性分歧，刻意保留）：
 #   ① 收尾逗号本实现可选（`\)[,]?`）vs 第 39 条必需（`\)[,]`）——无逗号收尾时
@@ -137,12 +141,31 @@ def blank_strlits(s):
     return ''.join(res)
 
 
+def opens_block(lines, i):
+    """行 i 是否开启 ModelPreset 构造块（W68 A3-R1：含括号换行形态）。
+
+    形态A/B：`ModelPreset(` 同行（可选空白）；括号换行：`ModelPreset` 独占一行且
+    下一**非空**行以 `(` 开头（严质衡 A2/A3 复审 f6 实测的静默逃逸面）。
+    """
+    s = strip_comment(lines[i])
+    if MULTI_OPEN.match(s):
+        return True
+    if OPEN_HEAD.match(s):
+        for j in range(i + 1, len(lines)):
+            nxt = strip_comment(lines[j])
+            if not nxt.strip():
+                continue
+            return bool(NEXT_PAREN.match(nxt))
+    return False
+
+
 def split_blocks(lines):
     """按统一开启判据切块；块 = 起点行 → 同缩进 `),` 收尾行（含）。
 
     W68 A1 ①②：形态A（换行续写）/ 形态B（括号前空格）都能识别；未收尾遇新
     块起点先按上一块结算（第 39 条同款）；EOF 时未收尾也结算（fail-closed，
     绝不把半块行静默丢给下一块或虚空）。
+    W68 A3-R1：补括号换行形态（`ModelPreset` 与 `(` 分行）。
     返回 [(start_index, [stripped_lines...]), ...]；start_index 从 0 起。
     """
     blocks = []
@@ -158,7 +181,7 @@ def split_blocks(lines):
         s = strip_comment(raw)
         ind_now = len(s) - len(s.lstrip(' \t'))
         if not inblk:
-            if MULTI_OPEN.match(s):
+            if opens_block(lines, i):
                 inblk = True
                 start = i
                 ind = ind_now
@@ -171,7 +194,7 @@ def split_blocks(lines):
             # 非块起点行（块间空白 / 注释 / 其它代码）不属任何块
             continue
         # inblk：块内
-        if SINGLE_LINE.match(s) or MULTI_OPEN.match(s):
+        if SINGLE_LINE.match(s) or opens_block(lines, i):
             # 未收尾遇新块起点 ⇒ 先按上一块结算，再开新块
             settle()
             start = i

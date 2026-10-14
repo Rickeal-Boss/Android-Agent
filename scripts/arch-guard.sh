@@ -1016,6 +1016,22 @@ check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓�
                if (has_anchor(\$0)) anchor=1
                next
              }
+             # W68 A3-R1：括号换行形态（`ModelPreset` 独占一行、`(` 在下一非空行）——
+             #   与 #34/#41 两个 Python 解析器同步（严质衡 A2/A3 复审 f6：旧判据要求
+             #   `(` 同行 ⇒ 该形态整块静默逃逸）。用 pending 标记跨空行前瞻。
+             /^[[:space:]]*ModelPreset[[:space:]]*\$/ {
+               if (inblk) { inblk=0; emit() }
+               pend=NR; match(\$0, /^[[:space:]]*/); pendind=RLENGTH
+               next
+             }
+             pend && /^[[:space:]]*\(/ {
+               inblk=1; start=pend; lbl=\"\"; ev=\"\"; anchor=0; ind=pendind; pend=0
+               if (match(\$0, /label[[:space:]]*=[[:space:]]*\"[^\"]*\"/)) { lbl=substr(\$0, RSTART, RLENGTH); sub(/^[^\"]*\"/, \"\", lbl); sub(/\"\$/, \"\", lbl) }
+               if (match(\$0, /evidenceLevel[[:space:]]*=[[:space:]]*[A-Za-z.]+/)) { ev=substr(\$0, RSTART, RLENGTH); sub(/^[^.]*\./, \"\", ev) }
+               if (has_anchor(\$0)) anchor=1
+               next
+             }
+             pend && \$0 ~ /[^[:space:]]/ { pend=0 }
              inblk && /^[[:space:]]+\)[,][[:space:]]*\$/ {
                match(\$0, /^[[:space:]]*/)
                if (RLENGTH == ind) { inblk=0; emit(); next }
