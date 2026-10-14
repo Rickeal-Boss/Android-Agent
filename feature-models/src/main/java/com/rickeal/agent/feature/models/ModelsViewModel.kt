@@ -1189,6 +1189,17 @@ internal fun sizeHint(
  *
  * 已知偏乐观之处：**不含 KV cache**（需要层数 / kv 头数 / head_dim，只有真正打开模型文件
  * 才探得到），所以长上下文场景下这个值是偏低的 —— 缺口由上面第 2 条补。
+ *
+ * **首个实测样本（W67 真机，E4B 单文件 CPU；W68 A2 按复检 Q-1 落档，tail 维持 1.25）**：
+ * 权重 W = 3.408GiB（`gemma-4-E4B-it.litertlm`，sizeBytes 3659530240）⇒
+ * 公式（CPU，tail 1.25）= (3.408×1.05 + max(0.195, 0.12×3.408))×1.25 ≈ **4.98GiB**；
+ * A13 真机实测峰值 PSS ≈ **5.66GiB**（`dumpsys meminfo`，加载后静置与生成峰值两点几乎
+ * 相等，3.41GiB 权重主导）⇒ **实测/公式 ≈ 1.14**；若把 swap ≈ 1.0GiB 计入
+ * （meminfo PSS 是否含 swap 尚未定案，W69-02）⇒ **1.34**。
+ * ⚠️ 结论只到「记下样本」为止：**tail 维持 1.25 不改**（改尾同时动 13 条闸门 = 行为面，
+ * 主理人预裁量②），补实测批（MiniCPM-V 4·8B / Phi-4-mini / E4B·GPU + swap 口径定案）
+ * 挂 W69-02。本条预设自己的 `requiredRamBytes` 走实测口径
+ * （`BASIS_CPU_E4B_MEASURED` = 峰值×1.25 ≈ 7.1GiB），不经本公式 —— 它只兜「无预设」支。
  */
 internal fun estimateRequiredRamBytes(
     weights: Long,

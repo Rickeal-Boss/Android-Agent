@@ -142,7 +142,23 @@ data class ModelPreset(
     val mirrors: List<ModelPresetMirror> = emptyList(),
     /** 是否推荐给新手（排序时置顶，UI 打「新手推荐」标识）。 */
     val recommended: Boolean = false,
-    /** 数字是怎么来的，写进数据里，后人才能校准。 */
+    /**
+     * 数字是怎么来的，写进数据里，后人才能校准。
+     *
+     * **两种口径，可机械区分**（W68 A2，复检 Q-1）：
+     *  - **公式口径**：值为 [BASIS_CPU] / [BASIS_GPU]（`W×f_backend+KV@4096+O，×1.25`
+     *    形态）⇒ 该 `requiredRamBytes` 由估算式算出，**未经真机峰值实测**；含 KV 项但
+     *    系数是经验值（历史上对 E4B 单文件低估 ~14%，实测样本见
+     *    `ModelsViewModel.estimateRequiredRamBytes` KDoc「已知偏乐观」段 —— 另一模块，
+     *    此处不重复数值）。
+     *  - **实测口径**：值含「实测」字样与 `W##` 波次锚点（如 [BASIS_CPU_E4B_MEASURED]，
+     *    格式 `W67 实测峰值 ×1.25（A13 13309cc8：…PSS 5.66GiB…）`）⇒ 该阈值锚定**真机
+     *    dumpsys meminfo 峰值**，后人校准时优先补这类样本（W69-02 挂账）。
+     *
+     * ⚠️ 读表诀窍：`memBasis` 以「实测」二字 + 波次锚点区分两种口径 —— 现役 14 条中
+     * 仅 Gemma 4 E4B 单文件一条为实测口径（[BASIS_CPU_E4B_MEASURED]），其余 13 条均为
+     * 公式口径（补实测批挂 W69-02）。
+     */
     val memBasis: String,
     val note: String,
     /** GPU 放行/禁用的依据与警示（模型卡展示）。空串 = 无特别说明。 */
@@ -296,7 +312,11 @@ object ModelPresets {
             ramText = "≥ 7.1 GB",
             requiredRamBytes = (7.1 * GB).toLong(),
             memBasis = BASIS_CPU_E4B_MEASURED,
-            note = "旗舰质量（单文件 CPU 变体，非 -gpu 特化）：实测可用，但权重 3.41GB、CPU 首字约 29s —— 仅建议 12GB 以上内存机型",
+            // W68 A2（复检 Q-1）：把「12GB 以上」与闸门 7.1GiB 的数字关系写成一句，
+            // 禁留「打架」观感 —— 两者是不同的线：12GB = Warrior 级机型**流畅体验建议**
+            // （CPU 变体无 GPU 分担、生成期整机压力大）；7.1GiB = **闸门放行线**
+            // （W67 实测峰值 PSS 5.66GiB × 1.25 安全余量，只保证「不低于崩溃线」）。
+            note = "旗舰质量（单文件 CPU 变体，非 -gpu 特化）：实测可用，但权重 3.41GB、CPU 首字约 29s —— 「12GB 以上内存机型」是流畅体验建议（CPU 无 GPU 分担、生成期整机压力大）；闸门「≥ 7.1 GB」只是放行线（实测峰值 PSS 5.66GiB × 1.25 安全余量，= 不低于崩溃线的下界）：体验看 12GB，门槛看 7.1GB，两回事",
             sizeBytes = 3659530240,
             recommended = false,
             backendBasis = "单文件（**非** `-gpu` 特化变体）；✅ 本仓真机取证：W66 真机 CPU 臂（`ModelStopped` / thinking 177 / 正文 OK / 零 `NOT_FOUND` / 零 FATAL）+ W67 真机复验（in 1365 / out 1，零 FATAL）；⚠️ **不得入 `ModelGpuSupport` 白名单** —— 同文件 GPU 路径在 A13 入门 Adreno 上 OOM（`IOCTL_KGSL_GPUOBJ_ALLOC errno 12` → `Resource deadlock` → SIGABRT → 整机重启，W66 §3.1），须高显存设备复测通过后才议",

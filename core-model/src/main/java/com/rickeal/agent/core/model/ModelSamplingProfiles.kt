@@ -115,6 +115,32 @@ object ModelSamplingProfiles {
                 "README 标 32k 上限但内存按 KV@4096 预算 → 上下文封顶 8192",
         )
 
+        // Gemma 4 E4B 单文件（CPU 变体，W68 A2 补档 —— 复检 Q-2：14 预设中唯一无档案
+        // 钳制的一条）：数值与上方 gemma 家族档逐字段相同（同族同证据口径），本条只补
+        // **本仓取证**证据：
+        //  - ✅ CPU 臂本仓实测：W66 真机 CPU 臂（`ModelStopped` / thinking 177 / 正文 OK /
+        //    零 NOT_FOUND / 零 FATAL）+ W67 真机复验（in 1365 / out 1，零 FATAL）——
+        //    `ModelPresets.kt` E4B 单文件条目 evidenceLevel=MEASURED 的 W## 锚点同源；
+        //  - ⚠️ **同文件 GPU 臂不得用**：A13 入门 Adreno 上 OOM（`IOCTL_KGSL_GPUOBJ_ALLOC
+        //    errno 12` → `Resource deadlock` → SIGABRT → 整机重启，W66 §3.1）⇒ 不进
+        //    `ModelGpuSupport` 白名单（本档案只约束采样/上下文，不构成 GPU 放行）；
+        //  - 上下文仍封顶 8192：实测内存样本全部采自 4k 上下文（W67 PSS 5.66GiB），拉到
+        //    32k 会让 KV 超预算（W66 §3.1 整机重启教训）——与家族档同值同理由。
+        // ⚠️ 为什么必须补（复检 Q-2）：无档案 ⇒ contextLength 可被拉到 32768（UI 滑条
+        //    值）⇒ KV 超预算约 4×；且漏掉 temperatureRange 下限 0.3 的防贪心循环保护
+        //    （Wave 18/19 实锤）。
+        "gemma-4-E4B-it.litertlm" -> ModelSamplingProfile(
+            recommendedTemperature = 1.0f,
+            temperatureRange = 0.3f..1.5f,
+            recommendedTopK = 64,
+            maxTopK = 128,
+            recommendedTopP = 0.95f,
+            maxContextLength = 8192,
+            evidence = "litert README 无采样建议 → Gemma 系口径 temp1.0/topP0.95/topK64；" +
+                "上下文封顶 8192（实测样本采自 4k，拉 32k 会 KV 超预算；W66 §3.1）；" +
+                "CPU 臂本仓实测 W66/W67（MEASURED 锚点同源），GPU 臂 A13 OOM 不进白名单",
+        )
+
         // Qwen2.5-1.5B-Instruct：官方 generation_config.json 逐字段照抄
         //（temperature 0.7 / top_p 0.8 / top_k 20 / repetition_penalty 1.1）。
         // 文件名 ekv4096 = KV 预算 4096，上下文封顶同值。
