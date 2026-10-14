@@ -7,7 +7,7 @@ package com.rickeal.agent.core.model
  *
  * 匹配键 = [FILE_NAME]（单一、精确字符串），两处消费点同源：
  *  - `ModelSamplingProfiles.forFileName`（本模块，`core-model`）；
- *  - `ModelPresets.findByFileName`（`feature-models`）。
+ *  - `ModelPresets.findByFileName`（同模块 `core-model`，W67 B2 迁移后与预设表同层）。
  *  二者**本波一行不改** —— 桩只新增常量与空接口。
  *
  * ## 目标（本波**不实现**）
@@ -17,12 +17,12 @@ package com.rickeal.agent.core.model
  * `ModelSamplingProfiles` 里手抄一整段几乎相同的档案）。
  *
  * ⚠️ **迁移逻辑必须单独立项**：它同时改 [ModelSamplingProfiles]（`core-model`）与
- * `ModelPresets`（`feature-models`）两处匹配面，且要处理「旧 fileName 档案 → 多键」的
- * 回退与冲突消解 —— 混进本波会把两个模块的匹配语义同时搅动，风险与收益不成比例。
+ * `ModelPresets`（同模块 `core-model`，W67 B2 迁移后同层）两处匹配面，且要处理「旧 fileName
+ * 档案 → 多键」的回退与冲突消解 —— 混进本波会把两个模块的匹配语义同时搅动，风险与收益不成比例。
  *
  * ## 命名为何是 `ModelPresetSchemaKeys`（不是 `ModelPresets`）
  *
- * `ModelPresets` 已是 `feature-models` 里的**实例表**（复数、含具体数据）；
+ * `ModelPresets` 已是 `core-model` 里的**实例表**（复数、含具体数据）；
  * 本对象只放**键名字面量**，与实例表是「schema vs data」两层，刻意不复用其名。
  */
 object ModelPresetSchemaKeys {

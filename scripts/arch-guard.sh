@@ -1026,6 +1026,41 @@ check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓�
              }
            " "$f"'
 
+# 40) core-model 源码禁出现 feature-models 字样（W68 A3，复检 Q-5）：W67 B2 把
+#     ModelPresets 从 feature-models 迁到 core-model 后，core-model 源码里残留的
+#     `feature-models` 字样全部是**迁移后失效的描述**（KDoc 里「两处匹配面」「实例表
+#     在哪」之类）—— 未来有人按过期描述做决策（去 feature-models 找预设表 / 把同一句话
+#     抄进新注释）就会踩空。本守卫把它变成机械判红。
+#     实现面（从严）：只扫 core-model 的 **main 源集** .kt；**不排除注释** —— 本守卫守的
+#     正是注释/KDoc 里的过期描述（若像其它守卫那样放行注释 = 永久零命中的 vacuous 规则，
+#     现役 5 处残留已实证全部在注释里）。字面量匹配（防拆写绕过：真要提旧模块名的人得
+#     故意写成 "feature-*models"，这已是有意为之）。
+#     fail-closed：目录缺失 ⇒ grep rc=2 ⇒ check() 判「守卫自身故障」红（不静默放行）。
+#     现役树已由 W68 A3 清理 5 处过期描述 ⇒ 0 命中（见 commit：ModelGpuSupport /
+#     ModelPresetSchema 的 KDoc 订正）。
+check "core-model 源码禁出现 feature-models 字样（迁移后描述失效防复发）" \
+  bash -c 'grep -rn "feature-models" --include="*.kt" core-model/src/main'
+
+# 41) ModelPresets 预设 ↔ ModelSamplingProfiles 档案双向一致（W68 A3，复检 Q-2）：
+#     方向A（硬）：每个预设的 .litertlm 文件名（url/ mirrors 提取，块解析与 #34 同款）
+#       必须命中 forFileName 某个 when 臂；缺 ⇒ 红，**除非**该预设 note 含显式豁免令牌
+#       「档案豁免」（机械可判 —— 防下一条新预设静默漏档：漏档 = 采样/上下文钳制缺席，
+#       E4B 单文件补档前正是此态）。
+#     方向B（硬）：每个 when 臂至少一个文件名命中某预设；全臂无对应 ⇒ 红（孤儿档案 =
+#       预设表已无此文件名的死条目）。臂内其余文件名视为**同族别名**（如 MiniCPM5-2B
+#       int4/int8 同臂，Wave 20 起有意登记），int4 锚定即整臂合法。
+#     扫描器按**本脚本所在目录**定位（GUARD_DIR，与 #34 同款）；恒 exit 0、违规打 stdout
+#     ⇒ 不踩「python 失败再跑 python3」双跑双输出。fail-closed：两文件任一缺失 / 提取不到
+#     任何构造块或档案臂 ⇒ 红（与 #34 同款契约）。现役树 14 预设 + E4B 新分支（W68 A2 补）
+#     ⇒ 0 红。
+check "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）" \
+  bash -c "P=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
+           S=core-model/src/main/java/com/rickeal/agent/core/model/ModelSamplingProfiles.kt
+           if [ ! -f \"\$P\" ]; then echo \"::error::\$P 不存在（第 41 条守卫面已失效）\"; exit 1; fi
+           if [ ! -f \"\$S\" ]; then echo \"::error::\$S 不存在（第 41 条守卫面已失效）\"; exit 1; fi
+           if [ ! -f \"$GUARD_DIR/check-preset-profile-parity.py\" ]; then echo \"::error::check-preset-profile-parity.py 不存在（第 41 条守卫面已失效）\"; exit 1; fi
+           python \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\" || python3 \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\""
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

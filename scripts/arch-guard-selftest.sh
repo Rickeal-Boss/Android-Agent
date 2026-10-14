@@ -67,7 +67,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -101,12 +101,12 @@ affected_guards_for_file() {
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerToolSetup.kt) echo "35" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerLoopHelpers.kt) echo "37" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt)          echo "13" ;;
-    core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt) echo "34 39" ;;
+    core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt) echo "34 39 40 41" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt)    echo "18" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt) echo "20 30" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt) echo "38" ;;
     .github/workflows/build.yml)                                                   echo "22 23 26" ;;
-    core-model/*)                                                                  echo "3 15 26" ;;
+    core-model/*)                                                                  echo "3 15 26 40 41" ;;
     *)                                                                             echo FULL ;;
   esac
 }
@@ -489,6 +489,10 @@ KT
   # 块的 `backendBasis`/`note` 赋值行内须含 `W##` 波次实测锚点（注释/label 里的 W## **不算**，
   # W66 深审 D2）⇒ 骨架三条预设分别用 MEASURED（锚点写在 `note` 里）与 UPSTREAM（无需锚点），
   # 并铺 enum 声明 + `note` 字段。漏铺任一 ⇒ 干净树被本条 fail-closed 判红（正例失守）。
+  # W68 A3 追加（第 41 条）：data class 补 `val url: String = ""` 字段，且 clean-recommended
+  # 显式赋 url = ".../fixture-preset.litertlm"（与下方 ModelSamplingProfiles 骨架臂同名）
+  # ⇒ 方向A（有 URL 的预设命中档案）与方向B（档案臂有预设锚定）双向皆绿；不铺 ⇒ 骨架臂
+  # 孤儿 ⇒ 所有绿面 case 被第 41 条误红。
   mkdir -p "$root/feature-models/src/main/java/com/rickeal/agent/feature/models"
   cat > "$root/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
 package com.rickeal.agent.core.model
@@ -497,6 +501,7 @@ enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
+    val url: String = "",
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
@@ -507,6 +512,7 @@ object ModelPresets {
     val all: List<ModelPreset> = listOf(
         ModelPreset(
             label = "clean-recommended",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
             recommended = true,
             evidenceLevel = EvidenceLevel.MEASURED,
             note = "W60 实测（fixture 锚点）：MEASURED 合法需 backendBasis/note 内出现 W## 波次标记。",
@@ -524,6 +530,34 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.UPSTREAM,
         ),
     )
+}
+KT
+  # 第 41 条（W68 A3，预设↔档案双向一致）要求 ModelSamplingProfiles.kt 存在且含
+  # `when (fileName) {` 提取面 ⇒ 骨架必须提供它，否则正例 + 所有绿面 case 会被本条
+  # fail-closed 判红（漏铺 ⇒ 全红）。铺**一臂非空注册表**（fixture-preset.litertlm），
+  # 与上方 clean-recommended 预设的 URL 同名 ⇒ 方向A（有 URL 的预设命中档案）与方向B
+  # （档案臂有预设锚定）双向皆绿。
+  # ⚠️ 为何不能铺空注册表（只有 else -> null）：扫描器对「when 区在但零臂」返回空列表
+  #   （合法空注册表：方向B 空过、方向A 仍硬判）——但那样 scaffold 正例的方向B 覆盖面就
+  #   vacuous 了，且 clean-recommended 一带 URL 就会被方向A 判红 ⇒ 仍铺一臂非空注册表。
+  # ⚠️ 覆写 ModelPresets.kt 的**绿面** case 必须自带同名 URL（fixture-preset.litertlm）
+  #   或同文件改注册表（case61e 已带 fixture-preset URL；case65e/case41c 双文件同覆）——
+  #   否则骨架臂变孤儿 ⇒ 方向B 误红。红面 case 不受影响（多一条红不断言，见文件头设计取舍）。
+  cat > "$root/core-model/src/main/java/com/rickeal/agent/core/model/ModelSamplingProfiles.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+object ModelSamplingProfiles {
+    fun forFileName(fileName: String?): ModelSamplingProfile? = when (fileName) {
+        "fixture-preset.litertlm" -> ModelSamplingProfile(
+            recommendedTemperature = 0.7f,
+            temperatureRange = 0.3f..1.2f,
+            recommendedTopK = 40,
+            maxTopK = 128,
+            maxContextLength = 4096,
+            evidence = "fixture：骨架唯一档案臂，与 clean-recommended URL 同名",
+        )
+        else -> null
+    }
 }
 KT
   # 第 26 条（Wave 53，测试基线双向同步）要求 build.yml 声明 `baseline=N` 且与全仓
@@ -2998,7 +3032,7 @@ object ModelPresets {
     val all: List<ModelPreset> = listOf(
         ModelPreset(
             label = "innocent-first",
-            url = "u1",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.MEASURED,
@@ -3046,6 +3080,10 @@ fi
 #   （括号前空格 `ModelPreset (`）预设各一枚：evidenceLevel 齐全（MEASURED 带 W##
 #   锚点 / UPSTREAM）、`recommended = true` 与显式 `knownBrokenOn = null` 合法共存
 #   ⇒ 必须整树退出 0（放开块识别 + 去行首锚定后，合规新形态零误红）。
+#   W68 A3 适配（第 41 条）：form-a-ok 的 url 用**骨架档案臂同名**的
+#   fixture-preset.litertlm（本 case 只覆写 ModelPresets.kt、不覆写档案表 ⇒ 不锚定
+#   骨架臂就会因方向B 孤儿红）；form-b-ok 的 url = "u2" 无 .litertlm 后缀 ⇒ 方向A
+#   跳过（无可检查项），顺带覆盖「无 .litertlm 文件名的块不判」这条口径。
 # ---------------------------------------------------------------------------
 if guard_selected "34 39"; then
 d="$TMP/case61e-formab-green"
@@ -3067,7 +3105,7 @@ data class ModelPreset(
 object ModelPresets {
     val all: List<ModelPreset> = listOf(
         ModelPreset(label = "form-a-ok",
-            url = "u1",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.MEASURED,
@@ -3165,6 +3203,214 @@ if printf '%s\n' "$out" | grep -qF "drifted-missing" && ! printf '%s\n' "$out" |
   PASS=$((PASS + 1))
 else
   echo "FAIL [case63b] 缩进漂移块与合规块粘连（D3 fail-open 未修）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case 64 / 64b / 65 / 65b / 65c：W68 A3 新守卫两件（复检 Q-5 / Q-2；主理人预裁量⑦）。
+#   #40（core-model 禁 feature-models 字样）：
+#     case64 —— 向骨架 core-model 源文件注入一行含 `feature-models` 的注释 ⇒ 判红，
+#               且红来自**注入的事实行**（file:line + 字样本身），非仅守卫名；
+#     case64b —— 绿面：dot 形态（feature.models）与空格形态不触犯（字面量从严，防过度匹配）。
+#   #41（ModelPresets ↔ ModelSamplingProfiles 双向一致）：
+#     case65 —— 方向A 红面：新预设带 URL 文件名但档案表（骨架空注册表）无对应臂 ⇒ 判红，
+#               输出含预设 label + 缺失文件名（预放下一条新预设静默漏档）；
+#     case65b —— 方向B 红面：档案臂登记预设表不存在的文件名（孤儿臂）⇒ 判红，输出含
+#               孤儿文件名事实行；
+#     case65c —— 绿面：方向A 豁免（note 含「档案豁免」令牌）+ 方向B 同臂别名锚定
+#               （int4/int8 同款形态）⇒ 整树退出 0。
+#   各面只覆写脚手架树内文件，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+if guard_selected 40; then
+d="$TMP/case64-feature-models-mention"
+scaffold "$d"
+cat >> "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+// fixture 注入：迁移前的 stale 描述 —— 预设表曾位于 feature-models（第 40 条必须判红）
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case64 core-model 残留 feature-models 字样 (第 40 条)" "$rc" "$out" \
+  "core-model 源码禁出现 feature-models 字样（迁移后描述失效防复发）"
+if printf '%s\n' "$out" | grep -qF "feature-models"; then
+  echo "PASS [case64b] 红来自真命中（输出含注入的事实行：ModelPresets.kt 内的 feature-models 字样）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case64b] 守卫判红但输出看不到注入的 feature-models 字样（守卫自身故障假红？）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 40; then
+d="$TMP/case64c-feature-models-dot-form"
+scaffold "$d"
+mkdir -p "$d/core-model/src/main/java/com/rickeal/agent/core/model"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/FixtureNote.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+// fixture：dot 形态（feature.models）与空格形态都不是 hyphen 字面量，第 40 条从严匹配不得误红
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case64d 非连字符形态不误伤 (第 40 条绿面)] 退出 0（字面量从严，只钉 feature-models）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case64d] 非连字符形态被误红（第 40 条匹配过宽，守卫公信力受损）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 41; then
+d="$TMP/case41a-preset-missing-profile"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "new-preset-no-profile",
+            url = "https://fixture.invalid/new-model.litertlm",
+            recommended = false,
+            evidenceLevel = EvidenceLevel.MEASURED,
+            note = "W60 实测（fixture 锚点）",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case65 新预设漏档案 (第 41 条方向A)" "$rc" "$out" \
+  "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）"
+if printf '%s\n' "$out" | grep -qF "new-preset-no-profile" && printf '%s\n' "$out" | grep -qF "new-model.litertlm" && printf '%s\n' "$out" | grep -qF "方向A"; then
+  echo "PASS [case65b] 红来自真命中（输出含预设 label + 缺失文件名 + 方向A 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case65b] 方向A 报红但输出不含预设 label / 缺失文件名（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 41; then
+d="$TMP/case41b-orphan-profile-arm"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelSamplingProfiles.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+object ModelSamplingProfiles {
+    fun forFileName(fileName: String?): ModelSamplingProfile? = when (fileName) {
+        "orphan-model.litertlm" -> ModelSamplingProfile(
+            recommendedTemperature = 0.7f,
+            temperatureRange = 0.3f..1.2f,
+            recommendedTopK = 40,
+            maxTopK = 128,
+            maxContextLength = 4096,
+            evidence = "fixture：孤儿档案臂",
+        )
+        else -> null
+    }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case65c 孤儿档案臂 (第 41 条方向B)" "$rc" "$out" \
+  "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）"
+if printf '%s\n' "$out" | grep -qF "orphan-model.litertlm" && printf '%s\n' "$out" | grep -qF "方向B"; then
+  echo "PASS [case65d] 红来自真命中（输出含孤儿文件名 + 方向B 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case65d] 方向B 报红但输出不含孤儿文件名（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 41; then
+d="$TMP/case41c-parity-green"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "covered-preset",
+            url = "https://fixture.invalid/kept-model.litertlm",
+            recommended = false,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+        ),
+        ModelPreset(
+            label = "alias-anchor",
+            url = "https://fixture.invalid/alias-a.litertlm",
+            recommended = false,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+        ),
+        ModelPreset(
+            label = "exempted-preset",
+            url = "https://fixture.invalid/exempted-model.litertlm",
+            recommended = false,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+            note = "实验容器：档案豁免（调参路线不同，待补档后销豁免，W68 fixture）",
+        ),
+    )
+}
+KT
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelSamplingProfiles.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+object ModelSamplingProfiles {
+    fun forFileName(fileName: String?): ModelSamplingProfile? = when (fileName) {
+        "kept-model.litertlm" -> ModelSamplingProfile(
+            recommendedTemperature = 0.7f,
+            temperatureRange = 0.3f..1.2f,
+            recommendedTopK = 40,
+            maxTopK = 128,
+            maxContextLength = 4096,
+            evidence = "fixture：方向A 覆盖",
+        )
+        "alias-a.litertlm",
+        "alias-b.litertlm",
+        -> ModelSamplingProfile(
+            recommendedTemperature = 0.7f,
+            temperatureRange = 0.3f..1.2f,
+            recommendedTopK = 40,
+            maxTopK = 128,
+            maxContextLength = 4096,
+            evidence = "fixture：同臂别名（int4/int8 同款），alias-a 锚定",
+        )
+        else -> null
+    }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case65e 覆盖+别名锚定+note 豁免 (第 41 条绿面)] 退出 0（双向一致不误红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case65e] 合法组合被第 41 条误红（豁免令牌 / 同臂别名锚定判据有偏）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
