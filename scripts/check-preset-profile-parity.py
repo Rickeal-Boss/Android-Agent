@@ -46,10 +46,45 @@ BLOCK_CLOSE = re.compile(r'^([ \t]+)\)[,]?[ \t]*$')
 # 块内具名实参位（前字符非 [A-Za-z0-9_".]，与第 39 条 field_lit 同语义）
 LABEL = re.compile(r'(?<![A-Za-z0-9_".])label[ \t]*=[ \t]*"([^"]*)"')
 NOTE = re.compile(r'(?<![A-Za-z0-9_".])note[ \t]*=[ \t]*"([^"]*)"')
-# W68 A3-R1：文件名只从 url / mirrors / domesticMirrors 具名实参位所在行提取
-#   （修 f8/f2：note/backendBasis 散文里提到的文件名造成孤儿臂假锚定 / 合法预设假红）
-URL_FIELD = re.compile(r'(?<![A-Za-z0-9_".])(url|mirrors|domesticMirrors)[ \t]*[=(]')
+# W68 A3-R2：文件名提取改「字段级散文置空」——先抹掉散文字段（note / backendBasis /
+#   knownBrokenOn / evidenceLevel / label / sizeText / ramText / memBasis）的字面量内容，
+#   再扫全块取 `.litertlm`。比 A3-R1 的「行级限定 url/mirrors」更稳：
+#   ① 仍根治 f2/f8（note/backendBasis 散文里的文件名不计入）；
+#   ② 不丢镜像/续行形态（bespoke `ModelPresetMirror(...)`、多行 `domesticMirrors(`、
+#      `url =` 换行续写）的文件名 —— 这些行没有 url/mirrors 关键字，行级限定会漏。
+PROSE_FIELD = re.compile(
+    r'(?<![A-Za-z0-9_".])(note|backendBasis|knownBrokenOn|evidenceLevel|label|sizeText|ramText|memBasis)[ \t]*='
+)
 LITERTLM_NAME = re.compile(r'([A-Za-z0-9._-]+\.litertlm)')
+
+
+def blank_prose_literals(s):
+    """抹掉**散文字段**后的第一个字符串字面量内容（引号保留），其余原样。
+
+    W68 A3-R2（严质衡 A3-R1 复跑 N2）：字段级而非行级 —— url / mirrors /
+    domesticMirrors / 任何其它位置的 `.litertlm` 字面量都保留，只有 note /
+    backendBasis 等散文里的提及被置空。一次同时根治 f2（散文文件名假红）与 f8
+    （散文文件名假锚定孤儿臂），且不牺牲镜像/续行形态的覆盖。
+    """
+    out = list(s)
+    for m in PROSE_FIELD.finditer(s):
+        i = m.end()
+        while i < len(s) and s[i] in ' \t':
+            i += 1
+        if i >= len(s) or s[i] != '"':
+            continue
+        j = i + 1
+        while j < len(s):
+            if s[j] == '\\':
+                j += 2
+                continue
+            if s[j] == '"':
+                break
+            j += 1
+        for k in range(i, min(j + 1, len(s))):
+            if out[k] != '"':
+                out[k] = ' '
+    return ''.join(out)
 
 # ---- ModelSamplingProfiles.kt 档案臂解析 ----
 WHEN_OPEN = re.compile(r'=\s*when\s*\(\s*fileName\s*\)\s*\{')
@@ -252,10 +287,9 @@ def main(argv):
         note = next((m.group(1) for m in (NOTE.search(raw) for raw in block) if m), "")
         names = []
         for raw in block:
-            # W68 A3-R1：只在 url / mirrors / domesticMirrors 具名实参位所在行提取文件名
-            # （具名位用 blank_strlits 定位 ⇒ note 散文里的同款字样不骗人；文件名取自原行）
-            if URL_FIELD.search(blank_strlits(raw)):
-                names.extend(LITERTLM_NAME.findall(raw))
+            # W68 A3-R2：字段级散文置空后扫全块（散文里的文件名不计入；url / mirrors /
+            # domesticMirrors / ModelPresetMirror 等真实文件名字面量全部保留）
+            names.extend(LITERTLM_NAME.findall(blank_prose_literals(raw)))
         if not names:
             continue  # 无 URL 的块（fixture/桩）无可检查项
         preset_names.update(names)

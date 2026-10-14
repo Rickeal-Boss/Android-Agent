@@ -2775,7 +2775,16 @@ fi
 #             必须不红（绿面；独立钉死 scaffold 铺点与 fail-closed 判据的同步关系）。
 #   各面都只在 $TMP 脚手架树内覆写 ModelPresets.kt，绝不碰生产文件。
 # ---------------------------------------------------------------------------
-if guard_selected 39; then
+# ---------------------------------------------------------------------------
+# case 56–63 / 61d–61e / 68–68b / 69：W66/W67/W68 的 #39/#34/#41 case 家族。
+# ⚠️ W68 A3-R2（严质衡 A3-R1 复跑 N1）：外层条件必须是**本区内全部守卫号的析取** ——
+#   旧写法只写 `guard_selected 39`，而区内混入了 #34 的 case61d/61e（A1）与 #41 的
+#   case69 家族（A3-R1）⇒ `--only 34` / `--only 41` 会被外层条件挡掉、静默跳过自己的
+#   case（本地 pre-push 子集跑失真；CI 全量模式不受影响）。
+#   ⚠️ 代价（如实申报）：case56–63 无自己的内层门，**外层即其唯一门** ⇒ 放宽后
+#   `--only 34` / `--only 41` 也会连带跑这 10 条 #39 case（多跑 ~3 分钟）。方向安全
+#   （「宁可多跑，不可漏跑」，见文件头 --affected 口径），且不影响 PASS/FAIL 判定。
+if guard_selected 39 || guard_selected 34 || guard_selected 41; then
 d="$TMP/case56-evidence-missing"
 scaffold "$d"
 cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
@@ -3277,7 +3286,7 @@ fi
 
 fi
 if guard_selected 41; then
-d="$TMP/case69c-note-name-no-anchor"
+d="$TMP/case69d-note-name-no-anchor"
 scaffold "$d"
 cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
 package com.rickeal.agent.core.model
@@ -3325,11 +3334,13 @@ object ModelSamplingProfiles {
 }
 KT
 out="$(run_guard "$d")"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qF "ghost-arm.litertlm"; then
-  echo "PASS [case69d] 孤儿臂仍判红（note 里的文件名未假锚定，红含 ghost-arm.litertlm）"
+assert_red "case69d 孤儿臂仍判红 (第 41 条方向B)" "$rc" "$out" \
+  "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）"
+if printf '%s\n' "$out" | grep -qF "ghost-arm.litertlm"; then
+  echo "PASS [case69d] 红来自真命中（含孤儿文件名 ghost-arm.litertlm，note 里的名字未假锚定）"
   PASS=$((PASS + 1))
 else
-  echo "FAIL [case69d] 孤儿档案臂被 note 文本假锚定（A3-R1 方向B 硬化失效）"
+  echo "FAIL [case69d] 方向B 报红但输出不含孤儿文件名（假红或归因丢失）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
