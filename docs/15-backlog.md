@@ -32,6 +32,7 @@
 | W69-01 | ToolExecutionGuard.kt 拆分实施（= G4 具体化落地；含深审 🟡-4 超时孤儿×防连发、🟡-5 墙钟口径） | parked | W68 G4 修法草案评审通过（预裁量①） | W68 |
 | W69-02 | 内存公式补实测批（MiniCPM-V 4·8B 6.5GiB / Phi-4-mini 5.6GiB / E4B·GPU 5.2GiB + meminfo PSS 含 swap 定案） | parked | 真机窗口（预裁量②：tail 1.25 维持不改） | W68 |
 | W69-03 | **阈值回填校准**（= G1 恢复项②）：健康探针 BAD/DEGRADED 校准 | active | **可行性已反转**：3 个 knownBroken 容器已在机 ⇒ 坏样本可得，前提（≥2 坏样本）已满足；W68 真机窗为条件件（§五.3），未搭车则入 W69 | W68 |
+| W69-04 | #39 开启行 evidenceLevel 提取为无锚定 match（raw string 若放 `ModelPreset(` 开启行且内容含「evidenceLevel = X」字样可污染 ev 判定 = 极端構巧；来源：严质衡 W68 A1 复审 P3） | parked | 出现该写法时修（awk 侧同款 `blank_strlits` 对偶）或随 #39 下次大修 | W68 |
 
 ## 沿袭滚动（无独立 ID；随各波交接清单滚动，禁重抄整表）
 
