@@ -140,10 +140,22 @@ ACP/浏览器/远程桌面/IM 通道 **不适用端侧**（无服务器、无桌
 （user_input/reminder 行类型）、审批分支 Wave1 遗留文案、存储原子写、记忆注入链收紧、
 子代理白名单解析——见 `e4b1b8a`/`c82d42e`/`709f14f` 三提交。
 
-**Wave 3 剩余 backlog**：Microcompact（清旧 tool result 保 KV 前缀）、revert 游标
-（append-only + cut 点重开）、history_v2 流式切块与恢复接管（rebuildHistorySync 备而不用）、
-prompt cache 分层注入、artifact 化工具结果预算、插件三层开关+CRITICAL_TOOLS、
-批量审批卡、会话级静态名单、定时任务（WorkManager 需版本矩阵评审）。
+**Wave 3 剩余 backlog —— 九件逐件判死活（W68 C2 真实性刀，沿 history_v2 判死留痕范式；判死 ≠ 删除记忆，每件一行理由）**：
+
+| # | 件 | 裁决 | 理由 / 重启前提 |
+|---|---|---|---|
+| 1 | Microcompact（清旧 tool result 保 KV 前缀） | 保留（parked） | 长会话 tool result 累积仍是真实 KV 压力，无架构性废弃证据；重启前提 = 压缩器改造波次 |
+| 2 | revert 游标（append-only + cut 点重开） | 保留（parked） | 与数据回填 / 会话编辑诉求同面；重启前提 = W68-01 触发时机裁决后同窗评估 |
+| 3 | history_v2 流式切块与恢复接管 | **判死（留痕）** | 本体 history_v2 已于 W30 判死（README Wave 3 段留痕），流式切块随本体失效；现行恢复路径（ChatRunRecovery）不经过 rebuildHistorySync 备而不用路径 |
+| 4 | prompt cache 分层注入 | **判死（留痕）** | 被 native 角色通道播种 + KV 复用取代（引擎侧能力演进），注入分层已无对应接口面 |
+| 5 | artifact 化工具结果预算 | 保留（parked） | 与 `maxToolOutputChars` 截断面同族；重启前提 = 工具结果治理波次 |
+| 6 | 插件三层开关 + CRITICAL_TOOLS | 保留（parked，与议程 C4 联动） | 插件化装载本身是 Wave 3 未决大项，此件随其裁决，不先行判死 |
+| 7 | 批量审批卡 | 保留（parked） | 审批闸门已单卡化且真机验证；重启前提 = 多工具并行审批诉求出现 |
+| 8 | 会话级静态名单 | 保留（parked） | 与按会话差异化工具集诉求同面；重启前提 = 该诉求出现 |
+| 9 | 定时任务（WorkManager 需版本矩阵评审） | **移交议程 C4 裁决** | 与 Wave 3 大项绑定（定时任务/人格/插件化一揽子），W68 不自行判死；C4 过会前 parked |
+
+> 台账化：以上 parked 件随 [`docs/15-backlog.md`](docs/15-backlog.md) 沿袭滚动管理；closed-dead 两件
+> （#3/#4）为判死留痕，重开需新证据（如上游引擎恢复对应接口）。
 
 **明确不做（端侧不适用）**：Workflow Compiler 静态分析栈、浏览器自动化、
 远程桌面、IM 通道、多用户 JWT、Postgres。
