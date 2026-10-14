@@ -905,6 +905,13 @@ check "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族�
 #        `field_lit`）—— `W##` 必须出现在 `backendBasis` / `note` 赋值行的**引号内**；行尾
 #        注释（`note = "..." // W99`）里的 `W##` **不算**锚点（旧多行判据 `$0 ~ /W[0-9][0-9]/`
 #        扫整行 ⇒ 注释里写个 W99 就能骗过 MEASURED 校验）。
+#     ⚠️ **W68 A1 再修补（复审22 P2-① 独立复核的残留逃逸）**：块识别两正则要求
+#        `ModelPreset` 与 `(` **紧邻**，且多行开启正则要求 `(` 后即行尾 ⇒ 两形态整块逃逸：
+#        形态A `ModelPreset(label = "x",`（换行续写，`(` 后非行尾）、形态B
+#        `ModelPreset (…`（括号前空格）。修补 = 统一开启判据：行含 `ModelPreset` +
+#        可选空白 + `(`；以 `)`（可选逗号）收尾 ⇒ 单行块，否则 ⇒ 多行块开启。
+#        #34（check-known-broken.py）同波修同款判据 + 补同缩进 `),` 收尾 + 去
+#        KNOWN_BROKEN_SET 行首锚定；selftest case61d 一夹具三杀钉触发面。
 #     ⚠️ **新增预设：多行块沿用与相邻块一致的缩进；单行块也必须显式写 `evidenceLevel`。**
 check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）" \
   bash -c 'f=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
@@ -970,7 +977,16 @@ check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓�
                else if (ev == \"MEASURED\" && !anchor) printf \"%s:%d 预设「%s」evidenceLevel=MEASURED 但 backendBasis/note 内无本仓取证锚点（W## 波次实测）—— 疑推测预填\n\", FILENAME, start, lbl
              }
              { \$0 = strip_comment(\$0) }
-             /^[[:space:]]*ModelPreset\(.*\)[[:space:]]*,?[[:space:]]*\$/ {
+             # W68 A1 修补（复审22 P2-①）—— 块识别两正则放开展现形态：
+             #   旧单行正则 `ModelPreset\(.*\)` 与旧多行开启正则 `ModelPreset\([[:space:]]*$`
+             #   都要求 `ModelPreset` 与 `(` 紧邻 ⇒ 形态B（括号前空格 `ModelPreset (…)`）
+             #   两不命中；旧多行开启正则还要求 `(` 后即行尾 ⇒ 形态A（换行续写
+             #   `ModelPreset(label = "x",`）不命中。两形态下整块逃逸校验。
+             #   修补 = 统一开启判据：行含 `ModelPreset` + 可选空白 + `(`；以 `)`
+             #   （可选逗号）收尾 ⇒ 单行块（本规则先判先走 next）；否则 ⇒ 多行块开启。
+             #   `data class ModelPreset(` / `ModelPresetMirror(` 仍不命中（行首锚定，
+             #   前置字面挡住）。check-known-broken.py（第 34 条）同波修同款判据。
+             /^[[:space:]]*ModelPreset[[:space:]]*\(.*\)[[:space:]]*,?[[:space:]]*\$/ {
                if (inblk) { inblk=0; emit() }
                start=NR; lbl=\"\"; ev=\"\"; anchor=0
                s=\$0
@@ -980,10 +996,19 @@ check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓�
                emit()
                next
              }
-             /^[[:space:]]*ModelPreset\([[:space:]]*\$/ {
+             # W68 A1：多行块开启正则去掉 `(` 后行尾锚定 ⇒ 换行续写形态
+             # （`ModelPreset(label = "x",`）也开启多行块（该行未自闭合，上面
+             # 单行规则不会拦截）；括号前空格由 `[[:space:]]*` 容忍。
+             /^[[:space:]]*ModelPreset[[:space:]]*\(/ {
                if (inblk) { inblk=0; emit() }
                inblk=1; start=NR; lbl=\"\"; ev=\"\"; anchor=0
                match(\$0, /^[[:space:]]*/); ind=RLENGTH
+               # W68 A1：开启行本身也可能带具名实参（形态A 换行续写 ⇒ label /
+               # evidenceLevel / 锚点都在开启行上）⇒ 与单行块同款提取，否则合法
+               # 的续写预设会被误判「缺 evidenceLevel」（假红）。
+               if (match(\$0, /label[[:space:]]*=[[:space:]]*\"[^\"]*\"/)) { lbl=substr(\$0, RSTART, RLENGTH); sub(/^[^\"]*\"/, \"\", lbl); sub(/\"\$/, \"\", lbl) }
+               if (match(\$0, /evidenceLevel[[:space:]]*=[[:space:]]*[A-Za-z.]+/)) { ev=substr(\$0, RSTART, RLENGTH); sub(/^[^.]*\./, \"\", ev) }
+               if (has_anchor(\$0)) anchor=1
                next
              }
              inblk && /^[[:space:]]+\)[,][[:space:]]*\$/ {

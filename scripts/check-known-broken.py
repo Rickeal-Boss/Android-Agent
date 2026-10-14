@@ -19,20 +19,131 @@
 
 用法：python scripts/check-known-broken.py <ModelPresets.kt 路径>
      （在仓库根目录执行；自测网以 cwd=脚手架 运行，路径随 argv 传入）
+
+---------------------------------------------------------------------------
+W68 A1 修补（复审22 P2-①；双修复逃逸形态，selftest case61d 钉触发面）
+---------------------------------------------------------------------------
+旧实现的三个逃逸/错位面（脚手架实测，现役守卫全绿或错位红）：
+  ① 块开启判据 = trim 后**恰为** `ModelPreset(` ⇒ 换行续写形态
+     （`ModelPreset(label = "x",` 后续写）与括号前空格形态（`ModelPreset (…`）
+     都不命中：前者整条不是块起点、其行被吞进**前一块**（中部注入 ⇒ 红挂在
+     清白预设名下，归因错位）；若它在首个块起点**之前**（头部注入）则完全静默。
+  ② 无块收尾判据（块 = 起点到下一起点）⇒ 与① 叠加放大错位面。
+  ③ `KNOWN_BROKEN_SET` 锚定行首 ⇒ 单行构造里任何位置的 `knownBrokenOn = "…"`
+     永不命中（单行块本来也整块不识别，双逃逸）。
+修补（判据与 arch-guard.sh 第 39 条统一，实现各自独立）：
+  ① 统一开启判据：行含 `ModelPreset` + 可选空白 + `(` 且该行**未自闭合**
+     （不是以 `)` 可选逗号收尾）⇒ 开多行块；自闭合 ⇒ 单行块。
+     `data class ModelPreset(` / `ModelPresetMirror(` 不命中（行首锚定，
+     前置字面挡住）。
+  ② 补块收尾判据：起点行缩进 == 收尾行缩进的 `),` 行收块；未收尾遇新块起点
+     ⇒ 先按上一块结算（第 39 条同缩进 `),` 同款语义）。
+  ③ 三个字段匹配（knownBrokenOn / recommended / label）一律改为**块内具名实参位**
+     匹配（前字符不是 `[A-Za-z0-9_".]`，即行首 / 逗号 / 空白 / 构造括号后均可）——
+     与第 39 条 awk `field_lit` 同语义；引号要求保留（`= "` 才计入非空），
+     字符串内容里的同款字样不会被误判。
+  ④ 块识别前剥行内 `//` 注释（字符串字面量内的 `//` 不动）——与第 39 条
+     awk `strip_comment` 同语义；否则注释里的 `knownBrokenOn = "…"` 会被误判。
 """
 import re
 import sys
 import traceback
 
-# 每个 ModelPreset( 构造块从「trim 后恰为 ModelPreset(」的行开始，到下一个同款行
-# （或文件尾）结束。data class ModelPreset( 声明行 trim 后是 "data class ModelPreset("，
-# 不命中 —— 与真实文件、脚手架 fixture 同款。
-BLOCK_START = re.compile(r"^ModelPreset\($")
+# W68 A1：统一开启判据（与 arch-guard.sh 第 39 条同语义，各自实现）——
+#   单行块：行首可选空白 + `ModelPreset` + 可选空白 + `(` … 以 `)`（可选逗号）收尾；
+#   多行块开启：含 `ModelPreset` + 可选空白 + `(` 且**未自闭合**。
+# 旧判据 `^ModelPreset\($`（trim 后严式）只认「(` 独占一行」⇒ 形态A/B 整块逃逸。
+SINGLE_LINE = re.compile(r'^[ \t]*ModelPreset[ \t]*\(.*\)[ \t]*,?[ \t]*$')
+MULTI_OPEN = re.compile(r'^[ \t]*ModelPreset[ \t]*\(')
+# 块收尾：同缩进的 `),` 行（缩进 == 起点行缩进，第 39 条同款机制）。
+BLOCK_CLOSE = re.compile(r'^([ \t]+)\)[,]?[ \t]*$')
 # 非空赋值形态：knownBrokenOn = "…"（null 显式写法 `knownBrokenOn = null` 与缺省都算空）。
-KNOWN_BROKEN_SET = re.compile(r"^\s*knownBrokenOn\s*=\s*\"")
-RECOMMENDED_TRUE = re.compile(r"^\s*recommended\s*=\s*true\b")
-LABEL = re.compile(r"^\s*label\s*=\s*\"([^\"]*)\"")
+# W68 A1 ③：去行首锚定，改块内具名实参位匹配（前字符非 `[A-Za-z0-9_".]`）——
+#   单行构造 / 续写形态里任意位置的具名实参都能命中；字符串内容里的同款字样
+#   因前字符是引号或内容不含 `= "` 形态而被排除（与第 39 条 field_lit 同标准）。
+KNOWN_BROKEN_SET = re.compile(r'(?<![A-Za-z0-9_".])knownBrokenOn[ \t]*=[ \t]*"')
+RECOMMENDED_TRUE = re.compile(r'(?<![A-Za-z0-9_".])recommended[ \t]*=[ \t]*true\b')
+LABEL = re.compile(r'(?<![A-Za-z0-9_".])label[ \t]*=[ \t]*"([^"]*)"')
 DECL = re.compile(r"val knownBrokenOn:\s*String\?")
+
+
+def strip_comment(s):
+    """剥掉行内 // 注释（字符串字面量内的 // 不动；转义引号不误切）。
+
+    与 arch-guard.sh 第 39 条 awk strip_comment 同语义（W68 A1 ④）：
+    不剥的话，注释里的 `knownBrokenOn = "…"` 会被具名实参位匹配误判为违规。
+    """
+    instr = False
+    esc = False
+    for i, c in enumerate(s):
+        if esc:
+            esc = False
+            continue
+        if c == '\\':
+            esc = True
+            continue
+        if c == '"':
+            instr = not instr
+            continue
+        if not instr and c == '/' and i + 1 < len(s) and s[i + 1] == '/':
+            return s[:i]
+    return s
+
+
+def split_blocks(lines):
+    """按统一开启判据切块；块 = 起点行 → 同缩进 `),` 收尾行（含）。
+
+    W68 A1 ①②：形态A（换行续写）/ 形态B（括号前空格）都能识别；未收尾遇新
+    块起点先按上一块结算（第 39 条同款）；EOF 时未收尾也结算（fail-closed，
+    绝不把半块行静默丢给下一块或虚空）。
+    返回 [(start_index, [stripped_lines...]), ...]；start_index 从 0 起。
+    """
+    blocks = []
+    inblk = False
+    start = -1
+    ind = 0
+    buf = []
+
+    def settle():
+        blocks.append((start, buf))
+
+    for i, raw in enumerate(lines):
+        s = strip_comment(raw)
+        ind_now = len(s) - len(s.lstrip(' \t'))
+        if not inblk:
+            if MULTI_OPEN.match(s):
+                inblk = True
+                start = i
+                ind = ind_now
+                buf = [s]
+                if SINGLE_LINE.match(s):
+                    # 自闭合 ⇒ 单行块，立即结算
+                    settle()
+                    inblk = False
+                continue
+            # 非块起点行（块间空白 / 注释 / 其它代码）不属任何块
+            continue
+        # inblk：块内
+        if SINGLE_LINE.match(s) or MULTI_OPEN.match(s):
+            # 未收尾遇新块起点 ⇒ 先按上一块结算，再开新块
+            settle()
+            start = i
+            ind = ind_now
+            buf = [s]
+            if SINGLE_LINE.match(s):
+                settle()
+                inblk = False
+            continue
+        m = BLOCK_CLOSE.match(s)
+        if m and len(m.group(1)) == ind:
+            buf.append(s)
+            settle()
+            inblk = False
+            continue
+        buf.append(s)
+    if inblk:
+        settle()
+    return blocks
 
 
 def main(argv):
@@ -50,24 +161,20 @@ def main(argv):
         print("%s 不存在 `val knownBrokenOn: String?` 声明（字段被删 = 第 34 条守卫面失效）" % path)
         return
 
-    # 切块：从每个「trim 后恰为 ModelPreset(」的行到下一个同款行。
-    starts = [i for i, raw in enumerate(lines) if BLOCK_START.match(raw.strip())]
-    blocks = []
-    for k, s in enumerate(starts):
-        e = starts[k + 1] if k + 1 < len(starts) else len(lines)
-        blocks.append((s, lines[s:e]))
+    # 切块：统一开启判据 + 同缩进 `),` 收尾（W68 A1）。
+    blocks = split_blocks(lines)
     if not blocks:
         print("%s 未找到任何 ModelPreset( 构造块（守卫面失效，按违规处理）" % path)
         return
 
     for s, block in blocks:
-        broken = any(KNOWN_BROKEN_SET.match(raw) for raw in block)
+        broken = any(KNOWN_BROKEN_SET.search(raw) for raw in block)
         if not broken:
             continue
-        recommended = any(RECOMMENDED_TRUE.match(raw) for raw in block)
+        recommended = any(RECOMMENDED_TRUE.search(raw) for raw in block)
         if not recommended:
             continue
-        label = next((m.group(1) for m in (LABEL.match(raw) for raw in block) if m), "<未取到 label>")
+        label = next((m.group(1) for m in (LABEL.search(raw) for raw in block) if m), "<未取到 label>")
         line_no = s + 1
         print(
             "%s:%d 预设「%s」knownBrokenOn 非空但 recommended=true —— "

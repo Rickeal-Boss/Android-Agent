@@ -2958,6 +2958,141 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ---------------------------------------------------------------------------
+# case 61d / 61e：第 39 条 + 第 34 条**双修**（W68 A1，复审22 P2-① 三线五跑实锤的逃逸形态）
+#   case61d —— 一夹具三杀：形态A（`ModelPreset(label = "x",` 换行续写）块插在两块
+#   **合规**块之间（#34 中部注入位）：
+#     杀① #39 逃逸：旧两正则均不命中形态A（`(` 后非行尾、行内无闭 `)`）⇒ 缺
+#          evidenceLevel 的块整块逃逸 ⇒ 修补后必须判红，且输出含「缺 evidenceLevel
+#          赋值」+ 注入块 label「mid-escape-a」；
+#     杀② #34 中部注入错位：旧 BLOCK_START 严式 ⇒ 注入块被吞进前块 ⇒ 红挂在**清白
+#          预设**「innocent-first」名下（归因错位）⇒ 修补后红必须归位到「mid-escape-a」；
+#     杀③ 合法块零误伤：innocent-first（显式 knownBrokenOn=null + recommended=true，
+#          合法组合）与 tail-clean（UPSTREAM）必须保持清白 ⇒ 输出**不含**两者 label。
+#     （「红必来自注入块事实行」恰好同时抓 ② 的错位红与 ① 的逃逸绿。）
+#   case61e —— 绿面（防双修假红）：合法形态A / 形态B预设（evidenceLevel 齐全、
+#   MEASURED 带锚点 / UPSTREAM，knownBrokenOn 与 recommended 不同真）⇒ 整树退出 0，
+#     钉「放开块识别后不把合规新形态判违规」。
+#   与 case61/case61c 同范式：只覆写脚手架树内 ModelPresets.kt，绝不碰生产文件。
+#   fixture-first 证据链（现役守卫判绿/错位 → 修补 → 判红归位 + 干净树 exit 0）见
+#   W68 A1 回报；本 case 把该触发面钉进自测网（guard_selected "34 39" 双编号）。
+# ---------------------------------------------------------------------------
+if guard_selected "34 39"; then
+d="$TMP/case61d-formab-mid-injection"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "innocent-first",
+            url = "u1",
+            recommended = true,
+            knownBrokenOn = null,
+            evidenceLevel = EvidenceLevel.MEASURED,
+            note = "W60 实测（fixture 锚点）",
+        ),
+        ModelPreset(label = "mid-escape-a",
+            url = "u2",
+            recommended = true,
+            knownBrokenOn = "0.17.1 引擎初始化 NOT_FOUND（fixture 注入）",
+        ),
+        ModelPreset(
+            label = "tail-clean",
+            url = "u3",
+            recommended = false,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case61d 形态A续写块逃逸被识别 (第 39 条)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+assert_red "case61d 中部注入红归位到注入块 (第 34 条)" "$rc" "$out" \
+  "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）"
+if printf '%s\n' "$out" | grep -qF "缺 evidenceLevel 赋值" && printf '%s\n' "$out" | grep -qF "mid-escape-a"; then
+  echo "PASS [case61d-39] 红来自真命中（形态A块被识别 + 输出含「缺 evidenceLevel 赋值」与注入块 label）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case61d-39] 形态A块仍整块逃逸（第 39 条 fail-open 未修）或输出不含注入块 label"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+if printf '%s\n' "$out" | grep -qF "mid-escape-a" && ! printf '%s\n' "$out" | grep -qF "innocent-first" && ! printf '%s\n' "$out" | grep -qF "tail-clean"; then
+  echo "PASS [case61d-34] 红来自注入块事实行（含 mid-escape-a、不含清白块 label ⇒ 归位不错位）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case61d-34] 红未归位到注入块（仍挂清白预设名 = 中部注入错位未修）或误红合法块"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case 61e：第 39 条 + 第 34 条双修绿面（W68 A1）—— 合法形态A（换行续写）与形态B
+#   （括号前空格 `ModelPreset (`）预设各一枚：evidenceLevel 齐全（MEASURED 带 W##
+#   锚点 / UPSTREAM）、`recommended = true` 与显式 `knownBrokenOn = null` 合法共存
+#   ⇒ 必须整树退出 0（放开块识别 + 去行首锚定后，合规新形态零误红）。
+# ---------------------------------------------------------------------------
+if guard_selected "34 39"; then
+d="$TMP/case61e-formab-green"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(label = "form-a-ok",
+            url = "u1",
+            recommended = true,
+            knownBrokenOn = null,
+            evidenceLevel = EvidenceLevel.MEASURED,
+            note = "W60 实测（fixture 锚点）",
+        ),
+        ModelPreset (
+            label = "form-b-ok",
+            url = "u2",
+            recommended = false,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case61e 合法形态A/形态B预设 (第 39 条 / 第 34 条绿面)] 退出 0（放开识别不误红合规新形态）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case61e] 合法形态A/形态B预设被误红（双修把合规新形态判违规 = 假红，第 39/34 条误伤）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
 d="$TMP/case62-anchor-in-label"
 scaffold "$d"
 cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
