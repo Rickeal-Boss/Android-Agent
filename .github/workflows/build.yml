@@ -225,6 +225,11 @@ jobs:
         run: |
           chmod +x scripts/arch-guard.sh
           bash scripts/arch-guard.sh
+          # W68 A5（深审 🟡-6）：行数守卫表漂移检测接入 CI —— 治「没人记得跑 ⇒
+          # 行数表停更」（D5：自洽检查 ≠ 漂移检测）。line-table.sh 只依赖仓内文件与
+          # grep/sed/wc/awk 等 POSIX 工具，clean checkout 可跑；--check 不符即红本步。
+          chmod +x scripts/line-table.sh
+          bash scripts/line-table.sh --check
 
       - name: Architecture guard self-test
         # 守卫自身也要被守卫：arch-guard.sh 是纯 bash、无测试，历史上出过两次
