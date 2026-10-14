@@ -541,7 +541,7 @@ KT
   #   （合法空注册表：方向B 空过、方向A 仍硬判）——但那样 scaffold 正例的方向B 覆盖面就
   #   vacuous 了，且 clean-recommended 一带 URL 就会被方向A 判红 ⇒ 仍铺一臂非空注册表。
   # ⚠️ 覆写 ModelPresets.kt 的**绿面** case 必须自带同名 URL（fixture-preset.litertlm）
-  #   或同文件改注册表（case61e 已带 fixture-preset URL；case65e/case41c 双文件同覆）——
+  #   或同文件改注册表（case61e 已带 fixture-preset URL；case67 双文件同覆）——
   #   否则骨架臂变孤儿 ⇒ 方向B 误红。红面 case 不受影响（多一条红不断言，见文件头设计取舍）。
   cat > "$root/core-model/src/main/java/com/rickeal/agent/core/model/ModelSamplingProfiles.kt" <<'KT'
 package com.rickeal.agent.core.model
@@ -3215,13 +3215,15 @@ fi
 #               且红来自**注入的事实行**（file:line + 字样本身），非仅守卫名；
 #     case64b —— 绿面：dot 形态（feature.models）与空格形态不触犯（字面量从严，防过度匹配）。
 #   #41（ModelPresets ↔ ModelSamplingProfiles 双向一致）：
-#     case65 —— 方向A 红面：新预设带 URL 文件名但档案表（骨架空注册表）无对应臂 ⇒ 判红，
-#               输出含预设 label + 缺失文件名（预放下一条新预设静默漏档）；
-#     case65b —— 方向B 红面：档案臂登记预设表不存在的文件名（孤儿臂）⇒ 判红，输出含
+#     case65 —— 方向A 红面：新预设带 URL 文件名但档案表无对应臂 ⇒ 判红，输出含预设
+#               label + 缺失文件名（预放下一条新预设静默漏档）；
+#     case66 —— 方向B 红面：档案臂登记预设表不存在的文件名（孤儿臂）⇒ 判红，输出含
 #               孤儿文件名事实行；
-#     case65c —— 绿面：方向A 豁免（note 含「档案豁免」令牌）+ 方向B 同臂别名锚定
-#               （int4/int8 同款形态）⇒ 整树退出 0。
+#     case67 —— 绿面：方向A 覆盖（kept-model）+ 方向B 同臂别名锚定（alias-a 锚定
+#               alias-b，int4/int8 同款形态）+ note「档案豁免」令牌 ⇒ 整树退出 0。
 #   各面只覆写脚手架树内文件，绝不碰生产文件。
+#   ⚠️ 编号避开 W59 已占用的 case41/41b/41c（第 30 条家族）：dir 名与 label 同号
+#     （本文件既有约定），不制造「同名不同义」。
 # ---------------------------------------------------------------------------
 if guard_selected 40; then
 d="$TMP/case64-feature-models-mention"
@@ -3263,7 +3265,7 @@ fi
 
 fi
 if guard_selected 41; then
-d="$TMP/case41a-preset-missing-profile"
+d="$TMP/case65-preset-missing-profile"
 scaffold "$d"
 cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
 package com.rickeal.agent.core.model
@@ -3305,7 +3307,7 @@ fi
 
 fi
 if guard_selected 41; then
-d="$TMP/case41b-orphan-profile-arm"
+d="$TMP/case66-orphan-profile-arm"
 scaffold "$d"
 cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelSamplingProfiles.kt" <<'KT'
 package com.rickeal.agent.core.model
@@ -3325,20 +3327,20 @@ object ModelSamplingProfiles {
 }
 KT
 out="$(run_guard "$d")"; rc=$?
-assert_red "case65c 孤儿档案臂 (第 41 条方向B)" "$rc" "$out" \
+assert_red "case66 孤儿档案臂 (第 41 条方向B)" "$rc" "$out" \
   "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）"
 if printf '%s\n' "$out" | grep -qF "orphan-model.litertlm" && printf '%s\n' "$out" | grep -qF "方向B"; then
-  echo "PASS [case65d] 红来自真命中（输出含孤儿文件名 + 方向B 事实行）"
+  echo "PASS [case66b] 红来自真命中（输出含孤儿文件名 + 方向B 事实行）"
   PASS=$((PASS + 1))
 else
-  echo "FAIL [case65d] 方向B 报红但输出不含孤儿文件名（假红或归因丢失）"
+  echo "FAIL [case66b] 方向B 报红但输出不含孤儿文件名（假红或归因丢失）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
 
 fi
 if guard_selected 41; then
-d="$TMP/case41c-parity-green"
+d="$TMP/case67-parity-green"
 scaffold "$d"
 cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
 package com.rickeal.agent.core.model
@@ -3407,10 +3409,10 @@ object ModelSamplingProfiles {
 KT
 out="$(run_guard "$d")"; rc=$?
 if [ "$rc" -eq 0 ]; then
-  echo "PASS [case65e 覆盖+别名锚定+note 豁免 (第 41 条绿面)] 退出 0（双向一致不误红）"
+  echo "PASS [case67 覆盖+别名锚定+note 豁免 (第 41 条绿面)] 退出 0（双向一致不误红）"
   PASS=$((PASS + 1))
 else
-  echo "FAIL [case65e] 合法组合被第 41 条误红（豁免令牌 / 同臂别名锚定判据有偏）"
+  echo "FAIL [case67] 合法组合被第 41 条误红（豁免令牌 / 同臂别名锚定判据有偏）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
