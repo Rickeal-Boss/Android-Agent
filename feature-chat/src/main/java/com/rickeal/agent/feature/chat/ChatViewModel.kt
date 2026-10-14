@@ -479,14 +479,9 @@ class ChatViewModel(
         // [ChatRunCoordinator.collectRunWithPerfWindow] 首行同为 persistState / salvageText 的
         // 唯一清零点）。
         run.resetForNewConversation()
-        val keep = _uiState.value
-        _uiState.value = ChatUiState(
-            config = keep.config,
-            availableModels = keep.availableModels,
-            activeModel = keep.activeModel,
-            toolsEnabled = keep.toolsEnabled,
-            agentMaxRounds = keep.agentMaxRounds,
-        )
+        // 状态重建见 [ChatUiState.forNewConversation]（W68 B2-R1 修复：整体重建时必须
+        // 一并保留 activeModelKnownBroken，否则新会话激活态提示静默失效）。
+        _uiState.value = _uiState.value.forNewConversation()
     }
 
     /* ------------------------------------------------------- run 编排薄转发 */
@@ -581,7 +576,10 @@ internal fun chatAgentPolicy(config: InferenceConfig, model: ModelDescriptor?): 
  * 返回 `null` = 无提示（正常路径零 UI 变化）；非 null = 上屏提示文案（含「仍可继续，
  * 但可能失败」类语义，**不拦 run** —— 与加载前确认框的「拦下」语义刻意区分）。
  *
- * @param fileName 激活模型下载文件名（判定键）；null = 无激活模型。
+ * @param fileName 激活模型下载文件名（判定键）；null / 空串 = 无有效文件名（第二子句
+ *   按 `isNullOrEmpty` 判空 —— 空串 `""` 会「∉ 白名单」恒真而**误报**，故一并挡掉，
+ *   与 `ModelGpuSupport.isGpuVerified` 对空串返回 false 的语义**刻意区分**：本处空串 =
+ *   不提示，非「未验证」）。
  * @param knownBrokenOn core-data 预解析的已知坏签名；null = 该文件无已知坏签名。
  * @param backend 激活模型本次 run 的计算后端（`InferenceConfig.backend`）。
  */
@@ -592,7 +590,7 @@ internal fun activationWarningFor(
 ): String? {
     val knownBrokenClause = knownBrokenOn != null
     val gpuClause = backend == InferenceBackend.GPU &&
-        fileName != null &&
+        !fileName.isNullOrEmpty() &&
         !ModelGpuSupport.isGpuVerified(fileName)
     if (!knownBrokenClause && !gpuClause) return null
     val reason = when {
@@ -652,3 +650,34 @@ internal fun ChatUiState.applyTerminalEvent(event: AgentEvent): ChatUiState = wh
 
     else -> this
 }
+
+/**
+ * 「新会话」状态重建（W68 B2-R1，严质衡 B2 复审 Finding 1 修复）。
+ *
+ * [ChatViewModel.onNewConversation] 需要**整体重建** [ChatUiState]（清消息 / 草稿 / 流式 /
+ * 上一次的提示卡），只保留跨会话不变的四项 + 激活模型。本函数把这层重建提为**纯函数**
+ * （不触 Compose / Android API）以便 JVM 单测（`ChatUiStateTest` / `ActivationWarningTest`）。
+ *
+ * ## 为什么必须保留 [ChatUiState.activeModelKnownBroken]（本修复的要害）
+ *
+ * 该字段由 core-data 派生流 `activeModelKnownBroken` **collect 一次后写回**，而该流是
+ * `combine(settings.activeModelId, models)` 的冷派生 —— 「新对话」时两上游均**不变** ⇒
+ * 派生流**不重发**（collect 协程只订阅一次）。故若重建把字段打回默认 `null`，**无人会恢复它**：
+ * E2B·GPU / E4B·GPU 这类「已知坏 ∧ GPU 白名单内」模型，在新会话 run 里第一子句
+ * （`knownBrokenOn != null`）与第二子句（`GPU ∧ ∉ 白名单`）**双 false** ⇒ 静默不再提示，
+ * 把 `ActivationWarningGate.reset()` 的「新会话可再提示一次」**整个抵消** —— 退化成
+ * 「仅 VM 首个会话提示」。保留本字段即让 gate 复位后的重校验**有真值可判**。
+ *
+ * ## 不保留 [ChatUiState.activeModelWarning]（刻意）
+ *
+ * 换会话须**清掉**上一次的提示卡（回落默认 `null`）—— 用户已看过/已关闭的提示不跨会话残留。
+ */
+internal fun ChatUiState.forNewConversation(): ChatUiState = ChatUiState(
+    config = config,
+    availableModels = availableModels,
+    activeModel = activeModel,
+    toolsEnabled = toolsEnabled,
+    agentMaxRounds = agentMaxRounds,
+    // 要害：派生流在新会话不重发 ⇒ 必须沿用上一值，否则激活态重校验在新会话静默失效。
+    activeModelKnownBroken = activeModelKnownBroken,
+)

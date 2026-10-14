@@ -21,6 +21,12 @@ import kotlin.test.assertTrue
  * 2. **文案完整性**：命中时原样携带 `knownBrokenOn` 条件词 + 「仍可继续，但可能失败」；
  * 3. **频控**：同会话二次 run 不再现（`consumeOnce`），换会话复位（`reset`）；
  * 4. **互斥**：提示是「激活态告知」形态，不携带加载前确认框的决策动词（不叠成双弹）。
+ *
+ * 另钉两组回归（W68 B2-R1，严质衡 B2 复审）：
+ * 5. **空文件名防御**：`fileName == ""` 不得因「∉ 白名单」恒真而误报（第二子句按
+ *    `isNullOrEmpty` 判空）；
+ * 6. **新会话保活**：新会话整体重建 [ChatUiState] 时必须保留 `activeModelKnownBroken`
+ *    （否则派生流不重发 ⇒ 提示静默失效），且清掉上一次的 `activeModelWarning`。
  */
 class ActivationWarningTest {
 
@@ -117,5 +123,32 @@ class ActivationWarningTest {
         // 该决策动词（若日后有人把两形态合并，本断言判红）。
         assertFalse(notice.contains("仍要尝试"), "激活态提示不得复用加载前确认框的决策动词")
         assertEquals(false, notice.endsWith("？"), "激活态提示是陈述式告知，不是确认问句")
+    }
+
+    @Test
+    fun `空文件名不误报（防御式判空，B2-R1）`() {
+        // 空串 `""` 满足 `∉ gpuVerifiedFileNames`（恒真）⇒ 若第二子句只判 `!= null`，
+        // GPU 后端 + 空文件名会误报「未列入 GPU 白名单」。空文件名 = 无有效判定键 ⇒ 不提示。
+        assertNull(
+            activationWarningFor(fileName = "", knownBrokenOn = null, backend = InferenceBackend.GPU),
+            "空文件名不得触发 GPU 白名单提示",
+        )
+    }
+
+    @Test
+    fun `新会话重建状态时保留已知坏签名且清掉旧提示（B2-R1 回归）`() {
+        // 严质衡 B2 复审 Finding 1：onNewConversation 整体重建 ChatUiState，若丢掉
+        // activeModelKnownBroken，则 E2B·GPU 这类「已知坏 ∧ GPU 白名单内」模型在新会话
+        // run 里两子句双 false ⇒ 静默不再提示，抵消 gate.reset()。本断言钉住重建后字段存活。
+        val kept = ChatUiState(
+            activeModelKnownBroken = brokenSignature,
+            activeModelWarning = "上一会话的旧提示",
+        ).forNewConversation()
+        assertEquals(
+            brokenSignature,
+            kept.activeModelKnownBroken,
+            "新会话必须保留已知坏签名（否则派生流不重发 ⇒ 提示静默失效）",
+        )
+        assertNull(kept.activeModelWarning, "新会话必须清掉上一次的提示卡")
     }
 }

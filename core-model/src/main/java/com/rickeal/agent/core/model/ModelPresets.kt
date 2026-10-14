@@ -188,9 +188,11 @@ data class ModelPreset(
      *
      * ## 取值与不变量
      *
-     * - 取值 = litertlm 版本串（与 `gradle/libs.versions.toml` 的 `litertlm` 行、守卫 #29
-     *   期望值**同源**；当前 `"0.17.1"`）。**不引入第二处版本常量** —— bump 时由守卫 #29
-     *   兜底提示同步。
+     * - 取值 = litertlm 版本串（**人工维护**；当前 `"0.17.1"`）。⚠️ 本字面量与
+     *   `gradle/libs.versions.toml` 的 `litertlm` 行**无机械联动** —— 守卫 #29 只钉 toml
+     *   一行、**不校验本字段**（本字段是**第 3 处**版本字面量）。故 bump litertlm 时须
+     *   **人工**同步本字段，否则复审锚会指向错版本。**不引入第二处版本常量**（避免双源
+     *   漂移）；bump 时由守卫 #29 报错提示 + `docs/12` 复审流程兜底。
      * - 不变量：`appliesToRuntime != null` ⇒ `knownBrokenOn != null`（时效字段是「坏结论的
      *   定语」，无坏结论却标适用版本无意义 —— 由 `ModelPresetsKnownBrokenTest` 机械查验）。
      * - `knownBrokenOn == null` 的条目本字段恒 `null`（禁预填）。
