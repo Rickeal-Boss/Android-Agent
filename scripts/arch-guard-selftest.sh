@@ -3131,6 +3131,101 @@ else
 fi
 
 fi
+# ---------------------------------------------------------------------------
+# case 68 / 68b：W68 A1-R1 —— 第 34 条「字符串内容假红」面（严质衡 A1 复审 P1）。
+#   A1 的具名实参位匹配（去行首锚定）把匹配面扩大到「空格后」⇒ 字符串字面量内容里的
+#   同款散文会骗过匹配，造成**合法预设假红**：
+#     case68 —— note 散文记录历史原因（「该 preset 曾 recommended = true…」）+
+#               knownBrokenOn 非空 + recommended = false（合法组合）⇒ 必须整树退出 0；
+#     case68b —— 单行 raw string（三引号）内含 `knownBrokenOn = "x" 与 recommended = true
+#               互斥`，块内 knownBrokenOn = null + recommended = true（合法）⇒ 退出 0。
+#   修补 = blank_strlits（字符串字面量内容置空、引号保留）后判定（与第 39 条 awk strlit 对偶）。
+#   fixture-first：旧守卫（fadfa56）对两夹具判红 ⇒ 修补后判绿；真违规（knownBrokenOn
+#   非空 ∧ recommended=true 真值）仍须红（存量 case48 守住，本 case 不重复）。
+#   ⚠️ 两夹具的 url 均锚定骨架档案臂同名 fixture-preset.litertlm（否则第 41 条方向B 孤儿红）。
+# ---------------------------------------------------------------------------
+if guard_selected "34 39"; then
+d="$TMP/case68-note-prose-green"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "prose-note-ok",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
+            recommended = false,
+            knownBrokenOn = "0.17.1 会话创建失败（Unsupported model type）",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+            note = "W63 起因：该 preset 曾 recommended = true，坏容器被置顶推荐后下线",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case68 note 散文假红面 (第 34 条 A1-R1 绿面)] 退出 0（字符串内容不再骗过具名实参位匹配）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case68] note 里的 recommended = true 散文被误判为违规（A1-R1 假红面未修）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected "34 39"; then
+d="$TMP/case68b-raw-string-green"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "raw-combined-ok",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
+            recommended = true,
+            knownBrokenOn = null,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+            note = """历史：knownBrokenOn = "x" 与 recommended = true 互斥（见 KDoc）""",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case68b raw string 假红面 (第 34 条 A1-R1 绿面)] 退出 0（三引号内同款字样不再误判）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case68b] raw string 内的 knownBrokenOn/recommended 字样被误判（A1-R1 假红面未修）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
 d="$TMP/case62-anchor-in-label"
 scaffold "$d"
 cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'

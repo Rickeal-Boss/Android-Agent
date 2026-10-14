@@ -1006,6 +1006,11 @@ check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓�
                # W68 A1：开启行本身也可能带具名实参（形态A 换行续写 ⇒ label /
                # evidenceLevel / 锚点都在开启行上）⇒ 与单行块同款提取，否则合法
                # 的续写预设会被误判「缺 evidenceLevel」（假红）。
+               # ⚠️ W68 A1-R1 已知边界（严质衡 A1 复审 P3，挂账 W69-04，本波不修）：
+               #   开启行/单行块上的 `evidenceLevel` 提取是**无锚定 match**（未做
+               #   field_lit 的具名实参位约束）——若开启行上放 raw string 且内容含
+               #   `evidenceLevel = X` 字样，理论上可污染 ev 判定（极端構巧；现役
+               #   文件 0 处三引号）。修法 = awk 侧同款 blank_strlits 对偶。
                if (match(\$0, /label[[:space:]]*=[[:space:]]*\"[^\"]*\"/)) { lbl=substr(\$0, RSTART, RLENGTH); sub(/^[^\"]*\"/, \"\", lbl); sub(/\"\$/, \"\", lbl) }
                if (match(\$0, /evidenceLevel[[:space:]]*=[[:space:]]*[A-Za-z.]+/)) { ev=substr(\$0, RSTART, RLENGTH); sub(/^[^.]*\./, \"\", ev) }
                if (has_anchor(\$0)) anchor=1
