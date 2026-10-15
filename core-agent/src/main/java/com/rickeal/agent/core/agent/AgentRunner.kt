@@ -2486,54 +2486,9 @@ class AgentRunner(
         return committed
     }
 
-    private suspend fun executeWithGuard(call: ToolCall, tool: Tool, policy: AgentPolicy): ToolResult {
-        val started = System.currentTimeMillis()
-        // 超时值必须在 try 外声明：catch 分支（超时文案）要用它，而 catch 看不见 try 体内的局部量
-        val timeoutMillis = tool.spec.timeoutMillisOverride ?: policy.toolTimeoutMillis
-        return try {
-            // 工具会做文件读写 / 剪贴板 / 进程外调用，必须离开调用方线程（Default/Main）跑在 IO 上
-            val raw = withTimeout(timeoutMillis) {
-                withContext(Dispatchers.IO) { tool.invoke(call.argumentsJson) }
-            }
-            val output = raw.output
-            val truncated = output.length > policy.maxToolOutputChars
-            raw.copy(
-                // 内置工具（Calculator / File / System / DateTime）只填 name/output，
-                // ToolResult.callId 的默认值是空串，从不填。这里必须补上真实 callId：
-                //   - 空 callId 的 TOOL 消息会被 sanitizeForProvider 当「孤儿结果」整条丢弃，
-                //     模型永远收到「工具结果缺失」而不是真实结果，原生工具协议也会失配。
-                // 失败路径本来就填了 callId，成功路径漏了 —— 这种不对称正是 bug 温床。
-                callId = raw.callId.ifBlank { call.id },
-                // 代理对安全截断（Wave 35 D1）：裸 take 会停在半个代理对上，尾部 emoji
-                // 变成 U+FFFD 乱码 —— 这是全仓最高频的用户可见截断路径（每轮几乎都有）。
-                output = if (truncated) output.truncateSafe(policy.maxToolOutputChars) + "\n…(已截断)" else output,
-                elapsedMillis = System.currentTimeMillis() - started,
-                truncated = truncated,
-            )
-        } catch (t: Throwable) {
-            // 协程取消必须原样上抛，绝不能被吞成一条「工具执行异常」的失败结果。
-            // 吞掉的话主循环不知道该停：round++ 之后再跑一整轮 4B 推理（几十秒、持续烧电占 GPU），
-            // UI 显示已停而后台继续跑，日志还记成「工具异常」。停止按钮在工具执行阶段 100% 失效。
-            //
-            // 顺序关键：TimeoutCancellationException 是 CancellationException 的**子类**，
-            // 必须先把它排除掉，否则「工具超时」会从「可恢复错误」变成「整个 run 被取消」。
-            if (t is CancellationException && t !is kotlinx.coroutines.TimeoutCancellationException) throw t
-            val message = if (t is kotlinx.coroutines.TimeoutCancellationException) {
-                AgentLogStore.warn("工具执行超时：${call.name}（${timeoutMillis}ms）")
-                "工具执行超时（${timeoutMillis}ms）"
-            } else {
-                t.message ?: "工具执行异常"
-            }
-            ToolResult(
-                callId = call.id,
-                name = call.name,
-                ok = false,
-                output = "",
-                errorMessage = message,
-                elapsedMillis = System.currentTimeMillis() - started,
-            )
-        }
-    }
+    // `executeWithGuard` 已抽至 `ToolExecutionGuard.kt`（W69 C8 / docs/15 W69-01）：
+    // 顶层 internal 函数，含 🟡-5 单调时钟（已实施）与 🟡-1/🟡-4 设计草案（parked）。
+    // 调用点见本文件 `executeSingleToolCall` 内的 `executeWithGuard(call, tool, policy)`。
 
     /**
      * 系统指令按 section 组装（Wave 21 重构自原 buildSystemInstruction，纯拆分、
