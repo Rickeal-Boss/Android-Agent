@@ -695,12 +695,26 @@ check "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt 调用点 1、p
 #     同 #26 baseline 提不出即红范式）。
 #     红输出 = F-1 后果摘要 + bump 前置清单提示（有意识动作化）。
 #     ⚠️ check() 契约 = stdout 非空即判红：判绿路径必须无输出，红路径必须 echo。
+#     W69 A5b（外部审查 深审 S-3）：**同批追加**一条一致性校验 —— `ModelPresets.kt` 里
+#     `appliesToRuntime` 的**字面量**（现 3 处 = `"0.17.1"`）必须等于本 toml 的 `litertlm`
+#     版本；不等即红（**取红不取 warn**，理由：① 本守卫家族哲学 = 「把纪律变结构」，
+#     warn 可被忽略、不阻断合并，等于没把「人工同步」这条纪律结构掉；② `appliesToRuntime`
+#     是 knownBroken 复审的**机械锚**（bump 后据以复审过期结论），漂移会令复审指向错版本
+#     而静默漏判 —— 与 #29 本体同类后果，宜同批硬判；③ 现役 3 处与 toml 一致 ⇒ 干净树零
+#     影响）。判据只对**赋值字面量**生效（`appliesToRuntime = "X"`，排除注释位）：字段全
+#     `null` / 零字面量属合法态（过）；字段被改名导致零命中不静默 —— 由「文件缺失即红」+
+#     `docs/12` 复审流程兜底。**不改既有编号、不改既有 0.17.1 判据语义**，仅在本条 body
+#     追加（守卫名与既有 ::error:: 行保持不变）。
 check "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读四前置+前置⑤）" \
   bash -c 'f=gradle/libs.versions.toml
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（版本目录蒸发，守卫面已失效）"; exit 1; fi
            v=$(grep -oE "^litertlm[[:space:]]*=[[:space:]]*\"[^\"]+\"" "$f" | head -1 | cut -d\" -f2)
            if [ -z "$v" ]; then echo "::error::$f 提不出 litertlm 版本行（行首锚被改名 ⇒ litertlm-android 访问器将解析失败，守卫面已失效）"; exit 1; fi
-           [ "$v" = "0.17.1" ] || echo "litertlm 已改为 $v：v0.18.0 起「1 元素 text 数组→string」收敛点已删且无等价替代（W56 实证 tag b2f686e2e 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸（非发图才炸）。bump 前必须按 W56 交接「四前置」+ W58 前置⑤（临时 K=3）逐条复核，并同步更新本守卫期望值。0.17.1 行为锚定面清单（前置⑥）见 docs/12-litertlm-0171-anchors.md（W59 P3-Ⓐ 指向行，只追加不改动既有子串）"'
+           [ "$v" = "0.17.1" ] || echo "litertlm 已改为 $v：v0.18.0 起「1 元素 text 数组→string」收敛点已删且无等价替代（W56 实证 tag b2f686e2e 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸（非发图才炸）。bump 前必须按 W56 交接「四前置」+ W58 前置⑤（临时 K=3）逐条复核，并同步更新本守卫期望值。0.17.1 行为锚定面清单（前置⑥）见 docs/12-litertlm-0171-anchors.md（W59 P3-Ⓐ 指向行，只追加不改动既有子串）"
+           mp=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
+           if [ ! -f "$mp" ]; then echo "::error::$mp 不存在（第 29 条 appliesToRuntime 一致性校验面失效）"; exit 1; fi
+           mism=$(grep -nE "appliesToRuntime[[:space:]]*=[[:space:]]*\"[^\"]*\"" "$mp" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | grep -oE "\"[^\"]*\"" | tr -d "\"" | sort -u | grep -vx "$v")
+           if [ -n "$mism" ]; then echo "ModelPresets.kt 的 appliesToRuntime 字面量（$(printf "%s " $mism)）与 gradle/libs.versions.toml 的 litertlm 版本 $v 不一致：bump litertlm 时必须同步该字段（否则 knownBroken 复审锚指向错版本、过期结论静默漏判）"; fi'
 
 # 30) ChatRunCoordinator「run 级 model 来源冻结」（W59，方案 §3）：AgentRequest.model 的
 #     取值点必须仍为全局 activeModel 读点（b8b9446 实测 3 处 = AgentRequest 传参位）。
@@ -889,7 +903,12 @@ check "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族�
 #          的 `W##` **不算**锚点（W66 深审 D2：旧判据扫整块 ⇒ label 里写个 W99 就能骗过）。
 #     fail-closed：文件缺失 / `val evidenceLevel` 声明被删 / 未找到任何构造块 ⇒ 判红
 #     （守卫面失效必须判红，不静默 —— 与 #34 同款契约）。
-#     实现用**内联 awk**（沿第 23 条范式），不引第二张手写表 —— 与 ModelPresets.kt 单一数据源。
+#     W69 A5：实现从**内联 awk**（沿第 23 条范式）迁移到独立 Python 检查器
+#     `scripts/check-evidence-level.py`，消费共享解析模块 `scripts/preset_blocks.py`
+#     （外部审查第十四审 H1：本条 awk 与 #34/#41 的块解析几乎逐字重复，W68 三轮修复每次
+#     都要手工同步三处）。判据与违规文案**逐字保持**；调用 = `python3 check-evidence-level.py`。
+#     顺带裁决 W69-04：开启行 / 单行块上的 `evidenceLevel` 提取改**锚定具名实参位**
+#     （模块字段 API 天然锚定），消除原「无锚定 match 污染」面。
 #     ⚠️ 块识别**兼容两种形态**（W66 深审 D1：旧判据只认「`ModelPreset(` 独占一行」⇒ 单行
 #        `ModelPreset(…),` 整块被跳过 = fail-open）：多行块（`ModelPreset(` 行起、同缩进
 #        `),` 行收）与单行块（`ModelPreset(…),` 一行内闭）**都要校验**。
@@ -912,140 +931,24 @@ check "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族�
 #        可选空白 + `(`；以 `)`（可选逗号）收尾 ⇒ 单行块，否则 ⇒ 多行块开启。
 #        #34（check-known-broken.py）同波修同款判据 + 补同缩进 `),` 收尾 + 去
 #        KNOWN_BROKEN_SET 行首锚定；selftest case61d 一夹具三杀钉触发面。
+#     ⚠️ **W69 A5 再收紧（复审24 P1-① / P2-①）**：随共享模块迁移一并修两处：
+#        ① 块开启判据改**行内具名位匹配**（非行首锚定）+ 排除前一词为 `class` 的匹配 ⇒
+#           修 `val x = ModelPreset(` / `items = listOf(ModelPreset(` 这类**赋值/表达式
+#           前缀形态**的整块静默逃逸（旧 awk 两正则要求 `ModelPreset` 在行首）；
+#           `data class ModelPreset(` / `ModelPresetMirror(` 仍不命中。
+#        ② 新增**块注释剥离**（`/* … */`，可跨行）⇒ 块内 KDoc 散文里的
+#           `evidenceLevel = X` 字样不再污染判定（旧 awk 只剥行内 `//`）。
 #     ⚠️ **新增预设：多行块沿用与相邻块一致的缩进；单行块也必须显式写 `evidenceLevel`。**
 check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）" \
-  bash -c 'f=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
-           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 39 条守卫面已失效）"; exit 1; fi
-           grep -q "val evidenceLevel" "$f" || { echo "::error::$f 缺 val evidenceLevel 声明（字段被删 = 第 39 条守卫面已失效）"; exit 1; }
-           awk "
-             # W67 B0 修补（复审21 P2-① / P3-①）—— 两处收紧，触发面由 selftest case61c 钉住：
-             # ① strip_comment：块识别前剥行内注释。单行构造 + 行尾注释（ModelPreset(...), // 注释）
-             #    不被单行块正则命中、无多行块开启、无块收尾 ⇒ 旧实现整块逃逸。字符串字面量内
-             #    的 // 不动（url 直链等），转义引号不误切。
-             function strip_comment(s,   i, c, instr, esc) {
-               instr = 0; esc = 0
-               for (i = 1; i <= length(s); i++) {
-                 c = substr(s, i, 1)
-                 if (esc) { esc = 0; continue }
-                 if (c == \"\\\\\") { esc = 1; continue }
-                 if (c == \"\\\"\") { instr = !instr; continue }
-                 if (!instr && c == \"/\" && substr(s, i + 1, 1) == \"/\") return substr(s, 1, i - 1)
-               }
-               return s
-             }
-             # ② 锚点判定截取字符串字面量段：W## 必须落在 backendBasis / note 赋值行的引号内；
-             #    行尾注释 / 拼接段 / 其它位置的 W99 不算锚点。strlit = 取第 n 个字面量内容。
-             function strlit(s, n,   i, c, cnt, inlit, out, esc) {
-               cnt = 0; inlit = 0; out = \"\"; esc = 0
-               for (i = 1; i <= length(s); i++) {
-                 c = substr(s, i, 1)
-                 if (esc) { if (inlit && cnt == n) out = out c; esc = 0; continue }
-                 if (c == \"\\\\\") { if (inlit && cnt == n) out = out c; esc = 1; continue }
-                 if (c == \"\\\"\") {
-                   if (!inlit) { cnt++; inlit = 1 } else { inlit = 0; if (cnt == n) return out }
-                   continue
-                 }
-                 if (inlit && cnt == n) out = out c
-               }
-               return out
-             }
-             # field_lit：取 s 中 <fld> = \"...\" 的字面量段；只认具名实参位（行首或逗号之后），
-             # 防字符串内容里嵌的 note = 假字段误判（与 label 里写 W99 同型骗面的补丁）。
-             function field_lit(s, fld,   base, rel, pos, rest, prev) {
-               base = 0
-               while (1) {
-                 rel = index(substr(s, base + 1), fld)
-                 if (rel == 0) return \"\"
-                 pos = base + rel
-                 prev = (pos == 1) ? \" \" : substr(s, pos - 1, 1)
-                 if (prev !~ /[A-Za-z0-9_\".]/) {
-                   rest = substr(s, pos + length(fld))
-                   if (rest ~ /^[[:space:]]*=/) return strlit(rest, 1)
-                 }
-                 base = pos
-               }
-             }
-             function has_anchor(s) {
-               if (field_lit(s, \"backendBasis\") ~ /W[0-9][0-9]/) return 1
-               if (field_lit(s, \"note\") ~ /W[0-9][0-9]/) return 1
-               return 0
-             }
-             function emit() {
-               n++
-               if (ev == \"\") printf \"%s:%d 预设「%s」缺 evidenceLevel 赋值（全 schema 要求每条预设显式标注）\n\", FILENAME, start, lbl
-               else if (ev !~ /^(MEASURED|UPSTREAM|UNVERIFIED)\$/) printf \"%s:%d 预设「%s」evidenceLevel=%s 非法（须 MEASURED/UPSTREAM/UNVERIFIED）\n\", FILENAME, start, lbl, ev
-               else if (ev == \"MEASURED\" && !anchor) printf \"%s:%d 预设「%s」evidenceLevel=MEASURED 但 backendBasis/note 内无本仓取证锚点（W## 波次实测）—— 疑推测预填\n\", FILENAME, start, lbl
-             }
-             { \$0 = strip_comment(\$0) }
-             # W68 A1 修补（复审22 P2-①）—— 块识别两正则放开展现形态：
-             #   旧单行正则 `ModelPreset\(.*\)` 与旧多行开启正则 `ModelPreset\([[:space:]]*$`
-             #   都要求 `ModelPreset` 与 `(` 紧邻 ⇒ 形态B（括号前空格 `ModelPreset (…)`）
-             #   两不命中；旧多行开启正则还要求 `(` 后即行尾 ⇒ 形态A（换行续写
-             #   `ModelPreset(label = "x",`）不命中。两形态下整块逃逸校验。
-             #   修补 = 统一开启判据：行含 `ModelPreset` + 可选空白 + `(`；以 `)`
-             #   （可选逗号）收尾 ⇒ 单行块（本规则先判先走 next）；否则 ⇒ 多行块开启。
-             #   `data class ModelPreset(` / `ModelPresetMirror(` 仍不命中（行首锚定，
-             #   前置字面挡住）。check-known-broken.py（第 34 条）同波修同款判据。
-             /^[[:space:]]*ModelPreset[[:space:]]*\(.*\)[[:space:]]*,?[[:space:]]*\$/ {
-               if (inblk) { inblk=0; emit() }
-               start=NR; lbl=\"\"; ev=\"\"; anchor=0
-               s=\$0
-               if (match(s, /label[[:space:]]*=[[:space:]]*\"[^\"]*\"/)) { lbl=substr(s, RSTART, RLENGTH); sub(/^[^\"]*\"/, \"\", lbl); sub(/\"\$/, \"\", lbl) }
-               if (match(s, /evidenceLevel[[:space:]]*=[[:space:]]*[A-Za-z.]+/)) { ev=substr(s, RSTART, RLENGTH); sub(/^[^.]*\./, \"\", ev) }
-               if (has_anchor(s)) anchor=1
-               emit()
-               next
-             }
-             # W68 A1：多行块开启正则去掉 `(` 后行尾锚定 ⇒ 换行续写形态
-             # （`ModelPreset(label = "x",`）也开启多行块（该行未自闭合，上面
-             # 单行规则不会拦截）；括号前空格由 `[[:space:]]*` 容忍。
-             /^[[:space:]]*ModelPreset[[:space:]]*\(/ {
-               if (inblk) { inblk=0; emit() }
-               inblk=1; start=NR; lbl=\"\"; ev=\"\"; anchor=0
-               match(\$0, /^[[:space:]]*/); ind=RLENGTH
-               # W68 A1：开启行本身也可能带具名实参（形态A 换行续写 ⇒ label /
-               # evidenceLevel / 锚点都在开启行上）⇒ 与单行块同款提取，否则合法
-               # 的续写预设会被误判「缺 evidenceLevel」（假红）。
-               # ⚠️ W68 A1-R1 已知边界（严质衡 A1 复审 P3，挂账 W69-04，本波不修）：
-               #   开启行/单行块上的 `evidenceLevel` 提取是**无锚定 match**（未做
-               #   field_lit 的具名实参位约束）——若开启行上放 raw string 且内容含
-               #   `evidenceLevel = X` 字样，理论上可污染 ev 判定（极端構巧；现役
-               #   文件 0 处三引号）。修法 = awk 侧同款 blank_strlits 对偶。
-               if (match(\$0, /label[[:space:]]*=[[:space:]]*\"[^\"]*\"/)) { lbl=substr(\$0, RSTART, RLENGTH); sub(/^[^\"]*\"/, \"\", lbl); sub(/\"\$/, \"\", lbl) }
-               if (match(\$0, /evidenceLevel[[:space:]]*=[[:space:]]*[A-Za-z.]+/)) { ev=substr(\$0, RSTART, RLENGTH); sub(/^[^.]*\./, \"\", ev) }
-               if (has_anchor(\$0)) anchor=1
-               next
-             }
-             # W68 A3-R1：括号换行形态（`ModelPreset` 独占一行、`(` 在下一非空行）——
-             #   与 #34/#41 两个 Python 解析器同步（严质衡 A2/A3 复审 f6：旧判据要求
-             #   `(` 同行 ⇒ 该形态整块静默逃逸）。用 pending 标记跨空行前瞻。
-             /^[[:space:]]*ModelPreset[[:space:]]*\$/ {
-               if (inblk) { inblk=0; emit() }
-               pend=NR; match(\$0, /^[[:space:]]*/); pendind=RLENGTH
-               next
-             }
-             pend && /^[[:space:]]*\(/ {
-               inblk=1; start=pend; lbl=\"\"; ev=\"\"; anchor=0; ind=pendind; pend=0
-               if (match(\$0, /label[[:space:]]*=[[:space:]]*\"[^\"]*\"/)) { lbl=substr(\$0, RSTART, RLENGTH); sub(/^[^\"]*\"/, \"\", lbl); sub(/\"\$/, \"\", lbl) }
-               if (match(\$0, /evidenceLevel[[:space:]]*=[[:space:]]*[A-Za-z.]+/)) { ev=substr(\$0, RSTART, RLENGTH); sub(/^[^.]*\./, \"\", ev) }
-               if (has_anchor(\$0)) anchor=1
-               next
-             }
-             pend && \$0 ~ /[^[:space:]]/ { pend=0 }
-             inblk && /^[[:space:]]+\)[,][[:space:]]*\$/ {
-               match(\$0, /^[[:space:]]*/)
-               if (RLENGTH == ind) { inblk=0; emit(); next }
-             }
-             inblk {
-               if (\$0 ~ /^[[:space:]]*label[[:space:]]*=[[:space:]]*\"/) { lbl=\$0; sub(/^[[:space:]]*label[[:space:]]*=[[:space:]]*\"/, \"\", lbl); sub(/\".*/, \"\", lbl) }
-               if (\$0 ~ /^[[:space:]]*evidenceLevel[[:space:]]*=[[:space:]]*/) { ev=\$0; sub(/^[[:space:]]*evidenceLevel[[:space:]]*=[[:space:]]*/, \"\", ev); sub(/[,].*/, \"\", ev); sub(/.*[.]/, \"\", ev); gsub(/[[:space:]]/, \"\", ev) }
-               if (has_anchor(\$0)) anchor=1
-             }
-             END {
-               if (inblk) { inblk=0; emit() }
-               if (n == 0) printf \"%s 未找到任何 ModelPreset( 构造块（守卫面失效，按违规处理）\n\", FILENAME
-             }
-           " "$f"'
+  bash -c "f=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
+           if [ ! -f \"\$f\" ]; then echo \"::error::\$f 不存在（被改名/删除？第 39 条守卫面已失效）\"; exit 1; fi
+           C=\"$GUARD_DIR/check-evidence-level.py\"
+           if [ ! -f \"\$C\" ]; then echo \"::error::\$C 不存在（第 39 条守卫面已失效）\"; exit 1; fi
+           PY=\$(command -v python3 || command -v python)
+           if [ -z \"\$PY\" ]; then echo \"::error::找不到 python3/python 运行 \$C（第 39 条守卫面已失效）\"; exit 1; fi
+           out=\$(\"\$PY\" \"\$C\" \"\$f\"); rc=\$?
+           if [ -n \"\$out\" ]; then printf '%s\n' \"\$out\"; fi
+           if [ \"\$rc\" -ne 0 ] && [ -z \"\$out\" ]; then echo \"::error::check-evidence-level.py 非零退出(\$rc)但无输出（守卫自身故障，防静默失效）\"; fi"
 
 # 40) core-model 源码禁出现 feature-models 字样（W68 A3，复检 Q-5）：W67 B2 把
 #     ModelPresets 从 feature-models 迁到 core-model 后，core-model 源码里残留的

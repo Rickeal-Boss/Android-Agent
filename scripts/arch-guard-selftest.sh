@@ -3465,6 +3465,138 @@ fi
 
 fi
 # ---------------------------------------------------------------------------
+# case 70 / 70b：W69 A5/A8 —— 共享解析模块 `preset_blocks.py` 迁移后的**新触发面**
+#   （外部审查第十四审 H1 抽共享模块；复审24 P1-① 赋值前缀逃逸 / P2-① 块注释散文假红）。
+#   case70 —— **一夹具三杀**：把违规块写成**赋值前缀形态** `val __evil = ModelPreset(`
+#     （旧三实现都要求 `ModelPreset` 在**行首** ⇒ 整块静默逃逸），块内同时违反三守卫判据：
+#       杀① #39：缺 `evidenceLevel` 赋值 ⇒ 红（输出含「缺 evidenceLevel 赋值」+ label）；
+#       杀② #34：`knownBrokenOn` 非空 ∧ `recommended = true` ⇒ 红（输出含注入块 label，
+#                **不含**清白块 label「innocent」⇒ 归位不错位）；
+#       杀③ #41：`url` 的 `.litertlm` 文件名不在档案表 ⇒ 方向A 红（输出含该文件名）。
+#     清白块 url 锚定骨架档案臂 fixture-preset.litertlm（隔离方向B 噪声）；
+#     三杀各自断言红来自**注入块事实行**（label / 文件名），缺一即 FAIL。
+#     fixture-first 证据（旧实现三守卫全绿/逃逸 → 迁移后三红归位）见 W69 A 回报；
+#     本 case 把该触发面钉进自测网（guard_selected "34 39 41" 三编号析取）。
+#   case70b —— **#34 块注释散文假红绿面**：块内**跨行块注释**（含 KDoc 反引号风格）写
+#     `knownBrokenOn = "x"` 字样，但块的真值合规（knownBrokenOn = null + recommended = true
+#     + evidenceLevel = UPSTREAM）⇒ 必须整树退出 0（旧 #34 只剥行内 `//` ⇒ 块注释里的同款
+#     字样骗过判定 ⇒ 假红）。钉「块注释剥离」这条 W69 新增判据。
+# ---------------------------------------------------------------------------
+if guard_selected "34 39 41"; then
+d="$TMP/case70-prefix-assign-three-kill"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "innocent",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
+            recommended = true,
+            knownBrokenOn = null,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+        ),
+    )
+
+    val __evil = ModelPreset(
+        label = "prefix-evil",
+        url = "https://x/evil-no-profile.litertlm",
+        recommended = true,
+        knownBrokenOn = "0.17.1 注入（赋值前缀形态）",
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case70 赋值前缀块逃逸被识别 (第 39 条)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+assert_red "case70 赋值前缀块逃逸被识别 (第 34 条)" "$rc" "$out" \
+  "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）"
+assert_red "case70 赋值前缀块逃逸被识别 (第 41 条方向A)" "$rc" "$out" \
+  "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）"
+if printf '%s\n' "$out" | grep -qF "缺 evidenceLevel 赋值" && printf '%s\n' "$out" | grep -qF "prefix-evil"; then
+  echo "PASS [case70-39] 红来自真命中（赋值前缀块被识别 + 输出含「缺 evidenceLevel 赋值」与注入块 label）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case70-39] 赋值前缀块仍整块逃逸（P1-① fail-open 未修）或输出不含注入块 label"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+if printf '%s\n' "$out" | grep -qF "prefix-evil" && ! printf '%s\n' "$out" | grep -qF "innocent"; then
+  echo "PASS [case70-34] 红来自注入块事实行（含 prefix-evil、不含清白块 label ⇒ 归位不错位）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case70-34] 红未归位到注入块（仍挂清白预设名 = 逃逸/错位未修）或误红合法块"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+if printf '%s\n' "$out" | grep -qF "prefix-evil" && printf '%s\n' "$out" | grep -qF "evil-no-profile.litertlm"; then
+  echo "PASS [case70-41] 红来自真命中（含注入块 label + 缺失文件名 evil-no-profile.litertlm）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case70-41] 方向A 未报出赋值前缀块的缺失文件名（块仍逃逸？）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected "34 39"; then
+d="$TMP/case70b-block-comment-prose-green"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            /* 历史沿革（跨行块注释）：
+               knownBrokenOn = "x" 与 recommended = true 互斥；
+               KDoc 反引号风格提及：`knownBrokenOn = "x"`
+            */
+            label = "block-comment-prose-ok",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
+            recommended = true,
+            knownBrokenOn = null,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case70b 块注释散文假红面 (第 34 条 P2-① 绿面)] 退出 0（块注释里的同款字样不再误判）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case70b] 块注释（含跨行/KDoc 反引号）里的 knownBrokenOn/recommended 字样被误判为违规（P2-① 假红面未修）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+
+# ---------------------------------------------------------------------------
 # case 64 / 64b / 65 / 65b / 65c：W68 A3 新守卫两件（复检 Q-5 / Q-2；主理人预裁量⑦）。
 #   #40（core-model 禁 feature-models 字样）：
 #     case64 —— 向骨架 core-model 源文件注入一行含 `feature-models` 的注释 ⇒ 判红，

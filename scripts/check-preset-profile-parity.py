@@ -28,63 +28,40 @@
   - 方向B（硬）：`forFileName` 的每个 `when` **臂**至少有一个文件名命中某预设 ⇒ 全臂
     无对应预设 ⇒ 红（孤儿档案）。臂内其余文件名视为**同族别名**（如
     `MiniCPM5-2B_int4/int8` 同臂两档，Wave 20 起有意登记；int4 有预设即锚定该臂）。
-  - 块开启判据（W68 A3-R1，与 #34/#39 同款）：`ModelPreset(` 同行（形态A/B 空白容忍）
+  - 块开启判据（W69 A4，与 #34/#39 同款，共享模块）：`ModelPreset(` 行内具名位匹配
     **或** `ModelPreset` 独占一行且下一非空行以 `(` 开头（括号换行形态）。
+
+---------------------------------------------------------------------------
+W69 A4：块解析迁移到共享模块 `scripts/preset_blocks.py`（外部审查第十四审 H1）
+---------------------------------------------------------------------------
+本脚本原先自带一份与 #34 / #39 几乎逐字重复的块解析实现（`SINGLE_LINE` / `MULTI_OPEN` /
+`OPEN_HEAD` / `NEXT_PAREN` / `BLOCK_CLOSE` + `strip_comment` / `blank_strlits` /
+`opens_block` / `split_preset_blocks`）以及 `blank_prose_literals`。W68 三轮修复每次
+都要**手工同步三处**；本波删除重复实现，改 `import preset_blocks` 消费同一解析源：
+  · 块切分 → `pb.parse_blocks`（行内具名位开启判据 + 同缩进 `),` 收尾 + 括号换行 +
+    块注释剥离 + 字段锚定具名位）。
+  · `blank_prose_literals` → `pb.blank_field_literals`（字段级散文置空，语义等价）。
+  · `label` / `note` 取自模块字段 API（`fields`），行号取 `start_line`。
+方向A / 方向B 判据与文案**逐字保持**。`parse_profile_arms`（ModelSamplingProfiles 侧
+的 `when (fileName)` 臂解析）为 #41 独有、无重复，保留（内部 `strip_comment` 改调模块
+`strip_line_comment`，同语义）。
 """
 import re
 import sys
 import traceback
 
-# ---- ModelPresets.kt 块解析（与 check-known-broken.py 第 34 条同款，W68 A1/A1-R1/A3-R1 判据）----
-SINGLE_LINE = re.compile(r'^[ \t]*ModelPreset[ \t]*\(.*\)[ \t]*,?[ \t]*$')
-MULTI_OPEN = re.compile(r'^[ \t]*ModelPreset[ \t]*\(')
-# W68 A3-R1：括号换行形态（`ModelPreset` 独占一行，`(` 在下一非空行）——严质衡 A2/A3
-#   复审 f6 实测的静默逃逸面；开启时须前瞻下一非空行是否以 `(` 开头。
-OPEN_HEAD = re.compile(r'^[ \t]*ModelPreset[ \t]*$')
-NEXT_PAREN = re.compile(r'^[ \t]*\(')
-BLOCK_CLOSE = re.compile(r'^([ \t]+)\)[,]?[ \t]*$')
-# 块内具名实参位（前字符非 [A-Za-z0-9_".]，与第 39 条 field_lit 同语义）
-LABEL = re.compile(r'(?<![A-Za-z0-9_".])label[ \t]*=[ \t]*"([^"]*)"')
-NOTE = re.compile(r'(?<![A-Za-z0-9_".])note[ \t]*=[ \t]*"([^"]*)"')
+import preset_blocks as pb
+
+# 文件名提取（块内，散文字段置空后扫全块）。
+LITERTLM_NAME = re.compile(r'([A-Za-z0-9._-]+\.litertlm)')
 # W68 A3-R2：文件名提取改「字段级散文置空」——先抹掉散文字段（note / backendBasis /
 #   knownBrokenOn / evidenceLevel / label / sizeText / ramText / memBasis）的字面量内容，
 #   再扫全块取 `.litertlm`。比 A3-R1 的「行级限定 url/mirrors」更稳：
 #   ① 仍根治 f2/f8（note/backendBasis 散文里的文件名不计入）；
 #   ② 不丢镜像/续行形态（bespoke `ModelPresetMirror(...)`、多行 `domesticMirrors(`、
 #      `url =` 换行续写）的文件名 —— 这些行没有 url/mirrors 关键字，行级限定会漏。
-PROSE_FIELD = re.compile(
-    r'(?<![A-Za-z0-9_".])(note|backendBasis|knownBrokenOn|evidenceLevel|label|sizeText|ramText|memBasis)[ \t]*='
-)
-LITERTLM_NAME = re.compile(r'([A-Za-z0-9._-]+\.litertlm)')
-
-
-def blank_prose_literals(s):
-    """抹掉**散文字段**后的第一个字符串字面量内容（引号保留），其余原样。
-
-    W68 A3-R2（严质衡 A3-R1 复跑 N2）：字段级而非行级 —— url / mirrors /
-    domesticMirrors / 任何其它位置的 `.litertlm` 字面量都保留，只有 note /
-    backendBasis 等散文里的提及被置空。一次同时根治 f2（散文文件名假红）与 f8
-    （散文文件名假锚定孤儿臂），且不牺牲镜像/续行形态的覆盖。
-    """
-    out = list(s)
-    for m in PROSE_FIELD.finditer(s):
-        i = m.end()
-        while i < len(s) and s[i] in ' \t':
-            i += 1
-        if i >= len(s) or s[i] != '"':
-            continue
-        j = i + 1
-        while j < len(s):
-            if s[j] == '\\':
-                j += 2
-                continue
-            if s[j] == '"':
-                break
-            j += 1
-        for k in range(i, min(j + 1, len(s))):
-            if out[k] != '"':
-                out[k] = ' '
-    return ''.join(out)
+PROSE_FIELDS = ("note", "backendBasis", "knownBrokenOn", "evidenceLevel", "label",
+                "sizeText", "ramText", "memBasis")
 
 # ---- ModelSamplingProfiles.kt 档案臂解析 ----
 WHEN_OPEN = re.compile(r'=\s*when\s*\(\s*fileName\s*\)\s*\{')
@@ -105,114 +82,6 @@ def exempted(note):
     return EXEMPT_TOKEN in note and ANCHOR.search(note) is not None
 
 
-def strip_comment(s):
-    """剥行内 // 注释（字符串内不动）—— 与第 34/39 条同语义。"""
-    instr = False
-    esc = False
-    for i, c in enumerate(s):
-        if esc:
-            esc = False
-            continue
-        if c == '\\':
-            esc = True
-            continue
-        if c == '"':
-            instr = not instr
-            continue
-        if not instr and c == '/' and i + 1 < len(s) and s[i + 1] == '/':
-            return s[:i]
-    return s
-
-
-def blank_strlits(s):
-    """字符串字面量内容置空、引号保留（与 check-known-broken.py 同款，W68 A1-R1）。
-
-    用于**定位**具名实参位（url/mirrors）而不被字符串内容里的同款字样骗到。
-    """
-    res = []
-    instr = False
-    esc = False
-    for ch in s:
-        if esc:
-            res.append(' ' if instr else ch)
-            esc = False
-            continue
-        if ch == '\\':
-            res.append(ch)
-            esc = True
-            continue
-        if ch == '"':
-            instr = not instr
-            res.append(ch)
-            continue
-        res.append(' ' if instr else ch)
-    return ''.join(res)
-
-
-def opens_block(lines, i):
-    """行 i 是否开启一个 ModelPreset 构造块（W68 A3-R1：含括号换行形态）。
-
-    形态A/B：`ModelPreset(` 同行（可选空白）；括号换行：`ModelPreset` 独占一行且
-    下一**非空**行以 `(` 开头。
-    """
-    s = strip_comment(lines[i])
-    if MULTI_OPEN.match(s):
-        return True
-    if OPEN_HEAD.match(s):
-        for j in range(i + 1, len(lines)):
-            nxt = strip_comment(lines[j])
-            if not nxt.strip():
-                continue
-            return bool(NEXT_PAREN.match(nxt))
-    return False
-
-
-def split_preset_blocks(lines):
-    """ModelPreset 构造块切分（第 34 条同款 + W68 A3-R1 括号换行形态）。"""
-    blocks = []
-    inblk = False
-    start = -1
-    ind = 0
-    buf = []
-
-    def settle():
-        blocks.append((start, buf))
-
-    for i, raw in enumerate(lines):
-        s = strip_comment(raw)
-        ind_now = len(s) - len(s.lstrip(' \t'))
-        if not inblk:
-            if opens_block(lines, i):
-                inblk = True
-                start = i
-                ind = ind_now
-                buf = [s]
-                if SINGLE_LINE.match(s):
-                    settle()
-                    inblk = False
-                continue
-            continue
-        if SINGLE_LINE.match(s) or opens_block(lines, i):
-            settle()
-            start = i
-            ind = ind_now
-            buf = [s]
-            if SINGLE_LINE.match(s):
-                settle()
-                inblk = False
-            continue
-        m = BLOCK_CLOSE.match(s)
-        if m and len(m.group(1)) == ind:
-            buf.append(s)
-            settle()
-            inblk = False
-            continue
-        buf.append(s)
-    if inblk:
-        settle()
-    return blocks
-
-
 def parse_profile_arms(lines):
     """提取 forFileName 的 when 臂：返回 [[文件名, ...], ...]（臂 = 两次 `->` 之间的名单）。
 
@@ -225,7 +94,7 @@ def parse_profile_arms(lines):
     arms = []
     current = []
     for raw in lines:
-        s = strip_comment(raw)
+        s = pb.strip_line_comment(raw)
         if not in_when:
             if WHEN_OPEN.search(s):
                 in_when = True
@@ -265,7 +134,7 @@ def main(argv):
         print("check-preset-profile-parity.py 读不到 %s：%s（守卫面失效，按违规处理）" % (profile_path, e))
         return
 
-    blocks = split_preset_blocks(preset_lines)
+    blocks = pb.parse_blocks(preset_lines)
     if not blocks:
         print("%s 未找到任何 ModelPreset( 构造块（第 41 条守卫面失效，按违规处理）" % preset_path)
         return
@@ -282,14 +151,14 @@ def main(argv):
 
     # ---- 方向A：预设文件名必须命中档案（note 显式豁免除外）----
     preset_names = set()
-    for s, block in blocks:
-        label = next((m.group(1) for m in (LABEL.search(raw) for raw in block) if m), "<未取到 label>")
-        note = next((m.group(1) for m in (NOTE.search(raw) for raw in block) if m), "")
+    for b in blocks:
+        label = b["label"] if b["label"] is not None else "<未取到 label>"
+        note = b["fields"].get("note", (None,))[0] or ""
         names = []
-        for raw in block:
+        for raw in b["lines"]:
             # W68 A3-R2：字段级散文置空后扫全块（散文里的文件名不计入；url / mirrors /
             # domesticMirrors / ModelPresetMirror 等真实文件名字面量全部保留）
-            names.extend(LITERTLM_NAME.findall(blank_prose_literals(raw)))
+            names.extend(LITERTLM_NAME.findall(pb.blank_field_literals(raw, PROSE_FIELDS)))
         if not names:
             continue  # 无 URL 的块（fixture/桩）无可检查项
         preset_names.update(names)
@@ -298,7 +167,7 @@ def main(argv):
             print(
                 "%s:%d 预设「%s」文件名 %s 无 ModelSamplingProfiles 档案分支 —— "
                 "新预设漏档 = 采样/上下文钳制静默缺席（第 41 条方向A；确需豁免请在 note 写明「%s」+ 理由 + W## 波次锚点）"
-                % (preset_path, s + 1, label, "、".join(missing), EXEMPT_TOKEN)
+                % (preset_path, b["start_line"], label, "、".join(missing), EXEMPT_TOKEN)
             )
 
     # ---- 方向B：每个档案臂至少一个文件名命中预设（全臂孤儿 ⇒ 红；臂内其余为同族别名）----
