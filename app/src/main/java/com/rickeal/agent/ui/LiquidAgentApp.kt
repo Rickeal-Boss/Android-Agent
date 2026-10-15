@@ -504,6 +504,28 @@ private fun MainShell() {
                         }
                     }
                 },
+                onDeleteConversation = { id ->
+                    // 权威闸门：忙时不删（UI 那侧已禁用行内删除图标；这里再判一次，
+                    // 读真源 `.value`，口径与新建 / 切会话一致 —— 删**当前会话**同样会
+                    // 销毁在途生成的 ChatViewModel，半截回答既不显示也不落库）。
+                    if (!container.agentRunner.isBusy.value) {
+                        // 删的是否为**当前正在看**的会话：是则删完必须切走，否则会停在
+                        // 一个已不存在的会话上（ChatViewModel 仍持旧 cid）。
+                        val deletingCurrent = id == currentConversationId
+                        drawerScope.launch {
+                            // 落盘 + 级联清理（钩子）在 Repository 内完成，_metas 随之刷新，
+                            // 列表自动更新，无需手工重拉。
+                            container.conversationRepository.delete(id)
+                            if (deletingCurrent) {
+                                // 复用抽屉「新建任务」的既有导航语义（空会话、
+                                // conversationId=null，重建 VM）—— **不自创导航**。
+                                // 删完关抽屉，与新建 / 切会话的收尾一致。
+                                navController.navigateConversation(null)
+                                drawerState.close()
+                            }
+                        }
+                    }
+                },
                 onOpenSandbox = {
                     sandboxInfoOpen = true
                     drawerScope.launch { drawerState.close() }

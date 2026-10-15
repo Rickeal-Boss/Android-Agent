@@ -75,8 +75,14 @@ class AppContainer(
     // 按声明顺序依赖它。消费点仍在其下的 engineLoadCoordinator（DefaultEngineFactory 注入）。
     private val engineResilienceStore: EngineResilienceStore = ProcessEngineResilienceStore()
 
+    // W69 C3：会话删除入口上线，钩子从「只清韧性快照」扩为**多步级联清理**
+    //（见 [cleanupConversationArtifacts]）。这里走**方法调用**（延迟到调用期解析），
+    // 因此被清理的 [toolApprovalCache] / [subagentSessions] 可以声明在本行**之后** ——
+    // 它们只在用户删除会话（`delete()` 回调）时被读到，那时全部属性都已初始化；
+    // 属性初始化顺序对方法体不设限（不同于在初始化表达式里直接读属性）。
+    // [engineResilienceStore] 仍保持在其上方声明不变（W58 的既有顺序）。
     val conversationRepository: ConversationRepository =
-        ConversationRepository(context) { id -> engineResilienceStore.clear(id) }
+        ConversationRepository(context) { id -> cleanupConversationArtifacts(id) }
 
     /**
      * 附件存储器。**同时是附件目录的唯一事实来源** —— [importAttachment] 与
@@ -594,6 +600,46 @@ class AppContainer(
     }
 
     /**
+     * 会话删除后的**级联清理**（W69 C3 激活 W58 卫生位）。
+     *
+     * [ConversationRepository.delete] 落盘完成（会话文件 + `index.json` 已更新、`_metas`
+     * 已刷新）后回调本方法，按 conversationId 清掉散落在各 store / 目录里的关联残留：
+     *
+     *  1. [engineResilienceStore]：进程级会话韧性快照（W58 原始卫生位）——
+     *     防「会话已删、证伪/计数快照仍占键」；
+     *  2. [toolApprovalCache]：该会话的「计划级授权」缓存。`revokeAll(id)` 按
+     *     `"$cid|"` 前缀清，天然覆盖全部能力档位（档位维度在 cid 之后）；
+     *  3. [subagentSessions]：该会话下全部子代理（Actor）上下文 —— 内存 + 磁盘
+     *     （`clearConversation(id)` 按 `"$cid::"` 前缀清，键格式见 [SubagentSessionStore.key]）；
+     *  4. journal 目录 `<journalRoot>/<cid>/` 与回合归档目录 `<historyRoot>/<cid>/`：
+     *     两者都是「按 cid 命名的专属子目录」的既有约定（[AgentRunJournal.open] /
+     *     `SegmentedHistoryStore.open`），故直接递归删除，**不改 journal / history 层**
+     *     —— 它们没有「按 cid 清理」的 API（如实申报，见下）。
+     *
+     * ⚠️ **不清理的（如实申报）**：
+     *  - 内容寻址 blob 池（`ContentAddressedPool`）：外部审查 🟡-3 的结论是「只增池」，
+     *    不做按会话删除（池内块可能被多会话共享，按 cid 删会误伤），本波沿用该结论；
+     *  - [historyStores] / [tokenLedgers] 的池化对象：随 AppContainer 存活，会话删除后
+     *    残留一个空 store / 空账本对象，无泄漏（与各自 KDoc 的既有结论同口径）。
+     *
+     * ⚠️ **失败不反噬删除本身**：四步各自 `runCatching` + 记 WARN —— 删除的**权威结果**
+     * 是会话文件与索引已落盘（[ConversationRepository.delete] 的职责），清理是卫生位；
+     * 任一步失败都不应把「已成功的删除」变成用户可见的报错。
+     *
+     * @see conversationArtifactDirs 目录级清理的**纯判据**（可 JVM 单测）。
+     */
+    private fun cleanupConversationArtifacts(id: String) {
+        runCatching { engineResilienceStore.clear(id) }
+            .onFailure { AgentLogStore.warn("会话删除清理：韧性快照 clear 失败（${it.javaClass.simpleName}）") }
+        runCatching { toolApprovalCache.revokeAll(id) }
+            .onFailure { AgentLogStore.warn("会话删除清理：审批缓存 revokeAll 失败（${it.javaClass.simpleName}）") }
+        runCatching { subagentSessions.clearConversation(id) }
+            .onFailure { AgentLogStore.warn("会话删除清理：子代理会话 clearConversation 失败（${it.javaClass.simpleName}）") }
+        runCatching { purgeConversationArtifactDirs(conversationArtifactDirs(journalRoot, historyRoot, id)) }
+            .onFailure { AgentLogStore.warn("会话删除清理：journal/history 目录清理失败（${it.javaClass.simpleName}）") }
+    }
+
+    /**
      * 引擎空闲时整体释放（4B 权重 GB 级常驻，是应用最大的内存占用者）。
      *
      * 真实调用点（Wave 30，Operit 启发分析 B.3）：
@@ -630,3 +676,67 @@ class AppContainer(
  */
 val LocalAppContainer: ProvidableCompositionLocal<AppContainer> =
     staticCompositionLocalOf { error("LocalAppContainer 未提供：请在 LiquidAgentTheme 外层 CompositionLocalProvider") }
+
+/**
+ * 会话删除时，该会话在 **journal / history 两个根目录**下的专属子目录（W69 C3）。
+ *
+ * 纯函数（不触 Android、不做 IO）—— 存在的全部理由是**可 JVM 单测**：删除会话会递归
+ * 删目录，是**不可逆**操作，判据一旦写错（比如把整个根目录当成待删目录）就是灾难，
+ * 必须能离线钉住。
+ *
+ * 约定（既有，未改动）：journal 目录 = `<journalRoot>/<conversationId>/`
+ * （见 [AgentRunJournal.open] 的 `runDir`），回合归档目录 = `<historyRoot>/<conversationId>/`
+ * （见 `SegmentedHistoryStore.open`）。两者都是**直接子目录**，故用 `File(root, cid)` 拼接。
+ *
+ * ⚠️ **防御性拒绝非法 cid**（返回空列表 = 不删任何东西，判据核见 [isSafeConversationDirName]）：
+ *  - 空白 cid：`File(root, "")` 等于 `root` 本身 ⇒ 会把**整个根目录**（全部会话的
+ *    journal / history）递归删光；
+ *  - **`"."`**：`File(root, ".")` 在文件系统上等价 `root` ⇒ 同样删光根下全部兄弟会话目录
+ *    （外部审查 P2 补正）；
+ *  - 含路径分隔符（`/`、`\`）、`..` 或 ISO 控制字符的 cid：逃逸出根目录 / 非法文件名。
+ * 生产 cid 是 UUID（不含这些字符），但删除是不可逆的，宁可保守。
+ */
+internal fun conversationArtifactDirs(
+    journalRoot: File,
+    historyRoot: File,
+    conversationId: String,
+): List<File> {
+    if (!isSafeConversationDirName(conversationId)) return emptyList()
+    return listOf(File(journalRoot, conversationId), File(historyRoot, conversationId))
+}
+
+/**
+ * 会话 id 是否可安全用作「单个目录名」—— [conversationArtifactDirs] 的判据核（独立可测）。
+ *
+ * 拒绝（返回 false，即不产出任何待删目录）：
+ *  - **空白**：`File(root, "")` 等于 `root` 本身 ⇒ 会删光整个根目录；
+ *  - **`"."`**：`File(root, ".")` 在文件系统上等价 `root` ⇒ 同样会删光根下**全部兄弟会话目录**
+ *    （与空白同型的「删光根」事故，外部审查 P2 补正 —— `"."` 非 blank、不含 `/ \ ..`，
+ *    旧的 `contains("..")` 判据**漏**它）；
+ *  - **`".."` / 含 `".."` 子串**：路径逃逸（保守拒绝；UUID 不含）；
+ *  - **含 `/` 或 `\`**：逃逸出根目录；
+ *  - **含 ISO 控制字符（含 NUL）**：非法文件名字节，可能被截断 / 抛异常。
+ *
+ * 生产 cid 是 UUID（上述全部不命中），但删除是**不可逆**操作，宁可保守。
+ */
+internal fun isSafeConversationDirName(conversationId: String): Boolean {
+    if (conversationId.isBlank()) return false
+    if (conversationId == "." || conversationId == "..") return false
+    if (conversationId.contains("..")) return false
+    if (conversationId.contains('/') || conversationId.contains('\\')) return false
+    if (conversationId.any { it.isISOControl() }) return false
+    return true
+}
+
+/**
+ * 递归删除 [conversationArtifactDirs] 产出的目录（W69 C3）。
+ *
+ * best-effort 且**幂等**：目录不存在时 `deleteRecursively()` 返回 false（不抛），
+ * 单目录失败（如被占用）不阻断其余目录。调用方（[AppContainer.cleanupConversationArtifacts]）
+ * 已在 `runCatching` 内再兜一层。
+ */
+internal fun purgeConversationArtifactDirs(dirs: List<File>) {
+    for (dir in dirs) {
+        runCatching { dir.deleteRecursively() }
+    }
+}

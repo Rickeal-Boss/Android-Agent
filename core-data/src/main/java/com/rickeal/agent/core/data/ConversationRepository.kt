@@ -27,17 +27,20 @@ typealias ConversationsRepository = ConversationRepository
 class ConversationRepository(
     context: Context,
     /**
-     * 会话删除后的清理钩子（W58 修补 B 附带卫生位）：[delete] 落盘完成后回调，
-     * 用于清掉进程级韧性 store 里该 cid 的快照（AppContainer 注入
-     * `engineResilienceStore::clear`），防「会话已删、证伪/计数快照仍占键」的残留。
-     * ⚠️ 如实申报：[delete] 当前**零生产调用点** —— 本钩子是为将来删除入口
-     * 预埋的卫生位，**不是**用户可见修复。启用时点：待「删除会话 UI」立项上线
-     * （A1 产品面裁决后激活）；在此之前本钩子休眠，**不撤**（撤 = 未来重接线成本）。
-     *（W59 H-3 处置成文）
-     * ⚠️ **W68-D（休眠状态成文，2026-10）**：会话删除 UI 归 W68 C3 议程裁决
-     * （docs/14 / 决策清单一页纸）。**C3 过会 ⇒ 删除 UI 立项即激活本钩子**；未过 ⇒
-     * 维持休眠，挂账 W68-05 保留并标注「等 C3」。本波**不激活**删除 UI（不新增任何
-     * 生产调用点，`onConversationDeleted` 仍为默认空实现）。
+     * 会话删除后的清理钩子（W58 修补 B 卫生位；**W69 C3 激活并扩为级联清理**）。
+     *
+     * [delete] 落盘完成（会话文件 + `index.json` 已更新、`_metas` 已刷新）后回调，
+     * 由 AppContainer 注入 `AppContainer.cleanupConversationArtifacts` 执行多步清理：
+     * 进程级韧性快照 / 审批缓存 / 子代理会话 / journal 与 history 目录
+     * （逐步清单见该方法 KDoc）。默认实现为空 `{}`（JVM 单测可无副作用构造）。
+     * ⚠️ **回调在 [writeMutex] 锁外执行**（W69 C3，审查 P2）：清理含**递归删目录**的阻塞 I/O，
+     * 放锁内会卡住其他会话的 [appendMessage] / [rename] / [delete]；删除的权威结果已在锁内落定。
+     *
+     * ⚠️ **订正（W69 C3，2026-10）**：本 KDoc 此前写「[delete] 当前**零生产调用点**、
+     * 钩子休眠，不是用户可见修复」——该描述**已过时**。C3「会话删除 UI」立项上线后，
+     * 抽屉删除入口（`ConversationDrawer` 删除确认对话框 → `LiquidAgentApp` 接线）
+     * 会调用 [delete]，本钩子**已被激活**。历史沿革：W58 预埋卫生位 → W59 H-3
+     * 成文「休眠」→ W68-D 挂账 W68-05「等 C3」→ **W69 C3 过会并上线，上述休眠描述作废**。
      */
     private val onConversationDeleted: (String) -> Unit = {},
 ) {
@@ -125,9 +128,12 @@ class ConversationRepository(
             val next = _metas.value.filter { it.id != id }
             _metas.value = next
             store.write("index.json", next, ListSerializer(ConversationMeta.serializer()))
-            // 清理钩子（W58 卫生位）：落盘完成后通知外部清该 cid 的关联快照。
-            onConversationDeleted(id)
         }
+        // 清理钩子（W58 卫生位）**移到锁外**（W69 C3，审查 P2）：本波把它从休眠激活为
+        // 「多步级联清理 + 递归删 journal/history 目录」，锁内做递归 I/O 会阻塞其他会话的
+        // appendMessage / rename / delete。删除的权威结果（会话文件 + index.json + _metas）
+        // 已在锁内完成；清理是卫生位，锁外执行且失败不影响删除语义。
+        onConversationDeleted(id)
     }
 
     suspend fun create(title: String = "新对话"): Conversation {
