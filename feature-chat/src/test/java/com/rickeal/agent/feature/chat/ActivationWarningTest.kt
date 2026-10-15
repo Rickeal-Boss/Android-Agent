@@ -27,6 +27,9 @@ import kotlin.test.assertTrue
  *    `isNullOrEmpty` 判空）；
  * 6. **新会话保活**：新会话整体重建 [ChatUiState] 时必须保留 `activeModelKnownBroken`
  *    （否则派生流不重发 ⇒ 提示静默失效），且清掉上一次的 `activeModelWarning`。
+ *
+ * 另钉一组（W69 C2）：GPU 子句改用引擎侧组合子 `gpuInvolved(backend, visionBackend)`
+ * 后，主后端 CPU 而视觉后端 GPU 仍命中（同源），主/视觉后端均 CPU 时不命中。
  */
 class ActivationWarningTest {
 
@@ -41,11 +44,15 @@ class ActivationWarningTest {
             fileName = brokenFile,
             knownBrokenOn = brokenSignature,
             backend = InferenceBackend.CPU,
+            visionBackend = null,
         )
         assertNotNull(notice)
         // 原文条件词不得丢（用户据此判断是哪一种已知失败）。
         assertContains(notice, brokenSignature)
         assertContains(notice, "仍可继续")
+        // C6（clause-aware）：knownBroken-only（后端非 GPU）没有「被自动回落 CPU」语义
+        // （那是引擎保命道 GPU→CPU 兜底）⇒ 该文案不得出现（防尾句退回三子句共享）。
+        assertFalse(notice.contains("回落 CPU"))
     }
 
     @Test
@@ -54,6 +61,7 @@ class ActivationWarningTest {
             fileName = "gemma-4-E4B-it.litertlm",
             knownBrokenOn = null,
             backend = InferenceBackend.GPU,
+            visionBackend = null,
         )
         assertNotNull(notice)
         assertContains(notice, "GPU")
@@ -67,6 +75,7 @@ class ActivationWarningTest {
                 fileName = "MiniCPM5-2B_int4.litertlm",
                 knownBrokenOn = null,
                 backend = InferenceBackend.GPU,
+                visionBackend = null,
             ),
         )
     }
@@ -78,13 +87,21 @@ class ActivationWarningTest {
                 fileName = "gemma-4-E2B-it.litertlm",
                 knownBrokenOn = null,
                 backend = InferenceBackend.CPU,
+                visionBackend = null,
             ),
         )
     }
 
     @Test
     fun `无激活模型时不提示`() {
-        assertNull(activationWarningFor(fileName = null, knownBrokenOn = null, backend = InferenceBackend.GPU))
+        assertNull(
+            activationWarningFor(
+                fileName = null,
+                knownBrokenOn = null,
+                backend = InferenceBackend.GPU,
+                visionBackend = null,
+            ),
+        )
     }
 
     @Test
@@ -94,6 +111,7 @@ class ActivationWarningTest {
             fileName = "gemma-4-E4B-it-gpu.litertlm",
             knownBrokenOn = brokenSignature,
             backend = InferenceBackend.GPU,
+            visionBackend = null,
         )
         assertNotNull(notice)
         // 单一字符串（非列表）：双命中合并为一条，不产生第二条提示。
@@ -116,6 +134,7 @@ class ActivationWarningTest {
             fileName = brokenFile,
             knownBrokenOn = brokenSignature,
             backend = InferenceBackend.CPU,
+            visionBackend = null,
         )
         assertNotNull(notice)
         // 加载前确认框（ModelCard.kt:342/:362，模型库页）以「仍要尝试」为决策动词、
@@ -130,7 +149,12 @@ class ActivationWarningTest {
         // 空串 `""` 满足 `∉ gpuVerifiedFileNames`（恒真）⇒ 若第二子句只判 `!= null`，
         // GPU 后端 + 空文件名会误报「未列入 GPU 白名单」。空文件名 = 无有效判定键 ⇒ 不提示。
         assertNull(
-            activationWarningFor(fileName = "", knownBrokenOn = null, backend = InferenceBackend.GPU),
+            activationWarningFor(
+                fileName = "",
+                knownBrokenOn = null,
+                backend = InferenceBackend.GPU,
+                visionBackend = null,
+            ),
             "空文件名不得触发 GPU 白名单提示",
         )
     }
@@ -150,5 +174,37 @@ class ActivationWarningTest {
             "新会话必须保留已知坏签名（否则派生流不重发 ⇒ 提示静默失效）",
         )
         assertNull(kept.activeModelWarning, "新会话必须清掉上一次的提示卡")
+    }
+
+    @Test
+    fun `主后端 CPU 而视觉后端 GPU 且非白名单时命中（W69 C2）`() {
+        // C2：GPU 子句改用引擎侧组合子 gpuInvolved(backend, visionBackend)
+        // （= backend == GPU || visionBackend == GPU）。主后端 CPU、视觉后端 GPU、
+        // 文件非白名单 ⇒ 仍应命中（与引擎「GPU 文案门控」同源）。
+        val notice = activationWarningFor(
+            fileName = "gemma-4-E4B-it.litertlm",
+            knownBrokenOn = null,
+            backend = InferenceBackend.CPU,
+            visionBackend = InferenceBackend.GPU,
+        )
+        assertNotNull(notice)
+        assertContains(notice, "GPU")
+        assertContains(notice, "仍可继续")
+        // C6（clause-aware）：GPU 相关子句须带「被自动回落 CPU」（引擎保命道存在性告知）。
+        assertContains(notice, "被自动回落 CPU")
+    }
+
+    @Test
+    fun `主后端与视觉后端均为 CPU 且非白名单时不命中（W69 C2）`() {
+        // C2 负例：backend=CPU ∧ visionBackend=CPU ⇒ gpuInvolved=false ⇒
+        // 即便文件非白名单也不得拼 GPU 文案（不误报）。
+        assertNull(
+            activationWarningFor(
+                fileName = "gemma-4-E4B-it.litertlm",
+                knownBrokenOn = null,
+                backend = InferenceBackend.CPU,
+                visionBackend = InferenceBackend.CPU,
+            ),
+        )
     }
 }

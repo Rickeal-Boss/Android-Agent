@@ -67,6 +67,7 @@ import com.rickeal.agent.core.design.rememberGlassHaptics
 import com.rickeal.agent.core.model.ModelCapabilities
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelFamily
+import com.rickeal.agent.core.model.ModelGpuSupport
 import com.rickeal.agent.core.model.ModelPreset
 import com.rickeal.agent.core.model.ModelPresetMirror
 import com.rickeal.agent.core.model.ModelPresets
@@ -211,8 +212,10 @@ fun ModelsScreen(
                 }
             }
             items(items = state.visibleModels, key = { it.id }) { model ->
-                // GPU 白名单（2026-09-26）：按预设元数据放行/禁用 GPU —— 官方无 Android
-                // GPU 验证证据的一律禁（native 崩溃 catch 不住）；无预设的导入模型从严。
+                // GPU 白名单（2026-09-26；W69 C5 判据同源）：按 `ModelGpuSupport` 白名单放行/禁用
+                // GPU —— 官方无 Android GPU 验证证据的一律禁（native 崩溃 catch 不住）；无预设的
+                // 导入模型从严。判据直接用 `ModelGpuSupport.isGpuVerified(fileName)`（白名单口径），
+                // 与 ModelsViewModel 加载兜底、引擎保命道同源（不再经 `preset.gpuSupported` 二次投影）。
                 val preset = ModelPresets.findByFileName(model.fileName)
                 ModelCard(
                     model = model,
@@ -220,7 +223,7 @@ fun ModelsScreen(
                     isLoading = model.id == state.loadingModelId,
                     isLoaded = model.id == state.loadedModelId,
                     backend = state.backend,
-                    gpuAllowed = preset?.gpuSupported == true,
+                    gpuAllowed = ModelGpuSupport.isGpuVerified(model.fileName),
                     gpuBasis = preset?.backendBasis.orEmpty(),
                     knownBrokenOn = preset?.knownBrokenOn,
                     onSelect = { viewModel.onSelect(model.id) },

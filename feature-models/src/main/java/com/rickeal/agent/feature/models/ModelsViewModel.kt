@@ -15,6 +15,7 @@ import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.ModelCapabilities
 import com.rickeal.agent.core.model.ModelDescriptor
 import com.rickeal.agent.core.model.ModelFamily
+import com.rickeal.agent.core.model.ModelGpuSupport
 import com.rickeal.agent.core.model.ModelPreset
 import com.rickeal.agent.core.model.ModelPresets
 import kotlinx.coroutines.Dispatchers
@@ -83,9 +84,11 @@ private const val MIN_REQUIRED_RAM_BYTES = 2L * 1024 * 1024 * 1024
  *
  * ## 为什么和 [MemoryGateBlock] 是两个独立的 block，而不是合成一个
  *
- * 两个闸门用**同一类数据**（`ModelPresets.sizeBytes` / `requiredRamBytes` 都是手写估算值）
- * 加一层余量，所以哲学必须一致 —— 都是「警告 + 用户可绕过」。但它们的**触发时机**与
- * **失败代价**完全不同，合成一个会让文案没法同时说清两件事：
+ * 两个闸门用**同一类数据**（`ModelPresets.sizeBytes` / `requiredRamBytes`）加一层余量，所以
+ * 哲学必须一致 —— 都是「警告 + 用户可绕过」。⚠️ 口径别笼统写成「都是手写估算值」：现役 14 条
+ * 中 E4B 单文件的 `requiredRamBytes` 已是 W67 真机实测（`memBasis = BASIS_CPU_E4B_MEASURED`），
+ * 其余 13 条仍为公式估算；`sizeBytes` 为手写登记值（逐条口径见 `ModelPreset.memBasis`）。
+ * 但它们的**触发时机**与**失败代价**完全不同，合成一个会让文案没法同时说清两件事：
  *
  * | | 触发时机 | 失败代价 |
  * |---|---|---|
@@ -897,12 +900,16 @@ class ModelsViewModel(
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     var config = _uiState.value.config
-                    // GPU 白名单兜底（2026-09-26）：模型卡已拦截 GPU 选择，但历史配置可能
-                    // 仍记着 GPU（白名单上线前选过）。GPU 路径不支持时是 native 崩溃，
-                    // catch 不住 —— 加载前最后一道：无预设依据放行 GPU 的一律落回 CPU，
-                    // 记忆值同步改写（否则 UI 显示 GPU、引擎实际 CPU，状态说谎）。
+                    // GPU 白名单兜底（2026-09-26；W69 C5 判据同源）：模型卡已拦截 GPU 选择，
+                    // 但历史配置可能仍记着 GPU（白名单上线前选过）。GPU 路径不支持时是 native
+                    // 崩溃，catch 不住 —— 加载前最后一道：未列入白名单的一律落回 CPU，记忆值
+                    // 同步改写（否则 UI 显示 GPU、引擎实际 CPU，状态说谎）。判据直接用
+                    // ModelGpuSupport.isGpuVerified(fileName)（白名单口径），与模型卡、引擎保命道同源。
                     val preset = ModelPresets.findByFileName(model.fileName)
-                    if (config.backend == InferenceBackend.GPU && preset?.gpuSupported != true) {
+                    if (
+                        config.backend == InferenceBackend.GPU &&
+                        !ModelGpuSupport.isGpuVerified(model.fileName)
+                    ) {
                         AgentLogStore.warn(
                             "GPU 已回落 CPU：${model.fileName} 未列入 GPU 白名单" +
                                 "（${preset?.backendBasis?.take(60) ?: "无预设元数据"}）"

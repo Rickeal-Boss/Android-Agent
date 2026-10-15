@@ -50,7 +50,7 @@ internal data class EngineAttempt(
  *    NOT_FOUND 只能是 text decoder 缺失 ⇒ [dropOneModality] 返回 null ⇒ [next] 返回 null
  *    ⇒ 调用方直接抛（与「无 GPU 可退」同理）。
  */
-internal object EngineLoadDegrade {
+object EngineLoadDegrade {
 
     /**
      * 一次 `loadLocked` 的最大尝试次数（防循环）。
@@ -58,7 +58,7 @@ internal object EngineLoadDegrade {
      * 上界推导：原样 → 去 audio → 去 vision → GPU 回退，任意组合 ≤ 4。配合 `visited` 集合
      * 去重（任何重复状态不再入队），循环必终止。
      */
-    const val MAX_LOAD_ATTEMPTS = 4
+    internal const val MAX_LOAD_ATTEMPTS = 4
 
     /**
      * 一次**会话期**模态降级重建的最大次数（Wave 45）：每模态最多降一次 ⇒ 上界 = 模态数（2）。
@@ -67,13 +67,13 @@ internal object EngineLoadDegrade {
      * （即便 [EngineAttempt.degraded] 幂等失效，也最多重建 2 次）；[MAX_LOAD_ATTEMPTS]
      * 兜 `loadLocked` 内「重建 → 再失败 → 再重建」的驱动循环。
      */
-    const val MAX_SESSION_DEGRADE_ATTEMPTS = 2
+    internal const val MAX_SESSION_DEGRADE_ATTEMPTS = 2
 
     /**
      * 确定性「缺子图」错误：litert-lm 请求 `AUDIO_ENCODER_HW` / `VISION_ENCODER` 子图，
      * 但容器 section 表里没有 ⇒ 抛含 `NOT_FOUND` 的错误（Wave 43 真机根因实证）。
      */
-    fun isDeterministicMissingSection(t: Throwable): Boolean =
+    internal fun isDeterministicMissingSection(t: Throwable): Boolean =
         t.message.orEmpty().contains("NOT_FOUND", ignoreCase = true)
 
     /**
@@ -82,7 +82,7 @@ internal object EngineLoadDegrade {
      * [degraded] 默认空集 ⇒ 既有调用（load 路径）逐字不变；会话期降级重建
      * （[LiteRtLmEngine.loadLocked] 的 `seedDegrade`）用它**预置**「已去模态」。
      */
-    fun initial(
+    internal fun initial(
         backend: InferenceBackend,
         visionBackend: InferenceBackend?,
         audioBackend: InferenceBackend?,
@@ -98,7 +98,7 @@ internal object EngineLoadDegrade {
      * @return 命中的模态；null = 非确定性缺 section / 消息不含可识别 section 名
      *   （交由 [modalityToDegradeOnSessionError] 走盲降兜底）。
      */
-    fun missingModality(error: Throwable): ModelModality? {
+    internal fun missingModality(error: Throwable): ModelModality? {
         if (!isDeterministicMissingSection(error)) return null
         val message = error.message.orEmpty()
         return when {
@@ -120,7 +120,7 @@ internal object EngineLoadDegrade {
      * 解析优先：命中 [missingModality] 时按 section 名精确去；解析不出时按 [dropOneModality]
      * 的盲降优先级兜底（**先 AUDIO 后 VISION** —— 复用同一优先级，不另起一套）。
      */
-    fun modalityToDegradeOnSessionError(
+    internal fun modalityToDegradeOnSessionError(
         error: Throwable,
         currentModalities: Set<ModelModality>,
         degradedModality: Set<ModelModality>,
@@ -136,6 +136,10 @@ internal object EngineLoadDegrade {
     /**
      * 用户请求是否涉及 GPU（主后端或视觉后端为 GPU）—— GPU 文案门控与二段降级的共同判据，
      * 等价于旧 `attempts.size > 1`（用户请求 CPU 且视觉非 GPU 时为 false，不得拼 GPU 文案）。
+     *
+     * 本函数是本 object **唯一的 public 成员**（其余成员均显式标 `internal`，保持原有效可见性）：
+     * feature-chat 的激活态提示判据 `activationWarningFor` 跨模块复用它，使 UI 与引擎共用同一
+     * GPU 口径（W69 C2）—— 勿改成 internal，否则跨模块复用断裂。
      */
     fun gpuInvolved(backend: InferenceBackend, visionBackend: InferenceBackend?): Boolean =
         backend == InferenceBackend.GPU || visionBackend == InferenceBackend.GPU
@@ -154,7 +158,7 @@ internal object EngineLoadDegrade {
      * 只能按固定优先级盲降。若容器**只缺 VISION**（audio 正常），首个尝试会白白去掉 audio 再
      * 重试，多付 1 次失败的引擎构建；有界（[MAX_LOAD_ATTEMPTS]=4 兜底），仅性能/日志噪声。
      */
-    fun dropOneModality(current: EngineAttempt): EngineAttempt? {
+    internal fun dropOneModality(current: EngineAttempt): EngineAttempt? {
         if (current.audioBackend != null) {
             return current.copy(
                 audioBackend = null,
@@ -175,7 +179,7 @@ internal object EngineLoadDegrade {
      * （与旧 `add(CPU to if (wantsVision) CPU else null)` 逐字等价）；audio 后端与主后端正交，
      * 保持不变。
      */
-    fun toCpu(current: EngineAttempt): EngineAttempt = current.copy(
+    internal fun toCpu(current: EngineAttempt): EngineAttempt = current.copy(
         backend = InferenceBackend.CPU,
         visionBackend = current.visionBackend?.let { InferenceBackend.CPU },
     )
@@ -186,7 +190,7 @@ internal object EngineLoadDegrade {
      * @param gpuInvolved 用户请求是否涉及 GPU（主后端或视觉后端为 GPU）。等价于旧
      *   `attempts.size > 1`（既有 GPU 二段降级门控，用于 [next] 第 2 步与 GPU 文案门控）。
      */
-    fun next(current: EngineAttempt, error: Throwable, gpuInvolved: Boolean): EngineAttempt? {
+    internal fun next(current: EngineAttempt, error: Throwable, gpuInvolved: Boolean): EngineAttempt? {
         // 1) 确定性缺 section：保持后端，只去一个模态（先 AUDIO 后 VISION）。
         if (isDeterministicMissingSection(error)) {
             return dropOneModality(current)

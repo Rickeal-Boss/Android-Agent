@@ -123,7 +123,7 @@ internal class ChatRunCoordinator(
     /**
      * 「激活态重校验」提示频控闸（W68 B2）：**每会话至多一次**。
      *
-     * run 起点（[collectRunWithPerfWindow]，三条 run 路径的共享入口）消费一次；
+     * run 起点（[collectRunWithPerfWindow]，四条公开入口经三个调用点汇入的共享起点）消费一次；
      * 换会话（[resetForNewConversation]）复位。这样 knownBroken 激活用户不会被每轮 run
      * 反复骚扰，也不会「进会话就红」（触发时机 = run 发起，非 UI collect）。
      */
@@ -239,7 +239,7 @@ internal class ChatRunCoordinator(
      * run 起点「激活态重校验」提示（W68 B2）。
      *
      * 判据式与文案见 [activationWarningFor]：`(fileName ∈ knownBrokenOn) OR
-     * (backend == GPU ∧ fileName ∉ gpuVerifiedFileNames)`。命中且本会话尚未提示过 ⇒
+     * (gpuInvolved(backend, visionBackend) ∧ fileName ∉ gpuVerifiedFileNames)`。命中且本会话尚未提示过 ⇒
      * 落一条 warn 日志（真机判据以应用日志为准）+ 把提示态写进 [ChatUiState.activeModelWarning]
      * （Compose 侧只渲染）。
      *
@@ -252,7 +252,7 @@ internal class ChatRunCoordinator(
         val notice = activationWarningFor(
             fileName = state.activeModel?.fileName,
             knownBrokenOn = state.activeModelKnownBroken,
-            backend = state.config.backend,
+            backend = state.config.backend, visionBackend = state.config.visionBackend,
         ) ?: return
         if (!activationWarningGate.consumeOnce()) return
         // 落日志：真机端到端判据以 journal/应用日志事实行为准（uiautomator dump 对 Compose
@@ -873,19 +873,19 @@ internal class ChatRunCoordinator(
      * release：散点接线是 Wave 27 以降的已知事故形态（方案 §2.2 裁决）。
      */
     private suspend fun collectRunWithPerfWindow(cid: String, request: AgentRequest) {
-        // 本 run 起点清零「助手落库」去重状态（Wave 46）：这是三条 run 路径
-        // （onSend / onSendFrom / onRecover）的**唯一共享入口**，每 run 恰调一次、先于任何
-        // 事件 ⇒ 是 committedMessageId / lastCommittedText 清零的硬不变量单点。
+        // 本 run 起点清零「助手落库」去重状态（Wave 46）：四条公开入口
+        // （onSend / onRetry / onRecover / onSendFrom）经三个调用点汇入本**唯一共享入口**，
+        // 每 run 恰调一次、先于任何事件 ⇒ 是 committedMessageId / lastCommittedText 清零的硬不变量单点。
         // ⛔ 严禁改放进 resetStreaming / resetStreamingText（那两处被 Finished / Cancelled
         // 在决策之后调用，且是散点）—— 详见 AssistantPersistenceState 类头 KDoc。
         persistState = persistState.beginRun()
         // 熔断救援缓冲（Wave 47 项2）与 persistState 同一清零点（run 起点）。
         salvageText = ""
         // token 账本观察（Wave 31 流2）：与 run 窗口同起，把发送侧估算镜像进 UI 状态。
-        // 放在这个共享入口 = 三条 run 路径（onSend / onSendFrom / onRecover）一次接线。
+        // 放在这个共享入口 = 四条公开入口（onSend / onRetry / onRecover / onSendFrom）经三调用点一次接线。
         observeTokenLedger(cid)
-        // 激活态重校验（W68 B2）：**run 发起时**按判据式决定是否提示一次（本方法是三条
-        // run 路径的共享起点，故一处接线覆盖全部）。刻意不放 UI collect 时 —— 避免进会话
+        // 激活态重校验（W68 B2）：**run 发起时**按判据式决定是否提示一次（本方法是四条
+        // 公开入口的共享起点，故一处接线覆盖全部）。刻意不放 UI collect 时 —— 避免进会话
         // 就红、离开就忘的噪声。频控 = 每会话至多一次（activationWarningGate）。
         maybeAnnounceActivationWarning()
         container.perfMonitorManager.acquire("chat-run:$cid")

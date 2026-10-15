@@ -13,6 +13,7 @@ import com.rickeal.agent.core.agent.breaker.BottleneckReport
 import com.rickeal.agent.core.agent.plan.PlanStep
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.engine.EngineSessionDiagnostics
+import com.rickeal.agent.core.engine.local.EngineLoadDegrade
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.EngineKind
@@ -131,8 +132,8 @@ data class ChatUiState(
     /**
      * 对话页「激活态重校验」提示（W68 B2）。非空 = 渲染一张可关闭的警示卡。
      *
-     * 判据式（写死）：`(fileName ∈ knownBrokenOn) OR (backend == GPU ∧ fileName ∉
-     * gpuVerifiedFileNames)`（见 [activationWarningFor]）。**触发时机 = run 发起时**
+     * 判据式（写死）：`(fileName ∈ knownBrokenOn) OR (gpuInvolved(backend, visionBackend) ∧
+     * fileName ∉ gpuVerifiedFileNames)`（见 [activationWarningFor]）。**触发时机 = run 发起时**
      * （不是 UI collect 时 —— 避免进会话就红、离开就忘的噪声）；**频控 = 每会话至多一次**
      * （[ActivationWarningGate]），用户关闭后当次会话不再现，换会话复位。
      *
@@ -563,7 +564,12 @@ internal fun chatAgentPolicy(config: InferenceConfig, model: ModelDescriptor?): 
 /**
  * 「激活态重校验」提示判据式（W68 B2，第十二审 R-2/R-3，纯函数可 JVM 单测）。
  *
- * 判据（写死）：`(fileName ∈ knownBrokenOn) OR (backend == GPU ∧ fileName ∉ gpuVerifiedFileNames)`。
+ * 判据（写死）：`(fileName ∈ knownBrokenOn) OR (gpuInvolved(backend, visionBackend) ∧
+ * fileName ∉ gpuVerifiedFileNames)`。GPU 子句**复用引擎侧组合子**
+ * [EngineLoadDegrade.gpuInvolved]（`backend == GPU || visionBackend == GPU`）—— 与引擎
+ * 「GPU 文案门控 / 二段降级」同源，避免 UI 与引擎各写一份 GPU 口径而漂移（W69 C2）。
+ * 当前 `visionBackend` 无 UI 设置（`resolveVisionBackend` 使其恒等于 backend / null）⇒
+ * 行为与旧 `backend == GPU` 逐字等价（零行为变化）。
  *
  *  - 第一子句：`knownBrokenOn` 由 core-data 的 `activeModelKnownBroken`（`fileName` 经
  *    `ModelPresets.findByFileName` **精确匹配**预设后取 `knownBrokenOn`）**预解析**传入 ⇒
@@ -582,14 +588,17 @@ internal fun chatAgentPolicy(config: InferenceConfig, model: ModelDescriptor?): 
  *   不提示，非「未验证」）。
  * @param knownBrokenOn core-data 预解析的已知坏签名；null = 该文件无已知坏签名。
  * @param backend 激活模型本次 run 的计算后端（`InferenceConfig.backend`）。
+ * @param visionBackend 激活模型本次 run 的视觉后端（`InferenceConfig.visionBackend`，
+ *   可为 null）；与 [backend] 一并喂 [EngineLoadDegrade.gpuInvolved]（W69 C2）。
  */
 internal fun activationWarningFor(
     fileName: String?,
     knownBrokenOn: String?,
     backend: InferenceBackend,
+    visionBackend: InferenceBackend?,
 ): String? {
     val knownBrokenClause = knownBrokenOn != null
-    val gpuClause = backend == InferenceBackend.GPU &&
+    val gpuClause = EngineLoadDegrade.gpuInvolved(backend, visionBackend) &&
         !fileName.isNullOrEmpty() &&
         !ModelGpuSupport.isGpuVerified(fileName)
     if (!knownBrokenClause && !gpuClause) return null
@@ -599,7 +608,10 @@ internal fun activationWarningFor(
         knownBrokenClause -> "已知不可用：$knownBrokenOn"
         else -> "该文件未列入 GPU 白名单，GPU 路径未经验证（可能崩溃）"
     }
-    return "$reason。仍可继续，但可能失败。"
+    // C6 尾句按 gpuClause 分叉：只有 GPU 相关路径才存在「被自动回落 CPU」（引擎保命道
+    // DefaultEngineFactory 的 GPU→CPU 兜底）；knownBroken-only（后端非 GPU）没有该语义。
+    val tail = if (gpuClause) "仍可继续，但可能失败或被自动回落 CPU。" else "仍可继续，但可能失败。"
+    return "$reason。$tail"
 }
 
 /**

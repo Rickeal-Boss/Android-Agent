@@ -64,8 +64,8 @@ fun ModelCard(
     // modifier 是「可选修饰」参数中的第一个，否则调用方按位置传参会踩坑。
     modifier: Modifier = Modifier,
     /**
-     * 是否放行 GPU（2026-09-26 GPU 白名单）。由调用方按预设元数据算好传入
-     * （`ModelPresets.findByFileName(...)?.gpuSupported`；无预设 = false 从严）。
+     * 是否放行 GPU（2026-09-26 GPU 白名单）。由调用方按**白名单口径**算好传入
+     * （`ModelGpuSupport.isGpuVerified(model.fileName)`；非白名单 / 无预设 = false 从严）。
      * GPU 路径不支持时是 native 崩溃（闪退），Kotlin 层 catch 不住 —— 这里直接
      * 拦下 GPU 选项并给出依据；加载侧 ModelsViewModel 还有第二道兜底。
      */
