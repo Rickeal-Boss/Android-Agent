@@ -51,7 +51,7 @@
 
 ### B1. `google-ai-edge/LiteRT-LM#3576` 补充评论
 
-- **状态**：⬜ 待办（issue 已存在、官方已复现，**不新开帖**，只补充评论）
+- **状态**：✅ **已提交（2026-10-16）** —— 补充评论已挂到 #3576：https://github.com/google-ai-edge/LiteRT-LM/issues/3576#issuecomment-6207887539（不新开帖，只评论，符合原案）。
 - **推荐选项（W68 C3 附）**：**做**（文案已入仓原样贴；bump 僵局唯一外力解之一；需用户账号约 3 分钟）。
 - **① 做什么**：打开 https://github.com/google-ai-edge/LiteRT-LM/issues/3576 ，把
   [`docs/upstream/3576-minicpm5-tojson-comment.md`](upstream/3576-minicpm5-tojson-comment.md)
@@ -66,7 +66,8 @@
 
 ### B2. gemma-4 GPU 双变体 `NOT_FOUND` 新 issue
 
-- **状态**：⬜ 待办（上游无同型报告，#2461/#3879 签名均不同 ⇒ **新开**）
+- **状态**：✅ **已提交（2026-10-16）** —— **实际落点与预案不同**：预案为 LiteRT-LM 新开 issue，用户**改投 gallery 仓库**，issue = https://github.com/google-ai-edge/gallery/issues/1326 （gallery 维护者 2026-10-12 已回复三项检查；我方回复文案起草见 [`docs/upstream/gallery-1326-reply-comment.md`](upstream/gallery-1326-reply-comment.md) ，待用户手动提交）。
+- **落点说明**：本条预案文案（`docs/upstream/gemma4-gpu-notfound-issue.md`，LiteRT-LM 新 issue 形态）保留为预案留痕；**实际提交以 gallery #1326 为准**，销账与后续跟踪均按 gallery #1326 进行。
 - **推荐选项（W68 C3 附）**：**做**（证据链可加 E4B 单文件 GPU OOM 对照——W66 追加证据已入本条；约 4 分钟）。
 - **① 做什么**：在 https://github.com/google-ai-edge/LiteRT-LM/issues/new 用
   [`docs/upstream/gemma4-gpu-notfound-issue.md`](upstream/gemma4-gpu-notfound-issue.md)
