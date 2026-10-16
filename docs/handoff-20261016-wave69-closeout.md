@@ -12,7 +12,7 @@
 
 关键现实（动手前必读）：
 1. 🔴 **K-1 单源链不变**：CEIL=9 ↔ 4608 ↔ 5.06 ↔ 1536（本波零触碰）；第 5 处人工锚 `appliesToRuntime`×3 新增**机械校验**（#29 扩展，取红不取 warn）。
-2. 🔴 **静态闸门基线上移**：arch-guard **41 项全绿**（#29 扩展为同批版本校验；#39 由内联 awk 迁为 `check-evidence-level.py`）；selftest 新增 **case70 家族**（一夹具三杀）+ **case70b**（块注释散文假红绿面）；`@Test` **727** == `build.yml:502 baseline`（沿革 718→725→727 逐 commit 点账）；fulltest 9 模块 `tests=727 failures=1`（唯一失败 = **既有** core-data `SandboxFileScannerTest` Windows 符号链接；无失败模块单独跑 exit 0，已证非本波回归）；行数表 10 行（AgentRunner **2787 → 2742**（C8 抽取）；ChatRunCoordinator **1245/1300 余 55 不变**；ChatViewModel 692/1600）。
+2. 🔴 **静态闸门基线上移**：arch-guard **41 项全绿**（#29 扩展为同批版本校验；#39 由内联 awk 迁为 `check-evidence-level.py`）；selftest 新增 **case70 家族**（一夹具三杀）+ **case70b**（块注释散文假红绿面）；`@Test` **727** == `build.yml:502 baseline`（沿革 718→725→727 逐 commit 点账）；fulltest 9 模块 `tests=727 failures=1`（唯一失败 = **既有** core-data `SandboxFileScannerTest` Windows 符号链接；无失败模块单独跑 exit 0，已证非本波回归）；行数表 10 行（AgentRunner **2787 → 2742**（C8 抽取）；ChatRunCoordinator **1245/1300 余 55 不变**；ChatViewModel 695/1600）。
 3. 🟡 **三解析器已合一**：`scripts/preset_blocks.py` 为唯一块解析源；#34（266→105 行）/ #41（319→188 行）改消费模块；#39 迁为 `scripts/check-evidence-level.py`（含 fail-closed 包装网）。
 4. 🟡 **C3 产品件行为面**：会话抽屉每行删除图标 → 确认框（默认焦点 = 取消；三取消路径不删）→ `ConversationRepository.delete` → 级联清理（韧性快照 / 审批缓存 `revokeAll(cid)` / 子代理会话 `clearConversation(cid)` / journal+history 的 `<cid>/` 目录递归删）；**不清理** blob 池（只增池，如实申报）。防误删判据核 `isSafeConversationDirName` fail-closed。
 5. 🟡 **C5 判据同源化（已申报的窄行为改动）**：GPU 放行判据直连 `ModelGpuSupport.isGpuVerified`；与旧式 `preset.gpuSupported` 严格恒等，**唯一分歧面 = `MiniCPM5-2B_int8.litertlm`**（白名单有、预设表无）—— 该面旧 UI 给 false 而引擎保命道放行 ⇒ 本批属**修正性对齐**（仅 SAF 导入该名文件可感知）。`ModelPreset.gpuSupported` 经本批后**零生产消费方**（见 §五 沿袭）。
@@ -109,7 +109,9 @@ W69 改了 `activationWarningFor`（C2 签名 + C6 文案）⇒ 必须回归。�
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | `38785057208` | （待回填） | @ `d4ad977` |
-| **Release** | `38785057262` | （待回填） | — |
+| **Build** | `38785057208` | ✅ success（41 守卫全绿 + fulltest + lint） | @ `d4ad977` |
+| **Release** | `38785057262` | ✅ success（debug + R8 release 双轨产物） | @ `d4ad977` |
+
+> 本 closeout 提交（`4329c88`，纯文档）按触发规则不跑 CI（`build.yml` paths-ignore 含 `**/*.md`；`release.yml` paths 正白名单不含 docs）—— 0 run 为设计预期，非故障。
 
 > 对照基线：W68 Build `38570098857` / Release `38570098851` @ `792acd7`。
