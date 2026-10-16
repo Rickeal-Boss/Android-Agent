@@ -6,7 +6,7 @@
   同一 `ModelPreset` 块解析语义此前存在**三份独立实现**：
     · #34 `scripts/check-known-broken.py`（266 行 Python）
     · #39 `scripts/arch-guard.sh` 内联 awk（约 :880–1002）
-    · #41 `scripts/check-preset-profile-parity.py`（319 行 Python）
+    · #41 `scripts/check-preset-profile-parity.py`（W69 A4 迁移时 319 行；W70 A2 追加方向 C 后 408 行）
   三者的块切分代码（`SINGLE_LINE` / `MULTI_OPEN` / `OPEN_HEAD` / `NEXT_PAREN` /
   `BLOCK_CLOSE` + `strip_comment` / `blank_strlits` / `opens_block` / `split_blocks`）
   几乎逐字重复；W68 三轮修复每次都要**手工同步三处**（`blank_strlits`、括号换行、

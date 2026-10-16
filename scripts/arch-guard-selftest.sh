@@ -67,7 +67,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -106,6 +106,9 @@ affected_guards_for_file() {
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt) echo "20 30" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt) echo "38" ;;
     .github/workflows/build.yml)                                                   echo "22 23 26" ;;
+    docs/15-backlog.md)                                                 echo "42" ;;
+    docs/handoff-*)                                                     echo "42" ;;
+    docs/12-litertlm-0171-anchors.md)                                   echo "41" ;;
     core-model/*)                                                                  echo "3 15 26 40 41" ;;
     *)                                                                             echo FULL ;;
   esac
@@ -493,6 +496,10 @@ KT
   # 显式赋 url = ".../fixture-preset.litertlm"（与下方 ModelSamplingProfiles 骨架臂同名）
   # ⇒ 方向A（有 URL 的预设命中档案）与方向B（档案臂有预设锚定）双向皆绿；不铺 ⇒ 骨架臂
   # 孤儿 ⇒ 所有绿面 case 被第 41 条误红。
+  # W70 A2 追加（第 41 条方向 C-1）：broken-not-recommended 显式赋
+  # appliesToRuntime = "0.17.1"（恰 1 处），与下方 docs/12 骨架件的锚 #14 声明
+  # （「一条 / 第 1 处」= `"0.17.1"`）**同步** ⇒ 干净树 C-1 绿。两处必须同改同绿
+  # （case72 注入 9.9.9 漂移钉判红；覆写 ModelPresets.kt 的绿面 case 同义务，见各 case 注释）。
   mkdir -p "$root/feature-models/src/main/java/com/rickeal/agent/feature/models"
   cat > "$root/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
 package com.rickeal.agent.core.model
@@ -521,6 +528,7 @@ object ModelPresets {
             label = "broken-not-recommended",
             recommended = false,
             knownBrokenOn = "0.17.1 假签名（fixture）",
+            appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.UPSTREAM,
         ),
         ModelPreset(
@@ -634,6 +642,44 @@ MD
 （暂无）
 
 > - ⚠️ **真机验收台账：Wave 33 起累计 3 条（其中 1 条 `✅回收` / 1 条 `⚠️部分` / 1 条 `⛔不适用`）**（逐条台账见 `docs/10-device-acceptance.md` §11.0.1）。
+MD
+  # 第 42 条（W70 A1，ledger-era 交接 delta ID ∈ docs/15 台账）为 fail-closed：
+  # 骨架必须同时提供 ① docs/15-backlog.md 主台账（## 主台账 表内至少一个 `| W##-N |` 行）
+  # 与 ② 一份 ledger-era 交接文档（文件名 docs/handoff-*-wave6[89]-*.md，只引用台账内 ID）
+  # ⇒ 否则干净树会被「扫不到 ledger-era 交接 / 台账解析不出 ID / 交接提取不到 ID」三条
+  # fail-closed 分支误红（正例失守）。交接正文刻意只引用 W69-01 / W68-01（均在骨架台账内）。
+  # ⚠️ 覆写交接文档的红面 case（case71 假台账 ID）不受影响；绿面 case 若新增 ledger-era
+  #    交接文件，其 ID 必须在本骨架台账内（case71c 钉「旧编号 W40-1 不误判」形态）。
+  cat > "$root/docs/15-backlog.md" <<'MD'
+# docs/15-backlog.md —— 挂账台账单一事实源（scaffold 最小件）
+
+## 主台账
+
+| ID | 条目 | 状态 | 重启前提 | 最后触碰波次 |
+|---|---|---|---|---|
+| W68-01 | fixture 台账项（第 42 条扫描面） | active | — | W68 |
+| W69-01 | fixture 台账项（第 42 条扫描面） | active | — | W69 |
+MD
+  cat > "$root/docs/handoff-20261016-wave69-closeout.md" <<'MD'
+# handoff fixture（ledger-era 命名空间：第 42 条只扫 wave6[89] / wave7[0-9] 文件名）
+
+交接 delta：W69-01 已销账；沿袭 W68-01。
+MD
+  # 第 41 条方向 C（W70 A2，docs/12 锚对账）：骨架必须提供 docs/12 锚清单 ——
+  # 方向 C-1 解析锚 #14 行依据列的取值集合 + 条数声明，方向 C-2 解析锚清单定案波次集合。
+  # docs/12 缺失 ⇒ fail-closed 红（方向 C 载体蒸发）。
+  # ⚠️ 与 ModelPresets.kt 骨架的 appliesToRuntime 字面量数**同步**：骨架恰 1 处
+  #    （broken-not-recommended）= "0.17.1"，本声明对应写「一条 / 第 1 处」⇒ C-1 绿。
+  #    改骨架预设的 appliesToRuntime 处数必须同改本声明（case72 钉漂移判红）。
+  # ⚠️ 定案波次列含 W68 —— case67 的「档案豁免」note 锚点 W68 必须命中 ⇒ C-2 绿。
+  cat > "$root/docs/12-litertlm-0171-anchors.md" <<'MD'
+# docs/12 — litertlm 0.17.1 行为锚定面清单（scaffold 最小件；第 41 条方向 C 扫描面）
+
+## 锚定面清单（14 项）
+
+| # | 锚定项 | 定案波次 | 依据（本仓锚 / 外部锚） | bump 复核要点 | 锚失效的可观测签名 | 打勾 |
+|---|---|---|---|---|---|---|
+| 14 | `knownBrokenOn` / GPU 白名单的运行时时效 | W68 B3 定案（fixture） | 机器可读字段 = `ModelPreset.appliesToRuntime`（一条已知坏条目均 = `"0.17.1"`；现为第 1 处 `"0.17.1"` 字面量） | bump 后逐条复审 | — | ☐ |
 MD
 }
 
@@ -3093,6 +3139,8 @@ fi
 #   fixture-preset.litertlm（本 case 只覆写 ModelPresets.kt、不覆写档案表 ⇒ 不锚定
 #   骨架臂就会因方向B 孤儿红）；form-b-ok 的 url = "u2" 无 .litertlm 后缀 ⇒ 方向A
 #   跳过（无可检查项），顺带覆盖「无 .litertlm 文件名的块不判」这条口径。
+#   W70 A2 适配（方向 C-1）：form-a-ok 补 appliesToRuntime = "0.17.1"（恰 1 处）——
+#   覆写 ModelPresets.kt 的绿面 case 与 docs/12 骨架声明（一条）必须同步，否则假红。
 # ---------------------------------------------------------------------------
 if guard_selected "34 39"; then
 d="$TMP/case61e-formab-green"
@@ -3118,6 +3166,7 @@ object ModelPresets {
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.MEASURED,
+            appliesToRuntime = "0.17.1",
             note = "W60 实测（fixture 锚点）",
         ),
         ModelPreset (
@@ -3152,6 +3201,8 @@ fi
 #   fixture-first：旧守卫（fadfa56）对两夹具判红 ⇒ 修补后判绿；真违规（knownBrokenOn
 #   非空 ∧ recommended=true 真值）仍须红（存量 case48 守住，本 case 不重复）。
 #   ⚠️ 两夹具的 url 均锚定骨架档案臂同名 fixture-preset.litertlm（否则第 41 条方向B 孤儿红）。
+#   W70 A2 适配（方向 C-1）：两夹具各补 appliesToRuntime = "0.17.1"（恰 1 处）——与
+#   docs/12 骨架声明（一条）同步，否则覆写 ModelPresets.kt 的绿面会被 C-1 假红。
 # ---------------------------------------------------------------------------
 if guard_selected "34 39"; then
 d="$TMP/case68-note-prose-green"
@@ -3177,6 +3228,7 @@ object ModelPresets {
             url = "https://fixture.invalid/fixture-preset.litertlm",
             recommended = false,
             knownBrokenOn = "0.17.1 会话创建失败（Unsupported model type）",
+            appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.UPSTREAM,
             note = "W63 起因：该 preset 曾 recommended = true，坏容器被置顶推荐后下线",
         ),
@@ -3219,6 +3271,7 @@ object ModelPresets {
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            appliesToRuntime = "0.17.1",
             note = """历史：knownBrokenOn = "x" 与 recommended = true 互斥（见 KDoc）""",
         ),
     )
@@ -3481,6 +3534,8 @@ fi
 #     `knownBrokenOn = "x"` 字样，但块的真值合规（knownBrokenOn = null + recommended = true
 #     + evidenceLevel = UPSTREAM）⇒ 必须整树退出 0（旧 #34 只剥行内 `//` ⇒ 块注释里的同款
 #     字样骗过判定 ⇒ 假红）。钉「块注释剥离」这条 W69 新增判据。
+#     W70 A2 适配（方向 C-1）：块内补 appliesToRuntime = "0.17.1"（恰 1 处，与 docs/12
+#     骨架声明同步）—— 否则本绿面被方向 C-1 假红。
 # ---------------------------------------------------------------------------
 if guard_selected "34 39 41"; then
 d="$TMP/case70-prefix-assign-three-kill"
@@ -3580,6 +3635,7 @@ object ModelPresets {
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            appliesToRuntime = "0.17.1",
         ),
     )
 }
@@ -3609,6 +3665,9 @@ fi
 #               孤儿文件名事实行；
 #     case67 —— 绿面：方向A 覆盖（kept-model）+ 方向B 同臂别名锚定（alias-a 锚定
 #               alias-b，int4/int8 同款形态）+ note「档案豁免」令牌 ⇒ 整树退出 0。
+#   W70 A2 适配（方向 C-1/C-2）：covered-preset 补 appliesToRuntime = "0.17.1"（恰 1 处，
+#   与 docs/12 骨架声明同步）；exempted-preset 的「档案豁免」note 锚点 W68 必须命中
+#   docs/12 骨架锚清单定案波次集合 {W68}（方向 C-2 绿面的承重面）。
 #   各面只覆写脚手架树内文件，绝不碰生产文件。
 #   ⚠️ 编号避开 W59 已占用的 case41/41b/41c（第 30 条家族）：dir 名与 label 同号
 #     （本文件既有约定），不制造「同名不同义」。
@@ -3751,6 +3810,7 @@ object ModelPresets {
             url = "https://fixture.invalid/kept-model.litertlm",
             recommended = false,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            appliesToRuntime = "0.17.1",
         ),
         ModelPreset(
             label = "alias-anchor",
@@ -3801,6 +3861,179 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case67] 合法组合被第 41 条误红（豁免令牌 / 同臂别名锚定判据有偏）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case 71 / 71b / 71c / 71d：W70 A1 —— 新第 42 条（ledger-era 交接 delta ID ∈ docs/15 台账，
+#   W68-09 立项落地）四面。编号续排（避开 W59 已占用的 case41/41b/41c 与既有 case42 家族；
+#   dir 名与 label 同号，同 case70 家族范式）：
+#     case71 —— 红面：注入一份 ledger-era 交接（文件名 docs/handoff-*-wave70-*.md）含
+#               台账外 ID W70-99 ⇒ 判红，且红来自**注入的事实行**（输出含 W70-99 +
+#               出现文件名）—— 钉「交接有、台账无」的丢账形态（W58 式 G1 事故）。
+#     case71b —— 绿面（防假红回归）：ledger-era 交接里写**前台账时代的波次内序号**
+#               （W40-1 / W64-1，非台账 ID）+ 台账内 ID W69-01 ⇒ 必须整树退出 0 ——
+#               钉命名空间边界（朴素全扫/宽正则会把这些旧序号当台账 ID 而假红）。
+#     case71c —— fail-closed①：把唯一的 ledger-era 交接改名（mv，不用 rm）⇒ 判红，
+#               断言输出含「守卫面已失效」事实行（交接被挪移不静默放行）。
+#     case71d —— fail-closed②：docs/15-backlog.md 缺失（mv 改名）⇒ 判红，断言输出含
+#               「主台账解析不出任何 ID」或「台账单一事实源蒸发」事实行。
+#   fixture-first 证据（现役无 #42 ⇒ 注入件在改动前判绿）见 W70 A 回报与回报附测；
+#   各面只覆写脚手架树内文件，绝不碰生产文件。
+# ---------------------------------------------------------------------------
+if guard_selected 42; then
+d="$TMP/case71-handoff-ghost-id"
+scaffold "$d"
+cat > "$d/docs/handoff-20261017-wave70-closeout.md" <<'MD'
+# handoff fixture（ledger-era：注入台账外 delta ID）
+
+交接 delta：W70-99 幽灵挂账项（docs/15 台账中不存在）。
+MD
+out="$(run_guard "$d")"; rc=$?
+assert_red "case71 交接含台账外 ID (第 42 条)" "$rc" "$out" \
+  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1）"
+if printf '%s\n' "$out" | grep -qF "W70-99" && printf '%s\n' "$out" | grep -qF "handoff-20261017-wave70-closeout.md"; then
+  echo "PASS [case71b] 红来自真命中（输出含注入的台账外 ID W70-99 + 出现文件名）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case71b] 守卫判红但输出不含注入 ID / 文件名（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 42; then
+d="$TMP/case71c-preledger-numbering-green"
+scaffold "$d"
+cat > "$d/docs/handoff-20261017-wave70-closeout.md" <<'MD'
+# handoff fixture（ledger-era 文件名 + 前台账时代波次内序号）
+
+历史沿革：W40-1 曾讨论内存公式（波次内序号，非台账 ID）；W64-1 同理。
+交接 delta：W69-01 已销账。
+MD
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case71c 前台账时代序号不误判 (第 42 条绿面)] 退出 0（W40-1/W64-1 不进 ledger-era ID 核对面）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case71c] 前台账时代波次内序号（W40-1/W64-1）被误判为台账外 ID（命名空间边界失效 = 假红）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 42; then
+d="$TMP/case71d-no-ledger-handoff"
+scaffold "$d"
+mv "$d/docs/handoff-20261016-wave69-closeout.md" "$d/docs/.handoff-renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case71d 扫不到 ledger-era 交接 (第 42 条 fail-closed①)" "$rc" "$out" \
+  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1）"
+if printf '%s\n' "$out" | grep -qF "守卫面已失效"; then
+  echo "PASS [case71d] fail-closed 生效（输出含「守卫面已失效」事实行，交接被挪移不静默放行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case71d] 交接缺失分支未打出「守卫面已失效」（fail-closed 失效 = 守卫面蒸发时假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 42; then
+d="$TMP/case71e-ledger-missing"
+scaffold "$d"
+mv "$d/docs/15-backlog.md" "$d/docs/.15-backlog.renamed"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case71e 台账缺失 (第 42 条 fail-closed②)" "$rc" "$out" \
+  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1）"
+if printf '%s\n' "$out" | grep -qF "守卫面已失效"; then
+  echo "PASS [case71e] fail-closed 生效（输出含「守卫面已失效」事实行，台账蒸发不静默放行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case71e] 台账缺失分支未打出「守卫面已失效」（fail-closed 失效）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case 72 / 73：W70 A2 —— 第 41 条方向 C（docs/12 锚对账）两面红面（方向 A/B 判据逐字不变）：
+#     case72 —— 方向C-1（非 vacuous）：把骨架唯一的 appliesToRuntime = "0.17.1" sed 成
+#               "9.9.9"（与 docs/12 骨架件锚 #14 声明 {「"0.17.1"」×1} 漂移）⇒ 判红，
+#               断言红来自真命中（输出含 9.9.9 + 方向C-1 事实行 + 出现行号）。
+#               （#29 会同轮红 —— 9.9.9 ≠ toml 0.17.1 —— 属互补判据的同时命中，不断言排斥。）
+#     case73 —— 方向C-2（现役 0 命中 = vacuous 面，本夹具即防阑尾证明）：覆写 ModelPresets.kt
+#               注入「档案豁免 + W99」假锚 note（W99 不在 docs/12 骨架锚清单定案波次集合
+#               {W68}）⇒ 判红，断言红来自真命中（输出含 W99 + 方向C-2 事实行 + 预设 label）。
+#               块的真值其余面合规（url 锚定骨架臂 / evidenceLevel 齐全 / appliesToRuntime
+#               恰 1 处与 docs/12 同步）⇒ 红只可能来自方向C-2 —— 隔离归因。
+#   fixture-first 证据（现役 #41 方向 A/B 对两注入判绿）见 W70 A 回报附测（旧版守卫实跑）。
+# ---------------------------------------------------------------------------
+if guard_selected 41; then
+d="$TMP/case72-applies-runtime-drift"
+scaffold "$d"
+sed -i 's/appliesToRuntime = "0\.17\.1"/appliesToRuntime = "9.9.9"/' \
+  "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case72 appliesToRuntime 与 docs/12 声明漂移 (第 41 条方向C-1)" "$rc" "$out" \
+  "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）"
+if printf '%s\n' "$out" | grep -qF "9.9.9" && printf '%s\n' "$out" | grep -qF "方向C-1"; then
+  echo "PASS [case72b] 红来自真命中（输出含漂移值 9.9.9 + 方向C-1 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case72b] 方向C-1 判红但输出不含漂移值 / 方向C-1 字样（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 41; then
+d="$TMP/case73-exempt-anchor-fake"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val url: String = "",
+    val recommended: Boolean = false,
+    val knownBrokenOn: String? = null,
+    val appliesToRuntime: String? = null,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val note: String = "",
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "clean-recommended",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
+            recommended = true,
+            appliesToRuntime = "0.17.1",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+        ),
+        ModelPreset(
+            label = "exempt-anchor-fake",
+            url = "https://fixture.invalid/fixture-preset.litertlm",
+            recommended = false,
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+            note = "实验容器：档案豁免（W99 fixture 假锚，docs/12 定案波次集合中不存在）",
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case73 豁免锚点不在 docs/12 定案波次 (第 41 条方向C-2)" "$rc" "$out" \
+  "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）"
+if printf '%s\n' "$out" | grep -qF "exempt-anchor-fake" && printf '%s\n' "$out" | grep -qF "W99" && printf '%s\n' "$out" | grep -qF "方向C-2"; then
+  echo "PASS [case73b] 红来自真命中（输出含预设 label + 假锚 W99 + 方向C-2 事实行；防 vacuous 阑尾）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case73b] 方向C-2 判红但归因丢失，或未判红（注入假锚未触发 = vacuous 阑尾实证）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

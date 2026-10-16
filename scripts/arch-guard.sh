@@ -965,6 +965,51 @@ check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓�
 check "core-model 源码禁出现 feature-models 字样（迁移后描述失效防复发）" \
   bash -c 'grep -rn "feature-models" --include="*.kt" core-model/src/main'
 
+# 42) ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 立项 / W70 A1 落地，G1 治本面）：
+#     W58 §六.6 重写沿袭清单时「数据回填 / 阈值回填」两项静默丢失、十波无一提及（G1 事故）
+#     ⇒ W68 建 docs/15-backlog.md 单一事实源 + 交接只写 delta（不再整表重抄）。但「delta 项
+#     ID ∈ 台账」此前纯人工：W69 M12 实测 3 处缺口（W69-05/10/11 交接有、台账无）。本条把
+#     该对账变机械判据（第 27 条家族：聚合面守卫，push 代码时顺带拦下）。
+#
+#     ⚠️ 命名空间边界（方案席实拉验证，W70 计划 §二 #3）：**只扫 ledger-era 交接文档** ——
+#     文件名匹配 docs/handoff-*-wave6[89]-*.md（W68/W69）/ docs/handoff-*-wave7[0-9]-*.md
+#     （W70 起台账时代）。朴素全 handoff 扫描**必假红**：W40-1 / W52-53 / W64-1 等前台账
+#     时代的**波次内序号**不是台账 ID（它们只是当时 §五 列表的行号式编号）。ID 提取正则
+#     同步限定 W(6[89]|[7-9][0-9])-\d+ —— 文件名 + 正文双保险，旧编号两头都不进核对面。
+#
+#     反向（台账 ID 是否被交接提及）**不要求**：closed 项可不出现在交接（M12 人工面保留）。
+#
+#     fail-closed（守卫自身故障不静默放行，三处；均 exit 1 + ::error::，stdout 非空即红）：
+#       ① 扫不到任何 ledger-era 交接文档 ⇒ 红（交接被改名/删除/挪移 ⇒ 守卫面失效）；
+#       ② docs/15-backlog.md 不存在 / 主台账解析不出任何 ID ⇒ 红（台账蒸发或表格形态漂移）；
+#       ③ ledger-era 交接提取不到任何 W##-N ID ⇒ 红（交接格式漂移 ⇒ ID 提取面失效；
+#          **0 命中 ≠ 通过** —— 与 #41 方向 C-2 同款 vacuous 纪律）。
+#     每条违规打「ID + 出现文件」事实行（check() 契约：stdout 非空 = 违规）。
+check "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1）" \
+  bash -c 'shopt -s nullglob
+           files=(docs/handoff-*-wave6[89]-*.md docs/handoff-*-wave7[0-9]-*.md)
+           if [ "${#files[@]}" -eq 0 ]; then
+             echo "::error::未找到任何 ledger-era 交接文档（docs/handoff-*-wave6[89]-*.md / docs/handoff-*-wave7[0-9]-*.md；交接被改名/删除/挪移 ⇒ 第 42 条守卫面已失效，fail-closed）"
+             exit 1
+           fi
+           L=docs/15-backlog.md
+           if [ ! -f "$L" ]; then echo "::error::$L 不存在（台账单一事实源蒸发 ⇒ 第 42 条守卫面已失效）"; exit 1; fi
+           ledger_ids=$(awk -F"|" "
+             /^## 主台账/ { on=1; next }
+             on && /^## / { on=0 }
+             on && \$2 ~ /^[[:space:]]*W[0-9]+-[0-9]+[[:space:]]*\$/ { gsub(/[[:space:]]/, \"\", \$2); print \$2 }
+           " "$L")
+           if [ -z "$ledger_ids" ]; then echo "::error::$L 主台账解析不出任何 ID（## 主台账 表格形态漂移？第 42 条守卫面已失效）"; exit 1; fi
+           ids=$(grep -ohE "W(6[89]|[7-9][0-9])-[0-9]+" "${files[@]}" | sort -u)
+           if [ -z "$ids" ]; then echo "::error::ledger-era 交接文档中提取不到任何 W##-N ID（交接格式漂移 ⇒ ID 提取面失效；第 42 条 0 命中 ≠ 通过，fail-closed）"; exit 1; fi
+           for id in $ids; do
+             if ! printf "%s\n" "$ledger_ids" | grep -qxF "$id"; then
+               where=$(grep -lF "$id" "${files[@]}" | paste -sd" " -)
+               echo "交接文档引用的台账 ID $id 不在 docs/15-backlog.md 主台账（出现于：$where）—— W58 式丢账复发（交接有、台账无）：按四要素（ID + 状态 + 重启前提 + 最后触碰波次）补登台账，或销账并在交接注明销账判据"
+             fi
+           done
+           exit 0'
+
 # 41) ModelPresets 预设 ↔ ModelSamplingProfiles 档案双向一致（W68 A3，复检 Q-2）：
 #     方向A（硬）：每个预设的 .litertlm 文件名（url/ mirrors 提取，块解析与 #34 同款）
 #       必须命中 forFileName 某个 when 臂；缺 ⇒ 红，**除非**该预设 note 含显式豁免令牌
@@ -977,13 +1022,30 @@ check "core-model 源码禁出现 feature-models 字样（迁移后描述失效�
 #     ⇒ 不踩「python 失败再跑 python3」双跑双输出。fail-closed：两文件任一缺失 / 提取不到
 #     任何构造块或档案臂 ⇒ 红（与 #34 同款契约）。现役树 14 预设 + E4B 新分支（W68 A2 补）
 #     ⇒ 0 红。
+#
+#     W70 A2 追加**方向 C（docs/12 锚对账，第 41 条扫描器新增第三入参）** —— 方向 A/B
+#     判据与文案**逐字不变**，方向 C 不占新编号（计划 §三.1：arch-guard 41→42 仅因 #42）：
+#       方向C-1（硬，**非 vacuous**）：`ModelPresets.kt` 全部 `appliesToRuntime` 字面量
+#         的**取值集合 + 条数**必须 == docs/12 锚 #14 依据列声明（现役 = {`"0.17.1"`} × 3）；
+#         漂移 ⇒ 红（红行含两侧实数与出现行号）。与 #29（appliesToRuntime == toml 版本）
+#         **互补不重叠**：#29 校「代码↔toml」，C-1 校「代码↔docs/12 文本声明」——
+#         bump 时改 toml 而忘改 docs/12（或反之）都会被其中一条拦下。
+#       方向C-2（硬，**现役 0 命中 = ⛔vacuous 面，已如实申报**）：`ModelPresets` note 出现
+#         「档案豁免」时，其 `W##` 波次锚点必须存在于 docs/12 锚清单**定案波次集合**
+#         （锚清单表定案波次列的全部 W##）；不在 ⇒ 红。**0 命中 ≠ 通过** —— 现役 0 处
+#         「档案豁免」令牌 ⇒ 本子判据当前零真实命中面；触发能力由 selftest case73 注入
+#         「档案豁免 + W99」假锚钉住（判据被执行 ≠ 判据被行使）。
+#     方向 C 的 fail-closed：docs/12 缺失 / 锚清单表头或锚 #14 行提取失败 / 依据列提不出
+#     版本取值或条数 / 定案波次集合为空 ⇒ 均红（载体蒸发或形态漂移不静默放行）。
 check "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）" \
   bash -c "P=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
            S=core-model/src/main/java/com/rickeal/agent/core/model/ModelSamplingProfiles.kt
+           D=docs/12-litertlm-0171-anchors.md
            if [ ! -f \"\$P\" ]; then echo \"::error::\$P 不存在（第 41 条守卫面已失效）\"; exit 1; fi
            if [ ! -f \"\$S\" ]; then echo \"::error::\$S 不存在（第 41 条守卫面已失效）\"; exit 1; fi
+           if [ ! -f \"\$D\" ]; then echo \"::error::\$D 不存在（第 41 条方向 C 的 docs/12 锚对账载体蒸发，守卫面已失效）\"; exit 1; fi
            if [ ! -f \"$GUARD_DIR/check-preset-profile-parity.py\" ]; then echo \"::error::check-preset-profile-parity.py 不存在（第 41 条守卫面已失效）\"; exit 1; fi
-           python \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\" || python3 \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\""
+           python \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\" \"\$D\" || python3 \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\" \"\$D\""
 
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
