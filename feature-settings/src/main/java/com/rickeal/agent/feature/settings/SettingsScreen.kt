@@ -44,6 +44,7 @@ import androidx.core.app.NotificationManagerCompat
 import com.rickeal.agent.core.design.GlassBackdropBlurOverride
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
+import com.rickeal.agent.core.design.GlassChip
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassSegmented
@@ -59,6 +60,7 @@ import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.LocalWallpaperImage
 import com.rickeal.agent.core.design.motion.staggeredPageItem
 import com.rickeal.agent.core.model.AiCapabilityMode
+import com.rickeal.agent.core.model.PersonaPreset
 import com.rickeal.agent.core.model.ToolDisclosureMode
 import com.rickeal.agent.core.model.ThinkingMode
 import java.util.Locale
@@ -453,6 +455,34 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.labelLarge,
                         color = colors.onGlassMuted,
                         modifier = Modifier.padding(top = 12.dp),
+                    )
+                    // 人格档位 chip（W70 B2，W69-07 重启件）：点选即把预设 prompt 逐字
+                    // 写入 systemInstruction（既有落盘路径，零第二状态源）；选中态 =
+                    // PersonaPreset.matches(当前文本)，手改/留空即「自定义」（无高亮）。
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp),
+                    ) {
+                        PersonaPreset.entries.forEach { persona ->
+                            GlassChip(
+                                text = persona.label,
+                                selected = PersonaPreset.matches(state.config.systemInstruction) == persona,
+                                onClick = {
+                                    viewModel.onConfigChange {
+                                        it.copy(systemInstruction = persona.prompt)
+                                    }
+                                },
+                            )
+                        }
+                    }
+                    Text(
+                        text = "点选人格即写入对应系统提示词；手动改动文本后为自定义（无高亮）。" +
+                            "人格只是一条系统指令，端侧小模型对它的遵循程度不一，效果可能有差异。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassMuted,
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                     GlassTextField(
                         value = state.config.systemInstruction,
