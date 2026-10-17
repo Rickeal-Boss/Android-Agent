@@ -128,8 +128,8 @@ T-3 全程写/还原/verify **只经工具**：`set-active-model` diff 29 字节
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| Build | （推送后回填） | | |
-| Release | （推送后回填） | | |
+| **Build** | `39044348349` | ✅ success | @ `d979248d` |
+| **Release** | `39044348294` | ✅ success（debug + R8 release 双轨产物） | @ `d979248d` |
 
 > 对照基线：W71 Build `39030058303` / Release `39030058288` @ `3461a32`（均 success）。
 > 本回填提交（纯 docs）按触发规则 0 run 为设计预期。
