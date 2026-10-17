@@ -479,7 +479,8 @@ fun SettingsScreen(
                     }
                     Text(
                         text = "点选人格即写入对应系统提示词；手动改动文本后为自定义（无高亮）。" +
-                            "人格只是一条系统指令，端侧小模型对它的遵循程度不一，效果可能有差异。",
+                            "人格只是一条系统指令，端侧小模型对它的遵循程度不一，效果可能有差异。" +
+                            "切换后下一条消息需重新 prefill（一次性数秒）；人格是全局项，影响所有会话。",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onGlassMuted,
                         modifier = Modifier.padding(top = 4.dp),

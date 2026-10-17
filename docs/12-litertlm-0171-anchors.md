@@ -12,20 +12,55 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 
 | # | 锚定项 | 定案波次 | 依据（本仓锚 / 外部锚） | bump 复核要点 | 锚失效的可观测签名 | 打勾 |
 |---|---|---|---|---|---|---|
-| 1 | 「1 元素 text 数组 → string」收敛语义 | W55 定案 / W56 v0.18.0 核验 | 收敛点 = v0.17.1 `runtime/conversation/model_data_processor/generic_data_processor.cc:105-112`（`content.size()==1 && [0].type=="text" && !requires_typed_content` ⇒ 收敛为 string）；W55 同构建真机 A/B（fold ON 不炸 / fold OFF 炸模板 `:23`） | **blocker 级**：新版若仍无等价收敛 ⇒ **bump 阻断**（P0，Qwen2.5 系每轮必炸）。⚠️ **tip 已删除该收敛** ⇒ bump 后 `foldAdjacentText` 从「修复」退化为「不够」——所有文本协议多段 user 内容场景全量复发模板炸。**bump 首跑判据**：第一条真机消息就用「一次发 3 个工具结果回灌」的 W51 原题面，collapse 是否还在必须**当场行使**（不是跑回归全绿就算过）。若恢复语义须同步真机 A/B 复验 fold 路径。**预案二选一**（届时按新锚重估）：① 推动上游恢复单元素收敛；② 本仓「整包提示词文本化」退路（不再依赖上游收敛）。⚠️ **W70 情报（2026-10-16）**：gallery #1326 维护者明确要求 0.17.1 vs **0.18.0** 同工件对照复测 ⇒ 0.18.0 = **bump 候选版本情报**；但 W56 已实测其单元素收敛点缺失（tag `b2f686e2e`）⇒ **bump 仍阻断**（W68-06 blocker 双维持：锚 #5 未验 + 锚 #1 收敛缺失）。 | `Failed to apply template` 复发且行号 `:23`/`:27`（W55 fold OFF 实证签名） | ☐ |
-| 2 | `Contents.toJson()` 恒返回 JSON 数组 | W51 javap 实锤 / W55 Probe.java 实跑 | `Contents.of("x").toJson()` = `[{"type":"text","text":"x"}]`（0.17.1 Java 层不存在标量 content 通道） | 若新版引入标量通道，前置④的「重启条件②」成立（app 侧标量通道评估另立，勿顺手做） | — | ☐ |
-| 3 | `ConversationConfig.channels` 覆盖（thought 通道声明随会话下发） | W43 真机实锤 / W48 按模型选 def | 引擎所有 ConversationConfig 构造点恒显式传 `channels`；缺省时依赖容器元数据自决（MiniCPM5 思维链泄漏形态） | 确认新版 channels 参数与解析行为不变；`front()` 语义（见 #4）不漂移 | — | ☐ |
-| 4 | thinking 预算只认 `channels.front()` | W47 | `ThinkingConfig` + 通道声明共同生效；非 front 通道不进预算口径 | 确认 `ThinkingConfig.thinkingTokenBudget` 参数仍在且口径不变 | — | ☐ |
-| 5 | `ThinkingBudgetConstraint` 已编入 `.so` | W47（0.17.1 AAR 字节级证实） | 到预算强制吐出 thinking 结束符转入正文（真机 222s 空转的根治面） | **缺失即阻断（P0）**：解包新版 AAR 核对符号仍存在；缺失 ⇒ bump 阻断（不再只是「核对项」）。**升级理由**（W64 K-1 治本后）：字符守卫（`thinkingCharBudgetFor` 派生阈值）已退化为 native 失效**兜底**——maxTokens 滑条越大，native 预算越高、字符守卫越不可达 ⇒ thinking 空转防线**单点依赖 native**；bump 后符号缺失 = 只剩墙钟兜底，W47 222s 空转回归面完整复现。**锚适用条件**（W67 B1 订正后）：健康 native 下守卫阈 = 预算×C(=9) > 预算×实测 r_max(5.06) ⇒ 判定③数学不可达（纯兜底定位）；native 失效时半预算档兜底阈 r > 4.5（实测英文思维链 4.5–5.1 可达）、轴档案档（1536/2048）r > 6.75（条件性收窄，由墙钟 + N-2 warn 承担）。⚠️ **OFF 档不适用本锚的「晚于 native」论证**：`ThinkingMode.OFF` 引擎恒不下发 ThinkingConfig，对不服从 `enable_thinking=false` 的显式通道模型（R1 类）thinking 无预算无守卫（best-effort 第三态，W67 F1 选项 B 申报）。 | thinking 空转（`thinking` 流不结束、无 thinking 结束符转入正文）+ 墙钟兜底触发 | ☐ |
-| 6 | `RepetitionPenaltyConfig` 为逐消息参数 | W20（0.17.1 起真实生效） | `sendMessageAsync` 逐消息传参；默认 1.0 = 不惩罚；NPU 后端不传 | 确认逐消息参数签名仍在（若被挪进 ConversationConfig = 会话级固化，调参即时生效语义破坏） | — | ☐ |
-| 7 | `automaticToolCalling` 默认 true（红线） | W34 | native 自行执行工具会完全绕过 AgentRunner 审批/沙箱/熔断管线；本仓所有构造点显式写 false，`DeclaredOnlyTool.execute()` 恒抛（物理保险） | 确认默认值未翻转、参数名未改；若上游改默认，本仓显式 false 仍须逐构造点核对 | — | ☐ |
-| 8 | `ToolProvider` 抽象方法名带模块混淆后缀 | W34 题 A | 0.17.1 实测：应用侧**无法覆写**，只能走 `tool(OpenApiTool)` 工厂（见 NativeToolBridge 注释） | 确认 `tool(OpenApiTool)` 工厂仍在；若抽象方法可覆写了，探针与注册路径须重新评估 | — | ☐ |
-| 9 | `renderPrefaceIntoString`（ExperimentalApi） | W28 | preface 渲染诊断的唯一代码侧观测点（第三态闸门的输入）；渲染失败静默跳过，诊断绝不成为失败面 | 确认 API 仍存在（@OptIn ExperimentalApi）；行为变化只影响观测面，须复跑 preface 诊断真机核对 | — | ☐ |
-| 10 | 模板渲染失败在 `sendMessageAsync` **同步抛出** | W55 真机证实 | `Failed to start nativeSendMessageAsync: … Failed to apply template …`；同步 catch 与异步 onError 双入口共用统一处置（W59 A4 起 token 门控幂等） | 真机复核失败路径形态（同步/异步）未漂移；若改为异步回调，处置入口仍兼容（双入口设计） | — | ☐ |
-| 11 | `ConversationConfig.systemInstruction` 类型为 `Contents?` | P0-A / W48（0.17.1 起，旧版是 `String?`） | 引擎侧 `systemText?.let { Contents.of(it) }`；传裸 String 编译不过（编译期即拦） | 确认类型未回退；若改回 String 或换类型，构造点编译错 = 有意识动作化 | — | ☐ |
-| 12 | 模板引擎 = minijinja 2.14.0 | —（外部锚：上游 minijinja 版本，无本仓定案波次） | v0.17.1 上游模板引擎版本（外部 Cargo 锚；W50-W55 离线复现所用行为基线） | 核对新版依赖的 minijinja 是否仍 2.14.0；升级需重跑「content 为数组必炸」离线复现，确认 `+` 报错语义未变 | — | ☐ |
-| 13 | 容器模板可含 minijinja 2.14.0 **不支持的 filter 参数** | W61 定案 | 实证 = MiniCPM5 容器 `chat_template` 第 6 行 `{{- tool \| tojson(ensure_ascii=False) }}`（在 `{%- if tools %}` 块内，即**原生工具通道**分支；`:160` 同款）；依据 = v0.17.1 `runtime/components/rust/minijinja_template.rs:142`（`fn tojson(value: minijinja::Value)` **单参**）+ `:187`（`env.add_filter("tojson", tojson)`）+ 离线复现（PyPI minijinja 2.14.0）⇒ TypeError: unexpected keyword argument 'ensure_ascii'（**同因**：单参 filter 收到关键字参数；Rust 内嵌版同因报 `too many arguments (in template:6)`）+ 真机日志（`原生工具通道：生成期模板渲染失败 … 已证伪本通道`） | 核对新版内嵌 minijinja 版本与 **filter 签名集**（`tojson` 等）；**若新版放宽 `tojson` 参数**（接受关键字参数）⇒ 本容器原生工具通道可用性需真机复验（「探针通过、生成期炸」的探针保真度缺口随之消失）。⚠️ 该失败面**仅在模板语句所在分支被行使时到达**（MiniCPM5 在 `tools` 非空的原生工具通道），与 fold / `requires_typed_content` 无关（W61 双源定案，勿按第七审 §3.1 补前置注记）。⚠️ **W70 情报（2026-10-16，#3576 根因共认）**：上游已复现并定位根因 = 已发布 bundle 内嵌原始模板（`tojson(ensure_ascii=False)`）+ `generic_model{}` 元数据（XML `<function>` 路由需 `minicpm5{}`）⇒ 修复可能落在 **bundle 层**（重打包换模板/元数据）而非引擎层（放宽 `tojson` 签名）——**两种修复路径下**，本仓 MiniCPM5 容器原生工具通道均须**真机复验**后销账。 | — | ☐ |
-| 14 | `knownBrokenOn` / GPU 白名单的**运行时时效**（结论会集体过期） | W68 B3（第十二审 R-1） | 机器可读字段 = `ModelPreset.appliesToRuntime`（三条已知坏条目均 = `"0.17.1"`；GPU 白名单 `ModelGpuSupport.gpuVerifiedFileNames` 同属「某运行时 / 设备下的结论」）。单测覆盖见 `feature-models` `ModelPresetsKnownBrokenTest`（时效定语 ⇒ 必有坏结论、无坏结论禁预填）。 | **bump 后必须逐条复审**：上游若修复了容器（`引擎初始化 NOT_FOUND` / `Unsupported model type` / 输出退化等）⇒ **清空对应 `knownBrokenOn`**（并恢复推荐资格，勿只改 `recommended` 留红字段）—— 否则红字硬提示会把已修好的可用模型吓跑；`gpuVerifiedFileNames` 同理须复跑真机验证后逐个放行（**不得**因 bump 就顺手放行）。⚠️ 该字段当前**不参与**任何判定（GPU 放行 / 内存闸门 / 激活态重校验只看 `knownBrokenOn` 与 `ModelGpuSupport`），只作复审锚。⚠️ `appliesToRuntime` 的版本字面量为**人工维护**（现为第 3 处 `"0.17.1"` 字面量），与 `gradle/libs.versions.toml` 的 `litertlm` 行**无机械联动** —— 守卫 #29 只钉 toml 一行、**不校**本字段 ⇒ bump 时须**人工同步**本字段，否则本复审锚会指向错版本。 | 已修好的容器仍按旧结论报「已知不可用」（用户被吓跑）；白名单未随运行时/设备变化复审 | ☐ |
+| 1 | 「1 元素 text 数组 → string」收敛语义 | W55 定案 / W56 v0.18.0 核验 | 收敛点 = v0.17.1 `runtime/conversation/model_data_processor/generic_data_processor.cc:105-112`（`content.size()==1 && [0].type=="text" && !requires_typed_content` ⇒ 收敛为 string）；W55 同构建真机 A/B（fold ON 不炸 / fold OFF 炸模板 `:23`） | **blocker 级**：新版若仍无等价收敛 ⇒ **bump 阻断**（P0，Qwen2.5 系每轮必炸）。⚠️ **tip 已删除该收敛** ⇒ bump 后 `foldAdjacentText` 从「修复」退化为「不够」——所有文本协议多段 user 内容场景全量复发模板炸。**bump 首跑判据**：第一条真机消息就用「一次发 3 个工具结果回灌」的 W51 原题面，collapse 是否还在必须**当场行使**（不是跑回归全绿就算过）。若恢复语义须同步真机 A/B 复验 fold 路径。**预案二选一**（届时按新锚重估）：① 推动上游恢复单元素收敛；② 本仓「整包提示词文本化」退路（不再依赖上游收敛）。⚠️ **W70 情报（2026-10-16）**：gallery #1326 维护者明确要求 0.17.1 vs **0.18.0** 同工件对照复测 ⇒ 0.18.0 = **bump 候选版本情报**；但 W56 已实测其单元素收敛点缺失（tag `b2f686e2e`）⇒ **bump 仍阻断**（W68-06 blocker 双维持：锚 #5 未验 + 锚 #1 收敛缺失）。 | `Failed to apply template` 复发且行号 `:23`/`:27`（W55 fold OFF 实证签名） | ⛔ 0.18.0 收敛缺失（W71 锚批实证，见下节） |
+| 2 | `Contents.toJson()` 恒返回 JSON 数组 | W51 javap 实锤 / W55 Probe.java 实跑 | `Contents.of("x").toJson()` = `[{"type":"text","text":"x"}]`（0.17.1 Java 层不存在标量 content 通道） | 若新版引入标量通道，前置④的「重启条件②」成立（app 侧标量通道评估另立，勿顺手做） | — | ✅ W71 锚批（toJson 仍返回 JsonArray） |
+| 3 | `ConversationConfig.channels` 覆盖（thought 通道声明随会话下发） | W43 真机实锤 / W48 按模型选 def | 引擎所有 ConversationConfig 构造点恒显式传 `channels`；缺省时依赖容器元数据自决（MiniCPM5 思维链泄漏形态） | 确认新版 channels 参数与解析行为不变；`front()` 语义（见 #4）不漂移 | — | ✅ 静态签名面（W71；行为归真机） |
+| 4 | thinking 预算只认 `channels.front()` | W47 | `ThinkingConfig` + 通道声明共同生效；非 front 通道不进预算口径 | 确认 `ThinkingConfig.thinkingTokenBudget` 参数仍在且口径不变 | — | ✅ 静态签名面（W71；行为归真机） |
+| 5 | `ThinkingBudgetConstraint` 已编入 `.so` | W47（0.17.1 AAR 字节级证实） | 到预算强制吐出 thinking 结束符转入正文（真机 222s 空转的根治面） | **缺失即阻断（P0）**：解包新版 AAR 核对符号仍存在；缺失 ⇒ bump 阻断（不再只是「核对项」）。**升级理由**（W64 K-1 治本后）：字符守卫（`thinkingCharBudgetFor` 派生阈值）已退化为 native 失效**兜底**——maxTokens 滑条越大，native 预算越高、字符守卫越不可达 ⇒ thinking 空转防线**单点依赖 native**；bump 后符号缺失 = 只剩墙钟兜底，W47 222s 空转回归面完整复现。**锚适用条件**（W67 B1 订正后）：健康 native 下守卫阈 = 预算×C(=9) > 预算×实测 r_max(5.06) ⇒ 判定③数学不可达（纯兜底定位）；native 失效时半预算档兜底阈 r > 4.5（实测英文思维链 4.5–5.1 可达）、轴档案档（1536/2048）r > 6.75（条件性收窄，由墙钟 + N-2 warn 承担）。⚠️ **OFF 档不适用本锚的「晚于 native」论证**：`ThinkingMode.OFF` 引擎恒不下发 ThinkingConfig，对不服从 `enable_thinking=false` 的显式通道模型（R1 类）thinking 无预算无守卫（best-effort 第三态，W67 F1 选项 B 申报）。 | thinking 空转（`thinking` 流不结束、无 thinking 结束符转入正文）+ 墙钟兜底触发 | ✅ W71 锚批（双 ABI `.so` 符号均在，「锚 #5 未验」半边消除） |
+| 6 | `RepetitionPenaltyConfig` 为逐消息参数 | W20（0.17.1 起真实生效） | `sendMessageAsync` 逐消息传参；默认 1.0 = 不惩罚；NPU 后端不传 | 确认逐消息参数签名仍在（若被挪进 ConversationConfig = 会话级固化，调参即时生效语义破坏） | — | ✅ W71 锚批（sendMessageAsync 第 4 参逐消息传） |
+| 7 | `automaticToolCalling` 默认 true（红线） | W34 | native 自行执行工具会完全绕过 AgentRunner 审批/沙箱/熔断管线；本仓所有构造点显式写 false，`DeclaredOnlyTool.execute()` 恒抛（物理保险） | 确认默认值未翻转、参数名未改；若上游改默认，本仓显式 false 仍须逐构造点核对 | — | ✅ W71 锚批（字节码实证默认 true 未翻） |
+| 8 | `ToolProvider` 抽象方法名带模块混淆后缀 | W34 题 A | 0.17.1 实测：应用侧**无法覆写**，只能走 `tool(OpenApiTool)` 工厂（见 NativeToolBridge 注释） | 确认 `tool(OpenApiTool)` 工厂仍在；若抽象方法可覆写了，探针与注册路径须重新评估 | — | ✅ W71 锚批（混淆后缀 + 工厂均在） |
+| 9 | `renderPrefaceIntoString`（ExperimentalApi） | W28 | preface 渲染诊断的唯一代码侧观测点（第三态闸门的输入）；渲染失败静默跳过，诊断绝不成为失败面 | 确认 API 仍存在（@OptIn ExperimentalApi）；行为变化只影响观测面，须复跑 preface 诊断真机核对 | — | ✅ W71 锚批（API 在） |
+| 10 | 模板渲染失败在 `sendMessageAsync` **同步抛出** | W55 真机证实 | `Failed to start nativeSendMessageAsync: … Failed to apply template …`；同步 catch 与异步 onError 双入口共用统一处置（W59 A4 起 token 门控幂等） | 真机复核失败路径形态（同步/异步）未漂移；若改为异步回调，处置入口仍兼容（双入口设计） | — | ☐ 静态不可判（归真机） |
+| 11 | `ConversationConfig.systemInstruction` 类型为 `Contents?` | P0-A / W48（0.17.1 起，旧版是 `String?`） | 引擎侧 `systemText?.let { Contents.of(it) }`；传裸 String 编译不过（编译期即拦） | 确认类型未回退；若改回 String 或换类型，构造点编译错 = 有意识动作化 | — | ✅ W71 锚批（systemInstruction 仍 Contents） |
+| 12 | 模板引擎 = minijinja 2.14.0 | —（外部锚：上游 minijinja 版本，无本仓定案波次） | v0.17.1 上游模板引擎版本（外部 Cargo 锚；W50-W55 离线复现所用行为基线） | 核对新版依赖的 minijinja 是否仍 2.14.0；升级需重跑「content 为数组必炸」离线复现，确认 `+` 报错语义未变 | — | ✅ W71 锚批（Cargo.toml 钉 `=2.14.0`） |
+| 13 | 容器模板可含 minijinja 2.14.0 **不支持的 filter 参数** | W61 定案 | 实证 = MiniCPM5 容器 `chat_template` 第 6 行 `{{- tool \| tojson(ensure_ascii=False) }}`（在 `{%- if tools %}` 块内，即**原生工具通道**分支；`:160` 同款）；依据 = v0.17.1 `runtime/components/rust/minijinja_template.rs:142`（`fn tojson(value: minijinja::Value)` **单参**）+ `:187`（`env.add_filter("tojson", tojson)`）+ 离线复现（PyPI minijinja 2.14.0）⇒ TypeError: unexpected keyword argument 'ensure_ascii'（**同因**：单参 filter 收到关键字参数；Rust 内嵌版同因报 `too many arguments (in template:6)`）+ 真机日志（`原生工具通道：生成期模板渲染失败 … 已证伪本通道`） | 核对新版内嵌 minijinja 版本与 **filter 签名集**（`tojson` 等）；**若新版放宽 `tojson` 参数**（接受关键字参数）⇒ 本容器原生工具通道可用性需真机复验（「探针通过、生成期炸」的探针保真度缺口随之消失）。⚠️ 该失败面**仅在模板语句所在分支被行使时到达**（MiniCPM5 在 `tools` 非空的原生工具通道），与 fold / `requires_typed_content` 无关（W61 双源定案，勿按第七审 §3.1 补前置注记）。⚠️ **W70 情报（2026-10-16，#3576 根因共认）**：上游已复现并定位根因 = 已发布 bundle 内嵌原始模板（`tojson(ensure_ascii=False)`）+ `generic_model{}` 元数据（XML `<function>` 路由需 `minicpm5{}`）⇒ 修复可能落在 **bundle 层**（重打包换模板/元数据）而非引擎层（放宽 `tojson` 签名）——**两种修复路径下**，本仓 MiniCPM5 容器原生工具通道均须**真机复验**后销账。 | — | ✅ W71 锚批（tojson 单参签名逐字未放宽） |
+| 14 | `knownBrokenOn` / GPU 白名单的**运行时时效**（结论会集体过期） | W68 B3（第十二审 R-1） | 机器可读字段 = `ModelPreset.appliesToRuntime`（三条已知坏条目均 = `"0.17.1"`；GPU 白名单 `ModelGpuSupport.gpuVerifiedFileNames` 同属「某运行时 / 设备下的结论」）。单测覆盖见 `feature-models` `ModelPresetsKnownBrokenTest`（时效定语 ⇒ 必有坏结论、无坏结论禁预填）。 | **bump 后必须逐条复审**：上游若修复了容器（`引擎初始化 NOT_FOUND` / `Unsupported model type` / 输出退化等）⇒ **清空对应 `knownBrokenOn`**（并恢复推荐资格，勿只改 `recommended` 留红字段）—— 否则红字硬提示会把已修好的可用模型吓跑；`gpuVerifiedFileNames` 同理须复跑真机验证后逐个放行（**不得**因 bump 就顺手放行）。⚠️ 该字段当前**不参与**任何判定（GPU 放行 / 内存闸门 / 激活态重校验只看 `knownBrokenOn` 与 `ModelGpuSupport`），只作复审锚。⚠️ `appliesToRuntime` 的版本字面量为**人工维护**（现为第 3 处 `"0.17.1"` 字面量），与 `gradle/libs.versions.toml` 的 `litertlm` 行**无机械联动** —— 守卫 #29 只钉 toml 一行、**不校**本字段 ⇒ bump 时须**人工同步**本字段，否则本复审锚会指向错版本。 | 已修好的容器仍按旧结论报「已知不可用」（用户被吓跑）；白名单未随运行时/设备变化复审 | ☐ W71 未覆盖（本仓复审面，bump 后人工逐条） |
+
+## 0.18.0 离线锚批（W71，2026-10-17）
+
+> 制品 = `com.google.ai.edge.litertlm:litertlm-android:0.18.0`（**20,905,807 B**，Last-Modified 2026-10-06 15:49:10 GMT）；jni 双 ABI = arm64-v8a + x86_64（`liblitertlm_jni.so`）。
+> ⚠️ **制品位置订正**：0.18.0 **从未上 Maven Central**（repo1.maven.org 路径整组 404），只在 `google()`（Google Maven）。任何「Maven Central 查证 ⇒ 误判不可得」的推论须按此订正。
+> 取证报告 = 工作区 `_research/w71-0180-anchor-batch.md`（AAR 解包 + javap + 二进制符号 grep + 上游 v0.18.0 源码三路；本仓仓库零触碰）。
+
+| 锚 | 0.18.0 结论 | 依据摘要 |
+|---|---|---|
+| #1 | ⛔ **缺失** | `generic_data_processor.cc` 重写为 93 行；`MessageToTemplateInput` 覆盖整体删除；基类默认实现只调 `NormalizeMessageContent`（仅包装不收敛）；`requires_typed_content` 三文件 0 命中（字段随重构消失，非改名）。与 W56 tag `b2f686e2e` 结论一致 |
+| #5 | ✅ | `ThinkingBudgetConstraint` 符号 arm64-v8a + x86_64 双 ABI 均在 |
+| #12 | ✅ | `Cargo.toml` 钉 `minijinja = "=2.14.0"` |
+| #13 | ✅ | `tojson` 单参签名 + `add_filter` 与 0.17.1 逐字一致（关键字参数失败面未放宽，与 #3576 bundle 层修复路径相符） |
+| #2/#3/#4/#6/#7/#8/#9/#11 | ✅（#3/#4 仅静态签名面，行为归真机） | javap/字节码/源码逐项核 |
+| #10/#14 | 未覆盖 | 归真机批复核（#10）/ 本仓 bump 后人工复审（#14） |
+
+**净结论**：静态可判 12 项仅锚 #1 缺失 ⇒ **W68-06 bump blocker 从「锚 #5 未验 + 锚 #1 收敛缺失」双维持变为单维持（锚 #1）**；gallery #1326 check②（0.17.1 vs 0.18.0 复测）的**离线侧已清**——两版本静态差异 = 仅收敛语义一项。
+
+### bump 决策树预登记（复测前写死，防结果出来后临场博弈）
+
+- **(a) 真机证 0.18.0 仍 GPU init NOT_FOUND** ⇒ 回复上游「双版本同签名」，bump 维持单挂起（锚 #1），季扫继续。零变化。
+- **(b) 0.18.0 修好 GPU init** ⇒ bump 权衡**首次变成真实的**：收益 = gemma-4 GPU 用户故事（W68-07）+ 可能修复 MiniCPM-V-4 `Unsupported model type`；代价 = 锚 #1 收敛缺失 ⇒ Qwen2.5 系 P1 回归（fold 失效、每轮必炸）。选项空间预先写明：① bump + 对不安全模板容器启用「导入期模板探测闸门」（第十一审 E4/E6，evidenceLevel schema 已就位）；② 不 bump 继续等收敛恢复；③ 双 runtime 不可行（单依赖）。**该分叉须一次专门用户裁决（可挂 C5 追加项）**。
+- **(c) 0.18.0 恢复收敛**（低概率；W56 源码 grep 零命中 + 本次锚批确认删除）⇒ bump 前置④转绿，走完整前置清单。
+
+## 已知盲区登记簿（W71 C4，v23 M14；防「探针 PASS = 健康证明」误读）
+
+> 收录「现役检测面**确实不覆盖**的形态」——与判据失效无关，是成本受控设计下的已知边界；新增盲区须在此登记（散落各 KDoc 的申报以此簿为聚合面）。
+
+| # | 盲区 | 申报位置 | 现状 |
+|---|---|---|---|
+| 1 | 探针对**多语种退化输出**假阴性：`gemma-4-E2B-it-gpu` 输出「我cannOlivКи blockchains…」（跨脚本混杂）被现役判据全漏、探针判 PASS | `ModelHealthCriteria.kt` KDoc（W70 留痕） | W71 P-1 离线判分给出正交候选判据（非必要脚本混合计数，退化样本命中/健康零误报，n=2），**待数据面补齐后另立项**（`_plans/w71-p1-scriptmix-report.md`） |
+| 2 | 端侧 2B「提醒后直答」不合规：gemma-2B 6 触发 0 合规 ⇒ 模型直答腿判死 | W68-10（closed-dead 留痕） | 已判死；重启 = 更强模型入册时重开 |
+| 3 | 双口径 token 对照观测力弱：`cumulativeIn`/`cumulativeOut` 是本仓自算（`TokenEstimator` 估算 + 内容 chunk 帧计数），引擎从不回报 usage ⇒ 「估算 vs 真实」承诺不成立 | README Token 账本行 + `TokenUsage.estimated` 沿袭 | 沿袭挂账（F4 三级文字 token 统一同面） |
+
+> 已消解（勿再当盲区引用）：gpuClause「零行使」—— W70 Y3 真机逐字命中 + GPU→CPU 回落闸同场实证，三道防线联动已行使。
 
 ## 复核流程
 
@@ -36,6 +71,7 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 5. **复审锚 #14**（W68 B3 增补）：逐条核对 `ModelPreset.appliesToRuntime`（现全 = `"0.17.1"`）——上游已修容器 ⇒ 清空对应 `knownBrokenOn`（恢复推荐资格）；`ModelGpuSupport.gpuVerifiedFileNames` 须**复跑真机验证**后逐个放行（勿顺手放行）；
 6. **跟踪 #3576 issue 状态**（W70 C1 B1 销账判据，锚 #13 同源）：bump 季扫时核对 #3576（MiniCPM5 bundle 模板/元数据根因）是否已发布修复 bundle 或运行时放宽 `tojson` 签名；命中 ⇒ 按锚 #13 复核要点（新 bundle 修复模板/元数据 ⇒ 原生工具通道真机复验）执行后再销账；
 7. 全部打勾 + 守卫 #29 期望值同步更新后，方可动 toml 版本行。
+8. **0.18.0 离线锚批已完成（W71，2026-10-17）**：静态 12 项结论与 bump 决策树 (a)/(b)/(c) 见上节；剩余未覆盖 = #10（真机失败路径）/ #14（bump 后人工逐条复审）。**若真机臂成立（另立项）**：先复测 gemma-4 GPU 双变体 init（答维护者 NOT_FOUND 是否修复），同臂顺带跑 W51 三工具结果原题面（collapse 首跑判据）。
 
 ### r（chars/token）的离线重测结论（W66 E5 立方法、W67 B1 首次全量执行）
 

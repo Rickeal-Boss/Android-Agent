@@ -17,6 +17,20 @@ package com.rickeal.agent.core.model
  * 加档位 = 追加枚举项（prompt 文本 + 短 label + 稳定 id）；id 不落盘、只用于
  * 归因与测试，改名无迁移面（与 [ToolDisclosureMode] 的落盘契约不同，刻意不
  * @Serializable —— 真正落盘的是 systemInstruction 文本本身）。
+ *
+ * **三层合并关系（W71 表述刀，v23 M13）**：system prompt 的实际组装是「人格/用户层
+ * （即本字段，人格档位只是它的预设快捷方式）→ 记忆索引/工具披露等运行时段落 →
+ * 模型自述层」——人格档位与手输 systemInstruction **同层互斥**（写的是同一个字段，
+ * 手改即离开预设）；层间合并顺序与优先级口径见 `docs/14-user-actions.md` C4 裁决。
+ *
+ * **改 prompt 文本 = 存量静默取消选中（W71 表述刀，深度审 T-4）**：选中态由逐字
+ * 相等派生 ⇒ 微调任一档的 prompt（改一个句号都算）会让已选该档的用户下次打开
+ * 设置页变成「自定义」（chip 不再高亮）。这是「零第二状态源」设计取舍的**有意代价**
+ * （不做迁移面）；改文案时须意识到动的是持久选中态，而不是纯展示文本。
+ *
+ * **换人格 = 下次 run 全量 re-prefill（W71 表述刀，深度审 T-5）**：`systemInstruction`
+ * 变化会进 `systemText`，引擎重建判据含 `systemText != currentSystemText` ⇒ 换人格
+ * 后下一条消息需重新 prefill（一次性数秒成本）。人格是**全局项**，影响所有会话。
  */
 enum class PersonaPreset(
     /** 稳定标识（归因/测试用；不落盘）。 */
