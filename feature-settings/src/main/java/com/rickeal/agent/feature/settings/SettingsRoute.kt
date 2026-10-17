@@ -100,6 +100,9 @@ fun NavGraphBuilder.settingsGraph(
             factory = viewModelFactory { DiagnosticsViewModel(container) },
         )
         val probeState by diagnosticsViewModel.probeState.collectAsState()
+        // 激活模型 knownBroken 签名（W71 B1 数据面）：诊断页「自检面 PASS」与
+        // 「已登记坏结论」并列呈现用（T-2/I-2，见 DiagnosticsScreen.probePresentation）。
+        val knownBrokenOn by diagnosticsViewModel.knownBrokenOn.collectAsState()
         DiagnosticsScreen(
             onBack = { navController.popBackStack() },
             readPersistedErrors = { container.agentLogFileStore.read() },
@@ -113,6 +116,7 @@ fun NavGraphBuilder.settingsGraph(
             },
             probeState = probeState,
             onRunProbe = diagnosticsViewModel::onRunProbe,
+            knownBrokenOn = knownBrokenOn,
         )
     }
 

@@ -69,6 +69,26 @@ class DiagnosticsViewModel(
     private val _probeState = MutableStateFlow<ProbeUiState>(ProbeUiState.Idle)
     val probeState: StateFlow<ProbeUiState> = _probeState.asStateFlow()
 
+    /**
+     * 激活模型的已知坏签名（W71 B1 数据面，收集范式沿 feature-chat
+     * `ChatViewModel` 的 `activeModelKnownBroken` 收集块）。
+     *
+     * 派生只读流（core-data `ModelRepository.activeModelKnownBroken`，精确文件名
+     * 匹配判定键收敛在 core-data）⇒ 诊断页**只收集、不查预设表**。`null` = 无激活
+     * 模型 / 未登记已知坏 / 非 preset 文件 —— **不是**「已登记坏」：并列呈现只在
+     * 非空时追加登记行（见 [DiagnosticsScreen] 的 `probePresentation`）。
+     */
+    private val _knownBrokenOn = MutableStateFlow<String?>(null)
+    val knownBrokenOn: StateFlow<String?> = _knownBrokenOn.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            container.modelRepository.activeModelKnownBroken.collect { broken ->
+                _knownBrokenOn.value = broken
+            }
+        }
+    }
+
     /** 用户点「运行自检」。 */
     fun onRunProbe() {
         if (_probeState.value is ProbeUiState.Running) return

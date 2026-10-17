@@ -71,7 +71,10 @@ dependencies {
     // :feature-models 同款配置（同一 catalog 键，不新增依赖版本）。只覆盖**不触碰
     // Android / Compose / ViewModel 运行时**的纯函数：工具分类展示名映射
     // （ToolCategories.kt）与搜索/分类/启用筛选归约（ToolsViewModel.kt 文件级
-    // internal 函数）。Composable 一律不在 JVM 上测。
+    // internal 函数）；另有沙箱文件纯逻辑（SandboxFilesPureLogicTest）与**诊断页
+    // 展示层纯函数**（DiagnosticsProbePresentationTest，W71 产品件：
+    // probePresentation 的文案与配色意图判定——刻意不构造 DiagnosticsViewModel，
+    // 它依赖 AppContainer / 协程，JVM 上不可测）。Composable 一律不在 JVM 上测。
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
 }

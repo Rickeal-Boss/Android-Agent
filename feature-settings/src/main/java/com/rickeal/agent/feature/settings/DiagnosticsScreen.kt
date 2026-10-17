@@ -90,6 +90,9 @@ import kotlinx.coroutines.withContext
  * @param clearPersistedErrors 清空落盘记录
  * @param probeState 模型自检状态机（Wave 44，带默认值向后兼容：不传 = 不显示自检结论）
  * @param onRunProbe 点「运行自检」的回调（Wave 44，带默认值向后兼容）
+ * @param knownBrokenOn 激活模型的已知坏签名（W71 B1，来自 [DiagnosticsViewModel.knownBrokenOn]；
+ *   `null` = 无激活模型 / 未登记 / 非 preset —— 并列呈现只在非空时追加登记行，
+ *   见 [probePresentation]）
  */
 @Composable
 fun DiagnosticsScreen(
@@ -108,6 +111,10 @@ fun DiagnosticsScreen(
     // ── 模型自检（Wave 44 P0-1）─────────────────────────────────────
     probeState: ProbeUiState = ProbeUiState.Idle,
     onRunProbe: () -> Unit = {},
+    // ── 激活模型已知坏签名（W71 B1）──────────────────────────────────
+    // 诊断页此前零消费 knownBroken（消费方仅 feature-chat）；W71 起与「自检面 PASS」
+    // 并列呈现（T-2/I-2）——不拦截、只告知，与 W68 对话页激活态重校验提示同范式。
+    knownBrokenOn: String? = null,
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
@@ -296,6 +303,8 @@ fun DiagnosticsScreen(
             // 手动触发的小样本自检：对当前模型跑两条固定短 prompt，检查输出是否退化。
             // 质量结论（PASS/DEGRADED/BAD）与「执行失败 / 未运行」严格区分（见 ProbeUiState
             // KDoc）—— 后者不是「模型坏」的结论，文案与配色都必须区分。
+            // W71（T-2/I-2）：PASS ∧ 激活模型已登记已知坏 ⇒ 「自检面结论」与「已登记坏结论」
+            // 并列呈现 + 免责一行（展示层全部经 probePresentation 纯函数产出，JVM 可测）。
             GlassCard(contentPadding = PaddingValues(14.dp)) {
                 Column {
                     Text(
@@ -310,6 +319,7 @@ fun DiagnosticsScreen(
                         color = colors.onGlassSubtle,
                         modifier = Modifier.padding(top = 2.dp),
                     )
+                    val presentation = probePresentation(probeState, knownBrokenOn)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -317,9 +327,9 @@ fun DiagnosticsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = probeHeadline(probeState),
+                            text = presentation.headline,
                             style = MaterialTheme.typography.labelMedium,
-                            color = probeHeadlineColor(probeState),
+                            color = probeToneColor(presentation.headlineTone),
                             modifier = Modifier.weight(1f),
                         )
                         GlassButton(
@@ -330,12 +340,31 @@ fun DiagnosticsScreen(
                             modifier = Modifier.padding(start = 10.dp),
                         )
                     }
-                    probeDetail(probeState)?.let { detail ->
+                    // 第二行：耗时·采样预览（或执行失败澄清）；null = 不渲染。
+                    presentation.detail?.let { line ->
                         Text(
-                            text = detail,
+                            text = line.text,
                             style = MaterialTheme.typography.labelSmall,
-                            color = colors.onGlassSubtle,
+                            color = probeToneColor(line.tone),
                             modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                    // 并列登记行（W71 B2）：仅 PASS ∧ 激活模型已登记已知坏。
+                    presentation.knownBroken?.let { line ->
+                        Text(
+                            text = line.text,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = probeToneColor(line.tone),
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    // 免责一行（W71 B3 / I-2）：仅 PASS；与登记行同家族（warning）口径。
+                    presentation.disclaimer?.let { line ->
+                        Text(
+                            text = line.text,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = probeToneColor(line.tone),
+                            modifier = Modifier.padding(top = 4.dp),
                         )
                     }
                     // 命中明细（仅 Completed 有）：HARD=danger / SOFT=warning，与结论同口径。
@@ -582,53 +611,170 @@ private fun CpuSecondsChart(
 }
 
 /**
- * 自检结论的一行标题（Wave 44）。
- *
- * ⚠️ **「未运行 / 执行失败」与「质量结论」必须文案区分**：前者不是「模型坏」的结论，
- * 否则会把「引擎没加载」误导成「模型有问题」。
+ * 自检结论行的配色意图（W71 B2）：纯函数侧只表达「用哪支颜色」，**不触碰**
+ * `LocalGlassColors` —— 映射收敛在 [probeToneColor]，纯逻辑因此可在 JVM 上单测。
  */
-private fun probeHeadline(state: ProbeUiState): String = when (state) {
-    ProbeUiState.Idle -> "尚未运行"
-    ProbeUiState.Running -> "正在自检…"
-    is ProbeUiState.Completed -> when (state.verdict) {
-        ModelHealthVerdict.PASS -> "结论：通过（PASS）"
-        ModelHealthVerdict.DEGRADED -> "结论：降级（DEGRADED）"
-        ModelHealthVerdict.BAD -> "结论：异常（BAD）"
-    }
-    is ProbeUiState.NotRun -> when (state.reason) {
-        ModelHealthProbe.NotRunReason.ENGINE_NOT_LOADED -> "请先在模型页加载模型，再运行自检"
-        ModelHealthProbe.NotRunReason.ENGINE_BUSY -> "正在生成，请稍后再试"
-        ModelHealthProbe.NotRunReason.NO_ACTIVE_MODEL -> "当前没有激活模型"
-    }
-    is ProbeUiState.Failed -> "自检未跑通：${state.message}"
+internal enum class ProbeTone {
+    /** PASS 中性结论（历史口径：`onGlassMuted`）。 */
+    NEUTRAL,
+
+    /** DEGRADED / 执行失败 / knownBroken 登记行 / 免责行（历史口径：`warning`）。 */
+    WARNING,
+
+    /** BAD（历史口径：`danger`）。 */
+    DANGER,
+
+    /** 未运行 / 空闲 / 第二行的弱提示（历史口径：`onGlassSubtle`）。 */
+    SUBTLE,
+
+    /** 跑中的常规前景（历史口径：`onGlass`）。 */
+    ONGLASS,
 }
 
-/** 自检结论配色：PASS=`onGlassMuted` / DEGRADED=`warning` / BAD=`danger`（与 [CapabilityRow] 同口径）。 */
-@Composable
-private fun probeHeadlineColor(state: ProbeUiState): Color {
-    val colors = LocalGlassColors.current
-    return when (state) {
-        is ProbeUiState.Completed -> when (state.verdict) {
-            ModelHealthVerdict.PASS -> colors.onGlassMuted
-            ModelHealthVerdict.DEGRADED -> colors.warning
-            ModelHealthVerdict.BAD -> colors.danger
+/** 结论卡的补充行：一行文字 + 它的配色意图（W71 B2 并列登记行 / B3 免责行）。 */
+internal data class ProbeCardLine(val text: String, val tone: ProbeTone)
+
+/**
+ * 自检结论卡的展示要素（W71 B2/B3）：[probePresentation] 的产出。颜色经 [ProbeTone]
+ * 间接表达 ⇒ 纯逻辑 JVM 可测（`DiagnosticsProbePresentationTest`）。
+ *
+ * @param headline 结论行文字。
+ * @param headlineTone 结论行配色意图。
+ * @param detail 第二行（耗时·采样预览 / 执行失败澄清）；null = 不渲染。
+ * @param knownBroken 并列登记行（仅 `Completed(PASS)` ∧ `knownBrokenOn != null`）。
+ * @param disclaimer 免责行（仅 `Completed(PASS)`）。
+ */
+internal data class ProbePresentation(
+    val headline: String,
+    val headlineTone: ProbeTone,
+    val detail: ProbeCardLine?,
+    val knownBroken: ProbeCardLine?,
+    val disclaimer: ProbeCardLine?,
+)
+
+/** 免责一行（W71 B3 / I-2）：PASS 的语义诚实化 —— 未检出已知失败面 ≠ 输出质量保证。 */
+private const val PROBE_PASS_DISCLAIMER = "PASS = 未检出已知失败面，不构成输出质量保证"
+
+/**
+ * 自检结论卡的展示要素（W71 B2/B3）：`ProbeUiState` × 激活模型 knownBroken 签名 ⇒
+ * 结论行 / 第二行 / 登记行 / 免责行的全部文案与配色意图。
+ *
+ * ## 并列呈现语义（W71 产品件，T-2/I-2）
+ *
+ * `Completed(PASS)` ∧ `knownBrokenOn != null` ⇒ 结论行改「结论：通过（自检面）」
+ * （**本次自检面**结论）+ 追加「该模型已登记已知不可用：原文」（warning，与
+ * DEGRADED 同口径）——「已登记的坏结论」与「本次自检面结论」并列，**不拦截、
+ * 只告知**（与 W68 对话页激活态重校验提示同范式）。
+ *
+ * `knownBrokenOn == null`（无激活模型 / 未登记 / 非 preset）⇒ 结论行与第二行
+ * **逐字维持** W71 前文案 —— ⛔ 不得把「未登记」显示成「已登记坏」。
+ *
+ * 免责行对**任意 PASS** 生效：探针 PASS = 未检出已知失败面 ≠ 输出质量保证 ——
+ * 假阴性盲区对「未登记坏」的模型同样成立（M14 登记簿），只对已登记坏显示会把
+ * 最大的误读面（健康模型）漏掉。
+ *
+ * ## 不变量（`DiagnosticsProbePresentationTest` 钉死）
+ *
+ * - 非 PASS 各态（DEGRADED / BAD / NotRun / Failed / Idle / Running）**不受**
+ *   `knownBrokenOn` 影响：无登记行、无免责行，文案逐字不动；
+ * - PASS ∧ broken=null 的 headline / detail 与 W71 前逐字一致。
+ */
+internal fun probePresentation(state: ProbeUiState, knownBrokenOn: String?): ProbePresentation =
+    when (state) {
+        ProbeUiState.Idle -> ProbePresentation(
+            headline = "尚未运行",
+            headlineTone = ProbeTone.SUBTLE,
+            detail = null,
+            knownBroken = null,
+            disclaimer = null,
+        )
+        ProbeUiState.Running -> ProbePresentation(
+            headline = "正在自检…",
+            headlineTone = ProbeTone.ONGLASS,
+            detail = null,
+            knownBroken = null,
+            disclaimer = null,
+        )
+        is ProbeUiState.Completed -> {
+            val preview = state.sample.replace('\n', ' ').take(120)
+            val sampling = ProbeCardLine(
+                text = "耗时 ${state.elapsedMs}ms · 采样：${preview.ifBlank { "（空）" }}",
+                tone = ProbeTone.SUBTLE,
+            )
+            when (state.verdict) {
+                ModelHealthVerdict.PASS -> ProbePresentation(
+                    // 并列呈现：已登记坏 ⇒ 结论行降为「自检面」口径 + 追加登记行；
+                    // 未登记 ⇒ 逐字维持「结论：通过（PASS）」。
+                    headline = if (knownBrokenOn != null) {
+                        "结论：通过（自检面）"
+                    } else {
+                        "结论：通过（PASS）"
+                    },
+                    headlineTone = ProbeTone.NEUTRAL,
+                    detail = sampling,
+                    knownBroken = knownBrokenOn?.let {
+                        ProbeCardLine("该模型已登记已知不可用：$it", ProbeTone.WARNING)
+                    },
+                    disclaimer = ProbeCardLine(PROBE_PASS_DISCLAIMER, ProbeTone.WARNING),
+                )
+                ModelHealthVerdict.DEGRADED -> ProbePresentation(
+                    headline = "结论：降级（DEGRADED）",
+                    headlineTone = ProbeTone.WARNING,
+                    detail = sampling,
+                    knownBroken = null,
+                    disclaimer = null,
+                )
+                ModelHealthVerdict.BAD -> ProbePresentation(
+                    headline = "结论：异常（BAD）",
+                    headlineTone = ProbeTone.DANGER,
+                    detail = sampling,
+                    knownBroken = null,
+                    disclaimer = null,
+                )
+            }
         }
-        is ProbeUiState.Failed -> colors.warning
-        is ProbeUiState.NotRun -> colors.onGlassSubtle
-        ProbeUiState.Running -> colors.onGlass
-        ProbeUiState.Idle -> colors.onGlassSubtle
+        is ProbeUiState.NotRun -> {
+            // ⚠️ 「未运行」与「质量结论」必须文案区分：它不是「模型坏」的结论，
+            // 否则会把「引擎没加载」误导成「模型有问题」（Wave 44 口径延续）。
+            val reason = when (state.reason) {
+                ModelHealthProbe.NotRunReason.ENGINE_NOT_LOADED -> "请先在模型页加载模型，再运行自检"
+                ModelHealthProbe.NotRunReason.ENGINE_BUSY -> "正在生成，请稍后再试"
+                ModelHealthProbe.NotRunReason.NO_ACTIVE_MODEL -> "当前没有激活模型"
+            }
+            ProbePresentation(
+                headline = reason,
+                headlineTone = ProbeTone.SUBTLE,
+                detail = null,
+                knownBroken = null,
+                disclaimer = null,
+            )
+        }
+        is ProbeUiState.Failed -> ProbePresentation(
+            headline = "自检未跑通：${state.message}",
+            headlineTone = ProbeTone.WARNING,
+            detail = ProbeCardLine(
+                text = "执行失败（非质量结论）：这不代表模型坏，请确认模型已加载、设备未过热后重试",
+                tone = ProbeTone.SUBTLE,
+            ),
+            knownBroken = null,
+            disclaimer = null,
+        )
     }
-}
 
-/** 自检结论的补充说明（采样预览 / 执行失败澄清）；null = 不渲染第二行。 */
-private fun probeDetail(state: ProbeUiState): String? = when (state) {
-    is ProbeUiState.Completed -> {
-        val preview = state.sample.replace('\n', ' ').take(120)
-        "耗时 ${state.elapsedMs}ms · 采样：${preview.ifBlank { "（空）" }}"
+/**
+ * [ProbeTone] → 玻璃配色映射（历史口径逐字沿用 Wave 44 的 `probeHeadlineColor`：
+ * PASS=`onGlassMuted` / DEGRADED=`warning` / BAD=`danger`，与 [CapabilityRow] 同口径）。
+ */
+@Composable
+private fun probeToneColor(tone: ProbeTone): Color {
+    val colors = LocalGlassColors.current
+    return when (tone) {
+        ProbeTone.NEUTRAL -> colors.onGlassMuted
+        ProbeTone.WARNING -> colors.warning
+        ProbeTone.DANGER -> colors.danger
+        ProbeTone.SUBTLE -> colors.onGlassSubtle
+        ProbeTone.ONGLASS -> colors.onGlass
     }
-    is ProbeUiState.Failed ->
-        "执行失败（非质量结论）：这不代表模型坏，请确认模型已加载、设备未过热后重试"
-    else -> null
 }
 
 @Composable
