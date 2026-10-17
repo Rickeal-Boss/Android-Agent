@@ -31,7 +31,16 @@ These are the load-bearing lines; full logcat for both bundles (and the working 
 
 ### 2. 0.17.1 vs 0.18.0 retest
 
-Not done yet: we have not re-tested these artifacts on `0.18.0`. The retest is queued in our internal runtime-upgrade checklist (we audit all 0.17.1 behavior anchors before any version bump) and we will report back once we have the 0.18.0 AAR and same-artifact device results. Separately, and unrelated to these bundles, we have already observed that 0.18.0 removed a single-element text-array convergence that exists in 0.17.1 — that is one reason a bump is currently blocked on our side, but we are drawing no conclusion about these GPU artifacts from it.
+We have now re-tested the same `gemma-4-E2B-it-gpu.litertlm` artifact (identical bytes: 2,008,432,640; revision `61e25a57…`) on `litertlm-android:0.18.0`, same device (OPPO A13, Android 15, arm64). Results:
+
+- **Engine initialization now succeeds.** The loader message that was fatal on 0.17.1 (`Failed to create engine: NOT_FOUND: TF_LITE_PREFILL_DECODE not found in the model`) is now emitted as a **warning** and loading continues:
+  `litert_lm_loader.cc:514 W  TFLite model type: tf_lite_prefill_decode not found for backend constraints. Skipping.`
+- **The GPU path is actually engaged**, not silently falling back to CPU:
+  `llm_gpu_artisan_executor.cc:311 I  LlmExecutorSettings: backend: GPU_ARTISAN`, conversation created (`kv=4096`), 38 tokens generated at **18.3 tok/s** — versus **0.47 tok/s** for a CPU bundle on the same device/runtime.
+- **Output quality is still degraded** on this bundle: the reply was mixed-script/garbled text (Latin + Devanagari fragments and unrelated tokens), consistent with the output-degradation signature we had recorded on 0.17.1. So on 0.18.0 the artifact loads and runs on GPU, but does not yet produce usable text.
+- `gemma-4-E4B-it-gpu.litertlm` was **not** re-tested on 0.18.0 (we do not have a device with sufficient GPU memory for that bundle).
+
+Separately, and unrelated to these bundles: the single-element text-array convergence removal we mentioned is now **empirically reproduced on device** under 0.18.0 — two containers whose chat templates concatenate `message.content` as a string fail on the very first turn with `Failed to apply template: invalid operation: tried to use + operator on unsupported types string and seq`, while the same containers work on 0.17.1. We report this as a data point on 0.18.0 behavior, not as a conclusion about the GPU artifacts above.
 
 ### 3. text-only?
 

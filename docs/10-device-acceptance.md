@@ -510,7 +510,7 @@ CI 和静态审查都发现不了，只有真机能复现。
 
 ### 11.0 先读：这份清单的取证前提（Wave 39 新增）
 
-Wave 33 起累计的验收项 **46 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **39 条 ✅回收 / 5 条 ⚠️部分 / 2 条 ⛔不适用**；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
+Wave 33 起累计的验收项 **55 条**（逐条见 §11.0.1 台账，均附证据 cid / 日志行号）—— 其中 **47 条 ✅回收 / 6 条 ⚠️部分 / 2 条 ⛔不适用**（**W72 A2 补登 W69–W72 设备件 9 项**：✅ 8 / ⚠️ 1，见台账 #47–#55）；**剩余项见台账末「⛔ 本波未覆盖（挂 W52）」**。此前无法回收的**真实原因是取证通道是断的**：
 
 | 事实 | 后果 |
 |---|---|
@@ -566,9 +566,9 @@ Wave 33 起累计的验收项 **46 条**（逐条见 §11.0.1 台账，均附证
 
 ---
 
-### 11.0.1 已回收台账（Wave 51 更新，逐条附证据）
+### 11.0.1 已回收台账（Wave 72 更新：补登 W69–W72，逐条附证据）
 
-下表逐条列出**已真机验过**的验收项（W43 / W45 / W46 / W47 / **W49**），每条附**证据锚点**（`cid` = 会话/日志 cid，或报告内的日志行号）。
+下表逐条列出**已真机验过**的验收项（W43 / W45 / W46 / W47 / **W49** / W50 / W53 / W55 / W56 / W57 / W58 / W59 / W60 / **W69 / W70 / W71 / W72**），每条附**证据锚点**（`cid` = 会话/日志 cid，或报告内的日志行号）。
 **判定口径**：`✅ 回收` = 有落盘日志 / 报告证据支撑「预期行为成立」；`⚠️ 部分` = 判据只满足一部分（逐条注明哪半成立，**不得整体记 ✅**）；`⛔ 不适用` = 该组合下无观测面（**不是通过**）。下表**未列出**的条目一律视为**未回收**（保持不标），不得据此推断已验。
 
 > ⚠️ **CI 侧观测面缺口（W52 记录）**：`GITHUB_STEP_SUMMARY` 无 API、job 日志正文不含 `tests=` 数值 ⇒ **CI 的用例数「数值」属 `⛔ 不可程序化核验`**（只能判「unit-tests job 步绿」这一层）。**不得**据此推断「CI 已守住『用例数不低于基线』」——该判据只能肉眼读 Summary。
@@ -657,6 +657,22 @@ Wave 33 起累计的验收项 **46 条**（逐条见 §11.0.1 台账，均附证
 |---|---|---|---|
 | 45 | **W60 构建真机冒烟 + 13 模型全量功能测试**（用户指令「下载全部模型并全量测试」） | ✅ **回收** | W60 工作树构建（`8f5e3b6`）APK → `adb push` + `pm install -r` Success（`lastUpdateTime 2026-10-10 21:24:14`）→ 冷启动 **FATAL=0**（全档 `_litert_forensics/_w60_smoke/w60_full.log` 41.3MB，**FATAL EXCEPTION=0**）。**行使面全补齐**：① **文本 run 两轮**（同会话 `Say OK`→`OK` in583/out1｜`Say GO`→`GO` in586/out1，均 `ModelStopped`）；② **换模型真重建**（多次切换 LFM2.5-VL-1.6B→MiniCPM5-2B→gemma-4-E2B-it→…→LFM2.5-VL-3B，均触发 `LiteRT-LM 会话重建` + 新 `会话已建`）；③ **翻转复位 OFF→ON 端到端**（开关 OFF 态 run 一次 ⇒ `引擎 nativeToolChannel=false`；开关 ON 后 run ⇒ **`[WARN] 原生工具通道：用户重新开启，已清证伪与重建计数，重新给机会`** + `useNativeTools=true` 即时生效）。**13 模型全量**：5 个缺失预设从 **ModelScope** 下载（HF 直连被沙箱阻断），字节数逐一精确吻合 `sizeBytes`（2969059328/1833451520/3910090752/1783424544/2352023888 ≈12GB）→ push → 冷启动模型页 **「共 13 个」**（`models.json` 实读 13 条）。逐模型功能测试（题面 `Say OK`）：**8 个正常** `ModelStopped`（LFM2.5-VL-1.6B `OK`｜MiniCPM5-2B `这是最终答案。`（**首下发 1 次模板失败→自愈重建→重试成功**，自愈链真机行使）｜gemma-4-E2B-it `OK`｜Qwen2.5-1.5B（**round0 原生工具调用→round1 收尾**，原生通道行使）｜LFM2.5-VL-450M `OK`｜Phi-4-mini `记忆已更新，任务停止。`｜Qwen2-VL-2B `OK`｜LFM2.5-VL-3B `OK`）＋**2 个自愈**（SmolVLM2-500M：round0 重复循环 `finish=LENGTH`→**`StreamRepetitionDetector` 注入系统提醒**→round1 换答案；DeepSeek-R1：2 次重复提醒后收尾）＋**3 个已知失败**（gemma-4-E2B-it-gpu / gemma-4-E4B-it-gpu：`Failed to create conversation config: Unsupported model type`——GPU 特化变体 0.17.1 不可用，预设已申报；MiniCPM-V-4-int8：`Unsupported model type`——既有已知限制）。⇒ **13 模型零 FATAL、无新增缺陷**（连续第八波正确性零新增 P0/P1） |
 | 46 | **W60 剩 2 容器 L3 图像端到端**（关闭 W56 遗留「其余视觉容器端到端待验」） | ✅ **回收** | 测试图 `w57_test_card.png`（红底 + 顶部黄条 + 白字 "37"）经 SAF 选图器挂附件（附件缩略图出现；能力位菜单「当前模型不支持音频输入，只能添加图片」）。**Qwen2-VL 2B**：回复 `The colors in the image are red and yellow. The number in the image is 37.` ⇒ 红/黄/数字 **37** **三锚点全中**（in 844/out 20，首字 44.9s）｜**LFM2.5-VL 3B_int4_fixB**：回复 `红色背景，黄色顶部，数字37。` ⇒ **三锚点全中（中文）**（in 844/out 11，首字 26.6s）。共同判据：`多元素 content 下发：折叠前 2 → 折叠后 2；元素类型 Text=1/Image=1/Audio=0/ToolResponse=0`、`Failed to apply template`=**0**、`settled=ModelStopped`、FATAL=0（`_litert_forensics/_w60_smoke/w60_l3.log`）。⇒ **视觉容器 L3 全族关闭**（同族 fixB 1.6B W57 + 3B W60｜异族 SmolVLM2 W57 + Qwen2-VL W60） |
+
+> **Wave 69–72 补登**（W72 A2 落地 / 第十六审 J5：聚合面此前停在 46 条，W69–W71 设备件 8 项 + W72 条件真机臂 1 项未入台账）：设备 OPPO A13 `13309cc8`（**有线 adb**），证据以各波 closeout §三 与 `_research/w72-0180-device-arm.md` 为据。
+> ⚠️ **结论列口径不变**（§11.0 判定四态）：证据列内出现的 ⚠️ / ⛔ 字样属**如实申报**（子项未行使 / 不可测），**不参与三态计数**（A5 守卫只认结论列）。
+> ⚠️ **挂账 ID ≠ 行使波次**：#49 / #50 / #51 的挂账 ID 是 W69-10 / W69-03，但**真机行使在 W70**（W69 真机窗只用于产品件 E2E 与激活态回归，四项顺延 —— W69 closeout §三.3 如实申报）。
+
+| # | 验收项 | 结论 | 证据锚点（cid / 行号 / 来源） |
+|---|---|---|---|
+| 47 | **W69 C3 会话删除 UI 真机 E2E**（产品件端到端，W69 真机窗主验证） | ✅ 回收 | W69 closeout §3.1（W69 包 02:0x 安装）：抽屉 `content-desc="删除会话"` **8 个节点**（= 可见行数）→ 点第 1 行 → 确认框「取消 (618,1396) 在左 / 删除 (856,1396) 在右」（与「默认焦点 = 取消」设计一致）→ 点「删除」⇒ journal 目录 **121→120**、conversations **122→121**，被删 cid `d6547462-111e-4fd2-a7c2-6fa75c6412b7` 的 **journal 目录与会话文件双双消失**（delete 本体 + 级联清理同时验证）；`FATAL EXCEPTION`=**0**、级联清理 WARN=**0**（静默成功，符合设计）。判据以设备侧文件为准（`_ci-tools/_w69_c3_e2e.py`，未依赖 UI dump 的语义断言） |
+| 48 | **W69 激活态重校验回归**（W69 **工程件** C2 签名 + C6 clause-aware 文案的真机回归；⚠️ 与 `docs/14` 用户行动卡新增的 **C6** 同名不同物 —— 后者是 bump 裁决项） | ✅ 回收 | W69 closeout §3.2（active = `gemma-4-E2B-it-gpu`，题面 `Hello please reply OK`）：`LiquidAgentDiag` WARN **恰好 1 次**，原文「激活态重校验提示：已知不可用：0.17.1 引擎初始化 NOT_FOUND（容器缺 TF_LITE_PREFILL_DECODE section；W43 另实测输出退化）。仍可继续，但可能失败。」；**不含「回落 CPU」**（grep 命中 0）⇒ C6 clause-aware 逐字验证（knownBroken-only 子句不带回落尾句）；run 未被拦截（journal settled `ModelStopped`）、FATAL=0。W71 §3.1 同原文再现（跨波交叉印证） |
+| 49 | **W69-10 D7：R1 探针 verdict 实读**（`DeepSeek-R1-Distill-Qwen-1.5B`） | ✅ 回收 | W70 closeout §3.2（**行使波次 = W70**，`_ci-tools/_w70_d7_r1.py` 单容器脚本）：verdict = **通过（PASS）**、采样**（空）**、耗时 **27020ms**；判据 C 两通道合并判定（thinking 非空 ⇒ 不误判 BAD）—— W66「R1 容器不认 `enable_thinking=false`」预判在 W70 复验成立 |
+| 50 | **W69-10 Y3：gpuClause 警告 + GPU→CPU 回落闸双命中**（ChatParamsPanel GPU + 白名单外模型行使样本） | ✅ 回收 | W70 closeout §3.4（**行使波次 = W70**）：13:53 logcat（探针批搭车）gpuClause 警告完整尾句「…仍可继续，但可能失败**或被自动回落 CPU**。」真机逐字命中；15:07 臂行使时 **GPU→CPU 回落闸**命中（「强行加载会闪退」保命道，非白名单模型 R1 触发）⇒ 第 3 道回落 + 第 4 道提示联动**均真机行使**，补 gpuClause 零行使记录 |
+| 51 | **W69-03 阈值批：候选判据「低字符多样性 <0.15」校准**（8 容器探针批） | ✅ 回收 | W70 closeout §3.1（**行使波次 = W70**，`_ci-tools/_w70_probe_e2e.py`）：**6 个有效 verdict + 2 个判据歧义**（Qwen2.5 / Phi-4-mini；Phi-4 根因经 W71 §一.5 订正 = 驱动脚本 UUID 错一位 ⇒ 该轮**从未选中模型**，非陈旧行）；校准结论 = 候选判据 **不采用**（退化样本 `gemma-4-E2B-it-gpu` 多样性 **0.722** vs 健康样本 `gemma-4-E2B-it` **0.748**，均远高于阈 ⇒ 无判别力），KDoc 留痕（`7450b21`）+ **探针保真度缺口**申报（该退化形态探针判 PASS = 假阴性） |
+| 52 | **W71 T-2 诊断页 PASS × knownBroken 并列 + 免责行**（产品件端到端） | ✅ 回收 | W71 closeout §3.1（W71 包 19:1x 安装）：激活 `gemma-4-E2B-it-gpu`（uuid `d0de1e7a…`）→ **先发题面加载引擎** → 设置→诊断信息→运行自检；UI dump 三判据全 True（「结论：通过（自检面）」/「该模型已登记已知不可用：」/ 免责行「PASS = 未检出已知失败面，不构成输出质量保证」）+ **负判据**：裸「结论：通过（PASS）」单独出现 = **False**；logcat `模型自检通过`；FATAL=0；datastore 逐字节还原 ✅。过程两坑（漏「先发题面」⇒ `ENGINE_NOT_LOADED` / 键盘挡底栏 ⇒ `NAV_RETRY`）已入 W71 §六.4 |
+| 53 | **W71 W69-02 内存实测批**（只测不改；tail 1.25 判定依据） | ✅ 回收 | W71 closeout §3.2：Phi-4-mini-instruct 峰值 PSS **5.20 GiB**（+swap 0.18 = 5.28）vs 公式预测 5.6（差 **−0.32**）；gemma-4-E4B-it-gpu **5.00 GiB**（+0.18 = 5.01）vs 5.2（**−0.19**）；口径 = `dumpsys meminfo` 的 TOTAL PSS 与 TOTAL SWAP PSS **分列**（PSS 不含 swap）。⚠️ `MiniCPM-V-4-int8` **不可测**（`Unsupported model type` 执行失败，失败路径 0.40 GiB，**如实申报：执行失败 ≠ 质量结论，不得记通过**）。两可测容器实测均低于预测 ⇒ **tail 1.25 维持不改** |
+| 54 | **W71 P-2 budget=96 臂**（第十四审「R1 思考上限 ~200 token ⇒ budget=96 可现 starvation」假设） | ⚠️ 部分（臂行使完整 / 目标信号未命中 = 负结果） | W71 closeout §3.3：Arm B 纪律完整（`ModelSamplingProfiles.kt` R1 档 `minThinkingTokenBudget` 1536→96 → 构建安装 → 真机 2 轮 → 还原 → 重建 → 装回干净包 → `git diff` 空核验）；补丁生效实证 logcat `模型采样档案生效：…/maxTok 2048/think 96/ctx 4096`（两轮均现）；两轮 journal thinking **188 / 180 字符**（≈36-37 token @ r≈5）、正文 **211 / 265 字符**；N-2 warn **0 行**、预算耗尽/截断 0 行、FATAL=0。归因：96 是实测思考（~37 token）的 **2.6 倍** ⇒ 预算从未触顶，且正文非空 ⇒ N-2 的「正文空」前提不成立 ⇒ 假设被实测**证伪**（**负结果留痕，非判据失效**）；W70-01 维持 parked、重启条件收紧（需「思考 ≥ 预算 ∧ 耗尽后不产正文」的模型/题面组合） |
+| 55 | **W72 0.18.0 条件真机臂**（litertlm 0.18.0；决策树 (b) 取数，**非决策**） | ✅ 回收 | `_research/w72-0180-device-arm.md`（临时 worktree `_w72_arm` / 分支 `w72-arm-0180`，测后弃；制品 = Google Maven `litertlm-android:0.18.0` 20,905,807 B）。**混合结论（取数完成 ≠ 决策；bump 本体未做）**：① ⛔ `Capabilities` 类被删（改 `ModelInfo.from`）⇒ 首跑 `assembleDebug` **BUILD FAILED**（`Unresolved reference 'Capabilities'`，7 错误），主树 2 文件 API 迁移后 **BUILD SUCCESSFUL 1m40s**；② ✅ `gemma-4-E2B-it-gpu` 引擎初始化**修复**（`GPU_ARTISAN`，38 token @ **18.34 tok/s** vs 同臂 CPU 0.47 tok/s ≈39× ⇒ 确系 GPU 路径、非静默回落）；③ ⚠️ 同容器**输出退化仍在**（跨脚本混杂天城文 + `RESET Remix` 碎片，W43 登记签名）⇒ `knownBrokenOn` **不可整体清空**；④ ✅ `MiniCPM-V-4-int8` 0.18.0 下**可建会话**（首 token **81779ms = 81.8s** / 12 token，可用但极慢）；⑤ ⛔ **锚 #1 P0 回归真机实证**：Qwen2.5-1.5B 与 MiniCPM5-2B 首轮均 `Failed to apply template … + operator on unsupported types string and se…`（journal 587 B、无 MODEL 消息；爆面 ≥2/14 预设，非个别容器问题）；⑥ ✅ `gemma-4-E2B-it` CPU 正常路径**无回归**（0.47 tok/s）。datastore 快照 **4 次运行全部逐字节还原一致**（927 B） |
 
 > **🔴 P1 · 模板渲染失败（W50 定案 → W51 修法落地 + 真机复验通过）**：
 > - **现象**：Qwen2.5-1.5B（`multi-prefill-seq_q8_ekv4096`）在**工具结果回灌那一轮**的 `nativeSendMessageAsync` 失败：`Failed to apply template: invalid operation: tried to use + operator on unsupported types string and sequence (in template:27 / :23)`。`createConversation` **从不失败**。

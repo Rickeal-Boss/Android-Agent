@@ -1,6 +1,6 @@
 # docs/12 — litertlm 0.17.1 行为锚定面清单（bump 前置⑥）
 
-> 本清单 = **bump 前置⑥**（W59 A5 成文，第六审 §3 A5 十二项为底稿；**W61 增补锚 #13 ⇒ 十三项**；**W68 B3 增补锚 #14 ⇒ 十四项**）。
+> 本清单 = **bump 前置⑥**（W59 A5 成文，第六审 §3 A5 十二项为底稿；**W61 增补锚 #13 ⇒ 十三项**；**W68 B3 增补锚 #14 ⇒ 十四项**；**W72 增补锚 #15 ⇒ 十五项**）。
 > **复核纪律：逐项复核完成后在本表「打勾」列标记，全部打勾之前不得动 `gradle/libs.versions.toml` 的 litertlm 版本行**（守卫 #29 钉版本取值、红输出指向本清单）。
 > 文档头不写本仓引擎源码行号（上游源码坐标为外部锚，可保留）；本清单只做「bump 复核面」的枚举，行为语义的完整论证见各定案波次的交接稿与源码内注释。
 
@@ -8,7 +8,7 @@
 
 litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0 起「1 元素 text 数组 → string」收敛点被删且无等价替代（tag `b2f686e2e` 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸。除该 P0 级阻断外，0.17.1 上还钉着一批**依赖上游实现细节**的行为锚 —— bump 时任何一项漂移都可能产生「编译能过、真机静默回归」的故障面。本清单把它们收拢为一处，作为 bump 评审的**机械复核单**。
 
-## 锚定面清单（14 项）
+## 锚定面清单（15 项）
 
 | # | 锚定项 | 定案波次 | 依据（本仓锚 / 外部锚） | bump 复核要点 | 锚失效的可观测签名 | 打勾 |
 |---|---|---|---|---|---|---|
@@ -25,7 +25,8 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 | 11 | `ConversationConfig.systemInstruction` 类型为 `Contents?` | P0-A / W48（0.17.1 起，旧版是 `String?`） | 引擎侧 `systemText?.let { Contents.of(it) }`；传裸 String 编译不过（编译期即拦） | 确认类型未回退；若改回 String 或换类型，构造点编译错 = 有意识动作化 | — | ✅ W71 锚批（systemInstruction 仍 Contents） |
 | 12 | 模板引擎 = minijinja 2.14.0 | —（外部锚：上游 minijinja 版本，无本仓定案波次） | v0.17.1 上游模板引擎版本（外部 Cargo 锚；W50-W55 离线复现所用行为基线） | 核对新版依赖的 minijinja 是否仍 2.14.0；升级需重跑「content 为数组必炸」离线复现，确认 `+` 报错语义未变 | — | ✅ W71 锚批（Cargo.toml 钉 `=2.14.0`） |
 | 13 | 容器模板可含 minijinja 2.14.0 **不支持的 filter 参数** | W61 定案 | 实证 = MiniCPM5 容器 `chat_template` 第 6 行 `{{- tool \| tojson(ensure_ascii=False) }}`（在 `{%- if tools %}` 块内，即**原生工具通道**分支；`:160` 同款）；依据 = v0.17.1 `runtime/components/rust/minijinja_template.rs:142`（`fn tojson(value: minijinja::Value)` **单参**）+ `:187`（`env.add_filter("tojson", tojson)`）+ 离线复现（PyPI minijinja 2.14.0）⇒ TypeError: unexpected keyword argument 'ensure_ascii'（**同因**：单参 filter 收到关键字参数；Rust 内嵌版同因报 `too many arguments (in template:6)`）+ 真机日志（`原生工具通道：生成期模板渲染失败 … 已证伪本通道`） | 核对新版内嵌 minijinja 版本与 **filter 签名集**（`tojson` 等）；**若新版放宽 `tojson` 参数**（接受关键字参数）⇒ 本容器原生工具通道可用性需真机复验（「探针通过、生成期炸」的探针保真度缺口随之消失）。⚠️ 该失败面**仅在模板语句所在分支被行使时到达**（MiniCPM5 在 `tools` 非空的原生工具通道），与 fold / `requires_typed_content` 无关（W61 双源定案，勿按第七审 §3.1 补前置注记）。⚠️ **W70 情报（2026-10-16，#3576 根因共认）**：上游已复现并定位根因 = 已发布 bundle 内嵌原始模板（`tojson(ensure_ascii=False)`）+ `generic_model{}` 元数据（XML `<function>` 路由需 `minicpm5{}`）⇒ 修复可能落在 **bundle 层**（重打包换模板/元数据）而非引擎层（放宽 `tojson` 签名）——**两种修复路径下**，本仓 MiniCPM5 容器原生工具通道均须**真机复验**后销账。 | — | ✅ W71 锚批（tojson 单参签名逐字未放宽） |
-| 14 | `knownBrokenOn` / GPU 白名单的**运行时时效**（结论会集体过期） | W68 B3（第十二审 R-1） | 机器可读字段 = `ModelPreset.appliesToRuntime`（三条已知坏条目均 = `"0.17.1"`；GPU 白名单 `ModelGpuSupport.gpuVerifiedFileNames` 同属「某运行时 / 设备下的结论」）。单测覆盖见 `feature-models` `ModelPresetsKnownBrokenTest`（时效定语 ⇒ 必有坏结论、无坏结论禁预填）。 | **bump 后必须逐条复审**：上游若修复了容器（`引擎初始化 NOT_FOUND` / `Unsupported model type` / 输出退化等）⇒ **清空对应 `knownBrokenOn`**（并恢复推荐资格，勿只改 `recommended` 留红字段）—— 否则红字硬提示会把已修好的可用模型吓跑；`gpuVerifiedFileNames` 同理须复跑真机验证后逐个放行（**不得**因 bump 就顺手放行）。⚠️ 该字段当前**不参与**任何判定（GPU 放行 / 内存闸门 / 激活态重校验只看 `knownBrokenOn` 与 `ModelGpuSupport`），只作复审锚。⚠️ `appliesToRuntime` 的版本字面量为**人工维护**（现为第 3 处 `"0.17.1"` 字面量），与 `gradle/libs.versions.toml` 的 `litertlm` 行**无机械联动** —— 守卫 #29 只钉 toml 一行、**不校**本字段 ⇒ bump 时须**人工同步**本字段，否则本复审锚会指向错版本。 | 已修好的容器仍按旧结论报「已知不可用」（用户被吓跑）；白名单未随运行时/设备变化复审 | ☐ W71 未覆盖（本仓复审面，bump 后人工逐条） |
+| 14 | `knownBrokenOn` / GPU 白名单的**运行时时效**（结论会集体过期） | W68 B3（第十二审 R-1） | 机器可读字段 = `ModelPreset.appliesToRuntime`（三条已知坏条目均 = `"0.17.1"`；GPU 白名单 `ModelGpuSupport.gpuVerifiedFileNames` 同属「某运行时 / 设备下的结论」）。单测覆盖见 `feature-models` `ModelPresetsKnownBrokenTest`（时效定语 ⇒ 必有坏结论、无坏结论禁预填）。 | **bump 后必须逐条复审**：上游若修复了容器（`引擎初始化 NOT_FOUND` / `Unsupported model type` / 输出退化等）⇒ **清空对应 `knownBrokenOn`**（并恢复推荐资格，勿只改 `recommended` 留红字段）—— 否则红字硬提示会把已修好的可用模型吓跑；`gpuVerifiedFileNames` 同理须复跑真机验证后逐个放行（**不得**因 bump 就顺手放行）。⚠️ 该字段当前**不参与**任何判定（GPU 放行 / 内存闸门 / 激活态重校验只看 `knownBrokenOn` 与 `ModelGpuSupport`），只作复审锚。⚠️ `appliesToRuntime` 的版本字面量为**人工维护**（现为第 3 处 `"0.17.1"` 字面量），与 `gradle/libs.versions.toml` 的 `litertlm` 行**无机械联动** —— 守卫 #29 只钉 toml 一行、**不校**本字段 ⇒ bump 时须**人工同步**本字段，否则本复审锚会指向错版本。 | 已修好的容器仍按旧结论报「已知不可用」（用户被吓跑）；白名单未随运行时/设备变化复审 | ☐ 部分覆盖（W72 臂：E2B-gpu 的 NOT_FOUND 半边已修、输出退化半边仍在 ⇒ **不得整体清空**，须订正为「仅输出退化」；MiniCPM-V-4 已可建会话 ⇒ 该条结论过期） |
+| 15 | `Capabilities` 类被 `ModelInfo` 取代（能力探测 API 重构） | W72 真机臂（**编译期**发现） | v0.18.0 AAR `classes.jar` 实证：`com.google.ai.edge.litertlm.Capabilities` **整类删除**。替代 = `ModelInfo`（`abstract class … : AutoCloseable`；静态工厂 `ModelInfo.from(String)`），`ModelInfo.Llm : ModelInfo(), LlmCapability` 提供 `hasSpeculativeDecodingSupport()` / `supportsThinking()` / `supportsFunctionCalling()` / `defaultSamplerParams()` / `isDynamicContext()` / `maxVisionTokenBudget()` / `visionSignatureSelection()`；另有 `LlmCapability` / `EmbeddingCapability` 两接口 | **编译期即拦，不是静默回归**：本仓 2 处 `Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }`（`core-engine/.../ModelCapabilityProbe.kt:19`、`.../LiteRtLmEngineLoader.kt:497`）在 0.18.0 下 `Unresolved reference 'Capabilities'`（实测 7 条编译错误）。迁移写法（W72 臂实证可编译）：`ModelInfo.from(p).use { (it as? ModelInfo.Llm)?.hasSpeculativeDecodingSupport() ?: false }` | `Unresolved reference 'Capabilities'` / `Cannot infer type for type parameter 'R'` | ✅ W72 臂（迁移后 `assembleDebug` BUILD SUCCESSFUL） |
 
 ## 0.18.0 离线锚批（W71，2026-10-17）
 
@@ -44,11 +45,32 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 
 **净结论**：静态可判 12 项仅锚 #1 缺失 ⇒ **W68-06 bump blocker 从「锚 #5 未验 + 锚 #1 收敛缺失」双维持变为单维持（锚 #1）**；gallery #1326 check②（0.17.1 vs 0.18.0 复测）的**离线侧已清**——两版本静态差异 = 仅收敛语义一项。
 
+### 0.18.0 条件真机臂（W72，2026-10-17）
+
+> 臂 = 临时 worktree（分支 `w72-arm-0180`，**不入 improve，测后弃**）；设备 OPPO A13 `13309cc8` 有线 adb；驱动 `_ci-tools/_w72_arm_probe.py` / `_w72_arm_case.py`；原始件 `_w72_dev/`；完整报告 `_research/w72-0180-device-arm.md`。
+> **取数，不是决策**：臂只回答「0.18.0 在各容器上的真实行为」，bump 本体仍须用户裁决（docs/14 C6）。
+
+| 问 | 容器 | 0.17.1 基线 | 0.18.0 实测 | 判定 |
+|---|---|---|---|---|
+| 编译 | — | 可编译 | `Capabilities` 类删除 ⇒ 2 处 `Unresolved reference`（7 条错误）；迁移到 `ModelInfo.from` 后 BUILD SUCCESSFUL | **⛔ 需 2 文件迁移（锚 #15）** |
+| Q1 | gemma-4-E2B-it-gpu | 引擎初始化 NOT_FOUND，会话建不起来 | `tf_lite_prefill_decode not found` 降为 **W** 并继续；`backend: GPU_ARTISAN`；会话建成；38 token @ **18.34 tok/s**（CPU 对照 0.47） | **✅ init 修复** |
+| Q1′ | 同上（输出质量） | 输出退化（W43） | 正文 = `您好。…需要我能为您 after what? 请提供具体的前मोन Ally (5/2) 问题RESET Remix 上…`（跨脚本混杂） | **⚠️ 退化未修 ⇒ knownBroken 不得整体清空** |
+| Q2 | MiniCPM-V-4-int8 | `Unsupported model type`，会话创建失败 | 会话建成，`{'body': '你好！有什么我可以帮你的吗？'}`，firstToken 81.8s | **✅ 修复（慢）** |
+| Q3 | gemma-4-E2B-it（CPU） | 正常 | 正常（thinking + 正文，0.47 tok/s） | **✅ 无回归** |
+| Q4 | Qwen2.5-1.5B | 可用（fold ON） | `Failed to apply template: invalid operation: tried to use + operator on unsupported types string and se…`，journal 587 B 无 MODEL 消息 | **⛔ 锚 #1 P0 真机实证** |
+| Q5 | MiniCPM5-2B | 可用（fold ON） | 同上签名（`+` on string and seq），journal 587 B 无 MODEL 消息 | **⛔ 爆面扩至 2/14** |
+
+**两条方法学教训（W72 新增，进交接 §六）**：
+1. **日志关键词判据必须排除自家文案**。驱动脚本首版用 `NOT_FOUND` / `Unsupported model type` 做旗标，被本仓 knownBroken **预设警告文案**命中 ⇒ 一度误读为「(a) 未修复」。正确三证 = ① native/引擎侧日志行（`litert_lm_loader.cc` / `llm_gpu_artisan_executor.cc`）② journal 有无 MODEL 消息 ③ `tokensPerSecond` 量级。
+2. **模板静态阅读 ≠ 运行期行为**。曾据 MiniCPM5 模板 `{%- if content is string %}…{%- else %}{%- set content = '' %}` 推演「数组 ⇒ 静默丢字」；实测是模板求值期**同步抛错**。凡「静默 vs 抛错」的形态判断，必须真机或离线 minijinja 复现。
+
 ### bump 决策树预登记（复测前写死，防结果出来后临场博弈）
 
-- **(a) 真机证 0.18.0 仍 GPU init NOT_FOUND** ⇒ 回复上游「双版本同签名」，bump 维持单挂起（锚 #1），季扫继续。零变化。
-- **(b) 0.18.0 修好 GPU init** ⇒ bump 权衡**首次变成真实的**：收益 = gemma-4 GPU 用户故事（W68-07）+ 可能修复 MiniCPM-V-4 `Unsupported model type`；代价 = 锚 #1 收敛缺失 ⇒ Qwen2.5 系 P1 回归（fold 失效、每轮必炸）。选项空间预先写明：① bump + 对不安全模板容器启用「导入期模板探测闸门」（第十一审 E4/E6，evidenceLevel schema 已就位）；② 不 bump 继续等收敛恢复；③ 双 runtime 不可行（单依赖）。**该分叉须一次专门用户裁决（可挂 C5 追加项）**。
-- **(c) 0.18.0 恢复收敛**（低概率；W56 源码 grep 零命中 + 本次锚批确认删除）⇒ bump 前置④转绿，走完整前置清单。
+> **W72 状态：分支 (b) 已由真机臂命中**（见下节「0.18.0 条件真机臂」）。以下三支保持原文留痕（预登记的价值在于「事后不得改写判据」），命中后的事实订正写在每支的行内。
+
+- **(a) 真机证 0.18.0 仍 GPU init NOT_FOUND** ⇒ 回复上游「双版本同签名」，bump 维持单挂起（锚 #1），季扫继续。零变化。**⛔ W72 实测未命中**：`tf_lite_prefill_decode not found` 由致命错误降为 W 级 warning，`GPU_ARTISAN` 后端建成会话（18.3 tok/s）。
+- **(b) 0.18.0 修好 GPU init** ⇒ bump 权衡**首次变成真实的**：收益 = gemma-4 GPU 用户故事（W68-07）+ 可能修复 MiniCPM-V-4 `Unsupported model type`；代价 = 锚 #1 收敛缺失 ⇒ Qwen2.5 系 P1 回归（fold 失效、每轮必炸）。选项空间预先写明：① bump + 对不安全模板容器启用「导入期模板探测闸门」（第十一审 E4/E6，evidenceLevel schema 已就位）；② 不 bump 继续等收敛恢复；③ 双 runtime 不可行（单依赖）。**该分叉须一次专门用户裁决（可挂 C5 追加项）**。**✅ W72 实测命中**：收益两项**均已证实**（GPU init 修复 + MiniCPM-V-4 可建会话，首 token 81.8s）；代价侧**实测加码**：① 锚 #1 真机复现（Qwen2.5-1.5B 首轮 `+` on string and seq）；② **爆面扩至 2/14**（MiniCPM5-2B 同样首轮必炸）；③ 新增**编译级**代价（锚 #15：`Capabilities` 类删除 ⇒ 2 文件迁移）；④ `gemma-4-E2B-it-gpu` 的「输出退化」半边**未修**（跨脚本混杂仍在）⇒ knownBroken **不得整体清空**，须订正为「仅输出退化」。裁决项见 `docs/14` C6。
+- **(c) 0.18.0 恢复收敛**（低概率；W56 源码 grep 零命中 + 本次锚批确认删除）⇒ bump 前置④转绿，走完整前置清单。**⛔ W72 实测未命中**：Qwen2.5 / MiniCPM5 首轮均 `Failed to apply template`。
 
 ## 已知盲区登记簿（W71 C4，v23 M14；防「探针 PASS = 健康证明」误读）
 
