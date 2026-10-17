@@ -17,6 +17,11 @@ package com.rickeal.agent.core.model
  *
  * **匹配口径 = 文件名精确匹配**（与 ModelPresets.findByFileName 同一约定）。
  * SAF 导入/重名落盘（name-1.ext）的文件不在名单 → 一律 CPU（从严防闪退）。
+ *
+ * ⚠️ **唯一入口（W72 了断）**：GPU 放行判定只有 [isGpuVerified] 这一处。`ModelPreset`
+ * 上曾有的 `gpuSupported` 二次投影属性在 W69 C5 同源化后零消费方，W72 已删除 ——
+ * ⛔ 不要在 `ModelPreset` / UI / 引擎任一层再包一层「预设侧判定」，两层判定必漂移，
+ * 漂移的代价是 native 崩溃（Kotlin catch 不住）。
  */
 object ModelGpuSupport {
 

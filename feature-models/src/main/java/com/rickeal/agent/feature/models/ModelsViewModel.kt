@@ -86,8 +86,10 @@ private const val MIN_REQUIRED_RAM_BYTES = 2L * 1024 * 1024 * 1024
  *
  * 两个闸门用**同一类数据**（`ModelPresets.sizeBytes` / `requiredRamBytes`）加一层余量，所以
  * 哲学必须一致 —— 都是「警告 + 用户可绕过」。⚠️ 口径别笼统写成「都是手写估算值」：现役 14 条
- * 中 E4B 单文件的 `requiredRamBytes` 已是 W67 真机实测（`memBasis = BASIS_CPU_E4B_MEASURED`），
- * 其余 13 条仍为公式估算；`sizeBytes` 为手写登记值（逐条口径见 `ModelPreset.memBasis`）。
+ * 中 **3 条**的 `requiredRamBytes` 已有真机实测锚点（E4B 单文件 W67；Phi-4-mini 与 E4B·GPU
+ * W71，逐条见 `ModelPreset.memBasis` 的 `*_MEASURED` 常量），另有 **1 条**（MiniCPM-V-4）
+ * 显式标注「执行失败不可测」；其余 **10 条**仍为公式估算。`sizeBytes` 为手写登记值
+ * （逐条口径见 `ModelPreset.memBasis`）。
  * 但它们的**触发时机**与**失败代价**完全不同，合成一个会让文案没法同时说清两件事：
  *
  * | | 触发时机 | 失败代价 |

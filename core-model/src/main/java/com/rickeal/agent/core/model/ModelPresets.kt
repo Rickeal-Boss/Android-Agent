@@ -128,6 +128,65 @@ enum class EvidenceLevel {
     UNVERIFIED,
 }
 
+/**
+ * 该容器的 `chat_template` 对**数组形态 content** 的处理结论（W72 D 数据件，U-1）。
+ *
+ * ## 为什么需要它（标记体系的结构性缺口）
+ *
+ * 本仓此前只记「安全」（`backendBasis` 里写「模板已离线取证数组安全」），**不记「不安全」**
+ * —— 而 litertlm bump 决策需要的恰是后者：`0.18.0` 删掉了「1 元素 text 数组 → string」
+ * 的收敛点（`docs/12` 锚 #1），于是**所有**「靠收敛兜住」的模板会在 bump 后集体炸。
+ * 要判断「bump 会炸哪些」，就必须有一条能机械读出的「数组安全」结论。
+ *
+ * ## 四态（判据必须可机械区分，⛔ 不许合并）
+ *
+ * - [SAFE]：**七格**均不抛错且文本**逐字保留**。七格 = `U_str` / `U_arr1` / `U_arrN`
+ *   （无 system）+ `S_str_U_str` / `S_arr_U_str` / `S_arr_U_arr1` / `S_arr_U_arrN`
+ *   （system 侧 × user 侧三形状）—— ⛔ **不是干净笛卡尔积**（system 为 string 时只配
+ *   user=string），格名以 harness 输出为准。判定依据格 = 带**数组**的五格。
+ *   ⚠️ **取证必须覆盖 `systemInstruction` 维度** —— W53/W55 当年的 harness 只喂 user
+ *   消息，因此**系统性高估**过安全面（MiniCPM5 就是这么被判成「安全」的，实际 system
+ *   分支会抛错）。只做 user 三格的结论**不足以**判 SAFE。
+ * - [UNSAFE]：任一格抛 `Failed to apply template`（**可见失败**：报错 + 日志 + 无输出，
+ *   用户立刻知道）。这类容器「坏得诚实」。
+ * - [LOSSY]：不抛错，但文本被**丢弃**（**不可见失败**）。
+ *   ⚠️ **现役 0 命中**，但这一态必须保留：`MiniCPM5-2B` 当前判 [UNSAFE]（system 分支
+ *   抛错），而它 user 分支的 `content=''` 性质**真实存在且被 system 侧的报错遮蔽**。
+ *   一旦谁只修 system 分支，这个容器就会从「可见失败」滑进「不可见失败」—— 而现有
+ *   **任何**检测面（探针 / logcat / 输出判别）都看不见文本被丢这件事。
+ *   保留 [LOSSY] 的唯一目的 = 让那次滑动在数据里留下可判的落点。
+ * - [UNVERIFIED]：无证据。**必须在 `backendBasis` 或 `note` 写明理由类别**，禁裸留：
+ *   - `NO_TEMPLATE_IN_CONTAINER`：容器里没有明文 `chat_template`（走运行时内建模板）
+ *     ⇒ 容器侧七格取证**方法不适用**（≠「还没做」）；
+ *   - `NO_CONTAINER`：连制品都没有（无文件可扫）。
+ *
+ * ⚠️ 本字段与 [EvidenceLevel] **正交**：前者度量「模板对数组的处理」，后者度量「本条
+ * 文本内的证据等级」。一个容器可以 `evidenceLevel=MEASURED`（真机跑过）同时
+ * `templateArraySafety=UNVERIFIED`（没做模板七格取证）—— 别互相推断。
+ *
+ * 取证 harness（W72 方案席，**仓外**不入库）：`_ci-tools/_w72_tpl_safety.py` —— 七格
+ * （格名与构成见上）逐格喂入并比对输出文本。复现
+ * 结论或新增预设时**用它跑，不要凭模板文本推断**（`+` 拼接在 string 分支合法、在数组
+ * 分支抛错，纯读代码很容易看漏 system 分支）。
+ *
+ * ⚠️ **接线状态（W72，勿当已交付功能）**：本字段目前**只做数据化 + 守卫**，**无 UI
+ * 消费方**（模型卡不展示）⇒ 属「🟡 已实现未接线」，与 [EvidenceLevel] 同款挂账。
+ * 重启前提 = 模型卡展示本字段 / bump 前置清单消费它。
+ */
+enum class TemplateArraySafety {
+    /** 七格（见枚举 KDoc）均不抛错且文本逐字保留。判定依据格 = 带数组的五格。 */
+    SAFE,
+
+    /** 任一格抛 `Failed to apply template`（可见失败）。 */
+    UNSAFE,
+
+    /** 不抛错但文本被丢弃（不可见失败）。现役 0 命中 —— 保留本态是为了捕获「只修 system 分支」的滑落。 */
+    LOSSY,
+
+    /** 无证据（禁推测；理由类别须写进 `backendBasis` / `note`）。 */
+    UNVERIFIED,
+}
+
 data class ModelPreset(
     val label: String,
     val url: String,
@@ -156,8 +215,12 @@ data class ModelPreset(
      *    dumpsys meminfo 峰值**，后人校准时优先补这类样本（W69-02 挂账）。
      *
      * ⚠️ 读表诀窍：`memBasis` 以「实测」二字 + 波次锚点区分两种口径 —— 现役 14 条中
-     * 仅 Gemma 4 E4B 单文件一条为实测口径（[BASIS_CPU_E4B_MEASURED]），其余 13 条均为
-     * 公式口径（补实测批挂 W69-02）。
+     * **4 条**不是纯公式口径：3 条实测（[BASIS_CPU_E4B_MEASURED] E4B 单文件 /
+     * [BASIS_CPU_PHI4_MEASURED] Phi-4-mini / [BASIS_GPU_E4B_MEASURED] E4B·GPU）+
+     * 1 条**显式标注「执行失败不可测」**（MiniCPM-V-4，字面量串，W71 实测批如实申报）；
+     * 其余 **10 条**为公式口径（[BASIS_CPU] / [BASIS_GPU] 或逐条字面量估算）。
+     * ⚠️ 「不可测」条目的数值仍是公式值，**不是实测** —— 它只是把「为什么没有实测」写进
+     * 数据，别当成第 4 条实测样本读。
      */
     val memBasis: String,
     val note: String,
@@ -210,15 +273,26 @@ data class ModelPreset(
      * （守卫 #39「全 schema」强制：缺赋值 / 未知等级 / MEASURED 无 `W##` 锚点 ⇒ 判红）。
      */
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
-) {
     /**
-     * 是否放行 GPU 后端（2026-09-26）。**判定源下沉到 [ModelGpuSupport]**（core-model）：
-     * GPU 路径不支持时是 native 崩溃（用户只看到闪退），除了本表的 UI 选择拦截，
-     * 对话链路（AgentRunner → EngineEnvironment.loadConfig）也要做加载前兜底 ——
-     * 判定必须是同一数据源，否则 UI 与引擎各判各的必然漂移。
+     * 该容器 `chat_template` 对数组形态 content 的处理结论（W72 D 数据件，U-1）：见
+     * [TemplateArraySafety]。
+     *
+     * `ModelPresets.all` 里**每条预设都必须显式赋值**（守卫 #39「全 schema」强制：
+     * 缺赋值 ⇒ 判红）。`UNVERIFIED` 虽是默认值，但**必须**在 `backendBasis` 或 `note`
+     * 写明理由类别（`NO_TEMPLATE_IN_CONTAINER` / `NO_CONTAINER`），否则视为漏做。
+     *
+     * 现役 14 条分布（W72 方案席 harness 七格取证定稿，10 个模板指纹）：
+     * **10 [TemplateArraySafety.SAFE] / 2 [TemplateArraySafety.UNSAFE] /
+     * 0 [TemplateArraySafety.LOSSY] / 2 [TemplateArraySafety.UNVERIFIED]**。
+     * ⚠️ 改这个分布必须同时改本条计数句，否则守卫与文档会互相打脸。
      */
-    val gpuSupported: Boolean
-        get() = ModelGpuSupport.gpuVerifiedFileNames.contains(url.substringAfterLast('/'))
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
+) {
+    // ⚠️ W72 删除 `val gpuSupported: Boolean get() = ModelGpuSupport.gpuVerifiedFileNames.contains(...)`：
+    // W69 C5 把判定源同源化到 `ModelGpuSupport.isGpuVerified(fileName)` 之后，该属性**零生产
+    // 消费方**（全仓 grep 只剩本文件定义 + 一句注释），悬置三波即僵尸字段。GPU 放行判定**只有**
+    // 一个入口 = `ModelGpuSupport.isGpuVerified(fileName)`（白名单口径）—— ⛔ 不要在此处重新
+    // 加一层「预设侧的二次投影」，两层判定必然漂移（漂移的代价是 native 崩溃，Kotlin catch 不住）。
     /** 全部可用直链：主源在前，镜像在后。 */
     val allUrls: List<String>
         get() = listOf(url) + mirrors.map { it.url }
@@ -270,6 +344,38 @@ object ModelPresets {
     private const val BASIS_CPU_E4B_MEASURED =
         "W67 实测峰值 ×1.25（A13 13309cc8：静置 PSS 5.66GiB / 生成峰值 PSS 5.66GiB，RSS 5.05GiB，swap≈1.0GiB）"
 
+    /**
+     * Phi-4-mini（CPU）**实测**内存口径（W71 内存实测批，W69-02 销账）。
+     *
+     * 9 样本（`dumpsys meminfo`，OPPO A13 `13309cc8`，MemTotal 11.8GB）：
+     * 生成峰值 **TOTAL PSS 5.20 GiB**（该样本 swap 0.06 GiB ⇒ 同样本合计 5.26 GiB）；
+     * 本批**最大同样本合计 5.28 GiB**、swap 峰值 0.18 GiB 出现在另一采样点。
+     * 实测**低于**公式预测 5.6 GiB（差 0.32~0.40 GiB，取决于是否含 swap）⇒
+     * `requiredRamBytes` **不动**（W69-02 定案：可测容器实测均低于预测 ⇒ tail 1.25 不降）。
+     *
+     * ⚠️ 为什么不写成单个「合计」数字：PSS 峰值与 swap 峰值来自**不同采样点**，
+     * `5.20 + 0.18 = 5.38` **不是任何一次观测的真实值**。`docs/handoff-20261017-wave71-closeout.md`
+     * §3.2 表里「合计」列取的是**同样本** `PSS + swap` 的最大值（5.28 GiB，来自另一采样点），
+     * 与「峰值 PSS 5.20」「峰值 swap 0.18」是三种不同聚合口径 —— 别把三列拼成一个数。
+     */
+    private const val BASIS_CPU_PHI4_MEASURED =
+        "W71 实测峰值 ×1.25（A13 13309cc8，9 样本：生成峰值 TOTAL PSS 5.20GiB，该样本 swap 0.06GiB ⇒ 合计 5.26GiB；本批最大同样本合计 5.28GiB）——实测低于公式 5.6GiB，阈值仍取 tail 1.25 后的 ≥5.6GiB 不动"
+
+    /**
+     * E4B·GPU **实测**内存口径（W71 内存实测批，W69-02 销账）。
+     *
+     * 15 样本（`dumpsys meminfo`，OPPO A13 `13309cc8`）：峰值 **TOTAL PSS 5.00 GiB**
+     * （该样本 swap 0.01 GiB ⇒ 同样本合计 5.01 GiB）。实测低于公式预测 5.2 GiB ⇒
+     * `requiredRamBytes` 不动（W69-02 定案）。
+     *
+     * ⚠️ **本条的证据边界（勿当「跑得好时占多少」读）**：该容器在 0.17.1 下是
+     * **已知坏**（`knownBrokenOn` = 引擎初始化 NOT_FOUND），样本里 PSS 由 5.00 GiB
+     * 回落到 3.00 GiB（内存释放）⇒ 峰值取自**加载阶段**，**生成期峰值未单独取证**。
+     * 对内存闸门（拦的就是加载）仍是有效锚点；对「生成期要多少」不构成结论。
+     */
+    private const val BASIS_GPU_E4B_MEASURED =
+        "W71 实测峰值 ×1.25（A13 13309cc8：加载峰值 TOTAL PSS 5.00GiB，该样本 swap 0.01GiB ⇒ 合计 5.01GiB；本容器 0.17.1 已知坏 ⇒ 生成期峰值未取证）——实测低于公式 5.2GiB，阈值仍取 tail 1.25 后的 ≥5.2GiB 不动"
+
     val all: List<ModelPreset> = listOf(
         ModelPreset(
             label = "Gemma 4 E2B · GPU",
@@ -298,6 +404,8 @@ object ModelPresets {
             // 过期复审」复核是否清空（上游若修复容器即恢复可用）。
             appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W53 L2 容器取证（`gemma4gpu.jinja`）+ W72 七格复验（含 systemInstruction 维度）
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -314,6 +422,8 @@ object ModelPresets {
             recommended = true,
             backendBasis = "CPU 特化变体（实测通过）；GPU 变体不可用（W60 引擎初始化 NOT_FOUND / W43 输出退化），勿用",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W53 L2 容器取证（`gemma4.jinja`）+ W72 七格复验（含 systemInstruction 维度）
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it.litertlm"),
         ),
         ModelPreset(
@@ -322,7 +432,7 @@ object ModelPresets {
             sizeText = "2.77 GB",
             ramText = "≥ 5.2 GB",
             requiredRamBytes = (5.2 * GB).toLong(),
-            memBasis = BASIS_GPU,
+            memBasis = BASIS_GPU_E4B_MEASURED,
             // 同 E2B · GPU：同一转换线的 GPU 特化变体。W60 真机实测**引擎初始化失败**
             // （NOT_FOUND，容器缺 VISION/AUDIO 编码器 section，见 backendBasis），与
             // E2B · GPU 同源；本工程**无 E4B CPU 变体** ⇒ 该变体 0.17.1 下不可用。
@@ -335,6 +445,8 @@ object ModelPresets {
             // W68 B3（R-1 时效）：同 E2B·GPU —— 只对 0.17.1 成立，bump 后按 docs/12 锚复审。
             appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W72 现场抽取（容器字节数 == 预设 sizeBytes 2969059328）+ 七格复验
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -353,6 +465,8 @@ object ModelPresets {
             recommended = false,
             backendBasis = "单文件（**非** `-gpu` 特化变体）；✅ 本仓真机取证：W66 真机 CPU 臂（`ModelStopped` / thinking 177 / 正文 OK / 零 `NOT_FOUND` / 零 FATAL）+ W67 真机复验（in 1365 / out 1，零 FATAL）；⚠️ **不得入 `ModelGpuSupport` 白名单** —— 同文件 GPU 路径在 A13 入门 Adreno 上 OOM（`IOCTL_KGSL_GPUOBJ_ALLOC errno 12` → `Resource deadlock` → SIGABRT → 整机重启，W66 §3.1），须高显存设备复测通过后才议",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W72 现场抽取（容器字节数 == 预设 sizeBytes 3659530240）+ 七格复验
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it.litertlm"),
         ),
         ModelPreset(
@@ -369,6 +483,8 @@ object ModelPresets {
             recommended = false,
             backendBasis = "官方 README 仅有桌面 GPU 基准（macOS Metal），无 Android GPU 验证 → 仅 CPU；✅ W60 真机普查（台账 #45，题面 Say OK 正常：round0 原生工具调用 → round1 收尾，原生通道行使，13 模型零 FATAL）；W61 J3 复验（TOOL_CALLS 收尾全通过）",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W53 L2 `qwen25.jinja:23`「+」拼接 + **W72 真机 Q4**（`Failed to apply template: + operator on unsupported types string and sequence`）
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             mirrors = domesticMirrors(
                 "Qwen2.5-1.5B-Instruct",
                 "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -384,8 +500,10 @@ object ModelPresets {
             note = "会先「想一想」再回答，适合体验思考过程",
             sizeBytes = 1833451520,
             recommended = false,
-            backendBasis = "官方 README 无 Android GPU 验证 → 仅 CPU；✅ W60 真机普查（台账 #45：13 模型题面 Say OK，DeepSeek-R1 属「2 个自愈」之一——2 次重复提醒后收尾，零 FATAL）；W61 J1 真机（R1+AUTO：capabilities.thinking/thinkingOn 修复生效）；W66 §3.2 探针（OFF 档正文空 ⛔ 如实记录）",
+            backendBasis = "官方 README 无 Android GPU 验证 → 仅 CPU；✅ W60 真机普查（台账 #45：13 模型题面 Say OK，DeepSeek-R1 属「2 个自愈」之一——2 次重复提醒后收尾，零 FATAL）；W61 J1 真机（R1+AUTO：capabilities.thinking/thinkingOn 修复生效）；W66 §3.2 探针（OFF 档正文空 ⛔ 如实记录）；⚠️ 模板数组安全 **`UNVERIFIED`（`NO_TEMPLATE_IN_CONTAINER`）**：容器无明文 `chat_template`（section 扫描仅 `TF_LITE_PREFILL_DECODE` / `model_type` / `prefill_*` / `decode`）⇒ 走运行时内建模板，容器侧七格取证**方法不适用**（W72 D 数据件，非漏做）",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // UNVERIFIED 理由 = `NO_TEMPLATE_IN_CONTAINER`：容器无明文 `chat_template`（section 扫描仅 TF_LITE_PREFILL_DECODE / model_type / prefill_* / decode）⇒ 走运行时内建模板，容器侧七格取证**方法不适用**（≠ 漏做）
+            templateArraySafety = TemplateArraySafety.UNVERIFIED,
             mirrors = domesticMirrors(
                 "DeepSeek-R1-Distill-Qwen-1.5B",
                 "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -410,6 +528,8 @@ object ModelPresets {
             // W66 §3.2 探针）⇒ 按「本条文本内有无锚点」口径（W66 深审 D9）升 MEASURED。
             // ⚠️ 字段语义 = 本条文本内锚点，≠ 本仓是否测过该模型。
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：**W72 真机 Q5** 同签名（journal 587 B 无 MODEL 消息）；⚠️ 本容器 user 分支的 `content=''` 性质被 system 侧报错遮蔽 —— 只修 system 分支即滑进 LOSSY（不可见失败）
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             mirrors = domesticMirrors("MiniCPM5-2B", "MiniCPM5-2B_int4.litertlm"),
         ),
         ModelPreset(
@@ -418,12 +538,14 @@ object ModelPresets {
             sizeText = "3.64 GB",
             ramText = "≥ 5.6 GB",
             requiredRamBytes = (5.6 * GB).toLong(),
-            memBasis = BASIS_CPU,
+            memBasis = BASIS_CPU_PHI4_MEASURED,
             note = "推理与代码能力强，但体积大，仅建议 12GB 内存机型",
             sizeBytes = 3910090752,
             recommended = false,
-            backendBasis = "官方 README 的 GPU 行无显存数据（N/A），无 Android GPU 验证 → 仅 CPU；✅ W60 真机普查（台账 #45：13 模型题面 Say OK 正常，Phi-4-mini 属「8 个正常」之一——`记忆已更新，任务停止。`，零 FATAL）",
+            backendBasis = "官方 README 的 GPU 行无显存数据（N/A），无 Android GPU 验证 → 仅 CPU；✅ W60 真机普查（台账 #45：13 模型题面 Say OK 正常，Phi-4-mini 属「8 个正常」之一——`记忆已更新，任务停止。`，零 FATAL）；⚠️ 模板数组安全 **`UNVERIFIED`（`NO_TEMPLATE_IN_CONTAINER`）**：容器无明文 `chat_template`（section 扫描仅 `TF_LITE_PREFILL_DECODE` / `model_type` / `prefill_*` / `decode`）⇒ 走运行时内建模板，容器侧七格取证**方法不适用**（W72 D 数据件，非漏做）",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // UNVERIFIED 理由 = `NO_TEMPLATE_IN_CONTAINER`：容器无明文 `chat_template`（section 扫描仅 TF_LITE_PREFILL_DECODE / model_type / prefill_* / decode）⇒ 走运行时内建模板，容器侧七格取证**方法不适用**（≠ 漏做）
+            templateArraySafety = TemplateArraySafety.UNVERIFIED,
             mirrors = domesticMirrors(
                 "Phi-4-mini-instruct",
                 "Phi-4-mini-instruct_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -441,6 +563,8 @@ object ModelPresets {
             recommended = false,
             backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ **端到端图片输入已真机验证（W56 L3：OPPO A13 + 0.17.1，发图会话建成、0 模板失败、内容判别相符——仅覆盖本容器，同族其余容器不外推）**；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W55 L1（本条 backendBasis 已载：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("LFM2.5-VL-450M", "LFM2.5-VL-450M_int8.litertlm"),
         ),
         // ── 视觉多模态批（2026-09-24 增补）：端侧 VL 帕累托前沿，500M/2B/1.6B/3B/8B 五档。
@@ -457,6 +581,8 @@ object ModelPresets {
             recommended = false,
             backendBasis = "官方在 Galaxy S26（litert-lm 0.15）验证 Android GPU 可生成；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证。⚠️ 文本对话能力弱（360M 解码器，为图像输入设计）：纯文本对话建议 Qwen2.5-1.5B 或 DeepSeek-R1；✅ 端到端图片输入已真机验证（W57 L3：台账 #41，异族/同族 fixB 双通过，0 模板失败 + 内容判别命中——仅覆盖本容器，同族其余容器不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W55 L1（本条 backendBasis 已载：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("SmolVLM2-500M", "SmolVLM2-500M.litertlm"),
         ),
         ModelPreset(
@@ -471,6 +597,8 @@ object ModelPresets {
             recommended = false,
             backendBasis = "官方在 Pixel 8a（视觉 GPU + 解码 CPU）与 Galaxy S26（0.15）验证；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W60 L3：台账 #46，红/黄/数字 37 三锚点命中，0 模板失败——仅覆盖本容器，同族不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）；⚠️ W55 已推翻 W53「Qwen 系同源 ⇒ 风险最高」的假设——其模板与 `Qwen2.5-1.5B` 的 `+` 拼接形态**不同**（同家族 ≠ 同模板）",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W55 L1（本条 backendBasis 已载：`content is string` + `for item in content`，非 `+` 拼接 —— W55 已推翻「Qwen 系同源 ⇒ 风险最高」假设）
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("Qwen2-VL-2B", "Qwen2-VL-2B.litertlm"),
         ),
         ModelPreset(
@@ -487,6 +615,8 @@ object ModelPresets {
             recommended = false,
             backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W57 L3：台账 #42，异族/同族 fixB 双通过，0 模板失败 + 内容判别命中——仅覆盖本容器，同族其余容器不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W55 L1（本条 backendBasis 已载：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("LFM2.5-VL-1.6B", "LFM2.5-VL-1.6B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -502,6 +632,8 @@ object ModelPresets {
             recommended = false,
             backendBasis = "官方在 Pixel 8a（litert-lm 0.16.1）验证过 GPU profile；运行时已升 0.17.1（版本达标），但视觉 GPU 组合真机未实测 → 仍禁 GPU 待验证；✅ 端到端图片输入已真机验证（W60 L3：台账 #46，红/黄/数字 37 三锚点命中，中文回答，0 模板失败——仅覆盖本容器，同族不外推）；⚠️ 模板已离线取证数组安全（W55 L1：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W55 L1（本条 backendBasis 已载：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("LFM2.5-VL-3B", "LFM2.5-VL-3B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -510,7 +642,9 @@ object ModelPresets {
             sizeText = "3.93 GB",
             ramText = "≥ 6.5 GB",
             requiredRamBytes = (6.5 * GB).toLong(),
-            memBasis = "W×1.05(CPU)+KV@4096(Qwen3-8B 骨干 ≈0.56G)+O ×1.25 ≈6.4G，含高分辨率图像 token 余量",
+            // W71 内存实测批：本容器执行失败不可测（knownBroken「Unsupported model type」，
+            // 只记失败路径 PSS 0.40GiB）⇒ 数值仍是公式值，只把「为什么没有实测」写进数据。
+            memBasis = "公式值 W×1.05(CPU)+KV@4096(Qwen3-8B 骨干 ≈0.56G)+O ×1.25 ≈6.4G，含高分辨率图像 token 余量；⚠️ W71 实测批执行失败不可测（knownBroken「Unsupported model type」，仅记失败路径 PSS 0.40GiB）⇒ 本值未经真机峰值校准",
             note = "视觉能力天花板：8B 级多模态，仅建议 8GB 以上内存机型",
             sizeBytes = 4214021104,
             recommended = false,
@@ -520,6 +654,8 @@ object ModelPresets {
             // W68 B3（R-1 时效）：只对 0.17.1 成立（上游支持该 model type 后即过期），bump 后按 docs/12 锚复审。
             appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.MEASURED,
+            // 证据：W53 L2（本条 backendBasis 已载：模板对多元素 content 走 is-string 分支并循环吐 `<image_soft_token>`，非 Qwen2.5 的「+」拼接形态）
+            templateArraySafety = TemplateArraySafety.SAFE,
             mirrors = domesticMirrors("MiniCPM-V-4", "MiniCPM-V-4-int8.litertlm"),
         ),
     )

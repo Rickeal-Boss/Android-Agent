@@ -212,10 +212,13 @@ fun ModelsScreen(
                 }
             }
             items(items = state.visibleModels, key = { it.id }) { model ->
-                // GPU 白名单（2026-09-26；W69 C5 判据同源）：按 `ModelGpuSupport` 白名单放行/禁用
-                // GPU —— 官方无 Android GPU 验证证据的一律禁（native 崩溃 catch 不住）；无预设的
-                // 导入模型从严。判据直接用 `ModelGpuSupport.isGpuVerified(fileName)`（白名单口径），
-                // 与 ModelsViewModel 加载兜底、引擎保命道同源（不再经 `preset.gpuSupported` 二次投影）。
+                // GPU 白名单（2026-09-26；W69 C5 判据同源；W72 了断）：按 `ModelGpuSupport`
+                // 白名单放行/禁用 GPU —— 官方无 Android GPU 验证证据的一律禁（native 崩溃
+                // catch 不住）；无预设的导入模型从严。判据直接用
+                // `ModelGpuSupport.isGpuVerified(fileName)`（白名单口径），与 ModelsViewModel
+                // 加载兜底、引擎保命道同源。⚠️ 历史上曾多绕一层 `preset.gpuSupported`
+                // （预设侧的二次投影），W69 C5 同源化后该属性零消费方、W72 已删除 ——
+                // 不要再把判定搬回预设层，两层判定必漂移。
                 val preset = ModelPresets.findByFileName(model.fileName)
                 ModelCard(
                     model = model,
