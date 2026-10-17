@@ -14,13 +14,17 @@ import kotlin.test.assertNull
  * [ProbeTone] 配色意图（颜色对象本身的映射在 Composable 侧 [probeToneColor]）。
  * 刻意**不构造** [DiagnosticsViewModel]：它依赖 AppContainer / 协程，JVM 上不可测。
  *
- * 钉住三组语义（W71 冻结判据）：
+ * 钉住四组语义（W71 冻结判据 + W72 唯一扩面）：
  *  1. PASS ∧ broken=null ⇒ headline / 第二行**逐字维持** W71 前文案（⛔ 不得把
  *     「未登记」显示成「已登记坏」）；
  *  2. PASS ∧ broken=非空 ⇒ headline 改「结论：通过（自检面）」+ 并列登记行
  *     （warning 标记，与 DEGRADED 同口径）；
- *  3. BAD / DEGRADED / NotRun / Failed / Idle / Running 文案**不受** `knownBrokenOn`
- *     影响（broken 在机也不叠加登记行 / 免责行）。
+ *  3. BAD / DEGRADED / NotRun(ENGINE_BUSY) / NotRun(NO_ACTIVE_MODEL) / Failed /
+ *     Idle / Running 文案**不受** `knownBrokenOn` 影响（broken 在机也不叠加登记行 /
+ *     免责行）；
+ *  4. **W72 唯一例外** = `NotRun(ENGINE_NOT_LOADED)`：headline / detail 逐字不动，
+ *     仅追加登记行（warning），免责行**仍不出现**（NotRun ≠ PASS，没有 PASS 误读面）。
+ *     只扩这一个 reason 的理由见 [probePresentation] KDoc「W72」段。
  */
 class DiagnosticsProbePresentationTest {
 
@@ -103,20 +107,12 @@ class DiagnosticsProbePresentationTest {
         assertNull(p.disclaimer, "免责行仅 PASS 态渲染")
     }
 
-    // ── ③ NotRun / Failed / Idle / Running 文案不受影响 ────────────────────
+    // ── ③ NotRun(ENGINE_BUSY / NO_ACTIVE_MODEL) / Failed / Idle / Running 不受影响 ──
 
     @Test
     fun notRunFailedIdleRunningUnaffectedByKnownBroken() {
         val broken = "2026-10-06 起 GPU 容器加载失败"
-        val notLoaded = probePresentation(
-            ProbeUiState.NotRun(ModelHealthProbe.NotRunReason.ENGINE_NOT_LOADED),
-            broken,
-        )
-        assertEquals("请先在模型页加载模型，再运行自检", notLoaded.headline)
-        assertNull(notLoaded.detail)
-        assertNull(notLoaded.knownBroken)
-        assertNull(notLoaded.disclaimer)
-
+        // NotRun(ENGINE_NOT_LOADED) 已在 ④ 单独钉（W72 唯一扩面），此处不重复断言。
         val busy = probePresentation(
             ProbeUiState.NotRun(ModelHealthProbe.NotRunReason.ENGINE_BUSY),
             broken,
@@ -156,5 +152,50 @@ class DiagnosticsProbePresentationTest {
         assertNull(running.detail)
         assertNull(running.knownBroken)
         assertNull(running.disclaimer)
+    }
+
+    // ── ④ W72 唯一扩面：NotRun(ENGINE_NOT_LOADED) ∧ broken=非空 ⇒ 追加登记行 ────
+
+    @Test
+    fun notRunEngineNotLoadedKeepsHeadlineAndAppendsRegisteredLine() {
+        val broken = "0.17.1 引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section）"
+        val p = probePresentation(
+            ProbeUiState.NotRun(ModelHealthProbe.NotRunReason.ENGINE_NOT_LOADED),
+            knownBrokenOn = broken,
+        )
+        // headline 逐字维持 Wave 44 口径（不把 NotRun 改写成质量结论）
+        assertEquals("请先在模型页加载模型，再运行自检", p.headline)
+        assertEquals(ProbeTone.SUBTLE, p.headlineTone)
+        assertNull(p.detail)
+        // 登记行在位：与 PASS 并列呈现**逐字同款**（W71 真机 UI dump 钉的是这个前缀）
+        assertEquals("该模型已登记已知不可用：$broken", p.knownBroken?.text)
+        assertEquals(ProbeTone.WARNING, p.knownBroken?.tone)
+        // ⛔ 免责行不出现：NotRun 不是 PASS，没有「PASS 被误读成输出质量保证」的面
+        assertNull(p.disclaimer, "NotRun 态不得渲染免责行（免责行仅 PASS 态）")
+    }
+
+    @Test
+    fun notRunEngineNotLoadedWithoutKnownBrokenKeepsNoRegisteredLine() {
+        val p = probePresentation(
+            ProbeUiState.NotRun(ModelHealthProbe.NotRunReason.ENGINE_NOT_LOADED),
+            knownBrokenOn = null,
+        )
+        assertEquals("请先在模型页加载模型，再运行自检", p.headline)
+        assertNull(p.knownBroken, "未登记 ⇒ 不得渲染登记行（未登记 ≠ 已登记坏）")
+        assertNull(p.disclaimer)
+    }
+
+    @Test
+    fun notRunEngineBusySuppressesRegisteredLine() {
+        val broken = "0.17.1 引擎初始化 NOT_FOUND（容器缺 VISION/AUDIO 编码器 section）"
+        val p = probePresentation(
+            ProbeUiState.NotRun(ModelHealthProbe.NotRunReason.ENGINE_BUSY),
+            knownBrokenOn = broken,
+        )
+        // 钉死「只扩 ENGINE_NOT_LOADED 一个 reason」：BUSY 态即使 broken 在机也不叠加
+        assertEquals("正在生成，请稍后再试", p.headline)
+        assertEquals(ProbeTone.SUBTLE, p.headlineTone)
+        assertNull(p.knownBroken, "ENGINE_BUSY 不在 W72 扩面内 ⇒ 不得追加登记行")
+        assertNull(p.disclaimer)
     }
 }

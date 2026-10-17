@@ -92,7 +92,7 @@ import kotlinx.coroutines.withContext
  * @param onRunProbe 点「运行自检」的回调（Wave 44，带默认值向后兼容）
  * @param knownBrokenOn 激活模型的已知坏签名（W71 B1，来自 [DiagnosticsViewModel.knownBrokenOn]；
  *   `null` = 无激活模型 / 未登记 / 非 preset —— 并列呈现只在非空时追加登记行，
- *   见 [probePresentation]）
+ *   见 [probePresentation]；W72 起该行也出现在 `NotRun(ENGINE_NOT_LOADED)` 态）
  */
 @Composable
 fun DiagnosticsScreen(
@@ -349,7 +349,7 @@ fun DiagnosticsScreen(
                             modifier = Modifier.padding(top = 6.dp),
                         )
                     }
-                    // 并列登记行（W71 B2）：仅 PASS ∧ 激活模型已登记已知坏。
+                    // 并列登记行（W71 B2；W72 起也覆盖 NotRun(ENGINE_NOT_LOADED)）。
                     presentation.knownBroken?.let { line ->
                         Text(
                             text = line.text,
@@ -641,7 +641,8 @@ internal data class ProbeCardLine(val text: String, val tone: ProbeTone)
  * @param headline 结论行文字。
  * @param headlineTone 结论行配色意图。
  * @param detail 第二行（耗时·采样预览 / 执行失败澄清）；null = 不渲染。
- * @param knownBroken 并列登记行（仅 `Completed(PASS)` ∧ `knownBrokenOn != null`）。
+ * @param knownBroken 并列登记行（`Completed(PASS)` ∧ `knownBrokenOn != null`，
+ *   或 W72 起的 `NotRun(ENGINE_NOT_LOADED)` ∧ `knownBrokenOn != null`）。
  * @param disclaimer 免责行（仅 `Completed(PASS)`）。
  */
 internal data class ProbePresentation(
@@ -654,6 +655,14 @@ internal data class ProbePresentation(
 
 /** 免责一行（W71 B3 / I-2）：PASS 的语义诚实化 —— 未检出已知失败面 ≠ 输出质量保证。 */
 private const val PROBE_PASS_DISCLAIMER = "PASS = 未检出已知失败面，不构成输出质量保证"
+
+/**
+ * 登记行文案（W71 B2 引入，W72 起被两处共用）：`Completed(PASS)` 的并列呈现与
+ * `NotRun(ENGINE_NOT_LOADED)` 的登记行**必须逐字一致**（W71 真机 UI dump 判据钉的
+ * 就是「该模型已登记已知不可用：」这个前缀）—— 各写一份迟早漂移，故收敛为一处。
+ */
+private fun knownBrokenLine(raw: String): ProbeCardLine =
+    ProbeCardLine("该模型已登记已知不可用：$raw", ProbeTone.WARNING)
 
 /**
  * 自检结论卡的展示要素（W71 B2/B3）：`ProbeUiState` × 激活模型 knownBroken 签名 ⇒
@@ -673,10 +682,48 @@ private const val PROBE_PASS_DISCLAIMER = "PASS = 未检出已知失败面，不
  * 假阴性盲区对「未登记坏」的模型同样成立（M14 登记簿），只对已登记坏显示会把
  * 最大的误读面（健康模型）漏掉。
  *
+ * ## W72：`NotRun(ENGINE_NOT_LOADED)` 也追加登记行（唯一的 NotRun 例外）
+ *
+ * 为什么必须加：两条 knownBroken 预设（Gemma 4 E2B·GPU / E4B·GPU）登记的坏签名
+ * 恰恰是「**引擎初始化 NOT_FOUND**」。用户在未发消息（引擎未加载）时打开诊断页，
+ * 原实现只显示「请先在模型页加载模型，再运行自检」—— 等于把用户引向一个
+ * **按本仓自己登记的结论不可能成功**的动作（加载即 NOT_FOUND），且页面上没有任何
+ * 一处告诉他这件事。加的是「**已登记的结论**」的可见性，不是把 NotRun 说成 BAD。
+ *
+ * ### 这个引导在现役运行时上「必然失败」—— 实测双证，不是推测
+ *
+ * W72 的 0.18.0 条件真机臂（`_research/w72-0180-device-arm.md` §一.2，判据汇总表 §三）：
+ *
+ *  - **现役 0.17.1**：`gemma-4-E2B-it-gpu`（uuid `d0de1e7a-…`）**引擎初始化
+ *    NOT_FOUND**（容器缺 `TF_LITE_PREFILL_DECODE` section）⇒ **会话根本建不起来**；
+ *  - **0.18.0 条件臂**：同一条 loader 信息降级为 W 级 warning 并继续，实际后端
+ *    `GPU_ARTISAN`，会话建成、38 token @ 18.34 tok/s（同臂 CPU 仅 0.47 tok/s，≈39×）
+ *    ⇒ 证明 0.17.1 的 NOT_FOUND 是**版本面**，不是「模型文件坏了」。
+ *
+ * 即：在现役 0.17.1 上，对这两条已登记容器，「请先在模型页加载模型」所指向的动作
+ * **必然失败**。此时页面只显示那句引导，等于让用户去撞一堵本仓自己登记过、且刚被
+ * 实测确认的墙 —— 这正是「失败可见化」要避免的形态。
+ *
+ * ⚠️ **证据边界**：该臂实测的是 `E2B·GPU`；`E4B·GPU` 未在 0.18.0 单独复测，其结论
+ * 来自**同源登记**（`knownBrokenOn` 明写「与 E2B·GPU 同源」，W60 同一失败面）。
+ * bump 后这两条 knownBroken 的订正走 `docs/12` **锚 #14「knownBroken / GPU 白名单
+ * 过期复审」人工复审面**（不是自动清空 —— 该臂同时确认 0.18.0 下「输出退化」半边仍在）。
+ *
+ * ⛔ **不改变 Wave 44「未运行 ≠ 质量结论」口径**：headline 仍是 NotRun 原文案
+ * （`SUBTLE` 色、不改成 DANGER、不出现 PASS/BAD 字样），登记行是**并列追加**；
+ * 免责行**不加** —— NotRun 不是 PASS，不存在「PASS 被误读成输出质量保证」那个面。
+ *
+ * 为什么只扩这一个 reason：`ENGINE_BUSY`（正在生成）与 `NO_ACTIVE_MODEL`
+ * （无激活模型 ⇒ `knownBrokenOn` 恒 null）都没有「用户即将执行一个已登记必败动作」
+ * 的误导面；扩面越大，越容易让 NotRun 被读成质量结论。**扩面须先有同等级理由。**
+ *
  * ## 不变量（`DiagnosticsProbePresentationTest` 钉死）
  *
- * - 非 PASS 各态（DEGRADED / BAD / NotRun / Failed / Idle / Running）**不受**
- *   `knownBrokenOn` 影响：无登记行、无免责行，文案逐字不动；
+ * - 非 PASS 各态（DEGRADED / BAD / Failed / Idle / Running，以及
+ *   `NotRun(ENGINE_BUSY)` / `NotRun(NO_ACTIVE_MODEL)`）**不受** `knownBrokenOn`
+ *   影响：无登记行、无免责行，文案逐字不动；
+ * - **唯一例外 = `NotRun(ENGINE_NOT_LOADED)`**（W72）：headline / detail 逐字不动，
+ *   仅当 `knownBrokenOn != null` 时追加登记行（WARNING），免责行仍恒 null；
  * - PASS ∧ broken=null 的 headline / detail 与 W71 前逐字一致。
  */
 internal fun probePresentation(state: ProbeUiState, knownBrokenOn: String?): ProbePresentation =
@@ -712,9 +759,7 @@ internal fun probePresentation(state: ProbeUiState, knownBrokenOn: String?): Pro
                     },
                     headlineTone = ProbeTone.NEUTRAL,
                     detail = sampling,
-                    knownBroken = knownBrokenOn?.let {
-                        ProbeCardLine("该模型已登记已知不可用：$it", ProbeTone.WARNING)
-                    },
+                    knownBroken = knownBrokenOn?.let(::knownBrokenLine),
                     disclaimer = ProbeCardLine(PROBE_PASS_DISCLAIMER, ProbeTone.WARNING),
                 )
                 ModelHealthVerdict.DEGRADED -> ProbePresentation(
@@ -742,10 +787,19 @@ internal fun probePresentation(state: ProbeUiState, knownBrokenOn: String?): Pro
                 ModelHealthProbe.NotRunReason.NO_ACTIVE_MODEL -> "当前没有激活模型"
             }
             ProbePresentation(
+                // headline / detail 逐字维持 Wave 44 口径：登记行是**并列追加**，
+                // 不把「未运行」改写成质量结论（理由见 KDoc「W72」段）。
                 headline = reason,
                 headlineTone = ProbeTone.SUBTLE,
                 detail = null,
-                knownBroken = null,
+                // W72 唯一扩面：`ENGINE_NOT_LOADED` ∧ 已登记坏 ⇒ 追加登记行（否则用户被
+                // 引向一个按登记结论不可能成功的动作）。其余两个 reason 恒 null。
+                knownBroken = if (state.reason == ModelHealthProbe.NotRunReason.ENGINE_NOT_LOADED) {
+                    knownBrokenOn?.let(::knownBrokenLine)
+                } else {
+                    null
+                },
+                // 免责行不加：NotRun 不是 PASS，没有「PASS 被误读成输出质量保证」的面。
                 disclaimer = null,
             )
         }
