@@ -26,13 +26,14 @@
 
 ---
 
-## 二、改动清单（4 commit）
+## 二、改动清单（5 commit）
 
 | commit | 性质 | 内容 |
 |---|---|---|
 | `feat(models)` | feat | **数据件 + 模型面产品件**：`TemplateArraySafety` 四态枚举 + `ModelPreset.templateArraySafety` 字段 + 14 条显式赋值（10/2/0/2，每条带证据锚）+ R1/Phi-4 `UNVERIFIED(NO_TEMPLATE_IN_CONTAINER)` 理由落 `backendBasis` + `memBasis` 实测回流 3 条（`BASIS_CPU_PHI4_MEASURED` / `BASIS_GPU_E4B_MEASURED` / MiniCPM-V-4 不可测标注）+ **删除僵尸字段 `gpuSupported`**（W69 C5 后零消费方）+ M16 `ModelCard.kt` 语义分工 KDoc + `ModelPresetTemplateSafetyTest` 2 例（分布冻结 + UNVERIFIED 禁裸留） |
 | `feat(settings)` | feat | **产品件**：`probePresentation` 唯一扩面 —— `NotRun(ENGINE_NOT_LOADED)` ∧ knownBroken ⇒ 追加登记行（WARNING，与 PASS 并列同文案源 `knownBrokenLine()`）；headline/detail 逐字维持 Wave 44 口径、免责行不渲染；KDoc 重写（不变量 + 实测双证立论 + 证据边界）；`DiagnosticsProbePresentationTest` 5→8 例 |
 | `feat(guard)` | feat | **治理批**：`scripts/datastore_tool.py` + `scripts/tests/test_datastore_tool.py`（13 例 + 变异实测）+ #39 扩展（`check-evidence-level.py` 同遍兼查四态：缺赋值 / 非法值 / SAFE 无锚 / UNVERIFIED 裸留，复用 preset_blocks 双重锚定）+ #42 glob 尾段 `*` + ID 正则 `[1-9][0-9]{2,}` 双去上限 + selftest +case71h/71i/71j + case76/76b/76c + 既有 #39 家族夹具补 `templateArraySafety` + `build.yml` baseline 735→740（沿革续写）+ docs/05 新增「真机实验铁律」常驻节 |
+| `fix(guard)` | fix | selftest #39 家族断言对齐 W72 D 扩展后的守卫名（9 处旧标题串补「W72 D 兼查 templateArraySafety 四态」尾缀；否则 case56/57/58/59/61/61d 的 assert_red 因标题漂移误判失败 —— 终验时主理人查获并修） |
 | `docs` | docs | **工程件 + 收官**：docs/12（锚 #15 新增 + 锚 #14 部分覆盖 + 0.18.0 条件臂专节 + 决策树 (b) 命中改写）+ docs/10 §11.0.1 聚合补登 46→**55**（47✅/6⚠️/2⛔，P-2 记 ⚠️）+ docs/14 增 **C6**（bump 分叉裁决，收益/代价/三选项）+ §D 悬置自动收敛条款（N=3，W72 起算）+ docs/15（W72-01/02/03 + 续更四条）+ README（W71/W72 波次段 + 聚合句 55 对齐）+ `docs/upstream/gallery-1326-reply-comment.md` **check② 补全**（0.18.0 实测：init 修复 + GPU 路径 + 退化仍在 + 模板炸数据点）+ 本交接 |
 
 ---
