@@ -19,6 +19,12 @@
   ⑧ test_mirror_not_matched                `ModelPresetMirror(` 不被识别
   ⑨ test_fields_anchored_to_named_arg      字段提取锚定具名位（字符串内容里的假字段不算）
   ⑩ test_clean_fixture_all_blocks          综合夹具：多块 + 干扰项，块数/字段/行号正确
+  ⑪ test_applies_to_runtime_literals       `--applies-to-runtime` 消费入口（W71 G5）：
+                                               正常提取 = `值<TAB>行号` 行，升序去重
+  ⑫ test_applies_string_content_not_misjudged  字符串内容里的 `appliesToRuntime = "9.9.9"`
+                                               字样不被误提取（#29 迁移后的假红免疫面）
+  ⑬ test_applies_zero_literal_clean        零字面量合法态 = 空输出 exit 0（与「读取失败
+                                               exit 1」的 fail-closed 面区分）
 
 ---------------------------------------------------------------------------
 变异测试说明（删/改一条判据 ⇒ 哪个用例必红）—— 用于证明本测试网**非 vacuous**：
@@ -291,6 +297,73 @@ object ModelPresets {
     assert labels == ["clean-recommended", "broken-not-recommended", "paren-newline-ok"], labels
     assert blocks[0]["start_line"] == 15, blocks[0]["start_line"]
     print("PASS [⑩] 综合夹具：3 块（data class / Mirror 均未混入），顺序正确")
+
+
+# ---------------------------------------------------------------------------
+# ⑪ W71 G5（#29 消费面）：applies_to_runtime_literals 正常提取（块内具名位 + 行号）
+# ---------------------------------------------------------------------------
+def test_applies_to_runtime_literals_extracted():
+    lines = r'''
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "a",
+            appliesToRuntime = "0.17.1",
+        ),
+        ModelPreset(
+            label = "b",
+            appliesToRuntime = "0.17.1",
+        ),
+    )
+}
+'''.splitlines()
+    lits = pb.applies_to_runtime_literals(lines)
+    assert lits == [("0.17.1", 6), ("0.17.1", 10)], lits
+    print("PASS [⑪] appliesToRuntime 字面量提取（值 + 行号，块内具名位）")
+
+
+# ---------------------------------------------------------------------------
+# ⑫ W71 G5（#29 消费面）：字符串内容里的同款字样不假红（迁移修掉旧 grep 假红面）
+#     旧 bash grep 不锚定块 + 注释排除只认行首 ⇒ note 字符串里的
+#     `appliesToRuntime = "9.9.9"` 会被误提取 ⇒ 假红。本消费双重锚定 ⇒ 免疫。
+# ---------------------------------------------------------------------------
+def test_applies_to_runtime_string_pollution_not_false_red():
+    lines = r'''
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "prose-ok",
+            note = "历史：appliesToRuntime = \"9.9.9\" 曾漂移（字符串内容，不算字面量）",
+            appliesToRuntime = "0.17.1",
+        ),
+    )
+}
+'''.splitlines()
+    lits = pb.applies_to_runtime_literals(lines)
+    assert lits == [("0.17.1", 7)], lits
+    print("PASS [⑫] 字符串内容里的 appliesToRuntime = \"9.9.9\" 不假红（只取块内具名位真值）")
+
+
+# ---------------------------------------------------------------------------
+# ⑬ W71 G5（#29 消费面）：零字面量合法态（字段全 null / 无赋值 ⇒ 空列表）
+# ---------------------------------------------------------------------------
+def test_applies_to_runtime_zero_literal_legal():
+    lines = r'''
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "null-ok",
+            appliesToRuntime = null,
+        ),
+        ModelPreset(
+            label = "absent-ok",
+        ),
+    )
+}
+'''.splitlines()
+    lits = pb.applies_to_runtime_literals(lines)
+    assert lits == [], lits
+    print("PASS [⑬] 零字面量合法态（null / 无赋值 ⇒ 空列表，非 fail-closed）")
 
 
 def main():

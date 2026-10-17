@@ -58,7 +58,8 @@ usage() {
   （无参数）            运行全部 case（CI 口径，默认；计数与退出码与既往一致）
   --only <n>[,<n>…]     只运行「守的是第 <n> 条守卫」的 case；其余整体跳过
                         （fixture 不建、守卫不跑、PASS/FAIL 不计数）。
-                        例：--only 34,35   （只跑 #34 / #35 的 case）
+                        分隔符：逗号、空格、中文逗号、顿号均可（W71 G1 起入口
+                        统一归一为逗号集；推荐纯逗号写法，例：--only 34,39,41）。
   --affected            依 git 改动文件映射到守卫编号，等价于 --only <映射结果>；
                         映射不全 / 改动 scripts/* / 无 upstream ⇒ 回退全量
   -h, --help            显示本帮助并退出
@@ -73,11 +74,16 @@ KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
 #    放进 KNOWN_GUARDS 会被 case53 的「KNOWN_GUARDS↔arch-guard 双向一致」断言判红。
 #    新增自洽性 case 时同步追加本表（否则 --only <新号> 报错而非静默零跑）。
-META_CASES="53"
+META_CASES="53 75"
 # 本波自洽性 case 的编号（case53 块用 `guard_selected $META_CASE` 变量形态引用自己，
 # 使下方 case53 的静态提取面 —— `guard_selected +[0-9]` 模式 —— 不会把它算进
 # 「有 case 的守卫号」集合）。新增自洽性 case 时与 META_CASES 同步。
 META_CASE=53
+# W71 G1 自洽性 case 编号（case75：--only 归一口径同源，空格/逗号等价行使）。
+# ⚠️ W71 质检席 P2-1 订正：本 case 一度编号 54 —— 与 case54 家族（第 37 条
+# AgentRunnerLoopHelpers 超行数，W65 起在册）**标签撞车** ⇒ 全量跑时两个不同
+# case 同名输出。改 75（现役最大家族号 = 74b，75 空闲）。
+META_CASE2=75
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -156,8 +162,26 @@ EOF
 
 [ "$AFFECTED" -eq 1 ] && resolve_affected
 
+# W71 G1（P2-1）：--only 入口归一 —— 逗号 / 空格 / 中文逗号 / 顿号统一收敛为
+# 「去重升序逗号集」。教训：此前入口对 --only 原样透传，下方校验循环按
+# `${ONLY_SET//,/ }` 词分割（空格形式全放行）而 `guard_selected` 的
+# `case ",$ONLY_SET," in *",$g,"*` 只认逗号 ⇒ `--only "34 39 41"` 校验通过但
+# 零 case 被选中、退出 0「自测全部通过」——**定向静默零跑假绿**（W71 复现实证：
+# PASS=0/exit 0）。修法 = 两侧解析同源：入口一次性归一，校验循环与 guard_selected
+# 共用同一次归一结果，结构上消除解析分叉。空输入 ⇒ 空集（= 全量，语义不变）。
+# tr 集含空格 / Tab / CR（质检席 P3-4：`$'34\t39'` Tab 分隔曾是残余零跑形态）。
+normalize_only_set() {
+  printf '%s' "$1" \
+    | tr '，、, \t\r' '\n' \
+    | grep -v '^$' \
+    | sort -un \
+    | paste -sd, -
+}
+ONLY_SET="$(normalize_only_set "$ONLY_SET")"
+
 # 校验 --only / --affected 选出的守卫编号都是已知的（防拼错后静默零跑）。
 # META_CASES 里的自洽性 case 号一并放行（它们的违例是「自测网自身漂移」，见 case53）。
+# 归一后 ONLY_SET 恒为逗号集 ⇒ 词分割恒正确（W71 G1 前空格形式在此放行是假绿源头）。
 if [ -n "$ONLY_SET" ]; then
   for g in ${ONLY_SET//,/ }; do
     case " $KNOWN_GUARDS $META_CASES " in
@@ -645,9 +669,10 @@ MD
 MD
   # 第 42 条（W70 A1，ledger-era 交接 delta ID ∈ docs/15 台账）为 fail-closed：
   # 骨架必须同时提供 ① docs/15-backlog.md 主台账（## 主台账 表内至少一个 `| W##-N |` 行）
-  # 与 ② 一份 ledger-era 交接文档（文件名 docs/handoff-*-wave6[89]-*.md，只引用台账内 ID）
-  # ⇒ 否则干净树会被「扫不到 ledger-era 交接 / 台账解析不出 ID / 交接提取不到 ID」三条
-  # fail-closed 分支误红（正例失守）。交接正文刻意只引用 W69-01 / W68-01（均在骨架台账内）。
+  # 与 ② 一份 ledger-era 交接文档（文件名 docs/handoff-*-wave@(6[89]|[7-9][0-9]|...)-*.md，
+  # W71 G2 起无数字上限，只引用台账内 ID）⇒ 否则干净树会被「扫不到 ledger-era 交接 /
+  # 台账解析不出 ID / 交接提取不到 ID」三条 fail-closed 分支误红（正例失守）。交接正文
+  # 刻意只引用 W69-01 / W68-01（均在骨架台账内）。
   # ⚠️ 覆写交接文档的红面 case（case71 假台账 ID）不受影响；绿面 case 若新增 ledger-era
   #    交接文件，其 ID 必须在本骨架台账内（case71c 钉「旧编号 W40-1 不误判」形态）。
   cat > "$root/docs/15-backlog.md" <<'MD'
@@ -661,7 +686,7 @@ MD
 | W69-01 | fixture 台账项（第 42 条扫描面） | active | — | W69 |
 MD
   cat > "$root/docs/handoff-20261016-wave69-closeout.md" <<'MD'
-# handoff fixture（ledger-era 命名空间：第 42 条只扫 wave6[89] / wave7[0-9] 文件名）
+# handoff fixture（ledger-era 命名空间：第 42 条扫 wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9]) 无上限文件名）
 
 交接 delta：W69-01 已销账；沿袭 W68-01。
 MD
@@ -2170,6 +2195,62 @@ fi
 
 fi
 # ---------------------------------------------------------------------------
+# case 74 / 74b：W71 G5（外部审查 P2-3）—— 第 29 条 appliesToRuntime 字面量提取
+#   迁移 preset_blocks.py 后的新消费面（第四份独立实现消除）：
+#     case74 —— 绿面（迁移修掉的假红面）：向骨架 broken-not-recommended 块注入
+#               **raw string** note（内容含 `appliesToRuntime = "9.9.9"` 字样，真值
+#               仍 0.17.1）⇒ 断言 **#29 不报** appliesToRuntime 违规事实行（输出
+#               不含「appliesToRuntime 字面量 9.9.9(第」）。旧 bash grep 不锚定块
+#               ⇒ 该字样被误提取 ⇒ 假红（现役失效面留证见 _w71_g5_fixture.log ①；
+#               单行 raw string 引号数为偶 ⇒ blank_strlits 状态机本行平衡，新消费
+#               免疫）。
+#               ⚠️ 兄弟面如实申报（不断言排斥）：同树 **#41 方向 C-1** 会因本注入判
+#               红 —— 其提取（`check-preset-profile-parity.py:212` 行级 regex）与旧
+#               #29 同族（注释排除只认行首），对 raw string 内容同样误提取。该实现
+#               文件不在 W71 G5 枚举改动面（禁越界），假红面修复候选另立台账 ID。
+#               本 case 只钉 #29 迁移面（绿 = #29 无 9.9.9 事实行）。
+#     case74b —— 红面（真漂移归因）：把骨架唯一 appliesToRuntime 赋值位
+#               0.17.1 → 9.9.9 ⇒ 判红，断言 #29 事实行归因（输出含「appliesToRuntime
+#               字面量 9.9.9(第…行)」+「litertlm 版本 0.17.1 不一致」）。（#41 方向
+#               C-1 会同轮红 —— case72 已钉，两守卫互补不重叠，本 case 不断言排斥。）
+#   fail-closed 面（CLI 运行失败判红）由 case39c 的「守卫命令自身执行失败」范式覆盖。
+# ---------------------------------------------------------------------------
+if guard_selected 29; then
+d="$TMP/case74-applies-runtime-string-pollution-green"
+scaffold "$d"
+sed -i 's|knownBrokenOn = "0.17.1 假签名（fixture）",|knownBrokenOn = "0.17.1 假签名（fixture）",\n            note = """历史沿革：appliesToRuntime = "9.9.9" 曾漂移（raw string 内容，不算字面量）""",|' \
+  "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
+out="$(run_guard "$d")"; rc=$?
+if ! printf '%s\n' "$out" | grep -qF "appliesToRuntime 字面量 9.9.9(第"; then
+  echo "PASS [case74 raw string 污染不假红 (第 29 条 G5 绿面)] #29 无 appliesToRuntime 违规事实行（字符串内容里的同款字样不再误提取；#41 C-1 兄弟面红已申报）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case74] 第 29 条对 raw string 内容里的 appliesToRuntime = \"9.9.9\" 误判（G5 迁移未修假红面）"
+  printf '%s\n' "$out" | grep "appliesToRuntime 字面量" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 29; then
+d="$TMP/case74b-applies-runtime-drift-29"
+scaffold "$d"
+sed -i 's/appliesToRuntime = "0\.17\.1"/appliesToRuntime = "9.9.9"/' \
+  "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case74b appliesToRuntime 真漂移 (第 29 条 G5)" "$rc" "$out" \
+  "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读四前置+前置⑤）"
+if printf '%s\n' "$out" | grep -qF "appliesToRuntime 字面量 9.9.9(第" \
+   && printf '%s\n' "$out" | grep -qF "litertlm 版本 0.17.1 不一致"; then
+  echo "PASS [case74b] 红来自真命中（输出含漂移值 9.9.9 + 出现行号 + toml 版本对比事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case74b] 第 29 条判红但归因丢失（输出不含 9.9.9/行号/对比文案 = 假红）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
 # case 41 / 41b / 41c：第 30 条（ChatRunCoordinator run 级 model 读点冻结，W59）两面：
 #   case41 —— 从脚手架 fixture 删 1 处 `model = uiState.value.activeModel`（3 → 2）
 #             ⇒ 计数 2 != 3 ⇒ 判红；case41b 断言红来自真命中（输出含
@@ -3529,7 +3610,9 @@ fi
 #     清白块 url 锚定骨架档案臂 fixture-preset.litertlm（隔离方向B 噪声）；
 #     三杀各自断言红来自**注入块事实行**（label / 文件名），缺一即 FAIL。
 #     fixture-first 证据（旧实现三守卫全绿/逃逸 → 迁移后三红归位）见 W69 A 回报；
-#     本 case 把该触发面钉进自测网（guard_selected "34 39 41" 三编号析取）。
+#     本 case 把该触发面钉进自测网（命令行口径：--only "34,39,41" 纯逗号；
+#     guard_selected 调用形态的多标签按空格析取是脚本内部谓词，W71 G1 起入口
+#     统一归一，空格/逗号/中文逗号 CLI 等价，case75 钉死该同源性）。
 #   case70b —— **#34 块注释散文假红绿面**：块内**跨行块注释**（含 KDoc 反引号风格）写
 #     `knownBrokenOn = "x"` 字样，但块的真值合规（knownBrokenOn = null + recommended = true
 #     + evidenceLevel = UPSTREAM）⇒ 必须整树退出 0（旧 #34 只剥行内 `//` ⇒ 块注释里的同款
@@ -3893,7 +3976,7 @@ cat > "$d/docs/handoff-20261017-wave70-closeout.md" <<'MD'
 MD
 out="$(run_guard "$d")"; rc=$?
 assert_red "case71 交接含台账外 ID (第 42 条)" "$rc" "$out" \
-  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1）"
+  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1 / W71 G2 glob 去上限）"
 if printf '%s\n' "$out" | grep -qF "W70-99" && printf '%s\n' "$out" | grep -qF "handoff-20261017-wave70-closeout.md"; then
   echo "PASS [case71b] 红来自真命中（输出含注入的台账外 ID W70-99 + 出现文件名）"
   PASS=$((PASS + 1))
@@ -3930,7 +4013,7 @@ scaffold "$d"
 mv "$d/docs/handoff-20261016-wave69-closeout.md" "$d/docs/.handoff-renamed"
 out="$(run_guard "$d")"; rc=$?
 assert_red "case71d 扫不到 ledger-era 交接 (第 42 条 fail-closed①)" "$rc" "$out" \
-  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1）"
+  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1 / W71 G2 glob 去上限）"
 if printf '%s\n' "$out" | grep -qF "守卫面已失效"; then
   echo "PASS [case71d] fail-closed 生效（输出含「守卫面已失效」事实行，交接被挪移不静默放行）"
   PASS=$((PASS + 1))
@@ -3947,12 +4030,66 @@ scaffold "$d"
 mv "$d/docs/15-backlog.md" "$d/docs/.15-backlog.renamed"
 out="$(run_guard "$d")"; rc=$?
 assert_red "case71e 台账缺失 (第 42 条 fail-closed②)" "$rc" "$out" \
-  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1）"
+  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1 / W71 G2 glob 去上限）"
 if printf '%s\n' "$out" | grep -qF "守卫面已失效"; then
   echo "PASS [case71e] fail-closed 生效（输出含「守卫面已失效」事实行，台账蒸发不静默放行）"
   PASS=$((PASS + 1))
 else
   echo "FAIL [case71e] 台账缺失分支未打出「守卫面已失效」（fail-closed 失效）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case 71f / 71g：W71 G2（T-1）—— 第 42 条 glob 去数字上限后的**命名覆盖新触发面**。
+#   教训（深度审 P1）：原 glob 写死 `wave6[89]`/`wave7[0-9]`（止于 W79）⇒ W80 起
+#   的新波交接不再被扫描而守卫仍全绿（fail-closed ① 永不触发：W68/69/70 文件永在）。
+#   现 glob 无上限（`wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9])`，覆盖 W100+）。
+#     case71f —— 红面：骨架树追加伪造 wave80 交接（台账外 ID W70-99，真实交接与
+#                台账均无）⇒ 判红，红来自事实行（输出含 W70-99 + wave80 文件名）
+#                —— 钉「W80 命名交接已进核对面」（现役形态对本注入判绿，失效面
+#                存在性留证见 _w71_g2_fixture.log ①）。
+#     case71g —— 绿面（宽 glob 连带面防假红）：wave80 交接里只写台账内 ID（W69-01）
+#                + 前台账时代波次内序号（W40-1）⇒ 整树退出 0 —— 钉宽 glob 不把
+#                合法新波交接误拉进核对面（ID 正则双保险仍在）。
+# ---------------------------------------------------------------------------
+if guard_selected 42; then
+d="$TMP/case71f-wave80-glob-coverage"
+scaffold "$d"
+cat > "$d/docs/handoff-20261017-wave80-closeout.md" <<'MD'
+# handoff fixture（W71 G2 注入件：wave80 命名，台账外 ID）
+
+交接 delta：W70-99 幽灵挂账项（台账中不存在；只存在于本 wave80 交接）。
+MD
+out="$(run_guard "$d")"; rc=$?
+assert_red "case71f wave80 命名交接进核对面 (第 42 条 G2)" "$rc" "$out" \
+  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1 / W71 G2 glob 去上限）"
+if printf '%s\n' "$out" | grep -qF "W70-99" && printf '%s\n' "$out" | grep -qF "handoff-20261017-wave80-closeout.md"; then
+  echo "PASS [case71f] 红来自真命中（输出含注入的台账外 ID W70-99 + wave80 出现文件名 ⇒ glob 去上限后覆盖新波）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case71f] 守卫判红但输出不含注入 ID / wave80 文件名（假红或归因丢失）；未判红 = glob 上限仍在"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 42; then
+d="$TMP/case71g-wave80-legal-green"
+scaffold "$d"
+cat > "$d/docs/handoff-20261017-wave80-closeout.md" <<'MD'
+# handoff fixture（W71 G2 绿面：wave80 命名 + 合法 ID）
+
+历史沿革：W40-1 曾讨论内存公式（前台账时代波次内序号，非台账 ID）。
+交接 delta：W69-01 已销账；沿袭 W68-01。
+MD
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case71g 宽 glob 连带面防假红 (第 42 条绿面)] 退出 0（wave80 交接内台账内 ID/前台账序号均不误判）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case71g] wave80 交接的合法内容被判红（宽 glob 连带面假红）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
@@ -4036,6 +4173,67 @@ else
   echo "FAIL [case73b] 方向C-2 判红但归因丢失，或未判红（注入假锚未触发 = vacuous 阑尾实证）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
+# case75（W71 G1，自洽性 case）：--only 归一口径同源 —— 空格形式与逗号形式等价行使。
+#   背景（P2-1 现役 bug，W71 复实证：`--only "34 39 41"` ⇒ PASS=0/exit 0「自测全部
+#   通过」）：入口对 --only 原样透传，校验循环按空格词分割放行而 guard_selected 只认
+#   逗号 ⇒ 空格分隔定向静默零跑、退出 0 假绿。W71 修法 = normalize_only_set 入口
+#   一次性归一（空格/逗号/中文逗号/顿号 → 逗号集），校验与 guard_selected 共用。
+#   本 case 递归调用自身（--only 集不含 75 ⇒ 无递归风暴；case35/case20 家族不调本 case）：
+#     ① 空格形式 `--only "27 20"` ⇒ 退出 0 且输出出现 case35 家族 PASS 行；
+#     ② 逗号形式 `--only "27,20"` ⇒ 退出 0 且 PASS 计数 > 0；
+#     ③ 两形态 PASS 计数相等（等价行使的数值证明）。
+#   空命中语义：任一形态 PASS=0 / 无 case35 家族行 / 退出非 0 ⇒ 本 case 红
+#   （即「归一失效 ⇒ 空格又静默零跑」被机械钉住）。
+#   ⚠️ W71 质检席 P2-1 订正（原编号 case54 的两处硬伤）：
+#   ① **标签撞车** —— case54 家族早在 W65 即归第 37 条（LoopHelpers 超行数）⇒ 本
+#      case 改编号 75；
+#   ② **递归成本** —— 原递归靶 `--only "34 39 41"`（49 例，实测 ≥37 min/遍，双遍
+#      ~80 min，CI unit-tests job timeout 45 min ⇒ 守卫被自测网拖垮）。归一是**选择器
+#      层性质、与具体守卫无关** ⇒ 改打最小双家族 #27+#20（case35 家族 2 例 + case20
+#      家族 4 例，双遍分钟级）；两形态必须含 ≥2 个守卫才有空格/逗号区分度（单值无
+#      空格形态），等价性的证明力不受影响（都是「选择器选中同一批 case」的数值对照）。
+# ---------------------------------------------------------------------------
+if guard_selected $META_CASE2; then
+viol=""
+run_only_form() { # $1 = --only 取值（原样透传给子进程，不经本进程归一）
+  bash "$SELF2" --only "$1" 2>&1
+}
+# SELF2 自取（SELF 变量在 case53 块内定义，而 case75 先于 case53 执行 ⇒ 不可依赖它）。
+SELF2="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+out_space="$(run_only_form "27 20")"; rc_space=$?
+out_comma="$(run_only_form "27,20")"; rc_comma=$?
+pass_space="$(printf '%s\n' "$out_space" | sed -n 's/^自测结果：PASS=\([0-9]*\).*/\1/p')"
+pass_comma="$(printf '%s\n' "$out_comma" | sed -n 's/^自测结果：PASS=\([0-9]*\).*/\1/p')"
+[ "$rc_space" -eq 0 ] || viol="$viol
+空格形式退出码 $rc_space（非 0）"
+[ "$rc_comma" -eq 0 ] || viol="$viol
+逗号形式退出码 $rc_comma（非 0）"
+if [ -n "$pass_space" ] && [ "$pass_space" -gt 0 ]; then :; else
+  viol="$viol
+空格形式 PASS 计数 ${pass_space:-空}（空命中 = G1 归一失效，空格又静默零跑）"
+fi
+if [ -n "$pass_comma" ] && [ "$pass_comma" -gt 0 ]; then :; else
+  viol="$viol
+逗号形式 PASS 计数 ${pass_comma:-空}"
+fi
+printf '%s\n' "$out_space" | grep -q 'case35' \
+  || viol="$viol
+空格形式输出未出现 case35 家族（选中的守卫 case 未行使）"
+if [ -n "$pass_space" ] && [ -n "$pass_comma" ] && [ "$pass_space" -ne "$pass_comma" ]; then
+  viol="$viol
+两形态 PASS 计数不等（空格 $pass_space vs 逗号 $pass_comma，等价性破缺）"
+fi
+if [ -n "$viol" ]; then
+  echo "FAIL [case75 --only 归一同源] 发现违例："
+  printf '%s\n' "$viol" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS [case75 --only 归一同源] 空格/逗号两形态均退出 0、PASS=$pass_space（case35 家族出现、计数相等）"
+  PASS=$((PASS + 1))
 fi
 
 fi

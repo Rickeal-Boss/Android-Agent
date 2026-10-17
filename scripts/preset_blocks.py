@@ -2,16 +2,17 @@
 # -*- coding: utf-8 -*-
 """共享块解析模块：`ModelPresets.kt` 的 `ModelPreset(...)` 构造块**单一解析源**（W69 A1）。
 
-为什么需要它（外部审查第十四审 H1 / 复审24 P1-① / P2-①）：
-  同一 `ModelPreset` 块解析语义此前存在**三份独立实现**：
+为什么需要它（外部审查第十四审 H1 / 复审24 P1-① / P2-① / W71 G5 P2-3）：
+  同一 `ModelPreset` 块解析语义此前存在**四份独立实现**：
     · #34 `scripts/check-known-broken.py`（266 行 Python）
     · #39 `scripts/arch-guard.sh` 内联 awk（约 :880–1002）
     · #41 `scripts/check-preset-profile-parity.py`（W69 A4 迁移时 319 行；W70 A2 追加方向 C 后 408 行）
-  三者的块切分代码（`SINGLE_LINE` / `MULTI_OPEN` / `OPEN_HEAD` / `NEXT_PAREN` /
+    · #29 `scripts/arch-guard.sh` 内联 bash grep（appliesToRuntime 字面量提取；W71 G5 已迁入本模块）
+  前三者的块切分代码（`SINGLE_LINE` / `MULTI_OPEN` / `OPEN_HEAD` / `NEXT_PAREN` /
   `BLOCK_CLOSE` + `strip_comment` / `blank_strlits` / `opens_block` / `split_blocks`）
   几乎逐字重复；W68 三轮修复每次都要**手工同步三处**（`blank_strlits`、括号换行、
   字段级置空）—— 这是本仓仅存的「靠人记得」面。本模块把该纪律**变结构**：
-  三守卫改为 `import preset_blocks` 消费同一实现，判据漂移不可能再分叉。
+  守卫改为 `import preset_blocks` 消费同一实现，判据漂移不可能再分叉。
 
 本波同时修掉三处独立实现里残留的逃逸/假红面（与 A2 fixture 单测一一对应）：
   · P1-① 赋值/表达式前缀形态静默逃逸：旧判据要求 `ModelPreset` 在**行首**
@@ -35,6 +36,7 @@ API（纯函数，无副作用；输入 = 文件行列表，输出 = 结构化�
   blank_field_literals(s, names)        -> str      具名位字段的字符串字面量内容置空
   opens_block_line(s)                   -> bool     单行判据（不含括号换行形态）
   parse_blocks(lines)                   -> list[dict]
+  applies_to_runtime_literals(lines)    -> list[(value, line_no)]  #29 消费入口（W71 G5）
 
 块 dict 结构（每块）：
   {
@@ -63,6 +65,7 @@ API（纯函数，无副作用；输入 = 文件行列表，输出 = 结构化�
     ⇒ 按首个匹配结算该行（罕见形态，未纳入判定）。
 """
 import re
+import sys
 
 # ---------------------------------------------------------------------------
 # 开启 / 收尾判据（行内具名位匹配，非行首锚定 —— 修 P1-① 赋值/表达式前缀逃逸）
@@ -419,3 +422,55 @@ def parse_blocks(lines):
     if inblk:
         emit(start, n - 1, ind)  # EOF 未收尾也结算（fail-closed）
     return blocks
+
+
+# ---------------------------------------------------------------------------
+# 第 29 条消费入口（W71 G5，治外部审查 P2-3）：appliesToRuntime 字面量提取
+# ---------------------------------------------------------------------------
+# 迁移前形态 = arch-guard.sh #29 段内联 `grep -nE "appliesToRuntime = \"X\""`
+# —— 第四份独立实现（与 #34/#39/#41 同族的解析漂移面）。已知边界（评审实证）：
+#   · 行匹配不锚定块 ⇒ **块外任意行**的同款赋值也被计入；
+#   · 注释排除只认行首 `/*`/`*` 形态 ⇒ 块内**字符串内容**（如 note 里写
+#     `appliesToRuntime = "9.9.9"`）里的同款字样可被误提取 ⇒ 假红。
+# 本消费函数 = 该提取迁移共享模块：块解析 + 具名位字段提取双重锚定 ⇒ 上述两面
+# 天然免疫（字符串内容已 blank_strlits；块外位置不进块）。**语义收紧申报**：
+# 旧实现计入块外同款赋值，新实现只计块内具名位 —— 后者才是守卫意图
+# （「预设表的 appliesToRuntime」），且现役树 3 处全在块内 ⇒ 行为等价。
+def applies_to_runtime_literals(lines):
+    """全部 `ModelPreset` 块的 `appliesToRuntime` 字段字面量（含行号）。
+
+    返回 `[(value, line_no), ...]`（line_no 1-based）。零字面量（字段全 null /
+    零赋值）= 合法态 ⇒ 空列表（与旧实现「mism 空 = 过」同语义）。
+    """
+    out = []
+    for b in parse_blocks(lines):
+        fv = b["fields"].get("appliesToRuntime")
+        if fv is not None and fv[0] is not None:
+            out.append((fv[0], fv[1]))
+    return out
+
+
+def _cli(argv):
+    """CLI 契约（arch-guard.sh #29 消费）：
+    `python3 preset_blocks.py --applies-to-runtime <ModelPresets.kt>`
+      stdout = 每行 `value<TAB>line_no`（可空 = 零字面量合法态），恒 exit 0；
+      读取失败 ⇒ stderr `::error::` + exit 1（arch-guard 侧 fail-closed 判红，
+      防「python 挂了输出空 ⇒ 假绿」—— 空输出与合法空态靠 exit code 区分）。
+    """
+    if len(argv) == 2 and argv[0] == "--applies-to-runtime":
+        try:
+            with open(argv[1], encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        except OSError as exc:
+            print("::error::读取 %s 失败：%s" % (argv[1], exc), file=sys.stderr)
+            return 1
+        for value, line_no in applies_to_runtime_literals(lines):
+            print("%s\t%d" % (value, line_no))
+        return 0
+    print("::error::未知用法：python3 preset_blocks.py --applies-to-runtime <ModelPresets.kt>",
+          file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(_cli(sys.argv[1:]))

@@ -705,6 +705,17 @@ check "LiteRtLmEngine.kt 韧性 store 双写双读接线（adopt 调用点 1、p
 #     `null` / 零字面量属合法态（过）；字段被改名导致零命中不静默 —— 由「文件缺失即红」+
 #     `docs/12` 复审流程兜底。**不改既有编号、不改既有 0.17.1 判据语义**，仅在本条 body
 #     追加（守卫名与既有 ::error:: 行保持不变）。
+#     W71 G5（外部审查 P2-3）：appliesToRuntime 字面量提取**迁移共享模块**
+#     `preset_blocks.py`（`--applies-to-runtime` 消费入口，按 **GUARD_DIR 定位** ——
+#     与 #34/#41 同款，禁相对 cwd 路径：自测网在脚手架树以 cwd=脚手架跑本守卫，
+#     相对路径 ⇒ 命令自身 exit 2 假红）—— 原内联 bash grep 是 #34/#39/#41 之后的
+#     **第四份独立解析实现**，两块已知边界：① 行匹配不锚定块 ⇒ 块外同款赋值也计入；
+#     ② 注释排除只认行首 `/*`/`*` ⇒ 块内**字符串内容**（note 里写
+#     `appliesToRuntime = "9.9.9"`）里的同款字样可被误提取 ⇒ 假红。迁移后双重锚定
+#     （块解析 + 具名位）⇒ 两面免疫；**语义收紧申报**：只计 ModelPreset 块内具名位
+#     （守卫意图 = 预设表），现役 3 处全在块内 ⇒ 行为等价。fail-closed：CLI 运行
+#     失败（非零退出，含脚本缺失）⇒ 红（空输出与零字面量合法态靠 exit code 区分，
+#     绝不假绿）。
 check "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读四前置+前置⑤）" \
   bash -c 'f=gradle/libs.versions.toml
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（版本目录蒸发，守卫面已失效）"; exit 1; fi
@@ -713,8 +724,12 @@ check "litertlm 版本必须为 0.17.1（H-A 收敛语义兼容；bump 前必读
            [ "$v" = "0.17.1" ] || echo "litertlm 已改为 $v：v0.18.0 起「1 元素 text 数组→string」收敛点已删且无等价替代（W56 实证 tag b2f686e2e 全树零命中）⇒ fold 失效 ⇒ Qwen2.5 系每轮必炸（非发图才炸）。bump 前必须按 W56 交接「四前置」+ W58 前置⑤（临时 K=3）逐条复核，并同步更新本守卫期望值。0.17.1 行为锚定面清单（前置⑥）见 docs/12-litertlm-0171-anchors.md（W59 P3-Ⓐ 指向行，只追加不改动既有子串）"
            mp=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
            if [ ! -f "$mp" ]; then echo "::error::$mp 不存在（第 29 条 appliesToRuntime 一致性校验面失效）"; exit 1; fi
-           mism=$(grep -nE "appliesToRuntime[[:space:]]*=[[:space:]]*\"[^\"]*\"" "$mp" | grep -vE "^[0-9]+:[[:space:]]*[*/]" | grep -oE "\"[^\"]*\"" | tr -d "\"" | sort -u | grep -vx "$v")
-           if [ -n "$mism" ]; then echo "ModelPresets.kt 的 appliesToRuntime 字面量（$(printf "%s " $mism)）与 gradle/libs.versions.toml 的 litertlm 版本 $v 不一致：bump litertlm 时必须同步该字段（否则 knownBroken 复审锚指向错版本、过期结论静默漏判）"; fi'
+           PY=$(command -v python3 || command -v python)
+           if [ -z "$PY" ]; then echo "::error::找不到 python3/python（第 29 条 appliesToRuntime 校验面已失效）"; exit 1; fi
+           lits=$("$PY" '"$GUARD_DIR"'/preset_blocks.py --applies-to-runtime "$mp"); prc=$?
+           if [ "$prc" -ne 0 ]; then echo "::error::preset_blocks.py --applies-to-runtime 运行失败（退出码 $prc；第 29 条校验面已失效，fail-closed）"; exit 1; fi
+           mism=$(printf "%s\n" "$lits" | awk -v v="$v" "NF && \$1 != v {printf \"%s%s(第%s行)\", sep, \$1, \$2; sep=\" \"}")
+           if [ -n "$mism" ]; then echo "ModelPresets.kt 的 appliesToRuntime 字面量 $mism 与 gradle/libs.versions.toml 的 litertlm 版本 $v 不一致：bump litertlm 时必须同步该字段（否则 knownBroken 复审锚指向错版本、过期结论静默漏判）"; fi'
 
 # 30) ChatRunCoordinator「run 级 model 来源冻结」（W59，方案 §3）：AgentRequest.model 的
 #     取值点必须仍为全局 activeModel 读点（b8b9446 实测 3 处 = AgentRequest 传参位）。
@@ -972,10 +987,20 @@ check "core-model 源码禁出现 feature-models 字样（迁移后描述失效�
 #     该对账变机械判据（第 27 条家族：聚合面守卫，push 代码时顺带拦下）。
 #
 #     ⚠️ 命名空间边界（方案席实拉验证，W70 计划 §二 #3）：**只扫 ledger-era 交接文档** ——
-#     文件名匹配 docs/handoff-*-wave6[89]-*.md（W68/W69）/ docs/handoff-*-wave7[0-9]-*.md
-#     （W70 起台账时代）。朴素全 handoff 扫描**必假红**：W40-1 / W52-53 / W64-1 等前台账
-#     时代的**波次内序号**不是台账 ID（它们只是当时 §五 列表的行号式编号）。ID 提取正则
-#     同步限定 W(6[89]|[7-9][0-9])-\d+ —— 文件名 + 正文双保险，旧编号两头都不进核对面。
+#     文件名匹配 docs/handoff-*-wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9])-*.md
+#     （W68/W69 / W70-W99 / W100+ 三段，**无数字上限**；extglob `@(...)` 分组形态）。
+#     朴素全 handoff 扫描**必假红**：W40-1 / W52-53 / W64-1 等前台账时代的**波次内序号**
+#     不是台账 ID（它们只是当时 §五 列表的行号式编号）。ID 提取正则同步限定
+#     W(6[89]|[7-9][0-9])-[0-9]+（W68-W99 ID 空间，与 docs/15 台账 ID 空间一致，不扩到
+#     W99+ 的幻影面）—— 文件名 + 正文双保险，旧编号两头都不进核对面。
+#
+#     ⚠️ W71 G2 教训（T-1，深度审 P1）：本 glob 一度写死上限 `wave6[89]`/`wave7[0-9]`
+#     （止于 W79）—— W80 起的新波交接不再被扫描，而守卫仍全绿（fail-closed ① 永不
+#     触发：W68/69/70 文件永在 ⇒ 扫到的是老波，不是「新波被漏掉」）。数字写死 = 守卫
+#     自己也会随波次过期。现改无上限形态：ledger-era 起始 = W68（docs/15 台账建立），
+#     之后每个波次交接都在核对面；若未来 handoff 命名规范变更 ⇒ fail-closed ①
+#     （扫不到任何 ledger-era ⇒ 红）兜底。ID 正则保持 W68-W99 空间（W100+ 波次若真
+#     出现，台账 ID 空间本身需先扩，届时同条改）。
 #
 #     反向（台账 ID 是否被交接提及）**不要求**：closed 项可不出现在交接（M12 人工面保留）。
 #
@@ -985,11 +1010,11 @@ check "core-model 源码禁出现 feature-models 字样（迁移后描述失效�
 #       ③ ledger-era 交接提取不到任何 W##-N ID ⇒ 红（交接格式漂移 ⇒ ID 提取面失效；
 #          **0 命中 ≠ 通过** —— 与 #41 方向 C-2 同款 vacuous 纪律）。
 #     每条违规打「ID + 出现文件」事实行（check() 契约：stdout 非空 = 违规）。
-check "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1）" \
-  bash -c 'shopt -s nullglob
-           files=(docs/handoff-*-wave6[89]-*.md docs/handoff-*-wave7[0-9]-*.md)
+check "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1 / W71 G2 glob 去上限）" \
+  bash -c 'shopt -s nullglob extglob
+           files=(docs/handoff-*-wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9])-*.md)
            if [ "${#files[@]}" -eq 0 ]; then
-             echo "::error::未找到任何 ledger-era 交接文档（docs/handoff-*-wave6[89]-*.md / docs/handoff-*-wave7[0-9]-*.md；交接被改名/删除/挪移 ⇒ 第 42 条守卫面已失效，fail-closed）"
+             echo "::error::未找到任何 ledger-era 交接文档（docs/handoff-*-wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9])-*.md，无数字上限；交接被改名/删除/挪移 ⇒ 第 42 条守卫面已失效，fail-closed）"
              exit 1
            fi
            L=docs/15-backlog.md
@@ -1035,6 +1060,13 @@ check "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 
 #         （锚清单表定案波次列的全部 W##）；不在 ⇒ 红。**0 命中 ≠ 通过** —— 现役 0 处
 #         「档案豁免」令牌 ⇒ 本子判据当前零真实命中面；触发能力由 selftest case73 注入
 #         「档案豁免 + W99」假锚钉住（判据被执行 ≠ 判据被行使）。
+#     W71 G5 兄弟面申报（C-1 提取面）：C-1 的字面量提取（`check-preset-profile-parity.py`
+#     的 `code_applies_to_runtime`，行级 regex + 行首注释排除）与旧 #29 同族 ——
+#     **块内 raw string 内容里的 `appliesToRuntime = "X"` 字样会被误提取**（与 #29
+#     迁移前假红面同源）。#29 已迁 preset_blocks 双重锚定；本提取的实现文件不在
+#     W71 G5 枚举改动面（禁越界），假红面修复候选另立台账 ID。判据本体（取值集合+
+#     条数 ↔ docs/12 声明）不受影响：误提取只会令条数虚增 ⇒ 判红（fail-closed 向，
+#     非静默放行）；现役树 note 零 raw string 污染 ⇒ 零实际影响。
 #     方向 C 的 fail-closed：docs/12 缺失 / 锚清单表头或锚 #14 行提取失败 / 依据列提不出
 #     版本取值或条数 / 定案波次集合为空 ⇒ 均红（载体蒸发或形态漂移不静默放行）。
 check "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏档 / 孤儿档案均判红）" \
