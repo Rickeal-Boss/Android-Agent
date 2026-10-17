@@ -2941,7 +2941,7 @@ object ModelPresets {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case56 构造块缺 evidenceLevel 赋值 (第 39 条)" "$rc" "$out" \
-  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
 if printf '%s\n' "$out" | grep -qF "缺 evidenceLevel 赋值" && printf '%s\n' "$out" | grep -qF "missing-level"; then
   echo "PASS [case56b] 红来自真命中（输出含违规预设 label + 「缺 evidenceLevel 赋值」事实行）"
   PASS=$((PASS + 1))
@@ -2977,7 +2977,7 @@ object ModelPresets {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case57 MEASURED 无本仓取证锚点 (第 39 条反推测预填)" "$rc" "$out" \
-  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
 if printf '%s\n' "$out" | grep -qF "但 backendBasis/note 内无本仓取证锚点"; then
   echo "PASS [case57b] 红来自真命中（输出含「MEASURED 但 backendBasis/note 内无本仓取证锚点」事实行）"
   PASS=$((PASS + 1))
@@ -3013,7 +3013,7 @@ object ModelPresets {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case58 evidenceLevel 未知等级 (第 39 条)" "$rc" "$out" \
-  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
 
 d="$TMP/case59-evidence-decl-gone"
 scaffold "$d"
@@ -3034,7 +3034,7 @@ object ModelPresets {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case59 evidenceLevel 声明被删 (第 39 条面失效)" "$rc" "$out" \
-  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
 if printf '%s\n' "$out" | grep -qF "缺 val evidenceLevel 声明（字段被删 = 第 39 条守卫面已失效）"; then
   echo "PASS [case59b] 红来自真命中（输出含「缺 val evidenceLevel 声明」逐字违规行）"
   PASS=$((PASS + 1))
@@ -3221,7 +3221,7 @@ object ModelPresets {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case61 单行 ModelPreset 缺 evidenceLevel 赋值 (第 39 条 D1)" "$rc" "$out" \
-  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
 if printf '%s\n' "$out" | grep -qF "缺 evidenceLevel 赋值" && printf '%s\n' "$out" | grep -qF "single-line-missing"; then
   echo "PASS [case61b] 红来自真命中（单行块被识别 + 输出含违规 label）"
   PASS=$((PASS + 1))
@@ -3336,7 +3336,7 @@ object ModelPresets {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case61d 形态A续写块逃逸被识别 (第 39 条)" "$rc" "$out" \
-  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
 assert_red "case61d 中部注入红归位到注入块 (第 34 条)" "$rc" "$out" \
   "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）"
 if printf '%s\n' "$out" | grep -qF "缺 evidenceLevel 赋值" && printf '%s\n' "$out" | grep -qF "mid-escape-a"; then
@@ -3708,7 +3708,7 @@ object ModelPresets {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case62 MEASURED 锚点只在 label/注释 (第 39 条 D2)" "$rc" "$out" \
-  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
 if printf '%s\n' "$out" | grep -qF "但 backendBasis/note 内无本仓取证锚点" && printf '%s\n' "$out" | grep -qF "W99-in-label-only"; then
   echo "PASS [case62b] 红来自真命中（label/注释里的 W99 未被当锚点）"
   PASS=$((PASS + 1))
@@ -3749,7 +3749,7 @@ object ModelPresets {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case63 缩进漂移块缺 evidenceLevel 未被吞 (第 39 条 D3)" "$rc" "$out" \
-  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
 if printf '%s\n' "$out" | grep -qF "drifted-missing" && ! printf '%s\n' "$out" | grep -qF "canonical-ok"; then
   echo "PASS [case63b] 漂移块被独立结算（含缺字段块 label、不含合规块 label ⇒ 未粘连）"
   PASS=$((PASS + 1))
@@ -3823,7 +3823,7 @@ object ModelPresets {
 KT
 out="$(run_guard "$d")"; rc=$?
 assert_red "case70 赋值前缀块逃逸被识别 (第 39 条)" "$rc" "$out" \
-  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）"
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
 assert_red "case70 赋值前缀块逃逸被识别 (第 34 条)" "$rc" "$out" \
   "knownBrokenOn 非空的预设不得 recommended（已知坏容器不得置顶推荐）"
 assert_red "case70 赋值前缀块逃逸被识别 (第 41 条方向A)" "$rc" "$out" \
