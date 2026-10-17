@@ -954,7 +954,17 @@ check "ChatRunRecovery.kt 总行数 ≤ 400（feature-chat 行数表 #25 家族�
 #        ② 新增**块注释剥离**（`/* … */`，可跨行）⇒ 块内 KDoc 散文里的
 #           `evidenceLevel = X` 字样不再污染判定（旧 awk 只剥行内 `//`）。
 #     ⚠️ **新增预设：多行块沿用与相邻块一致的缩进；单行块也必须显式写 `evidenceLevel`。**
-check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3）" \
+#     ⚠️ **W72 D 扩展（U-1，深度审 P1）：同一遍扫描兼查 `templateArraySafety` 四态** ——
+#        bump 后的失效面 = 「模板**非**数组安全」的预设，而旧标记体系只记「安全」不记
+#        「不安全」⇒ 信息方向反了。判据（同一 `check-evidence-level.py`，仍 42 项不加号）：
+#        ① 块内缺 `templateArraySafety = TemplateArraySafety.<值>` 赋值 ⇒ 判红；
+#        ② 值不在 {SAFE, UNSAFE, LOSSY, UNVERIFIED} ⇒ 判红；
+#        ③ SAFE 但 backendBasis/note 字面量内无 `W##` 锚点 ⇒ 判红（防「标安全无证据」）；
+#        ④ UNVERIFIED 但 backendBasis/note 内无理由类别
+#          （`NO_TEMPLATE_IN_CONTAINER` / `NO_CONTAINER`）⇒ 判红（禁裸留）。
+#        取证事实源 = 仓外 `_ci-tools/_w72_tpl_safety.py --all`（七格矩阵含 systemInstruction
+#        维度；分布 10/2/0/2）。变异实测：删赋值 / 非法值 / 裸留三面均判红（W72 主理人亲跑）。
+check "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）" \
   bash -c "f=core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt
            if [ ! -f \"\$f\" ]; then echo \"::error::\$f 不存在（被改名/删除？第 39 条守卫面已失效）\"; exit 1; fi
            C=\"$GUARD_DIR/check-evidence-level.py\"
@@ -990,17 +1000,32 @@ check "core-model 源码禁出现 feature-models 字样（迁移后描述失效�
 #     文件名匹配 docs/handoff-*-wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9])-*.md
 #     （W68/W69 / W70-W99 / W100+ 三段，**无数字上限**；extglob `@(...)` 分组形态）。
 #     朴素全 handoff 扫描**必假红**：W40-1 / W52-53 / W64-1 等前台账时代的**波次内序号**
-#     不是台账 ID（它们只是当时 §五 列表的行号式编号）。ID 提取正则同步限定
-#     W(6[89]|[7-9][0-9])-[0-9]+（W68-W99 ID 空间，与 docs/15 台账 ID 空间一致，不扩到
-#     W99+ 的幻影面）—— 文件名 + 正文双保险，旧编号两头都不进核对面。
+#     不是台账 ID（它们只是当时 §五 列表的行号式编号）。ID 提取正则同步限定 ledger-era
+#     起点 W68 之后（**W60-W67 段刻意不纳入**：W64-1 正是前台账序号，纳入即假红 ——
+#     selftest case71c 钉死该边界）—— 文件名 + 正文双保险，旧编号两头都不进核对面。
 #
 #     ⚠️ W71 G2 教训（T-1，深度审 P1）：本 glob 一度写死上限 `wave6[89]`/`wave7[0-9]`
 #     （止于 W79）—— W80 起的新波交接不再被扫描，而守卫仍全绿（fail-closed ① 永不
 #     触发：W68/69/70 文件永在 ⇒ 扫到的是老波，不是「新波被漏掉」）。数字写死 = 守卫
 #     自己也会随波次过期。现改无上限形态：ledger-era 起始 = W68（docs/15 台账建立），
 #     之后每个波次交接都在核对面；若未来 handoff 命名规范变更 ⇒ fail-closed ①
-#     （扫不到任何 ledger-era ⇒ 红）兜底。ID 正则保持 W68-W99 空间（W100+ 波次若真
-#     出现，台账 ID 空间本身需先扩，届时同条改）。
+#     （扫不到任何 ledger-era ⇒ 红）兜底。
+#
+#     ⚠️ **W72 A1（莫斯线 P3-A / 深度审 U-4）再对齐：ID 正则与文件名 glob 双向去上限**。
+#     病灶（此前残留的**第二处写死上限**）：glob 已无上限（`[1-9][0-9][0-9]*` 覆盖
+#     W100/W1000/…），而 **ID 提取正则仍止于 W99**（`W(6[89]|[7-9][0-9])-[0-9]+`）
+#     ⇒ W100 起的交接文件**被扫到、ID 却提不出来** ⇒ 该文件里任何台账外 ID 都**静默漏检**
+#     （守卫仍全绿：老波文件永在 ⇒ fail-closed ① 不触发）。与 W71 G2 同族 ——
+#     「数字写死 ⇒ 守卫自己随波次过期」，只是这次写死的是**正文侧**而非文件名侧。
+#     修法：ID 正则改**不定长** `W(6[89]|[7-9][0-9]|[1-9][0-9]{2,})-[0-9]+`
+#     （W68-W69 + W70-W99 + **W100 以上无上限**；`[6-9][0-9]` 会误纳 W60-W67 ⇒ 不采，
+#     见上条）；glob 尾段同步补 `*`（`[1-9][0-9][0-9]*` = 三位起、无上限）。
+#     ⇒ **ID 空间无上限**：交接里出现的任何 `W<wave>-<n>`（wave ≥ 68）都在核对面；
+#     台账实际最大号见 `docs/15-backlog.md` 主台账（现役最大 W71-02），本守卫**不读**
+#     该最大号做上限（否则又成一处写死面）。
+#     selftest 夹具：case76（wave100 文件名 + W100-01 台账外 ⇒ 红面，钉「文件被扫到、
+#     ID 提不出」）、case76b（wave1000 文件名 + W1000-01 台账外 ⇒ 红面，钉文件名侧
+#     去上限）、case76c（wave1000 文件名 + 台账内 ID ⇒ 绿面，防宽 glob 连带假红）。
 #
 #     反向（台账 ID 是否被交接提及）**不要求**：closed 项可不出现在交接（M12 人工面保留）。
 #
@@ -1012,9 +1037,9 @@ check "core-model 源码禁出现 feature-models 字样（迁移后描述失效�
 #     每条违规打「ID + 出现文件」事实行（check() 契约：stdout 非空 = 违规）。
 check "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1 / W71 G2 glob 去上限）" \
   bash -c 'shopt -s nullglob extglob
-           files=(docs/handoff-*-wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9])-*.md)
+           files=(docs/handoff-*-wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9]*)-*.md)
            if [ "${#files[@]}" -eq 0 ]; then
-             echo "::error::未找到任何 ledger-era 交接文档（docs/handoff-*-wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9])-*.md，无数字上限；交接被改名/删除/挪移 ⇒ 第 42 条守卫面已失效，fail-closed）"
+             echo "::error::未找到任何 ledger-era 交接文档（docs/handoff-*-wave@(6[89]|[7-9][0-9]|[1-9][0-9][0-9]*)-*.md，无数字上限；交接被改名/删除/挪移 ⇒ 第 42 条守卫面已失效，fail-closed）"
              exit 1
            fi
            L=docs/15-backlog.md
@@ -1025,7 +1050,7 @@ check "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 
              on && \$2 ~ /^[[:space:]]*W[0-9]+-[0-9]+[[:space:]]*\$/ { gsub(/[[:space:]]/, \"\", \$2); print \$2 }
            " "$L")
            if [ -z "$ledger_ids" ]; then echo "::error::$L 主台账解析不出任何 ID（## 主台账 表格形态漂移？第 42 条守卫面已失效）"; exit 1; fi
-           ids=$(grep -ohE "W(6[89]|[7-9][0-9])-[0-9]+" "${files[@]}" | sort -u)
+           ids=$(grep -ohE "W(6[89]|[7-9][0-9]|[1-9][0-9]{2,})-[0-9]+" "${files[@]}" | sort -u)
            if [ -z "$ids" ]; then echo "::error::ledger-era 交接文档中提取不到任何 W##-N ID（交接格式漂移 ⇒ ID 提取面失效；第 42 条 0 命中 ≠ 通过，fail-closed）"; exit 1; fi
            for id in $ids; do
              if ! printf "%s\n" "$ledger_ids" | grep -qxF "$id"; then

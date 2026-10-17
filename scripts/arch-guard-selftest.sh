@@ -529,6 +529,7 @@ KT
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -536,6 +537,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -546,6 +548,7 @@ object ModelPresets {
             url = "https://fixture.invalid/fixture-preset.litertlm",
             recommended = true,
             evidenceLevel = EvidenceLevel.MEASURED,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             note = "W60 实测（fixture 锚点）：MEASURED 合法需 backendBasis/note 内出现 W## 波次标记。",
         ),
         ModelPreset(
@@ -554,12 +557,14 @@ object ModelPresets {
             knownBrokenOn = "0.17.1 假签名（fixture）",
             appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
         ModelPreset(
             label = "explicit-null-recommended",
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
     )
 }
@@ -2918,10 +2923,12 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
 )
 
 object ModelPresets {
@@ -2950,10 +2957,12 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
 )
 
 object ModelPresets {
@@ -2961,6 +2970,7 @@ object ModelPresets {
         ModelPreset(
             label = "measured-no-anchor",
             evidenceLevel = EvidenceLevel.MEASURED,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
     )
 }
@@ -2983,10 +2993,12 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
 )
 
 object ModelPresets {
@@ -2994,6 +3006,7 @@ object ModelPresets {
         ModelPreset(
             label = "bogus-level",
             evidenceLevel = EvidenceLevel.BOGUS,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
     )
 }
@@ -3043,6 +3056,130 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ---------------------------------------------------------------------------
+# case 76 / 76b / 76c：第 39 条 **W72 D 扩展**（`templateArraySafety` 四态，U-1）三红面。
+#   为什么必须有独立红面：W72 D 给 check-evidence-level.py 加了三条新判据（缺赋值 /
+#   SAFE 无锚 / UNVERIFIED 无理由），若只靠「现役树全绿」验证 = 口径未行使（⛔ vacuous，
+#   「测试全绿」≠「判据被验证」）。三面都只覆写 $TMP 脚手架树，绝不碰生产文件；
+#   绿面（现役树 + case60 scaffold 双合法字段）由 case60 与全量 arch-guard 兜住。
+#   case76  —— 块缺 `templateArraySafety` 赋值 ⇒ 判红（全 schema：不允许未标注预设）；
+#   case76b —— `SAFE` 但 backendBasis/note 内无 `W##` 取证锚点 ⇒ 判红（SAFE 必须可指出
+#              证据来源 —— 与 MEASURED 带锚同款口径；防「标了安全但说不出哪来的」）；
+#   case76c —— `UNVERIFIED` 但块内无理由类别（NO_TEMPLATE_IN_CONTAINER / NO_CONTAINER）
+#              ⇒ 判红（禁裸留 —— R1/Phi-4 的「容器无明文模板」这类理由必须落在文本里，
+#              否则后人会当成漏做）。
+# ---------------------------------------------------------------------------
+if guard_selected 39 || guard_selected 34 || guard_selected 41; then
+d="$TMP/case76-array-safety-missing"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "missing-array-safety",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case76 块缺 templateArraySafety 赋值 (第 39 条 W72 D)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
+if printf '%s\n' "$out" | grep -qF "缺 templateArraySafety 赋值" && printf '%s\n' "$out" | grep -qF "missing-array-safety"; then
+  echo "PASS [case76b] 红来自真命中（输出含违规 label + 「缺 templateArraySafety 赋值」事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case76b] 输出不含「缺 templateArraySafety 赋值」+ 违规 label（W72 D 判据①未行使或守卫自身故障）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case76c-array-safety-safe-no-anchor"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "safe-no-anchor",
+            backendBasis = "没有任何波次锚点的说明文本",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.SAFE,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case76c SAFE 无本仓取证锚点 (第 39 条 W72 D)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
+if printf '%s\n' "$out" | grep -qF "无本仓取证锚点" && printf '%s\n' "$out" | grep -qF "safe-no-anchor"; then
+  echo "PASS [case76d] 红来自真命中（输出含「SAFE 但 backendBasis/note 内无本仓取证锚点」+ 违规 label）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case76d] 输出不含 SAFE 无锚事实行（W72 D 判据②未行使 = SAFE 可无证据地标 ⇒ 判据假绿）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case76e-unverified-no-reason"
+scaffold "$d"
+cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
+
+data class ModelPreset(
+    val label: String,
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
+)
+
+object ModelPresets {
+    val all: List<ModelPreset> = listOf(
+        ModelPreset(
+            label = "unverified-no-reason",
+            evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNVERIFIED,
+        ),
+    )
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case76e UNVERIFIED 裸留 (第 39 条 W72 D)" "$rc" "$out" \
+  "ModelPreset 全 schema 显式声明 evidenceLevel 且 MEASURED 带本仓取证锚点（W66 B3；W72 D 兼查 templateArraySafety 四态）"
+if printf '%s\n' "$out" | grep -qF "无理由类别" && printf '%s\n' "$out" | grep -qF "unverified-no-reason"; then
+  echo "PASS [case76f] 红来自真命中（输出含「无理由类别（NO_TEMPLATE_IN_CONTAINER / NO_CONTAINER）」+ 违规 label）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case76f] 输出不含 UNVERIFIED 无理由事实行（W72 D 判据③未行使 = 裸留被放行）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+
 # case 61 / 61b / 61c / 62 / 62b / 63 / 63b：第 39 条（W66 深审 D1–D3 修补 + W67 B0 复审21
 #   P2-① / P3-① 再收紧）—— 四个 fail-open 面：
 #   D1 fail-open：旧判据只认「`ModelPreset(` 独占一行」，单行 `ModelPreset(…),` 整块被跳过。
@@ -3067,11 +3204,13 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
     val recommended: Boolean = false,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
 )
 
 object ModelPresets {
@@ -3098,11 +3237,13 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
     val recommended: Boolean = false,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val knownBrokenOn: String? = null,
     val note: String = "",
 )
@@ -3112,6 +3253,7 @@ object ModelPresets {
         ModelPreset(
             label = "compliant-anchor",
             evidenceLevel = EvidenceLevel.MEASURED,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             note = "W60 真机实测通过",
         ),
         ModelPreset(label = "trailing-comment-escape", evidenceLevel = EvidenceLevel.MEASURED, note = "本条文本内无本仓锚点"), // W99 只在行尾注释里：不算锚点
@@ -3154,6 +3296,7 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -3161,6 +3304,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -3172,6 +3316,7 @@ object ModelPresets {
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.MEASURED,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             note = "W60 实测（fixture 锚点）",
         ),
         ModelPreset(label = "mid-escape-a",
@@ -3184,6 +3329,7 @@ object ModelPresets {
             url = "u3",
             recommended = false,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
     )
 }
@@ -3230,6 +3376,7 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -3237,6 +3384,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -3247,6 +3395,7 @@ object ModelPresets {
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.MEASURED,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             appliesToRuntime = "0.17.1",
             note = "W60 实测（fixture 锚点）",
         ),
@@ -3255,6 +3404,7 @@ object ModelPresets {
             url = "u2",
             recommended = false,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
     )
 }
@@ -3292,6 +3442,7 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -3299,6 +3450,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -3311,6 +3463,7 @@ object ModelPresets {
             knownBrokenOn = "0.17.1 会话创建失败（Unsupported model type）",
             appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             note = "W63 起因：该 preset 曾 recommended = true，坏容器被置顶推荐后下线",
         ),
     )
@@ -3334,6 +3487,7 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -3341,6 +3495,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -3352,6 +3507,7 @@ object ModelPresets {
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             appliesToRuntime = "0.17.1",
             note = """历史：knownBrokenOn = "x" 与 recommended = true 互斥（见 KDoc）""",
         ),
@@ -3527,11 +3683,13 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
     val recommended: Boolean = false,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -3541,6 +3699,7 @@ object ModelPresets {
             label = "W99-in-label-only",
             recommended = false,
             evidenceLevel = EvidenceLevel.MEASURED,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             // W99 只在注释里：不算锚点（W66 深审 D2 修复面）。
             note = "本条文本内无本仓锚点",
         ),
@@ -3565,11 +3724,13 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
     val recommended: Boolean = false,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
 )
 
 object ModelPresets {
@@ -3581,6 +3742,7 @@ object ModelPresets {
         ModelPreset(
             label = "canonical-ok",
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
     )
 }
@@ -3627,6 +3789,7 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -3634,6 +3797,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -3645,6 +3809,7 @@ object ModelPresets {
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
     )
 
@@ -3696,6 +3861,7 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -3703,6 +3869,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -3718,6 +3885,7 @@ object ModelPresets {
             recommended = true,
             knownBrokenOn = null,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             appliesToRuntime = "0.17.1",
         ),
     )
@@ -3801,6 +3969,7 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -3808,6 +3977,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -3818,6 +3988,7 @@ object ModelPresets {
             url = "https://fixture.invalid/new-model.litertlm",
             recommended = false,
             evidenceLevel = EvidenceLevel.MEASURED,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             note = "W60 实测（fixture 锚点）",
         ),
     )
@@ -3876,6 +4047,7 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -3883,6 +4055,7 @@ data class ModelPreset(
     val recommended: Boolean = false,
     val knownBrokenOn: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -3893,6 +4066,7 @@ object ModelPresets {
             url = "https://fixture.invalid/kept-model.litertlm",
             recommended = false,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             appliesToRuntime = "0.17.1",
         ),
         ModelPreset(
@@ -3900,12 +4074,14 @@ object ModelPresets {
             url = "https://fixture.invalid/alias-a.litertlm",
             recommended = false,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
         ModelPreset(
             label = "exempted-preset",
             url = "https://fixture.invalid/exempted-model.litertlm",
             recommended = false,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             note = "实验容器：档案豁免（调参路线不同，待补档后销豁免，W68 fixture）",
         ),
     )
@@ -4096,6 +4272,94 @@ fi
 
 fi
 # ---------------------------------------------------------------------------
+# case 76 / 76b / 76c：W72 A1（莫斯线 P3-A / 深度审 U-4）—— 第 42 条**ID 空间去上限**
+#   （与 W71 G2 的 glob 去上限同族；病灶 = 文件被扫到、ID 提不出来 ⇒ 静默漏检）。
+#     case71h  —— 红面（正文侧去上限）：wave100 命名交接含台账外 **W100-01**。改前
+#                ID 正则止于 W99 ⇒ W100-01 提不出来 ⇒ 该文件被扫到却零命中 ⇒ 守卫
+#                全绿（静默漏检）。改后必须判红，且红来自事实行（输出含 W100-01 +
+#                出现文件名）。
+#     case71i —— 红面（文件名侧去上限）：wave1000 命名交接含台账外 **W1000-01**。
+#                改前 glob 尾段 `[1-9][0-9][0-9]` 恰三位 ⇒ wave1000 文件**根本不被
+#                扫到**（连静默漏检都算不上，是守卫面直接不覆盖）。改后必须判红。
+#     case71j —— 绿面（宽 glob / 宽正则的连带面防假红）：wave1000 命名交接只引用
+#                **台账内** W1000-01（台账由本夹具同步补登）⇒ 整树退出 0 —— 钉
+#                「去上限」只扩大核对面、不改判据语义（合法新波交接不误判）。
+#   fixture-first 证据：改前守卫对 case71h/case71i 两注入**均判绿**（见 W72 E 回报附测：
+#   同一夹具树 + `git show HEAD:scripts/arch-guard.sh` 旧版实跑，退出 0 零输出）。
+# ---------------------------------------------------------------------------
+if guard_selected 42; then
+d="$TMP/case71h-wave100-id-nocap"
+scaffold "$d"
+cat > "$d/docs/handoff-20261017-wave100-closeout.md" <<'MD'
+# handoff fixture（W72 A1 注入件：wave100 命名 + 台账外 ID，改前 ID 正则止于 W99）
+
+交接 delta：W100-01 幽灵挂账项（台账中不存在；W100 起 ID 空间此前提不出来）。
+MD
+out="$(run_guard "$d")"; rc=$?
+assert_red "case71h wave100 台账外 ID (第 42 条 W72 A1)" "$rc" "$out" \
+  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1 / W71 G2 glob 去上限）"
+if printf '%s\n' "$out" | grep -qF "W100-01" && printf '%s\n' "$out" | grep -qF "handoff-20261017-wave100-closeout.md"; then
+  echo "PASS [case71h] 红来自真命中（输出含注入的台账外 ID W100-01 + wave100 出现文件名 ⇒ ID 正则去上限后 W100 起不再静默漏检）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case71h] 守卫判红但输出不含注入 ID / 文件名（假红或归因丢失）；未判红 = ID 正则上限仍在（W100 起静默漏检）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 42; then
+d="$TMP/case71i-wave1000-id-nocap"
+scaffold "$d"
+cat > "$d/docs/handoff-20261017-wave1000-closeout.md" <<'MD'
+# handoff fixture（W72 A1 注入件：wave1000 命名 + 台账外 ID，改前 glob 恰三位不扫）
+
+交接 delta：W1000-01 幽灵挂账项（台账中不存在；wave1000 文件名此前不在扫描面）。
+MD
+out="$(run_guard "$d")"; rc=$?
+assert_red "case71i wave1000 命名交接进核对面 (第 42 条 W72 A1)" "$rc" "$out" \
+  "ledger-era 交接 delta ID 必须存在于 docs/15 台账（W68-09 / W70 A1 / W71 G2 glob 去上限）"
+if printf '%s\n' "$out" | grep -qF "W1000-01" && printf '%s\n' "$out" | grep -qF "handoff-20261017-wave1000-closeout.md"; then
+  echo "PASS [case71i] 红来自真命中（输出含注入的台账外 ID W1000-01 + wave1000 出现文件名 ⇒ glob 尾段补 * 后四位数波次也在核对面）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case71i] 守卫判红但输出不含注入 ID / 文件名（假红或归因丢失）；未判红 = glob 仍止于三位（wave1000 文件不被扫到）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+if guard_selected 42; then
+d="$TMP/case71j-wave1000-legal-green"
+scaffold "$d"
+cat > "$d/docs/15-backlog.md" <<'MD'
+# docs/15-backlog.md —— 挂账台账单一事实源（case71j 夹具：含四位数波次 ID）
+
+## 主台账
+
+| ID | 条目 | 状态 | 重启前提 | 最后触碰波次 |
+|---|---|---|---|---|
+| W68-01 | fixture 台账项（第 42 条扫描面） | active | — | W68 |
+| W69-01 | fixture 台账项（第 42 条扫描面） | active | — | W69 |
+| W1000-01 | fixture 台账项（四位数波次 ID，W72 A1 绿面） | active | — | W1000 |
+MD
+cat > "$d/docs/handoff-20261017-wave1000-closeout.md" <<'MD'
+# handoff fixture（W72 A1 绿面：wave1000 命名 + 台账内 ID）
+
+交接 delta：W1000-01 已销账；沿袭 W68-01。
+MD
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case71j 去上限连带面防假红 (第 42 条绿面)] 退出 0（wave1000 交接内台账内 ID 不误判 ⇒ 去上限只扩核对面、不改判据语义）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case71j] wave1000 交接的合法内容被判红（去上限引入连带假红）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+fi
+# ---------------------------------------------------------------------------
 # case 72 / 73：W70 A2 —— 第 41 条方向 C（docs/12 锚对账）两面红面（方向 A/B 判据逐字不变）：
 #     case72 —— 方向C-1（非 vacuous）：把骨架唯一的 appliesToRuntime = "0.17.1" sed 成
 #               "9.9.9"（与 docs/12 骨架件锚 #14 声明 {「"0.17.1"」×1} 漂移）⇒ 判红，
@@ -4133,6 +4397,7 @@ cat > "$d/core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt"
 package com.rickeal.agent.core.model
 
 enum class EvidenceLevel { MEASURED, UPSTREAM, UNVERIFIED }
+enum class TemplateArraySafety { SAFE, UNSAFE, LOSSY, UNVERIFIED }
 
 data class ModelPreset(
     val label: String,
@@ -4141,6 +4406,7 @@ data class ModelPreset(
     val knownBrokenOn: String? = null,
     val appliesToRuntime: String? = null,
     val evidenceLevel: EvidenceLevel = EvidenceLevel.UNVERIFIED,
+    val templateArraySafety: TemplateArraySafety = TemplateArraySafety.UNVERIFIED,
     val note: String = "",
 )
 
@@ -4152,12 +4418,14 @@ object ModelPresets {
             recommended = true,
             appliesToRuntime = "0.17.1",
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
         ),
         ModelPreset(
             label = "exempt-anchor-fake",
             url = "https://fixture.invalid/fixture-preset.litertlm",
             recommended = false,
             evidenceLevel = EvidenceLevel.UPSTREAM,
+            templateArraySafety = TemplateArraySafety.UNSAFE,
             note = "实验容器：档案豁免（W99 fixture 假锚，docs/12 定案波次集合中不存在）",
         ),
     )

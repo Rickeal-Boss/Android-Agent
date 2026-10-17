@@ -49,15 +49,32 @@ import preset_blocks as pb
 
 # 字段声明存在性判据（fail-closed：字段被删 = 守卫面失效）。
 DECL = re.compile(r"val evidenceLevel")
+DECL2 = re.compile(r"val templateArraySafety")
 VALID = ("MEASURED", "UPSTREAM", "UNVERIFIED")
+# W72 D（U-1）：`ModelPreset.templateArraySafety` 四态全 schema（与 evidenceLevel 同一遍
+# 扫描校验）。为什么加这个字段：bump 后的失效面 = 「模板**非**数组安全」的预设，而旧标记
+# 体系只记「安全」不记「不安全」⇒ 信息方向反了（深度审 U-1）。取证事实源 = 仓外
+# `_ci-tools/_w72_tpl_safety.py`（七格矩阵，含 systemInstruction 维度），分布 10/2/0/2。
+VALID2 = ("SAFE", "UNSAFE", "LOSSY", "UNVERIFIED")
 ANCHOR = re.compile(r"W[0-9][0-9]")
+# UNVERIFIED 必须带理由类别（禁裸留）：容器无明文模板 / 无制品。
+UNVERIFIED_REASON = re.compile(r"NO_TEMPLATE_IN_CONTAINER|NO_CONTAINER")
 
 
 def _anchor_ok(fields):
-    """MEASURED 锚点判据：backendBasis / note 的**字符串字面量内容**内出现 `W##`。"""
+    """MEASURED / SAFE 锚点判据：backendBasis / note 的**字符串字面量内容**内出现 `W##`。"""
     for name in ("backendBasis", "note"):
         fld = fields.get(name)
         if fld is not None and fld[0] and ANCHOR.search(fld[0]):
+            return True
+    return False
+
+
+def _unverified_reason_ok(fields):
+    """UNVERIFIED 理由判据：backendBasis / note 字面量内出现理由类别关键字。"""
+    for name in ("backendBasis", "note"):
+        fld = fields.get(name)
+        if fld is not None and fld[0] and UNVERIFIED_REASON.search(fld[0]):
             return True
     return False
 
@@ -74,6 +91,9 @@ def main(argv):
         return 1
     if not DECL.search("\n".join(lines)):
         print("::error::%s 缺 val evidenceLevel 声明（字段被删 = 第 39 条守卫面已失效）" % path)
+        return 1
+    if not DECL2.search("\n".join(lines)):
+        print("::error::%s 缺 val templateArraySafety 声明（字段被删 = 第 39 条守卫面已失效，W72 D）" % path)
         return 1
 
     blocks = pb.parse_blocks(lines)
@@ -101,10 +121,38 @@ def main(argv):
                 % (path, b["start_line"], label, ev)
             )
             violations += 1
-            continue
-        if ev == "MEASURED" and not _anchor_ok(f):
+        elif ev == "MEASURED" and not _anchor_ok(f):
             print(
                 "%s:%d 预设「%s」evidenceLevel=MEASURED 但 backendBasis/note 内无本仓取证锚点（W## 波次实测）—— 疑推测预填"
+                % (path, b["start_line"], label)
+            )
+            violations += 1
+
+        # ── W72 D：templateArraySafety 四态全 schema（同一遍块扫描） ──────────────
+        ts_field = f.get("templateArraySafety")
+        if ts_field is None or ts_field[0] is None:
+            print(
+                "%s:%d 预设「%s」缺 templateArraySafety 赋值（W72 D 全 schema：每条预设必须显式标注模板数组安全态）"
+                % (path, b["start_line"], label)
+            )
+            violations += 1
+            continue
+        ts = ts_field[0].split('.')[-1]
+        if ts not in VALID2:
+            print(
+                "%s:%d 预设「%s」templateArraySafety=%s 非法（须 SAFE/UNSAFE/LOSSY/UNVERIFIED）"
+                % (path, b["start_line"], label, ts)
+            )
+            violations += 1
+        elif ts == "SAFE" and not _anchor_ok(f):
+            print(
+                "%s:%d 预设「%s」templateArraySafety=SAFE 但 backendBasis/note 内无本仓取证锚点（W## 波次）—— SAFE 必须可指出证据来源"
+                % (path, b["start_line"], label)
+            )
+            violations += 1
+        elif ts == "UNVERIFIED" and not _unverified_reason_ok(f):
+            print(
+                "%s:%d 预设「%s」templateArraySafety=UNVERIFIED 但 backendBasis/note 内无理由类别（NO_TEMPLATE_IN_CONTAINER / NO_CONTAINER）—— 禁裸留"
                 % (path, b["start_line"], label)
             )
             violations += 1

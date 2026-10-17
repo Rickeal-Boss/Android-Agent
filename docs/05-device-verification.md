@@ -159,6 +159,66 @@ NPU 内存系数目前是 **1.25 的保守占位**（与 GPU 相同），注释�
 
 ---
 
+## 真机实验铁律（W72 起常驻；datastore / 日志 / 导航）
+
+> 这一节是从 W70/W71/W72 三波「同一类事故反复发生」里提炼的**常驻 checklist**。
+> 为什么进 `docs/05` 而不是只写进交接：交接是**快照**，下波不会读上波；而这几条每条都被违反过 ≥1 次。
+
+### A. datastore 只能经 `scripts/datastore_tool.py`（⛔ 禁一次性脚本）
+
+**事故链**：W70 首次写坏 `has_seen_intro`（切片搜索相对位置当绝对位置用）→ W71 同日恢复脚本**再踩同一坑** → 结论是「纪律重申防不住高频手工不可逆操作，必须把操作收进带护栏的工具」。
+
+```bash
+# 1) 先快照（没有快照就没有回滚锚点；工具会拒绝无快照的写入）
+python scripts/datastore_tool.py snapshot --out _w72_dev/ds_pre.pb
+
+# 2) 切激活模型（内置 UUID 对账 + 等长替换 + 补丁后自动逐字节 diff）
+python scripts/datastore_tool.py set-active-model --uuid <uuid> --snap _w72_dev/ds_pre.pb
+
+# 3) 只读比对（验证设备现状 == 某快照）
+python scripts/datastore_tool.py verify --snap _w72_dev/ds_pre.pb
+
+# 4) 还原（写回后自动再 verify）
+python scripts/datastore_tool.py restore --snap _w72_dev/ds_pre.pb
+```
+
+四条护栏（缺一即 exit≠0，fail-closed）：
+
+1. **无快照拒绝执行** —— 没有回滚锚点就不写。
+2. **编译态定位** —— 只用 `re.compile(...).search(blob, ki)`（`ki = blob.find(b"active_model_id")`，`pos` 参数 = **绝对位置**）。⛔ 切片法 `search(blob[ki:])` 得到的是**相对位置**，直接当绝对位置用会写进别的字段值区 —— W70/W71 两次事故就是这个。
+3. **补丁后自动逐字节 diff** —— 只允许差异**落在 UUID 跨度内**（36 字符，含 4 个连字符；实测某次切换 29 个十六进制位不同），其余任何差异即判红并自动回滚。⚠️ 判据是「**位置**在跨度内」而不是「差异字节数 == 28」—— 字节数是随两个 UUID 的十六进制相似度变化的，把它写死会误判。
+4. **UUID 对账设备索引** —— uuid 必须存在于设备 `files/model_index/models.json`，否则拒绝（W70 曾把 Phi-4 的 `4d95` 写成 `4c95`，整轮"歧义"实为从未选中模型）。
+
+⚠️ 还原后**必须逐字节 diff**，不能只查「UUID 子串存在」—— 子串在错误位置也会"通过"（W71 实例）。
+⚠️ 设备真原值以设备索引为准，不以交接文档为准。
+
+### B. 日志判据：关键词必须排除「自家文案」
+
+W72 实例：驱动脚本用 `NOT_FOUND` / `Unsupported model type` 做旗标，结果命中的是**本仓 knownBroken 预设的警告文案**（`[WARN] 激活态重校验提示：已知不可用：0.17.1 引擎初始化 NOT_FOUND（…）`），一度把「已修复」误读成「未修复」。
+
+正确三证（缺一不判）：
+
+1. **native / 引擎侧日志行**（`litert_lm_loader.cc` / `llm_gpu_artisan_executor.cc` 等，不是本仓 Kotlin 打印）；
+2. **journal 有无 MODEL 消息**（`files/journal/<cid>/<id>.jsonl` 里 `"role":"MODEL"`）；
+3. **量级佐证**（如 `tokensPerSecond`：GPU 18.3 vs CPU 0.47 ⇒ 确系 GPU 路径，不是静默回落）。
+
+另：唯一日志文件 + 先 `pkill -f 'logcat.*<tag>'` + `logcat -c`，并按 tap 时间戳过滤陈旧行（多 nohup 叠加会让旧结论"复现"）。
+
+### C. 导航与输入
+
+- **发完消息先 `input keyevent 4` 收键盘**再点底部导航 tab（键盘在屏会挡住 tab，W71 二跑 `NAV_RETRY` 即此）。
+- **探针/自检前必须先发一条题面把引擎加载起来**，否则 `NotRun(ENGINE_NOT_LOADED)`（W71 首跑即此坑）。⚠️ W72 起该态会额外显示已登记的坏签名，但「先加载引擎」仍是自检的前置条件。
+- **生成未结束时应用会拦截页签导航** ⇒ 等 journal `settled` + 无「停止」按钮 + 页面标记验证，失败则 BACK 重试。
+- **中文题面无法 `adb input text`**（非 ASCII 直接 NPE）⇒ 真机题面一律英文；中文能力靠"模型思维链仍中文"间接覆盖。
+- 久置设备先 `input keyevent 224` 唤醒 + `cmd statusbar collapse` 收通知栏。
+
+### D. 模型 UUID / 容器对账
+
+- 设备模型清单以 `files/model_index/models.json` 为准（14 条），**脚本内 UUID 清单复用前必须对账**。
+- `active_model_id` 与"某模型的 UUID"不是一回事：前者是 datastore 里的当前选择，后者是索引条目 —— 别把两者混用。
+
+---
+
 ## 已知的能力边界（不必验证）
 
 - **native 硬崩溃（SIGSEGV / OOM killer）不会产生日志**。进程直接死在推理库里，走不到 `record()`。
