@@ -104,9 +104,12 @@ Arm B 纪律完整：改 `ModelSamplingProfiles.kt:171/192`（1536→2047）→ 
 
 ---
 
-## 七、CI run id（push 后回填）
+## 七、CI run id
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| Build | 待回填 | — | @ `7450b21`（或收官 commit） |
-| Release | 待回填 | — | 同上 |
+| **Build** | `39001830338` | ✅ success（42 守卫全绿 + fulltest + lint） | @ `3d92af3` |
+| **Release** | `39001830345` | ✅ success（debug + R8 release 双轨产物） | @ `3d92af3` |
+
+> 对照基线：W69 Build `38785057208` / Release `38785057262` @ `d4ad977`（均 success）。
+> 本回填提交（纯文档）按触发规则不跑 CI（`build.yml` paths-ignore 含 `**/*.md`；`release.yml` paths 正白名单不含 docs）—— 0 run 为设计预期，非故障。
