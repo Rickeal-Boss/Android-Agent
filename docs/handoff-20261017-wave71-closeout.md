@@ -112,7 +112,8 @@ Arm B 纪律：改 `ModelSamplingProfiles.kt` R1 档 `minThinkingTokenBudget` 15
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| **Build** | （推送后回填） | — | — |
-| **Release** | （推送后回填） | — | — |
+| **Build** | `39030058303` | ✅ success（Assemble Debug / Unit tests / Lint 三 job 全绿） | @ `3461a32` |
+| **Release** | `39030058288` | ✅ success（debug + R8 release 双轨产物） | @ `3461a32` |
 
 > 对照基线：W70 Build `39001830338` / Release `39001830345` @ `3d92af3`（均 success）。
+> 本回填提交（纯文档）按触发规则不跑 CI（`build.yml` paths-ignore 含 `**/*.md`；`release.yml` paths 正白名单不含 docs）—— 0 run 为设计预期，非故障。
