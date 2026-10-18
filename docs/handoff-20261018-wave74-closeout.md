@@ -98,7 +98,5 @@
 
 | workflow | run id | 结论 | 备注 |
 |---|---|---|---|
-| Build | 待回填 | — | 本波纯 docs（`paths-ignore` 命中）⇒ 自动 0 run 属设计预期 |
-| Release | 待回填 | — | 同上 |
-
-> 纯文档提交按 W73 先例走 `workflow_dispatch` 在同 SHA 补验，双绿后回填本节。
+| **Build** | `39133654131` | ✅ success | @ `dfa0e90`（手动 dispatch；纯 docs 提交按 `paths-ignore` 自动 0 run 属设计预期，故 dispatch 补验） |
+| **Release** | `39133656415` | ✅ success | @ `dfa0e90`（同上） |
