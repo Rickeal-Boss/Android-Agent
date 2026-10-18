@@ -92,6 +92,8 @@ B1 振荡 ⚠️ / B2 ask_actor ⚠️ 部分行使（planner ✅）/ B3 音频 
 ## 六、下次接手须知
 
 1. 🔴 **测试套件离线契约已机械化**（run_adb 绊线）：给 `scripts/tests/test_datastore_tool.py` 加测试时必须整体 mock 设备层（`_apply`/`device_read`/`device_push`/`device_copy_back`/`_cleanup_remote`）；带设备跑套件如今安全，但**新增测试漏 mock 会被绊线当场炸出**——这是设计意图。
+1b. 🔴 **`arch-guard.sh` 必须在「最后一次文档提交之后」复跑**（本波实证漏检）：selftest 的 `positive` 案例用**合成脚手架树**（`scaffold`）验证守卫行为，**不覆盖真实仓库状态**——真实树的台账/交接一致性只有直接跑 `arch-guard.sh` 才判。本波 16:18 跑绿后 16:22 又提交了 docs/15（误覆盖 W73-03 行），未复跑 ⇒ #42 在 CI 判红（Build/Release 同因失败，修复 `ea4b86c`）。**推送前最后一步永远是 arch-guard 全绿 + `git status` 干净**。
+1c. 🔴 **改台账/聚合面必须「插入」不得「整行替换」**：W73-04 落账时 old_string 用了 W73-03 整行、new_string 只写 W73-04 ⇒ W73-03 被静默覆盖。改 docs/15 后立刻 `grep -c "^| W7" docs/15-backlog.md` 核对行数（W73 应为 4 行）。
 2. 🔴 **`adb shell input text` 分号截断**：题面含 `;` 必须 `adb shell "input text '<escaped>'"` 单引号包裹（`_ci-tools/_w73_run.sh` 已修，复用其写法）。
 3. 🔴 **datastore 三道闸**（按序）：`validate_preferences_blob` 整文件结构闸（`_apply` 统一入口）→ `find_key_offset` 双断言（count≠1 + gap≤4，真 gap=4 零余量）→ 写后 diff 越界判红自动回滚。改任何一层前先跑 `python scripts/tests/test_datastore_tool.py`（**22/22**）。
 4. **selftest `--only` 收守卫号**；case 编号查重已机械化（G3，`uniq -d`），下一个空闲 case **77**。
@@ -105,5 +107,8 @@ B1 振荡 ⚠️ / B2 ask_actor ⚠️ 部分行使（planner ✅）/ B3 音频 
 
 | workflow | run id | 结论 | 关键 job |
 |---|---|---|---|
-| Build | （推送后回填） | | |
-| Release | （推送后回填） | | |
+| **Build** | `39128602263` | ✅ success | @ `ea4b86c`（手动 dispatch，同代码含 #42 修复） |
+| **Release** | `39128605160` | ✅ success | @ `ea4b86c`（debug + R8 release 双轨产物） |
+
+> 对照：首次推送 `37d1717` 的 Build `39127322158` / Release `39127322182` **同因失败**（守卫 #42：W73-03 台账行被主理人误覆盖）⇒ 修复 `ea4b86c` 后手动 dispatch 双绿。修复 commit 为 docs-only（`paths-ignore` 命中）⇒ 自动 0 run 属设计预期，故用 `workflow_dispatch` 在同 SHA 补验。
+> 本次回填提交（纯 docs）按触发规则 0 run 为设计预期。
