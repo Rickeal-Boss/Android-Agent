@@ -798,6 +798,7 @@ class AgentRunner(
                 // 已知残余误差：生成失败后**重试也失败**（终态 Failed 直接返回）不记账
                 // 也无影响；真正无法覆盖的是引擎在轮内被外部整体重置的场景 —— 当前
                 // 记账状态只写不读（尚未接入压缩门控），启用门控前必须先补齐该口径。
+                // W73 裁决：判死（docs/15 W73-01）；重启前提 = 估算失准事故。
                 accountSendTokens(request, state, config, generationRequest)
 
                 val generation = runGenerationRound(

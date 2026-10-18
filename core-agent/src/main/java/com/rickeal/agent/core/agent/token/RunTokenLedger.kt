@@ -64,6 +64,7 @@ data class RunTokenSnapshot(
  * 消费顺序约定（Wave 30 方案 §2.3）：本波账本只做读侧投影，摘要触发（B.4 双阈值）与
  * 压缩门控口径**不接** —— 摘要门控架构上不能安全接线（runMutex 不可重入），压缩门控
  * 的挂账口径见 AgentRunner 记账块 KDoc 的「只写不读」自认。
+ * W73 裁决：判死（docs/15 W73-01）；重启前提 = 估算失准事故。
  *
  * 纯 Kotlin：StateFlow 来自 kotlinx.coroutines（core-agent 既有依赖），TokenUsage 来自
  * core-model（@Serializable 纯 Kotlin）—— 无任何 Android 类型，可 JVM 直接单测

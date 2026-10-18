@@ -149,6 +149,9 @@ enum class EvidenceLevel {
  *   分支会抛错）。只做 user 三格的结论**不足以**判 SAFE。
  * - [UNSAFE]：任一格抛 `Failed to apply template`（**可见失败**：报错 + 日志 + 无输出，
  *   用户立刻知道）。这类容器「坏得诚实」。
+ *   ⚠️ **边界（W73 V-1 订正，补段不删原描述）**：本态描述**容器裸模板**性质；0.17.1 下
+ *   不表现（`foldAdjacentText` 收单元素 + 收敛点降 string ⇒ 被完整绕过，两条 UNSAFE
+ *   现役可用）；bump 删收敛后才暴露 ⇒ 本字段是 bump 决策数据，**不是当前可用性判据**。
  * - [LOSSY]：不抛错，但文本被**丢弃**（**不可见失败**）。
  *   ⚠️ **现役 0 命中**，但这一态必须保留：`MiniCPM5-2B` 当前判 [UNSAFE]（system 分支
  *   抛错），而它 user 分支的 `content=''` 性质**真实存在且被 system 侧的报错遮蔽**。
@@ -478,8 +481,8 @@ object ModelPresets {
             memBasis = BASIS_CPU,
             note = "中文好、体积小，6GB 内存的手机也能流畅跑",
             sizeBytes = 1597931520,
-            // 注意：recommended 只允许两项（MiniCPM5 主推 + Gemma 4 E2B·GPU 备选），
-            // 标多了就失去「替用户做决定」的意义。
+            // 注意：recommended 只允许两项（MiniCPM5 主推 + Gemma 4 E2B·CPU 备选；E2B·GPU
+            // 为 knownBroken 不参选），标多了就失去「替用户做决定」的意义。
             recommended = false,
             backendBasis = "官方 README 仅有桌面 GPU 基准（macOS Metal），无 Android GPU 验证 → 仅 CPU；✅ W60 真机普查（台账 #45，题面 Say OK 正常：round0 原生工具调用 → round1 收尾，原生通道行使，13 模型零 FATAL）；W61 J3 复验（TOOL_CALLS 收尾全通过）",
             evidenceLevel = EvidenceLevel.MEASURED,

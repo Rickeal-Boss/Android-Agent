@@ -49,7 +49,7 @@
 ## B. 上游出货（需用户账号权限，文案已入仓）
 
 > ⚠️ fine-grained PAT 对 `google-ai-edge` 组织**无 issue 写权限**（`Resource not accessible by
-> personal access token`）⇒ 以下两条**转用户手动提交**。文案已入仓（见下），换机器不失联。
+> personal access token`）⇒ 以下各条**转用户手动提交**（B1/B2 已提交，B3 待办）。文案已入仓（见下），换机器不失联。
 > 提交后请把 URL 回贴到本页对应项，并在 `docs/12-litertlm-0171-anchors.md` 的 bump 季扫里
 > 加一条「跟踪该 issue 状态」。
 
@@ -94,6 +94,15 @@
 > Adreno 显存）→ `Resource deadlock` → `SIGABRT` → 整机重启，**与两个 `-gpu` 特化变体的
 > `NOT_FOUND`/缺 section 失败面是两条不同的路**。⇒ 提交 §B2 issue 时建议**同时附上这条对照**
 > （说明「section 完整 ≠ 设备可跑」，上游可据此判断是否为显存门槛问题）。
+
+### B3. 0.18.0 单元素 content 收敛删除回归 issue（W73 新增）
+
+- **状态**：⬜ **待用户手动提交** —— 文案已入仓 [`docs/upstream/0180-convergence-removal-regression-issue.md`](upstream/0180-convergence-removal-regression-issue.md)（fine-grained PAT 对 `google-ai-edge` 组织无 issue 写权限 ⇒ 转用户手动提交；与 gallery #1326 回复**同一次用户触点**提交）。
+- **背景（为什么值得一次上游触点）**：0.18.0 删除「1 元素 text 数组 → string」收敛点（v0.17.1 `generic_data_processor.cc:105-112`；W56 tag `b2f686e2e` + W71 0.18.0 离线锚批源码级核验）⇒ 所有把 `content` 当 string 拼接的 chat_template **每轮必炸**。W72 条件真机臂实测：`Qwen2.5-1.5B`（默认中文模型）与 `MiniCPM5-2B`（主推）**首轮即失败**（journal 仅 587 B、无 MODEL 消息；逐字错串 `Failed to apply template: … tried to use + operator on unsupported types string and se…`）⇒ 爆面 ≥2/14 预设（DeepSeek-R1 Qwen 蒸馏底座高度疑似）。该收敛是 **bump 选项①的前置解**：不恢复收敛，导入闸门只能拦新导入、救不回存量预设。
+- **① 做什么**：在 https://github.com/google-ai-edge/LiteRT-LM/issues/new 用 [`docs/upstream/0180-convergence-removal-regression-issue.md`](upstream/0180-convergence-removal-regression-issue.md) 的**标题 + 正文**创建 issue（与 gallery #1326 回复**同一次触点**完成，约 5 分钟）。
+- **② 预期看到什么**：issue 创建成功；正文含三段证据（Q4/Q5 真机逐字签名 / minijinja 2.14.0 七格离线复现 / 0.17.1↔0.18.0 `generic_data_processor.cc` 版本 diff）+ 请求**恢复收敛或提供兼容开关** + **与 #3576 不同族声明**（#3576 = `{%- if tools %}` 段 `tojson` filter 签名问题、仅原生工具通道；本件 = user content 单元素收敛删除、每轮核心文本路径）。
+- **③ 销账判据**：issue URL 回贴本页 ⇒ 项目把「跟踪该 issue 状态」挂进 docs/12 bump 季扫；上游回复「恢复收敛 / 提供兼容开关 / 判定不作」三选一，据此重开 §C6 选项①的称重（收敛恢复 = bump 代价侧 P0 消除）。
+- **完成后销账于**：`docs/upstream/0180-convergence-removal-regression-issue.md` 头部「状态」字段（⬜→✅ + issue URL）+ 本页 §B3「状态」行（⬜→✅ + URL 回贴）+ `docs/12` 复核流程季扫清单追加「跟踪 0.18.0 收敛回归 issue 状态」一行（锚 #1 同源）。
 
 ---
 
@@ -191,13 +200,13 @@
   1. **`gemma-4-E2B-it-gpu` 引擎初始化成功**：0.17.1 下 = `NOT_FOUND`（缺 `TF_LITE_PREFILL_DECODE` section，会话建不起来）；0.18.0 下同一条 loader 信息**降为 W 级 warning 并继续**，实际后端 = **`GPU_ARTISAN`**，38 token @ **18.34 tok/s**（同臂 CPU 0.47 tok/s ≈ 39× ⇒ 确系 GPU 路径、非静默回落 CPU）。
   2. **`MiniCPM-V-4-int8` 可建会话**：0.17.1 = `Unsupported model type`（knownBroken 在册）；0.18.0 下会话建成并产出正文。代价：首 token **81.8s**（81779ms）/ 12 token —— **可用但极慢**。
 - **② 代价（实测）**：
-  1. **锚 #1 = P0 真机回归**：`Qwen2.5-1.5B` 首轮 `Failed to apply template: tried to use + operator on unsupported types string and se…`（journal 仅 587 B、无 MODEL 消息）；**追加实证 `MiniCPM5-2B` 同样首轮必炸** ⇒ 爆面 **≥2/14 预设**（DeepSeek-R1 为 Qwen 蒸馏底座，高度疑似）——「非数组安全模板」是**普遍面**，不是个别容器问题。
+  1. **锚 #1 = P0 真机回归**：`Qwen2.5-1.5B` 首轮 `Failed to apply template: tried to use + operator on unsupported types string and se…`（journal 仅 587 B、无 MODEL 消息）；**追加实证 `MiniCPM5-2B` 同样首轮必炸** ⇒ 爆面 **≥2/14（含主推 MiniCPM5-2B 与默认中文模型 Qwen2.5-1.5B）预设**（DeepSeek-R1 为 Qwen 蒸馏底座，高度疑似）——「非数组安全模板」是**普遍面**，不是个别容器问题。
   2. **`Capabilities` 类被删除**（改 `ModelInfo.from(...)`）⇒ 首次 `assembleDebug` **BUILD FAILED**（`Unresolved reference 'Capabilities'`，7 错误）；**2 文件 API 迁移**（`core-engine/.../ModelCapabilityProbe.kt`、`core-engine/.../LiteRtLmEngineLoader.kt`，另 import 两行）后 BUILD SUCCESSFUL（1m40s）。⇒ bump **不是「改一行 toml」**：**五处联动** = toml + 2 文件 API 迁移 + 守卫 #29 期望值 + `appliesToRuntime` 字面量 + `docs/12` 锚 #14 依据列声明（#29 / #41C-1 会机械判红，**属设计意图，不是误报**）。
   3. **`gemma-4-E2B-it-gpu` 输出退化未修**：跨脚本混杂（天城文 `मोन` + `RESET Remix` 碎片，即 W43 登记签名）⇒ **`knownBrokenOn` 不能整体清空**，只能订正为「0.18.0 输出退化（引擎初始化 NOT_FOUND 已修复）」并同步 `appliesToRuntime` 版本串。
 - **③ 三选项（`docs/12` 已预登记，现全部有数据支撑）**：
-  - **① bump + 导入期模板探测闸门**：升级到 0.18.0，并在模型导入期加「模板数组安全性探测」闸门（不安全的模板直接拦在导入前）。**收益**：GPU 用户故事 + MiniCPM-V-4 可用；**成本**：上面三条代价全付 + 闸门本身是新功能（需设计 + 单测 + 真机臂），且闸门只能**拦新导入**、存量 14 预设仍需逐个判定。
-  - **② 继续 pin `0.17.1`，等锚 #1 收敛恢复**：零改动、零回归风险；**代价**：GPU 用户故事（W68-07）与 MiniCPM-V-4 继续不可用，`gemma-4-E4B-it` 单文件双后端路线仍是唯一出路。
-  - **③ 双 runtime（0.17.1 + 0.18.0 并存）**：**不可行** —— 单依赖（同一 AAR 坐标 + 同名 native 符号），两版本无法同进程共存；除非复制 native 符号做私有封装，成本远超收益。
+  - **① bump + 导入期模板探测闸门**：升级到 0.18.0，并在模型导入期加「模板数组安全性探测」闸门（不安全的模板直接拦在导入前）。**收益**：GPU 用户故事 + MiniCPM-V-4 可用；**成本**：上面三条代价全付 + 闸门本身是新功能（需设计 + 单测 + 真机臂），且闸门只能**拦新导入**、存量 14 预设仍需逐个判定。⚠️ **UNVERIFIED 运行时默认策略格（W73 N-2 补）**：闸门对 UNVERIFIED 态（容器无明文 `chat_template`、走运行时内建模板）**按模板指纹匹配 UNSAFE 才拦，指纹不中放行并保持 UNVERIFIED 标注**——论据：① 伤害载体是模板数组签名（Q4/Q5 逐字同款 `+` on string and seq），无明文模板容器不经过该签名面；② 模板指纹设施已建（14 预设 → 10 个不同模板，可复现比对）；③ R1/Phi-4「无明文模板 ≠ 不安全」反例在案（W72-02）⇒「未知即最坏」若传染运行时会 over-block 全部存量导入件。⚠️ **闸门真实成本订正（v26 审读补充）**：存量导入件全 UNVERIFIED ⇒ 闸门成本 ≠ 设计本身，而是**取证 harness 产品化**（七格复现现为仓外脚本、依赖 pip 环境；拦新导入须随包分发可复现判据）。
+  - **② 继续 pin `0.17.1`，等锚 #1 收敛恢复**：零改动、零回归风险；**代价**：GPU 用户故事（W68-07）与 MiniCPM-V-4 继续不可用，`gemma-4-E4B-it` 单文件双后端路线仍是唯一出路。⚠️ **残余风险（v26 审读补充）**：E2B·GPU 输出退化未修（W43 签名、0.18.0 臂仍在）+ MiniCPM5 GPU 未测——两条债不因 pin 而消，锚 #1 收敛恢复后 bump 时仍须面对。
+  - **③ 双 runtime（0.17.1 + 0.18.0 并存）**：**不可行** —— 单依赖（同一 AAR 坐标 + 同名 native 符号），两版本无法同进程共存；除非复制 native 符号做私有封装，成本远超收益（shadow + dlopen 前缀改造量级 = **周级**，v26 审读补充）。
 - **④ 销账判据**：用户给出「①/②/③」明确选择（或「暂不裁决」）⇒ 项目按选择立项：① ⇒ bump 分支 + 闸门设计 + 四处联动 + 真机回归臂；② ⇒ 把 `docs/12` 决策树收敛为「(b) 已知、维持 pin」并关闭 W68-06 的 bump 待裁面；③ ⇒ 先做可行性否决记录（预期否决）。
 - **推荐（方案席立场，可改；用户裁决优先）**：**② 继续 pin**。理由：① 的收益两项都是**边缘可用**（E2B-GPU 输出仍退化 = 实际不可用；MiniCPM-V-4 首 token 81.8s = 体验不可接受），而代价命中的是**默认锚模型 Qwen2.5-1.5B 的首轮 P0**（≥2/14 预设），代价/收益严重不对称；待锚 #1 收敛（上游或导入闸门落地）再议 ①。
 - **⚠️ 口径纪律**：本节**只呈现实测数据与三选项**，不构成 bump 决策；任何「bump 已开始」的表述均不成立（`libs.versions.toml` 零触碰、主树零改动）。
@@ -220,9 +229,10 @@
 | 10 | C5-1 evidenceLevel 接线 | 三态徽章 + tooltip | 不接线留档 | 半天 | **A** |
 | 11 | C5-2 F1 强度 | 强抑制（需真机双臂） | 维持 best-effort | 一真机窗 | **B** |
 | 12 | C5-3 W68-B OFF 硬阈 | 实施 | 不实施 | 半天 | **B** |
-| 13 | **C6 bump 0.18.0 分叉（决策树 (b) 命中）** | ① bump + 导入期模板探测闸门 | ② 继续 pin 0.17.1 等锚 #1 收敛（③ 双 runtime 不可行：单依赖） | ① toml + 2 文件 API 迁移 + **≥2/14 预设首轮 P0** + 闸门新功能；② 零改动 | **②**（① 待闸门设计 + 锚 #1 收敛） |
+| 13 | **C6 bump 0.18.0 分叉（决策树 (b) 命中）** | ① bump + 导入期模板探测闸门 | ② 继续 pin 0.17.1 等锚 #1 收敛（③ 双 runtime 不可行：单依赖） | ① toml + 2 文件 API 迁移 + **≥2/14（含主推 MiniCPM5-2B 与默认中文模型 Qwen2.5-1.5B）预设首轮 P0** + 闸门新功能；② 零改动 | **②**（① 待闸门设计 + 锚 #1 收敛） |
+| 14 | B3 上游 0.18.0 收敛回归 issue | 做（文案已入仓，与 gallery #1326 回复同一次触点提交，约 5 分钟） | 跳过（bump 僵局少一个外力解） | 5 分钟 | **做** |
 
-> 会议流程建议：#1–#3 手验/贴文项先过（8 分钟内）；#4/#5 法务与 tag 联动定；#6–#9 产品项
+> 会议流程建议：#1–#3 手验/贴文项先过（8 分钟内）；**#14（B3）与 gallery #1326 回复同一次触点提交**；#4/#5 法务与 tag 联动定；#6–#9 产品项
 > 逐项拍；#10–#12 技术项随 #11 一并定（#12 与 #11 联动）；**#13 与 `docs/12` 决策树 (a)/(b)/(c)
 > 联动**（(b) 已实测命中，数据在 `_research/w72-0180-device-arm.md`，本节即拍板底稿）。全部结论回贴本页各「状态」行，
 > 项目按 `docs/15-backlog.md` 台账（W68-04）逐项销账。
@@ -231,6 +241,7 @@
 > （= 不做 / 零行为改动）并在 `docs/15` 记 `closed-dead` 留痕（详见 §C5 末「悬置默认路径条款」）；
 > 用户裁决**优先于**自动收敛。**C5-1 的 N=3 计数条件已满足**（W70/W71/W72 三波未裁决），
 > 但**本页不代裁**其本体 —— 落账动作由主理人在 `docs/15` 执行。
+> **#10（C5-1）= 悬置条款首次行使检查点**：N=3 已满足 ⇒ 请用户确认 **closed-dead**（永久退出候选池，由主理人在 `docs/15` 落账留痕）或**救回**（转为 UI 波首件）—— 本页仍不代裁。
 
 ---
 

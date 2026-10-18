@@ -24,9 +24,34 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 | 10 | 模板渲染失败在 `sendMessageAsync` **同步抛出** | W55 真机证实 | `Failed to start nativeSendMessageAsync: … Failed to apply template …`；同步 catch 与异步 onError 双入口共用统一处置（W59 A4 起 token 门控幂等） | 真机复核失败路径形态（同步/异步）未漂移；若改为异步回调，处置入口仍兼容（双入口设计） | — | ☐ 静态不可判（归真机） |
 | 11 | `ConversationConfig.systemInstruction` 类型为 `Contents?` | P0-A / W48（0.17.1 起，旧版是 `String?`） | 引擎侧 `systemText?.let { Contents.of(it) }`；传裸 String 编译不过（编译期即拦） | 确认类型未回退；若改回 String 或换类型，构造点编译错 = 有意识动作化 | — | ✅ W71 锚批（systemInstruction 仍 Contents） |
 | 12 | 模板引擎 = minijinja 2.14.0 | —（外部锚：上游 minijinja 版本，无本仓定案波次） | v0.17.1 上游模板引擎版本（外部 Cargo 锚；W50-W55 离线复现所用行为基线） | 核对新版依赖的 minijinja 是否仍 2.14.0；升级需重跑「content 为数组必炸」离线复现，确认 `+` 报错语义未变 | — | ✅ W71 锚批（Cargo.toml 钉 `=2.14.0`） |
-| 13 | 容器模板可含 minijinja 2.14.0 **不支持的 filter 参数** | W61 定案 | 实证 = MiniCPM5 容器 `chat_template` 第 6 行 `{{- tool \| tojson(ensure_ascii=False) }}`（在 `{%- if tools %}` 块内，即**原生工具通道**分支；`:160` 同款）；依据 = v0.17.1 `runtime/components/rust/minijinja_template.rs:142`（`fn tojson(value: minijinja::Value)` **单参**）+ `:187`（`env.add_filter("tojson", tojson)`）+ 离线复现（PyPI minijinja 2.14.0）⇒ TypeError: unexpected keyword argument 'ensure_ascii'（**同因**：单参 filter 收到关键字参数；Rust 内嵌版同因报 `too many arguments (in template:6)`）+ 真机日志（`原生工具通道：生成期模板渲染失败 … 已证伪本通道`） | 核对新版内嵌 minijinja 版本与 **filter 签名集**（`tojson` 等）；**若新版放宽 `tojson` 参数**（接受关键字参数）⇒ 本容器原生工具通道可用性需真机复验（「探针通过、生成期炸」的探针保真度缺口随之消失）。⚠️ 该失败面**仅在模板语句所在分支被行使时到达**（MiniCPM5 在 `tools` 非空的原生工具通道），与 fold / `requires_typed_content` 无关（W61 双源定案，勿按第七审 §3.1 补前置注记）。⚠️ **W70 情报（2026-10-16，#3576 根因共认）**：上游已复现并定位根因 = 已发布 bundle 内嵌原始模板（`tojson(ensure_ascii=False)`）+ `generic_model{}` 元数据（XML `<function>` 路由需 `minicpm5{}`）⇒ 修复可能落在 **bundle 层**（重打包换模板/元数据）而非引擎层（放宽 `tojson` 签名）——**两种修复路径下**，本仓 MiniCPM5 容器原生工具通道均须**真机复验**后销账。 | — | ✅ W71 锚批（tojson 单参签名逐字未放宽） |
+| 13 | 容器模板可含 minijinja 2.14.0 **不支持的 filter 参数** | W61 定案 | 实证 = MiniCPM5 容器 `chat_template` 第 6 行 `{{- tool \| tojson(ensure_ascii=False) }}`（在 `{%- if tools %}` 块内，即**原生工具通道**分支；`:160` 同款）；依据 = v0.17.1 `runtime/components/rust/minijinja_template.rs:142`（`fn tojson(value: minijinja::Value)` **单参**）+ `:187`（`env.add_filter("tojson", tojson)`）+ 离线复现（PyPI minijinja 2.14.0）⇒ TypeError: unexpected keyword argument 'ensure_ascii'（**同因**：单参 filter 收到关键字参数；Rust 内嵌版同因报 `too many arguments (in template:6)`）+ 真机日志（`原生工具通道：生成期模板渲染失败 … 已证伪本通道`） | 核对新版内嵌 minijinja 版本与 **filter 签名集**（`tojson` 等）；**若新版放宽 `tojson` 参数**（接受关键字参数）⇒ 本容器原生工具通道可用性需真机复验（「探针通过、生成期炸」的探针保真度缺口随之消失）。⚠️ 该失败面**仅在模板语句所在分支被行使时到达**（MiniCPM5 在 `tools` 非空的原生工具通道），与 fold / `requires_typed_content` 无关（W61 双源定案，勿按第七审 §3.1 补前置注记）。⚠️ **W70 情报（2026-10-16，#3576 根因共认）**：上游已复现并定位根因 = 已发布 bundle 内嵌原始模板（`tojson(ensure_ascii=False)`）+ `generic_model{}` 元数据（XML `<function>` 路由需 `minicpm5{}`）⇒ 修复可能落在 **bundle 层**（重打包换模板/元数据）而非引擎层（放宽 `tojson` 签名）——**两种修复路径下**，本仓 MiniCPM5 容器原生工具通道均须**真机复验**后销账。⚠️ **W73 追加**：上游 MiniCPM5 模板变更（bundle 修复 / 重打包 / 新版本）⇒ **重跑七格取证判定表**（新模板的数组行为未知，`templateArraySafety` 结论随模板指纹 `sha256` 作废重算；W72-01 重启前提同族）。 | — | ✅ W71 锚批（tojson 单参签名逐字未放宽） |
 | 14 | `knownBrokenOn` / GPU 白名单的**运行时时效**（结论会集体过期） | W68 B3（第十二审 R-1） | 机器可读字段 = `ModelPreset.appliesToRuntime`（三条已知坏条目均 = `"0.17.1"`；GPU 白名单 `ModelGpuSupport.gpuVerifiedFileNames` 同属「某运行时 / 设备下的结论」）。单测覆盖见 `feature-models` `ModelPresetsKnownBrokenTest`（时效定语 ⇒ 必有坏结论、无坏结论禁预填）。 | **bump 后必须逐条复审**：上游若修复了容器（`引擎初始化 NOT_FOUND` / `Unsupported model type` / 输出退化等）⇒ **清空对应 `knownBrokenOn`**（并恢复推荐资格，勿只改 `recommended` 留红字段）—— 否则红字硬提示会把已修好的可用模型吓跑；`gpuVerifiedFileNames` 同理须复跑真机验证后逐个放行（**不得**因 bump 就顺手放行）。⚠️ 该字段当前**不参与**任何判定（GPU 放行 / 内存闸门 / 激活态重校验只看 `knownBrokenOn` 与 `ModelGpuSupport`），只作复审锚。⚠️ `appliesToRuntime` 的版本字面量为**人工维护**（现为第 3 处 `"0.17.1"` 字面量），与 `gradle/libs.versions.toml` 的 `litertlm` 行**无机械联动** —— 守卫 #29 只钉 toml 一行、**不校**本字段 ⇒ bump 时须**人工同步**本字段，否则本复审锚会指向错版本。 | 已修好的容器仍按旧结论报「已知不可用」（用户被吓跑）；白名单未随运行时/设备变化复审 | ☐ 部分覆盖（W72 臂：E2B-gpu 的 NOT_FOUND 半边已修、输出退化半边仍在 ⇒ **不得整体清空**，须订正为「仅输出退化」；MiniCPM-V-4 已可建会话 ⇒ 该条结论过期） |
 | 15 | `Capabilities` 类被 `ModelInfo` 取代（能力探测 API 重构） | W72 真机臂（**编译期**发现） | v0.18.0 AAR `classes.jar` 实证：`com.google.ai.edge.litertlm.Capabilities` **整类删除**。替代 = `ModelInfo`（`abstract class … : AutoCloseable`；静态工厂 `ModelInfo.from(String)`），`ModelInfo.Llm : ModelInfo(), LlmCapability` 提供 `hasSpeculativeDecodingSupport()` / `supportsThinking()` / `supportsFunctionCalling()` / `defaultSamplerParams()` / `isDynamicContext()` / `maxVisionTokenBudget()` / `visionSignatureSelection()`；另有 `LlmCapability` / `EmbeddingCapability` 两接口 | **编译期即拦，不是静默回归**：本仓 2 处 `Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }`（`core-engine/.../ModelCapabilityProbe.kt:19`、`.../LiteRtLmEngineLoader.kt:497`）在 0.18.0 下 `Unresolved reference 'Capabilities'`（实测 7 条编译错误）。迁移写法（W72 臂实证可编译）：`ModelInfo.from(p).use { (it as? ModelInfo.Llm)?.hasSpeculativeDecodingSupport() ?: false }` | `Unresolved reference 'Capabilities'` / `Cannot infer type for type parameter 'R'` | ✅ W72 臂（迁移后 `assembleDebug` BUILD SUCCESSFUL） |
+
+### 七格取证判定表（W73 立；锚 #1 同源 + W72-01 挂账事实源）
+
+> **用途**：`templateArraySafety` 四态（现役分布 = 10 SAFE / 2 UNSAFE / 0 LOSSY / 2 UNVERIFIED = 14）的取证必须**可复现**，否则即推测预填。harness 脚本本体**仓外不入库**（`_ci-tools/_w72_tpl_safety.py`，依赖 PyPI `minijinja==2.14.0` pip 环境；先例 = 本清单对 170KB 模板「改存判定表 + 复现命令」）⇒ **本表 + 复现命令入仓即事实源**，换机器/换接手人不失联。
+>
+> **复现命令**：
+> 1. `python -m pip install 'minijinja==2.14.0'`（与锚 #12 钉死的上游内嵌版本一致；PyPI 版 `TypeError: unexpected keyword argument` 与 Rust 内嵌版 `too many arguments` **同因不同串**）；
+> 2. `python _ci-tools/_w72_tpl_safety.py --all`（~25 s；`--no-hash` 调试快跑 / `--verbose` 逐格明细）。**零网络**：模板来源只有两处 —— `_litert_forensics/_w53_containers/*.jinja`（W53 存档）/ `_research/w55_l1/*.jinja`（W55 存档）+ 盘上容器现场抽取；
+> 3. 判据行 = 尾部固定输出 `DIST 10/2/0/2` + `TEMPLATE_FINGERPRINTS 12 条预设 -> 10 个不同模板`（两行供 grep）；
+> 4. **锚定**：每条结论挂「容器/头 dump `sha256[:12]` + 模板指纹 `sha256[:12]`」（`TEMPLATE_FINGERPRINTS` 行内）；容器字节与预设 `sizeBytes` 逐字节相等（E4B 两条已由主理人独立核实）⇒ **换容器/换版本 ⇒ 旧结论作废重跑**。
+
+**判定依据格 = 带数组的五格**（非数组两格 `U_str` / `S_str_U_str` 14 条全 OK，不列）：
+
+| 格 | system | user | 期望（0.17.1 收敛语义下） | 判红条件 |
+|---|---|---|---|---|
+| `U_arr1` | — | `[text]` | 不抛错且文本逐字保留 | 抛 `Failed to apply template` ⇒ UNSAFE；不抛但文本被丢 ⇒ LOSSY |
+| `U_arrN` | — | `[image,text]` | 同上 | 同上 |
+| `S_arr_U_str` | `[text]` | string（**应用真实形态**） | 同上 | 同上 |
+| `S_arr_U_arr1` | `[text]` | `[text]`（bump 后纯文本真实形态） | 同上 | 同上 |
+| `S_arr_U_arrN` | `[text]` | `[image,text]`（bump 后多模态真实形态） | 同上 | 同上 |
+
+- 逐字错串（两条同款）：`invalid operation: tried to use + operator on unsupported types string and sequence (in <string>:N)`；`N` = 模板内 `+ message(s)[…].content` 所在行（Qwen2.5 user 支 `:23` / system 支 `:16`；MiniCPM5 system 支 `:24`）。
+- **空命中语义（判红）**：`DIST` 行缺失或分布 ≠ `10/2/0/2` ⇒ 结论作废重跑；某预设无 `S_arr_*` 格输出 = 只跑了 user 三格（W53/W55 旧 harness 形态）⇒ 该行作废；容器缺失且无存档模板 ⇒ `SKIP(NO_CONTAINER)`，**禁伪造结论**；无明文模板 ⇒ `UNVERIFIED(NO_TEMPLATE_IN_CONTAINER)`，禁裸留。
+- **样本独立性申报**：14 预设只有 **10 个不同模板**（LFM2.5-VL 450M/1.6B/3B 三档共用同一份 882 B 模板，`sha256[:12]=f57ac3cedd00`）⇒ 任何「安全面比例」表述按**模板数**计，「10 SAFE」的样本独立性 = 9（同族同模板 = 一个证据；镜像纪律 = W55「同家族 ≠ 同模板」）。
+- W72 实测：Qwen2.5-1.5B 与 MiniCPM5-2B 的 `S_arr_*` 格抛错（真机 Q4/Q5 逐字同签名）⇒ 0.18.0 下 bump 爆面 ≥2/14 的离线侧铁证；MiniCPM5 user 分支 `content=''`（`U_arr1`/`U_arrN` = LOSS）被 system 支抛错遮蔽 ⇒ W72-01 挂账依据。
 
 ## 0.18.0 离线锚批（W71，2026-10-17）
 
@@ -94,6 +119,8 @@ litertlm bump 是本仓最高级别的行为风险事件：W56 已实证 v0.18.0
 6. **跟踪 #3576 issue 状态**（W70 C1 B1 销账判据，锚 #13 同源）：bump 季扫时核对 #3576（MiniCPM5 bundle 模板/元数据根因）是否已发布修复 bundle 或运行时放宽 `tojson` 签名；命中 ⇒ 按锚 #13 复核要点（新 bundle 修复模板/元数据 ⇒ 原生工具通道真机复验）执行后再销账；
 7. 全部打勾 + 守卫 #29 期望值同步更新后，方可动 toml 版本行。
 8. **0.18.0 离线锚批已完成（W71，2026-10-17）**：静态 12 项结论与 bump 决策树 (a)/(b)/(c) 见上节；剩余未覆盖 = #10（真机失败路径）/ #14（bump 后人工逐条复审）。**若真机臂成立（另立项）**：先复测 gemma-4 GPU 双变体 init（答维护者 NOT_FOUND 是否修复），同臂顺带跑 W51 三工具结果原题面（collapse 首跑判据）。
+9. **修 system 分支必须同步验 user 分支**（W73 V-4）：模板数组取证必须覆盖 `systemInstruction` 维度——只验 user 三格会**系统性高估**安全面（W53/W55 旧 harness 事故同型：MiniCPM5 曾被判「安全」）；判定依据格 = 带数组的五格（见「七格取证判定表」节），只修 system 分支不修 user 分支 = 把容器从可见失败推进不可见失败（W72-01 挂账面）。
+10. **bump 季扫清单（W73 新增行）**：每次季扫核对三项 —— ① #3576（MiniCPM5 bundle 模板/元数据修复）② 0.18.0 单元素收敛回归 issue（`docs/14` §B3，提交后回贴 URL）③ 上游 MiniCPM5 模板变更（新 bundle / 新 tag）；**命中任一项 ⇒ 先重跑「七格取证判定表」再按对应锚要点执行**；**空命中语义 = 三项均无变更 ⇒ 记录「无变更」并维持 W68-06 blocker（锚 #1 收敛缺失）**，0 命中 ≠ 通过。
 
 ### r（chars/token）的离线重测结论（W66 E5 立方法、W67 B1 首次全量执行）
 
@@ -164,4 +191,10 @@ thinking 字符预算相对 native token 预算的**字符当量上界系数**�
 
 > **回落判据**：本归档段为历史推导存档；现役口径以 `ThinkingBudgetInvariantTest` 钉住的常量（C = 9 / 窗口 (5.06, 10.11) / `THINKING_CHAR_BUDGET` = 4608）与代码为准，冲突时以现役值为准并回查本段。文件内指针保留**文字版复现规程**（journal thinking 全文 + 官方 tokenizer 离线计数），不依赖仓外脚本存活。
 
-—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）；W66 A5 追加 r 测量方法；W67 B1 回填重测结论；W68 B3 增补锚 #14（knownBroken / GPU 白名单运行时时效复审）；**W73 K4 追加 `THINKING_CHARS_PER_TOKEN_CEIL` KDoc 推导长段归档（「W73 K4 移入」小节，原文照搬 + K4 瘦身指针互换）**。
+#### K2 层5 压缩门控判死结论（W73 主理人终裁）
+
+> **W73 裁决：判死（closed-dead，台账 `docs/15-backlog.md` W73-01）**。判死措辞写死防临场博弈：压缩触发恒由估算开窗（W41）驱动；token 实测账本维持只写不读（读侧投影定位不变，Wave 30 §2.3 明立「账本只做读侧投影，门控口径不接」= 设计决策非疏漏）；**重启前提 = 出现估算失准事故（压缩时机明显失准的实证）**。
+>
+> 依据：① 现役压缩由 W41 估算开窗驱动且无估算失准事故记录；② 接线解（runMutex 重入：门控检查移锁外 / channel 化二选一）动核心循环最精密并发面，风险/收益严重不对称（W69 拆 `ToolExecutionGuard` 前因）。代码侧两处 KDoc 自陈（`AgentRunner` 记账块 / `RunTokenLedger` 消费顺序约定）已同步补裁结论句——**只加句、不改原自陈事实**。
+
+—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）；W66 A5 追加 r 测量方法；W67 B1 回填重测结论；W68 B3 增补锚 #14（knownBroken / GPU 白名单运行时时效复审）；**W73 K4 追加 `THINKING_CHARS_PER_TOKEN_CEIL` KDoc 推导长段归档（「W73 K4 移入」小节，原文照搬 + K4 瘦身指针互换）**；**W73 A5 追加七格取证判定表节 + 锚 #13 复核要点 + 复核流程第 9/10 条（V-4 system/user 同步验 + 季扫清单）+ K2 判死结论段（W73-01）**。
