@@ -85,6 +85,10 @@ field 5 载荷，`0x2a <tlen> <text>` 的 text 段）；等长替换下标签 / 
    切换 = UUID 区 28 字节差，字节数随新旧值相似度变化），只钉「不得越界」。
 3. `restore` / `verify` 的判据是**逐字节**，不是「UUID 子串在不在」—— 子串在错误位置
    也会「通过」，那正是 W70/W71 写坏后看起来「成功」的原因。
+4. **键定位双断言**（W73 G1，复审27-莫斯线 P3-A）：[find_key_offset] 要求键名在快照里
+   **恰出现一次**（0 / ≥2 次 = 结构歧义拒绝）且 UUID 值区起点距键尾 ≤ 4B（实测真编码
+   gap=4；封「仅伪键」态）。两断言联用达「三巧合级残余、现役不可达」口径 —— 如实申报
+   残余，禁称一刀全封；残余由写后 diff（值区外差异判红）兜底。
 
 ## 用法示例
 
@@ -122,6 +126,14 @@ DEFAULT_ADB = "D:/WBfil/2026-09-18-18-27-37/_j2env/sdk/platform-tools/adb.exe"
 KEY = b"active_model_id"
 #: UUID 文本长度（含 4 个连字符）。等长替换的前提。
 UUID_LEN = 36
+#: W73 G1（复审27-莫斯线 P3-A）：UUID 值区起点距键尾的**结构紧凑性上限**（字节）。
+#: 现役真编码 = 4（W73 崔续程实拉设备快照 927B：`active_model_id` 偏移 107、
+#: 键尾 122、UUID 起点 126，间隔字节 `12 <vlen=0x26> 2a <tlen=0x24>`）；
+#: 复审27-莫斯线申报的「gap=2B」= 键尾→`0x2a` 串标签距（同族口径，小 2）。
+#: UUID 恒 36 字符 ⇒ vlen/tlen 恒单字节 varint ⇒ 该形态下 gap 恒 = 4（= 阈值上界，
+#: 零余量，如实申报）。若设备侧 protobuf 形态变化致 gap>4 ⇒ 判红停手查清，
+#: **禁放宽阈值迁就**（宽容放过 = W70 UUID 错一位事故同源）。
+UUID_MAX_KEY_GAP = 4
 #: W73 G2（N-1）：`set-string-key` 的**字段白名单** —— 仓内已知设置键全表。
 #: 来源 = `core-data/src/main/java/com/rickeal/agent/core/data/SettingsRepository.kt`
 #: 的 `preferencesKey(...)` 声明（W73 grep 实拉；`active_model_id` 有专用写命令，
@@ -172,13 +184,43 @@ class DatastorePatchError(Exception):
 # 纯函数层（无 I/O、无 adb、无文件系统 ⇒ 可离线单测）
 # ---------------------------------------------------------------------------
 def find_key_offset(blob: bytes, key: bytes = KEY) -> int:
-    """`key` 在 `blob` 里的**绝对**偏移；找不到抛 [DatastorePatchError]。"""
+    """`key` 在 `blob` 里的**绝对**偏移；结构歧义 / 伪键态一律抛 [DatastorePatchError]。
+
+    W73 G1（复审27-莫斯线 P3-A，勘误块 A 规格）双断言，**同 commit 联用**：
+      ① `blob.count(key) != 1` ⇒ 拒绝（封两态：0 次 = 拉错文件 / 空文件；
+         ≥2 次 = 键名与别处结构相撞 —— 首现哪一次都是猜）；
+      ② **gap ≤ [UUID_MAX_KEY_GAP]（4B）必选联用**：键尾之后 [UUID_MAX_KEY_GAP]
+         字节内必须出现 UUID 形态值区（真编码 gap = 4，见常量注）—— 封「仅伪键」态
+         （键名文本出现一次，但那一处并不是该键的紧凑值区，例如键名撞进某个长字符串
+         值区的载荷里；此态能过 [validate_preferences_blob] 整文件结构闸 —— 结构合法
+         但值区不紧凑，只有 gap 断言能兜底）。
+    两断言联用 = 「三巧合级残余、现役不可达」完备口径 —— **如实申报残余**：
+    仍理论上存在「键名唯一 + 4B 内恰好是 UUID 文本 + 却仍不是本键值区」的巧合态，
+    现役数据结构下不可达；禁称一刀全封。残余兜底在写后 diff（值区外差异判红）。
+    """
+    count = blob.count(key)
+    if count != 1:
+        raise DatastorePatchError(
+            "键 %r 在快照里出现 %d 次，结构歧义拒绝（0 次 = 拉错文件或空文件；"
+            "≥2 次 = 键名与别处结构相撞，首现哪一次都是猜）"
+            % (key.decode("ascii", "replace"), count)
+        )
     offset = blob.find(key)
     if offset < 0:
+        # count==1 已保证不可达；保留防御（禁 fail-open）。
         raise DatastorePatchError(
             "快照里找不到键 %r（快照字节数 %d）—— 多半是拉错了文件或拉成了空文件"
             % (key.decode("ascii", "replace"), len(blob))
         )
+    match = UUID_PATTERN.search(blob, offset)
+    if match is not None:
+        gap = match.start() - (offset + len(key))
+        if gap > UUID_MAX_KEY_GAP:
+            raise DatastorePatchError(
+                "键 %r（绝对偏移 %d）之后 %d 字节才出现 UUID，超出结构紧凑性上限 %d "
+                "—— 疑似「仅伪键」态（该键名出现处并非其值区）；拒绝继续（不带病写）"
+                % (key.decode("ascii", "replace"), offset, gap, UUID_MAX_KEY_GAP)
+            )
     return offset
 
 
@@ -410,7 +452,14 @@ def patch_active_model_id(blob: bytes, new_uuid: str) -> Tuple[bytes, Tuple[int,
       ③ 替换后总字节数必须与入参**逐字节等长**（不等长会让 PreferencesProto 的长度
          前缀与后续字段全部错位 —— 这是比写错值更彻底的损坏）。
     """
-    new_bytes = new_uuid.encode("ascii", "strict")
+    # P4-a（W73）：非 ASCII 文本不再裸 traceback —— encode 失败归入 DatastorePatchError
+    #（调用方统一走「拒绝执行」文案 + exit 2，而不是 UnicodeEncodeError 炸栈）。
+    try:
+        new_bytes = new_uuid.encode("ascii", "strict")
+    except UnicodeEncodeError:
+        raise DatastorePatchError(
+            "非 ASCII UUID 文本：%r（datastore 字节补丁只接受 ASCII UUID）" % new_uuid
+        )
     if UUID_FULLMATCH.match(new_bytes) is None:
         raise DatastorePatchError("非法 UUID 文本：%r（须 8-4-4-4-12 十六进制）" % new_uuid)
     start, end = find_uuid_span(blob)

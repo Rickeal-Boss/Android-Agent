@@ -47,6 +47,13 @@ W73 P0 结构闸判据面（2026-10-18 事故后新增；修法 = 整文件结�
   ⑮ test_fixture_builders_match_real_device_format
         夹具自洽：make_blob / make_string_blob / 长值条目全部过 validate（混合形态不可能再现）
 
+W73 G1 双断言判据面（解锁后落盘：find_key_offset count + gap≤4 + P4-a）：
+  ⑯ test_find_key_offset_rejects_duplicated_key
+        断言①：键出现 0 / ≥2 次 ⇒ 拒绝（含读取路径 fail-closed 到 None）
+  ⑰ test_find_key_offset_gap_assertion
+        断言②：伪键态（count==1、结构合法、gap=6）⇒ 拒绝；真编码 gap=4 与
+        紧凑编码 gap=2（莫斯线口径）⇒ 放行
+
 ---------------------------------------------------------------------------
 变异测试说明（删/改一条判据 ⇒ 哪个用例必红）—— 用于证明本测试网**非 vacuous**：
 **已实测执行的变异（W72 本波真跑过，非推测）**：把 `find_uuid_span` 里的
@@ -63,9 +70,14 @@ datastore（用户 P0 的直接肇事路径）。修法：⑪ 绿面补 mock `_a
 测试补 mock `device_read`；模块级 `run_adb` 绊线（见文件中部）让整套测试**可证明
 离线**。此后「本文件不碰 adb」从注释承诺变为机械判据。
 
-**W73 G1 双断言（find_key_offset count + gap≤4）与 P4-a 仍处时序锁**（真机设备写
-进行中）：代码 + ⑫/⑬ 两例 fixture 已写在仓外草稿 `_ci-tools/_w73_g1_draft.py`
-（含变异自证输出：打回首现形态 ⇒ ⑫/⑬ 必红、还原复绿），解锁即落正文件。
+**W73 G1 双断言已落盘**（解锁通知后：真机设备写已全部完成、终态经 verify 与 927B
+全量快照逐字节一致）：`find_key_offset` 双断言（count≠1 + gap≤[UUID_MAX_KEY_GAP]=4，
+两断言同 commit 联用）+ P4-a（非 ASCII UUID 归入 DatastorePatchError）。变异自证已
+实测：把定位打回 `blob.find(KEY)` 首现形态 ⇒ ⑯/⑰ 必红、还原复绿（输出留 W73 回报；
+变异体副本 `_ci-tools/_w73_g2_draft/datastore_tool_MUTANT_firsthit.py`）。gap 口径：
+W73 实拉设备快照 key_end→UUID 文本 = 4B（`12 <vlen> 2a <tlen>` 结构字节）；莫斯线
+申报的「gap=2B」= 键尾→`0x2a` 串标签距（同族口径，小 2）—— 阈值 4 对两个口径兼容，
+真编码恰在界内（零余量，如实申报；形态变化致 gap>4 ⇒ 判红查清，禁放宽）。
 
 其余变异（未逐一执行，按代码路径推导）：
   · 把 `DiffReport.ok` 的 `out_of_span` 条件删掉 ⇒ **④ 必红**。
@@ -82,8 +94,11 @@ datastore（用户 P0 的直接肇事路径）。修法：⑪ 绿面补 mock `_a
     （畸形字节直通设备 = W73 P0 事故通道重开）。
   · 把 `validate_preferences_blob` 的 `entry_end > total` 边界检查删掉 ⇒ **⑬ 必红**
     （截断文件被放行）；把 `blob[pos] != 0x0A` 顶层检查删掉 ⇒ **⑬ 必红**（缺包裹直通）。
-  · （G1 时序锁中，草稿态）删 `find_key_offset` 的 count / gap 断言 ⇒ 草稿 ⑫/⑬ 必红
-    （已实测：变异体 `_ci-tools/_w73_g2_draft/datastore_tool_MUTANT_firsthit.py`）。
+  · 把 `find_key_offset` 的 count 断言删掉 ⇒ **⑯ 必红**（重复键被放行；已实测：变异体
+    `_ci-tools/_w73_g2_draft/datastore_tool_MUTANT_firsthit.py` ⇒ ⑯/⑰ 双红）。
+  · 把 `find_key_offset` 的 gap 断言删掉 ⇒ **⑰ 必红**（伪键态被放行；同上变异体）。
+  · 把 `patch_active_model_id` 的 `encode("ascii")` try 归回裸调用 ⇒ 非 ASCII UUID
+    裸 traceback（P4-a 复发；行为面无单测钉子，靠本列表申报）。
 ---------------------------------------------------------------------------
 """
 import contextlib
@@ -653,6 +668,83 @@ class StructureValidationTests(unittest.TestCase):
         self.assertEqual(legacy_mixed, self.P0_CRASH_BLOB, "事故形态复刻与真机字节不符")
         with self.assertRaises(dst.DatastorePatchError):
             dst.validate_preferences_blob(legacy_mixed)
+
+
+# ---------------------------------------------------------------------------
+# ⑯ / ⑰ W73 G1（复审27-莫斯线 P3-A 勘误块 A）：find_key_offset 双断言
+# ---------------------------------------------------------------------------
+class KeyOffsetAssertionTests(unittest.TestCase):
+    """⑯ count≠1 拒绝｜⑰ gap>4 拒绝（两断言同 commit 联用；真编码 gap=4 放行）。
+
+    设备隔离（W73 P0 纪律）：两类都是**纯函数层**（find_key_offset /
+    find_uuid_span 不经设备层），仍按套件纪律整体 mock 五个设备函数，并在例末
+    断言「零设备调用」—— 把「不碰 adb」从注释承诺变成机械判据（P0 肇事路径 =
+    只 mock device_read 不 mock _apply；本类连 device_read 都不经过）。
+    """
+
+    def setUp(self):
+        self.calls = []
+        self._old = {name: getattr(dst, name) for name in
+                     ("_apply", "device_read", "device_push", "device_copy_back",
+                      "_cleanup_remote")}
+        for name in self._old:
+            setattr(dst, name, lambda *a, **k: self.calls.append(name))
+
+    def tearDown(self):
+        for name, fn in self._old.items():
+            setattr(dst, name, fn)
+        self.assertEqual(self.calls, [],
+                         "G1 两例走了设备层（%r）—— 纯函数断言不碰设备" % (self.calls,))
+
+    def test_find_key_offset_rejects_duplicated_key(self):
+        """⑯ 断言①：键出现 0 / ≥2 次都拒绝（首现哪一次都是猜）。"""
+        # 0 次：夹具里没这个键（白名单字符串键，无 active_model_id）
+        with self.assertRaises(dst.DatastorePatchError, msg="缺键被放行"):
+            dst.find_key_offset(make_string_blob())
+        # ≥2 次：键名撞结构（夹具与主树现行款式一致：全条目带外层包裹）
+        dup = make_blob() + _string_entry(dst.KEY, NEW_UUID.encode("ascii"))
+        self.assertEqual(dup.count(dst.KEY), 2, "夹具未造出重复键")
+        with self.assertRaises(dst.DatastorePatchError, msg="重复键被放行"):
+            dst.find_key_offset(dup)
+        with self.assertRaises(dst.DatastorePatchError, msg="重复键被 find_uuid_span 放行"):
+            dst.find_uuid_span(dup)
+        # 读取路径不炸但读不到（fail-closed 到 None，而不是首现值）
+        self.assertIsNone(dst.read_active_model_id(dup))
+
+    def test_find_key_offset_gap_assertion(self):
+        """⑰ 断言②：gap>4 拒绝（伪键态）；真编码 gap=4 / 紧凑编码 gap=2 放行。"""
+        uuid_text = NEW_UUID.encode("ascii")
+        # 伪键 fixture：键名唯一、**结构合法**（带外层包裹、过 validate_preferences_blob
+        # —— P0 结构闸拦不住它：合法文件里键名出现处并非其值区），但键尾之后 6 字节
+        # 才见 UUID（值区不紧凑）。「仅伪键」态只有 gap 断言能兜底。
+        junk = b"\x3f\x3f"
+        payload = b"\x2a" + bytes([len(junk) + len(uuid_text)]) + junk + uuid_text
+        entry_inner = (b"\x0a" + bytes([len(dst.KEY)]) + dst.KEY
+                       + b"\x12" + bytes([len(payload)]) + payload)
+        fake = (_bool_entry(b"has_seen_intro", True)
+                + b"\x0a" + bytes([len(entry_inner)]) + entry_inner)
+        self.assertEqual(fake.count(dst.KEY), 1, "伪键夹具应键名唯一（否则红的是断言①）")
+        dst.validate_preferences_blob(fake)  # 结构合法 ⇒ 只有 gap 断言能拦
+        with self.assertRaises(dst.DatastorePatchError, msg="伪键态（gap=6）被放行"):
+            dst.find_key_offset(fake)
+        with self.assertRaises(dst.DatastorePatchError, msg="伪键态被 find_uuid_span 放行"):
+            dst.find_uuid_span(fake)
+
+        # 真编码 fixture：gap=4（W73 实拉设备快照同款式 `12 <vlen> 2a <tlen>`）⇒ 放行
+        real_shape = _bool_entry(b"has_seen_intro", True) + _string_entry(dst.KEY, uuid_text)
+        start, end = dst.find_uuid_span(real_shape)
+        self.assertEqual(real_shape[start:end], uuid_text)
+        self.assertEqual(start - (real_shape.find(dst.KEY) + len(dst.KEY)), 4,
+                         "真编码 gap 漂离实测值 4（形态变了必须查清，禁默默放宽）")
+
+        # 紧凑编码 fixture：gap=2（键尾后 2 字节即 UUID 文本 —— 莫斯线申报口径）⇒ 放行
+        entry_inner2 = (b"\x0a" + bytes([len(dst.KEY)]) + dst.KEY
+                        + b"\x12" + bytes([len(uuid_text)]) + uuid_text)
+        compact = (_bool_entry(b"has_seen_intro", True)
+                   + b"\x0a" + bytes([len(entry_inner2)]) + entry_inner2)
+        start2, end2 = dst.find_uuid_span(compact)
+        self.assertEqual(compact[start2:end2], uuid_text)
+        self.assertEqual(start2 - (compact.find(dst.KEY) + len(dst.KEY)), 2)
 
 
 if __name__ == "__main__":
