@@ -241,6 +241,91 @@ def _read_varint(blob: bytes, pos: int) -> Tuple[int, int]:
             raise DatastorePatchError("varint 超过 5 字节（位置 %d）—— 结构不符" % (pos - 1))
 
 
+#: preferences `Value` 子消息 oneof 的已知首字节标签（datastore-preferences 1.1.x
+#: `PreferencesMap` proto；字段号 → tag：(1<<3)|0=0x08 bool｜(2<<3)|5=0x15 float｜
+#: (3<<3)|1=0x19 double｜(4<<3)|0=0x20 integer｜(5<<3)|2=0x2a string｜
+#: (6<<3)|2=0x32 byte_array｜(7<<3)|2=0x3a string_set）。
+_VALUE_TAGS = frozenset({0x08, 0x15, 0x19, 0x20, 0x2A, 0x32, 0x3A})
+
+
+def validate_preferences_blob(blob: bytes) -> None:
+    """整文件结构校验：待写字节必须符合真 `preferences_pb` 的完整 map 条目形态。
+
+    真形态（datastore-preferences 1.1.x `PreferencesMap`，实测快照
+    `0a 14 0a 0e has_seen_intro 12 02 08 01 …` 佐证）：
+
+        顶层 = 0..N 个 map 条目，每条 = `0a <entry_len> <entry>`
+        entry（**必须**有外层 `0a <len>` 包裹） = `0a <key_len> <key>` + `12 <value_len> <Value>`
+        Value = oneof 载荷，首字节 ∈ [._VALUE_TAGS]
+
+    结构不合法 ⇒ [DatastorePatchError]（fail-closed：一个字节都不许上设备）。
+
+    🔴 为什么需要它（W73 P0 事故，2026-10-18）：单测夹具曾产出「**缺外层
+    `0a <len>` 包裹**」的畸形条目（`make_string_blob` = 无包裹 bool 条目 + 有包裹
+    string 条目的混合形态，共 43 B：`0a 0e has_seen_intro … 0a 15 0a 09 dark_mode
+    … LIGHT!`）。畸形字节**通得过所有既有值区定位护栏**（定位断言只查 key 周边
+    字节，看不出缺外层包裹），被当快照经 `_apply` 整体写回真机 ⇒ 真机 DataStore
+    `PreferencesMapCompat.readFrom` 抛 `CorruptionException: Unable to parse
+    preferences proto` ⇒ 每次启动即崩（用户现象：**同意用户协议后 App 闪退**，
+    随后崩溃循环）。唯一能在**写前**拦住它的判据 = 整文件结构校验，故所有设备
+    写路径（`_apply`：set-active-model / set-string-key / restore / 回滚）统一先过
+    本函数。
+
+    空文件（0 字节）合法 —— DataStore 把空文件读成 emptyPreferences。
+    """
+    pos = 0
+    total = len(blob)
+    while pos < total:
+        if blob[pos] != 0x0A:
+            raise DatastorePatchError(
+                "protobuf 结构非法：偏移 %d 首字节 %#x ≠ map 条目标签 0x0a —— 疑似缺外层"
+                " `0a <len>` 包裹的畸形文件（W73 P0 事故形态：单测夹具曾被当快照写回真机）"
+                % (pos, blob[pos])
+            )
+        entry_len, entry_start = _read_varint(blob, pos + 1)
+        entry_end = entry_start + entry_len
+        if entry_end > total:
+            raise DatastorePatchError(
+                "protobuf 结构非法：偏移 %d 条目声明 %d 字节但只剩 %d —— 截断/写坏的文件"
+                % (pos, entry_len, total - entry_start)
+            )
+        if entry_len < 6:
+            raise DatastorePatchError(
+                "protobuf 结构非法：偏移 %d 条目仅 %d 字节（最小合法 entry ≥ 6："
+                "键 3 + 值 4）—— 长度前缀与内容不符" % (pos, entry_len)
+            )
+        if blob[entry_start] != 0x0A:
+            raise DatastorePatchError(
+                "protobuf 结构非法：偏移 %d 条目内首字节 %#x ≠ 键标签 0x0a"
+                % (entry_start, blob[entry_start])
+            )
+        key_len, cur = _read_varint(blob, entry_start + 1)
+        if cur + key_len > entry_end:
+            raise DatastorePatchError(
+                "protobuf 结构非法：偏移 %d 键长 %d 越出条目边界 —— 长度前缀错位"
+                % (entry_start, key_len)
+            )
+        cur += key_len
+        if cur >= entry_end or blob[cur] != 0x12:
+            raise DatastorePatchError(
+                "protobuf 结构非法：偏移 %d 键后不是值标签 0x12（实为 %#x）"
+                % (cur, blob[cur] if cur < entry_end else -1)
+            )
+        val_len, val_start = _read_varint(blob, cur + 1)
+        if val_start + val_len != entry_end:
+            raise DatastorePatchError(
+                "protobuf 结构非法：偏移 %d 值区 [%d, %d) 未布满条目尾 %d ——"
+                " key+value 之外有多余字节（长度前缀错位）" % (cur, val_start, val_start + val_len, entry_end)
+            )
+        if val_len == 0 or blob[val_start] not in _VALUE_TAGS:
+            raise DatastorePatchError(
+                "protobuf 结构非法：偏移 %d 值载荷首字节 %s 不是已知 Value 标签"
+                "（bool/float/double/integer/string/byte_array/string_set）"
+                % (val_start, hex(blob[val_start]) if val_len else "<空>")
+            )
+        pos = entry_end
+
+
 def find_string_value_span(blob: bytes, key: bytes) -> Tuple[int, int]:
     """定位字符串设置键的**值文本区** `[start, end)`（绝对偏移；禁切片法）。
 
@@ -508,7 +593,16 @@ def _cleanup_remote(adb: str, remote_path: str) -> None:
 
 
 def _apply(adb: str, pkg: str, local_path: str) -> None:
-    """push + run-as cp 回原位（快照、补丁、回滚三条路径共用同一段编排）。"""
+    """push + run-as cp 回原位（快照、补丁、回滚三条路径共用同一段编排）。
+
+    🔴 W73 P0 结构闸：写入前对**待写文件**做整文件结构校验
+    （[validate_preferences_blob]）—— 缺外层包裹的畸形夹具曾通不过任何既有值区
+    定位护栏、被当快照写回真机，导致 DataStore CorruptionException 崩溃循环
+    （用户现象：同意用户协议后闪退）。校验不过 ⇒ [DatastorePatchError]，
+    调用方判红/回滚，一个字节不上设备。
+    """
+    blob = read_bytes(local_path)
+    validate_preferences_blob(blob)
     remote = _remote_name(local_path)
     device_push(adb, local_path, remote)
     device_copy_back(adb, pkg, remote, DATASTORE_REL)

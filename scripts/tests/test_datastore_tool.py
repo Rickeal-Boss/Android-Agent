@@ -36,6 +36,17 @@ W73 新增判据面（G2 通用写路径 + G1 双断言）：
   ⑪ test_set_string_key_out_of_span_write_judged_red_with_rollback
         设备读回值文本区**外**有差异 ⇒ 判红（exit 1）且自动回滚被行使（离线 monkeypatch）
 
+W73 P0 结构闸判据面（2026-10-18 事故后新增；修法 = 整文件结构闸 + 夹具带包裹）：
+  ⑫ test_validate_accepts_real_device_format_sample
+        真机快照实测字节（带外层 `0a <len>` 包裹）⇒ validate 放行；空文件合法
+  ⑬ test_validate_rejects_p0_crash_blob
+        P0 事故件逐字（43 B 缺包裹混合形态，曾写回真机致崩溃循环）⇒ DatastorePatchError；
+        同类畸形（截断 / 键后缺 0x12 / 未知 Value 标签）一并拒
+  ⑭ test_apply_refuses_malformed_blob_before_device_io
+        `_apply` 写前闸：畸形字节 ⇒ 拒绝且 device_push/copy_back 零调用（离线 monkeypatch）
+  ⑮ test_fixture_builders_match_real_device_format
+        夹具自洽：make_blob / make_string_blob / 长值条目全部过 validate（混合形态不可能再现）
+
 ---------------------------------------------------------------------------
 变异测试说明（删/改一条判据 ⇒ 哪个用例必红）—— 用于证明本测试网**非 vacuous**：
 **已实测执行的变异（W72 本波真跑过，非推测）**：把 `find_uuid_span` 里的
@@ -61,6 +72,10 @@ W73 新增判据面（G2 通用写路径 + G1 双断言）：
   · 把 `patch_string_value` 的等长断言删掉 ⇒ **⑩ 必红**（非等长被静默接受）。
   · 把 `cmd_set_string_key` 的 `out_of_span` 判红 + 回滚分支删掉 ⇒ **⑪ 必红**
     （越界写入被判绿 = W70 形态在通用路径复发）。
+  · 把 `_apply` 里的 `validate_preferences_blob` 调用删掉 ⇒ **⑭ 必红**
+    （畸形字节直通设备 = W73 P0 事故通道重开）。
+  · 把 `validate_preferences_blob` 的 `entry_end > total` 边界检查删掉 ⇒ **⑬ 必红**
+    （截断文件被放行）；把 `blob[pos] != 0x0A` 顶层检查删掉 ⇒ **⑬ 必红**（缺包裹直通）。
   · （G1 时序锁中，草稿态）删 `find_key_offset` 的 count / gap 断言 ⇒ 草稿 ⑫/⑬ 必红
     （已实测：变异体 `_ci-tools/_w73_g2_draft/datastore_tool_MUTANT_firsthit.py`）。
 ---------------------------------------------------------------------------
@@ -80,22 +95,47 @@ import datastore_tool as dst  # noqa: E402
 # ---------------------------------------------------------------------------
 # 夹具：合成一个最小 PreferencesProto 字节串
 # ---------------------------------------------------------------------------
-# 真实形态（`preferences_pb` 的 map<string, Value> 条目）：
-#   0x0a <len> "<key>"   0x12 <len> <Value 子消息>
-# 字符串值 = Value 里的 field 5（wire type 2）⇒ 子消息 = 0x2a <len> "<text>"
+# 真实形态（`preferences_pb` 的 map<string, Value> 条目，实测快照
+# `0a 14 0a 0e has_seen_intro 12 02 08 01` 佐证 —— W73 P0 事故后逐字节核对）：
+#   0x0a <elen>  0x0a <klen> "<key>"  0x12 <vlen> <Value 子消息>
+#   ^^^^^^^^^^  外层 map 条目包裹，**不可省**（W73 P0：省了它真机直接 CorruptionException）
+# 字符串值 = Value 里的 field 5（wire type 2）⇒ 子消息 = 0x2a <tlen> "<text>"
+#
+# 🔴 W73 P0 事故备忘（2026-10-18）：本文件曾经的 `_string_entry`/`_bool_entry`
+# 缺外层 `0a <elen>` 包裹，而 `_str_entry` 有 ⇒ `make_string_blob` 产出**混合形态**
+# （43 B：首条无包裹 + 次条有包裹 + `LIGHT!`），该字节流被当快照写回真机 ⇒ 真机
+# DataStore 崩溃循环（用户现象：同意用户协议后闪退）。修法 = 全部夹具统一带包裹
+# + 工具侧 `validate_preferences_blob` 整文件结构闸（见 datastore_tool.py）。
 OLD_UUID = "0e0d75b0-36c0-49ed-b97e-5f4be8103ee0"   # 设备真原值（W71 §六.3 留痕）
 #: 与 [OLD_UUID] **恰好差 28 个字节**（= W71 实测的正常切换形态；8 个字符相同）。
 NEW_UUID = "f1dba342-bb68-5d95-cd86-39bd5cea3ee0"
 
 
+def _varint(n: int) -> bytes:
+    """protobuf varint 编码（长度 >127 走多字节 —— `inference_config` 同款）。"""
+    out = bytearray()
+    while True:
+        bits = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(bits | 0x80)
+        else:
+            out.append(bits)
+            return bytes(out)
+
+
 def _string_entry(key: bytes, text: bytes) -> bytes:
-    value = b"\x2a" + bytes([len(text)]) + text
-    return b"\x0a" + bytes([len(key)]) + key + b"\x12" + bytes([len(value)]) + value
+    """字符串 map 条目（**带外层包裹**，与设备快照实测同款式）。"""
+    value = b"\x2a" + _varint(len(text)) + text
+    entry_inner = b"\x0a" + _varint(len(key)) + key + b"\x12" + _varint(len(value)) + value
+    return b"\x0a" + _varint(len(entry_inner)) + entry_inner
 
 
 def _bool_entry(key: bytes, flag: bool) -> bytes:
+    """布尔 map 条目（**带外层包裹** —— W73 P0 前此函数漏了包裹）。"""
     value = b"\x08" + (b"\x01" if flag else b"\x00")
-    return b"\x0a" + bytes([len(key)]) + key + b"\x12" + bytes([len(value)]) + value
+    entry_inner = b"\x0a" + _varint(len(key)) + key + b"\x12" + _varint(len(value)) + value
+    return b"\x0a" + _varint(len(entry_inner)) + entry_inner
 
 
 def make_blob(uuid_text=OLD_UUID) -> bytes:
@@ -474,6 +514,97 @@ class StringKeyTests(unittest.TestCase):
             dst.device_read = old_read2
         self.assertEqual(code2, dst.EXIT_OK, "绿面被判红：%s" % out2)
         self.assertIn("补丁完成", out2)
+
+
+# ---------------------------------------------------------------------------
+# ⑫-⑮ W73 P0 结构闸回归（整文件 validate + _apply 写前闸 + 夹具自洽）
+# ---------------------------------------------------------------------------
+class StructureValidationTests(unittest.TestCase):
+    """⑫ 真机格式样本放行｜⑬ P0 崩溃字节拒杀｜⑭ `_apply` 写前闸｜⑮ 夹具自洽。
+
+    背景（W73 P0 事故，2026-10-18）：缺外层 `0a <len>` 包裹的畸形夹具被当快照
+    写回真机 ⇒ 真机 DataStore CorruptionException 崩溃循环（用户现象：同意用户
+    协议后 App 闪退）。修法 = 工具侧 `validate_preferences_blob` 整文件结构闸
+    （所有设备写路径经 `_apply` 统一先过）+ 夹具统一带包裹。本类 = 回归钉子。
+    """
+
+    #: 真机快照前两条（P0 事故当日 15:07 全量快照 `ds_pre.pb` 头 45 字节逐字）：
+    #: entry1 = has_seen_intro=true（`0a 14` 包裹），entry2 = is_tos_accepted=true（`0a 15` 包裹）。
+    REAL_SAMPLE = bytes.fromhex(
+        "0a140a0e6861735f7365656e5f696e74726f12020801"
+        "0a150a0f69735f746f735f616363657074656412020801"
+    )
+
+    #: P0 事故件逐字（43 B，曾把真机 datastore 写成这个 ⇒ 崩溃循环）：
+    #: 旧 `make_string_blob(b"LIGHT!")` 产出 = 无包裹 bool 条目 + 有包裹 string 条目的混合形态。
+    P0_CRASH_BLOB = bytes.fromhex(
+        "0a0e6861735f7365656e5f696e74726f12020801"
+        "0a150a096461726b5f6d6f646512082a064c4947485421"
+    )
+
+    def test_validate_accepts_real_device_format_sample(self):
+        """⑫ 真机实测格式（带外层包裹）⇒ 放行；工具夹具与空文件同样放行。"""
+        dst.validate_preferences_blob(self.REAL_SAMPLE)  # 不抛即通过
+        dst.validate_preferences_blob(make_blob())
+        dst.validate_preferences_blob(make_string_blob())
+        dst.validate_preferences_blob(make_string_blob(b"LIGHT!"))
+        dst.validate_preferences_blob(b"")  # 空文件合法（DataStore 读成 emptyPreferences）
+
+    def test_validate_rejects_p0_crash_blob(self):
+        """⑬ P0 事故字节（缺外层包裹）⇒ DatastorePatchError —— 回归钉子。"""
+        with self.assertRaises(dst.DatastorePatchError, msg="P0 崩溃字节被结构闸放行"):
+            dst.validate_preferences_blob(self.P0_CRASH_BLOB)
+        # 错误信息必须点破形态（缺 0x0a 条目标签），不能是泛泛的 parse 错
+        try:
+            dst.validate_preferences_blob(self.P0_CRASH_BLOB)
+        except dst.DatastorePatchError as exc:
+            self.assertIn("0x0a", str(exc), "错误信息未点出条目标签：%s" % exc)
+        # 同类畸形形态一并拒：截断条目 / 键后缺 0x12 / 值载荷未知标签
+        with self.assertRaises(dst.DatastorePatchError, msg="截断条目被放行"):
+            dst.validate_preferences_blob(self.REAL_SAMPLE[:20])
+        bad_value_tag = bytearray(self.REAL_SAMPLE)
+        bad_value_tag[18] = 0x0A  # entry1 键后的 0x12 值标签改掉
+        with self.assertRaises(dst.DatastorePatchError, msg="键后缺 0x12 被放行"):
+            dst.validate_preferences_blob(bytes(bad_value_tag))
+        unknown_tag = bytearray(self.REAL_SAMPLE)
+        unknown_tag[20] = 0x99  # 值载荷首字节（bool 0x08）改成未知标签
+        with self.assertRaises(dst.DatastorePatchError, msg="未知 Value 标签被放行"):
+            dst.validate_preferences_blob(bytes(unknown_tag))
+
+    def test_apply_refuses_malformed_blob_before_device_io(self):
+        """⑭ `_apply` 对畸形字节一个字节都不推设备（P0 直接闸口，离线 monkeypatch）。"""
+        pushed, copied, cleaned = [], [], []
+        old_push, old_copy, old_clean = dst.device_push, dst.device_copy_back, dst._cleanup_remote
+        dst.device_push = lambda adb, pkg, local: pushed.append(local)
+        dst.device_copy_back = lambda adb, pkg, remote, rel: copied.append(remote)
+        dst._cleanup_remote = lambda adb, remote: cleaned.append(remote)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                bad = _write_temp(tmp, "malformed.pb", self.P0_CRASH_BLOB)
+                with self.assertRaises(dst.DatastorePatchError, msg="畸形字节过了 _apply 闸"):
+                    dst._apply("adb", "pkg", bad)
+                # 绿面：真格式放行且设备 IO 被行使
+                ok = _write_temp(tmp, "ok.pb", make_string_blob())
+                dst._apply("adb", "pkg", ok)
+        finally:
+            dst.device_push, dst.device_copy_back, dst._cleanup_remote = old_push, old_copy, old_clean
+        self.assertEqual(pushed, [dst._remote_name(ok)], "畸形字节被推送 / 绿面未推送：%r" % pushed)
+        self.assertEqual(len(copied), 1)
+        self.assertEqual(len(cleaned), 1)
+
+    def test_fixture_builders_match_real_device_format(self):
+        """⑮ 夹具自洽：所有 builder 产出必须是带外层包裹的真格式（混合形态不再可能）。"""
+        dst.validate_preferences_blob(make_blob())
+        dst.validate_preferences_blob(make_string_blob(b"LIGHT!"))
+        blob = make_string_blob(b"SYSTEM") + _long_str_entry(b"inference_config", b"x" * 400)
+        dst.validate_preferences_blob(blob)
+        # 旧事故形态自证：无包裹 bool + 有包裹 string（曾静默通过所有既有值区护栏）
+        legacy_mixed = b"\x0a\x0ehas_seen_intro\x12\x02\x08\x01" + _str_entry(
+            b"dark_mode", b"LIGHT!"
+        )
+        self.assertEqual(legacy_mixed, self.P0_CRASH_BLOB, "事故形态复刻与真机字节不符")
+        with self.assertRaises(dst.DatastorePatchError):
+            dst.validate_preferences_blob(legacy_mixed)
 
 
 if __name__ == "__main__":
