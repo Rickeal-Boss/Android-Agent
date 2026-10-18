@@ -57,6 +57,12 @@ W73 P0 结构闸判据面（2026-10-18 事故后新增；修法 = 整文件结�
 `test_patch_preserves_preceding_bool_field`（补丁污染 `has_seen_intro` —— 与两次真机
 事故的现象逐字一致）。⇒ 这张网确实拦得住那个坑，不是形式主义。
 
+**W73 P0 事后加固（2026-10-18，用户报告「同意用户协议后闪退」的事后复盘）**：
+⑪ 绿面曾只 mock `device_read` 不 mock `_apply` ⇒ 带设备跑套件会把夹具写进真机
+datastore（用户 P0 的直接肇事路径）。修法：⑪ 绿面补 mock `_apply`；索引不可用
+测试补 mock `device_read`；模块级 `run_adb` 绊线（见文件中部）让整套测试**可证明
+离线**。此后「本文件不碰 adb」从注释承诺变为机械判据。
+
 **W73 G1 双断言（find_key_offset count + gap≤4）与 P4-a 仍处时序锁**（真机设备写
 进行中）：代码 + ⑫/⑬ 两例 fixture 已写在仓外草稿 `_ci-tools/_w73_g1_draft.py`
 （含变异自证输出：打回首现形态 ⇒ ⑫/⑬ 必红、还原复绿），解锁即落正文件。
@@ -91,6 +97,29 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import datastore_tool as dst  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# 🔴 W73 P0 事后加固：全测试套件 adb 绊线（离线契约机械化）
+#
+# 事故：W73 G2 的测试 ⑪ 绿面只 monkeypatch 了 `device_read`、**没** patch `_apply`
+# ⇒ 带真机跑 `python scripts/tests/test_datastore_tool.py` 时，绿面的
+# `set-string-key` 经**真实** `_apply` 把测试夹具（`make_string_blob` 打成
+# `LIGHT!` 的 43B/45B 字节）push+cp 进了真机 datastore ⇒ 真机 DataStore
+# CorruptionException 崩溃循环（用户现象：同意用户协议后 App 闪退）。
+# `device_read`/`device_push`/`device_copy_back` 全部经 `run_adb` 收口 ⇒ 在此
+# 炸掉任何未被 mock 的真实 adb 调用：本套件从此**可证明**离线（CI 席/开发席
+# 带设备跑测试也不再能碰设备一根字节）。
+# ---------------------------------------------------------------------------
+def _tripwire_run_adb(adb, args):  # pragma: no cover - 永不应被调用
+    raise AssertionError(
+        "测试套件禁止真实 adb 调用（W73 P0：⑪ 绿面曾只 mock device_read 不 mock "
+        "_apply，把夹具写进真机 datastore 致用户 App 崩溃循环）。设备层必须整体 "
+        "monkeypatch（_apply / device_read / device_push / device_copy_back / "
+        "_cleanup_remote）；如确需走 run_adb 的语义，请在测试内 mock device_read。"
+    )
+
+
+dst.run_adb = _tripwire_run_adb
 
 # ---------------------------------------------------------------------------
 # 夹具：合成一个最小 PreferencesProto 字节串
@@ -253,10 +282,20 @@ class RefusalTests(unittest.TestCase):
     def test_set_active_model_refuses_when_index_unavailable(self):
         with tempfile.TemporaryDirectory() as tmp:
             snap = _write_temp(tmp, "snap.pb", make_blob())
-            code, out = self._run([
-                "set-active-model", "--uuid", NEW_UUID, "--snap", snap,
-                "--model-index", os.path.join(tmp, "missing.json"),
-            ])
+            # 🔴 W73 P0：load_index 取本地文件失败会回落**真实** device_read（经 run_adb）
+            # ⇒ 必须 mock 掉，否则「不可达设备」语义被真机状态顶替（且违背套件离线契约）。
+            def fake_read(adb, pkg, rel):
+                raise dst.DatastorePatchError("模拟无设备/索引读不到")
+
+            old_read = dst.device_read
+            dst.device_read = fake_read
+            try:
+                code, out = self._run([
+                    "set-active-model", "--uuid", NEW_UUID, "--snap", snap,
+                    "--model-index", os.path.join(tmp, "missing.json"),
+                ])
+            finally:
+                dst.device_read = old_read
         self.assertEqual(code, dst.EXIT_REFUSED, "索引取不到应 fail-closed：%s" % out)
         self.assertIn("取不到模型索引", out)
 
@@ -493,8 +532,12 @@ class StringKeyTests(unittest.TestCase):
         self.assertIn("已自动回滚", out)
 
         # 对照绿面：设备读回 = 补丁本体（差异全在值文本区）⇒ exit 0
+        # 🔴 W73 P0：绿面也必须 patch `_apply`（只 patch device_read 会让**真实**
+        # `_apply` 把夹具推真设备 —— G2 当波即因此把设备 datastore 写坏、用户 App
+        # 崩溃循环）。此后绿面与红面同规格：设备层全 mock。
         snap_blob2 = make_string_blob(b"SYSTEM")
         reads2 = []
+        applies2 = []
 
         def fake_read_ok(adb, pkg, rel):
             if not reads2:
@@ -503,17 +546,22 @@ class StringKeyTests(unittest.TestCase):
                 return head + _str_entry(b"dark_mode", b"LIGHT!")
             return snap_blob2
 
-        old_read2 = dst.device_read
+        def fake_apply_ok(adb, pkg, local_path):
+            applies2.append(local_path)
+
+        old_read2, old_apply2 = dst.device_read, dst._apply
         dst.device_read = fake_read_ok
+        dst._apply = fake_apply_ok
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 snap2 = _write_temp(tmp, "snap.pb", snap_blob2)
                 code2, out2 = self._run(["set-string-key", "dark_mode", "LIGHT!",
                                          "--snap", snap2])
         finally:
-            dst.device_read = old_read2
+            dst.device_read, dst._apply = old_read2, old_apply2
         self.assertEqual(code2, dst.EXIT_OK, "绿面被判红：%s" % out2)
         self.assertIn("补丁完成", out2)
+        self.assertEqual(len(applies2), 1, "绿面未走一次 _apply")
 
 
 # ---------------------------------------------------------------------------
