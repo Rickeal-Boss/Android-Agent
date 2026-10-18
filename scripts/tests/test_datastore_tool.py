@@ -27,6 +27,15 @@
   ⑦ test_patch_rejects_malformed_uuid        非法 UUID 文本 ⇒ 拒绝（等长前提）
   ⑧ test_index_uuids_accepts_both_shapes      索引两种形态都能对账
 
+W73 新增判据面（G2 通用写路径 + G1 双断言）：
+  ⑨ test_set_string_key_rejects_key_outside_whitelist
+        白名单外键 ⇒ 拒绝执行（exit 2），且**先于** --snap 检查（拒决不趁晚）
+  ⑩ test_string_value_span_and_equal_length_patch_confined_to_value_region
+        字符串键值文本区定位（单/多字节 varint 两形态）+ 等长补丁差异只落值文本区
+        + 布尔键 fail-closed + 非等长拒绝（UUID 跨度判据不直搬的重设计判据）
+  ⑪ test_set_string_key_out_of_span_write_judged_red_with_rollback
+        设备读回值文本区**外**有差异 ⇒ 判红（exit 1）且自动回滚被行使（离线 monkeypatch）
+
 ---------------------------------------------------------------------------
 变异测试说明（删/改一条判据 ⇒ 哪个用例必红）—— 用于证明本测试网**非 vacuous**：
 **已实测执行的变异（W72 本波真跑过，非推测）**：把 `find_uuid_span` 里的
@@ -37,6 +46,10 @@
 `test_patch_preserves_preceding_bool_field`（补丁污染 `has_seen_intro` —— 与两次真机
 事故的现象逐字一致）。⇒ 这张网确实拦得住那个坑，不是形式主义。
 
+**W73 G1 双断言（find_key_offset count + gap≤4）与 P4-a 仍处时序锁**（真机设备写
+进行中）：代码 + ⑫/⑬ 两例 fixture 已写在仓外草稿 `_ci-tools/_w73_g1_draft.py`
+（含变异自证输出：打回首现形态 ⇒ ⑫/⑬ 必红、还原复绿），解锁即落正文件。
+
 其余变异（未逐一执行，按代码路径推导）：
   · 把 `DiffReport.ok` 的 `out_of_span` 条件删掉 ⇒ **④ 必红**。
   · 把 `cmd_set_active_model` 的 `if not args.snap` 守卫删掉 ⇒ **② 必红**
@@ -44,6 +57,12 @@
   · 把索引对账（`validate_uuid_in_index`）删掉 ⇒ **③ 必红**。
   · 把 `is_identical` 改成「UUID 子串在不在」⇒ **⑤ 必红**（差一字节但子串仍在）。
   · 把 `UUID_FULLMATCH` 校验删掉 ⇒ **⑦ 必红**（35 字符 UUID 会被静默接受）。
+  · 把白名单检查（`KNOWN_SETTINGS_KEYS`）删掉 ⇒ **⑨ 必红**（白名单外键被放行）。
+  · 把 `patch_string_value` 的等长断言删掉 ⇒ **⑩ 必红**（非等长被静默接受）。
+  · 把 `cmd_set_string_key` 的 `out_of_span` 判红 + 回滚分支删掉 ⇒ **⑪ 必红**
+    （越界写入被判绿 = W70 形态在通用路径复发）。
+  · （G1 时序锁中，草稿态）删 `find_key_offset` 的 count / gap 断言 ⇒ 草稿 ⑫/⑬ 必红
+    （已实测：变异体 `_ci-tools/_w73_g2_draft/datastore_tool_MUTANT_firsthit.py`）。
 ---------------------------------------------------------------------------
 """
 import contextlib
@@ -273,6 +292,188 @@ class IndexTests(unittest.TestCase):
         hit, available = dst.validate_uuid_in_index("z", [{"id": "a"}])
         self.assertFalse(hit)
         self.assertEqual(available, ["a"])
+
+
+# ---------------------------------------------------------------------------
+# ⑨ / ⑩ / ⑪ W73 G2（N-1）：set-string-key 通用写路径
+# ---------------------------------------------------------------------------
+def _str_entry(key: bytes, text: bytes) -> bytes:
+    """字符串 map 条目（与设备快证实测同款式：0a <elen> 0a <klen> key 12 <vlen> 2a <tlen> text）。"""
+    value = b"\x2a" + bytes([len(text)]) + text
+    entry_inner = b"\x0a" + bytes([len(key)]) + key + b"\x12" + bytes([len(value)]) + value
+    return b"\x0a" + bytes([len(entry_inner)]) + entry_inner
+
+
+def _long_str_entry(key: bytes, text: bytes) -> bytes:
+    """长字符串条目（vlen/tlen 走**多字节 varint**，钉 `_read_varint` —— 实测
+    `inference_config` 就是 `12 d9 03 2a d6 03` 形态；按 1 字节长度硬编码会算错）。"""
+    def _varint(n: int) -> bytes:
+        out = bytearray()
+        while True:
+            bits = n & 0x7F
+            n >>= 7
+            if n:
+                out.append(bits | 0x80)
+            else:
+                out.append(bits)
+                return bytes(out)
+
+    value = b"\x2a" + _varint(len(text)) + text
+    entry_inner = b"\x0a" + bytes([len(key)]) + key + b"\x12" + _varint(len(value)) + value
+    return b"\x0a" + _varint(len(entry_inner)) + entry_inner
+
+
+def make_string_blob(text: bytes = b"SYSTEM") -> bytes:
+    """夹具：bool 前置 + `dark_mode` 字符串条目（键名取自 SettingsRepository 白名单）。"""
+    return _bool_entry(b"has_seen_intro", True) + _str_entry(b"dark_mode", text)
+
+
+class StringKeyTests(unittest.TestCase):
+    """⑨ 白名单拒绝 / ⑩ 值文本区定位+等长 diff / ⑪ 越界回滚。"""
+
+    def _run(self, argv):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = dst.main(argv)
+        return code, buf.getvalue()
+
+    def test_set_string_key_rejects_key_outside_whitelist(self):
+        """⑨ 白名单外 ⇒ exit 2，且**先于** --snap 检查（连快照都不要求）。"""
+        for bad_key in ("not_a_settings_key", "active_model_id", "javax.net", "proto"):
+            code, out = self._run(["set-string-key", bad_key, "v"])
+            self.assertEqual(code, dst.EXIT_REFUSED,
+                            "白名单外键 %r 未返回 exit 2：%s" % (bad_key, out))
+            self.assertIn("白名单", out)
+        # active_model_id 有专用命令：拒绝文案要点名这件事（防有人拿通用路径绕 UUID 护栏）
+        code, out = self._run(["set-string-key", "active_model_id", "x"])
+        self.assertIn("set-active-model", out)
+        # 白名单内的已知布尔键走到定位期才拒（fail-closed，非白名单问题）——
+        # 证明白名单拦的是「键存不存在」，定位拦的是「值区形态对不对」。
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = _write_temp(tmp, "snap.pb", make_string_blob())
+            code, out = self._run(["set-string-key", "has_seen_intro", "true",
+                                   "--snap", snap])
+            self.assertEqual(code, dst.EXIT_REFUSED, "布尔键被通用路径放行：%s" % out)
+            self.assertIn("不是字符串载荷", out)
+
+    def test_string_value_span_and_equal_length_patch_confined_to_value_region(self):
+        """⑩ 值文本区定位（单/多字节 varint）+ 等长补丁差异只落值文本区。"""
+        # --- 单字节 varint 形态 ---
+        blob = make_string_blob(b"SYSTEM")
+        start, end = dst.find_string_value_span(blob, b"dark_mode")
+        self.assertEqual(blob[start:end], b"SYSTEM")
+        patched, span = dst.patch_string_value(blob, b"dark_mode", "LIGHT!")
+        self.assertEqual(span, (start, end))
+        self.assertEqual(len(patched), len(blob), "等长替换被破坏")
+        # 差异只允许落在值文本区内（UUID 跨度判据不直搬：这里是 text 段）
+        report = dst.classify_diff(blob, patched, span)
+        self.assertTrue(report.ok, "等长补丁被判红：%s" % report.describe())
+        self.assertEqual(report.out_of_span, ())
+        self.assertEqual(report.count, 6)
+        for pos in report.positions:
+            self.assertGreaterEqual(pos, span[0])
+            self.assertLess(pos, span[1])
+        # 条目标签 / 长度前缀 / 前置 bool 条目逐字节不变
+        head = _bool_entry(b"has_seen_intro", True)
+        self.assertEqual(patched[:len(head)], blob[:len(head)])
+        self.assertEqual(patched[end:], blob[end:])
+        self.assertEqual(patched[:start], blob[:start])
+
+        # --- 多字节 varint 形态（长 JSON 值，实测 inference_config 同款） ---
+        long_text = ('{"sampling":{"temperature":0.7},"pad":"%s"}' % ("x" * 400)).encode()
+        blob2 = make_string_blob(b"SYSTEM") + _long_str_entry(b"inference_config", long_text)
+        start2, end2 = dst.find_string_value_span(blob2, b"inference_config")
+        self.assertEqual(blob2[start2:end2], long_text)
+        # 钉「多字节 varint 确实被行使」：tlen > 127 ⇒ 长度前缀是 2 字节 varint，
+        # text_start 前第 2 字节必带 varint 延续位（0x80）—— 按 1 字节长度硬编码
+        # 会在这里算错区（「差一字节」族坑，实测 inference_config 同款）。
+        self.assertGreater(len(long_text), 127, "夹具未逼出多字节 varint（本形态 vacuous）")
+        self.assertTrue(blob2[start2 - 2] & 0x80, "tlen varint 不是多字节形态")
+        new_long = ('{"sampling":{"temperature":0.9},"pad":"%s"}' % ("x" * 400)).encode()
+        patched2, span2 = dst.patch_string_value(blob2, b"inference_config", new_long.decode())
+        self.assertEqual(len(patched2), len(blob2))
+        report2 = dst.classify_diff(blob2, patched2, span2)
+        self.assertTrue(report2.ok, "长值补丁被判红：%s" % report2.describe()[:80])
+        self.assertEqual(report2.out_of_span, ())
+        # 长度前缀区（varint 字节）不动 ⇒ 只改文本
+        self.assertEqual(patched2[:start2], blob2[:start2])
+        self.assertEqual(patched2[end2:], blob2[end2:])
+
+        # --- 布尔键 fail-closed（值区非字符串载荷） ---
+        with self.assertRaises(dst.DatastorePatchError, msg="布尔键被当字符串定位"):
+            dst.find_string_value_span(blob, b"has_seen_intro")
+
+        # --- 非等长拒绝（长度前缀会动） ---
+        with self.assertRaises(dst.DatastorePatchError, msg="非等长替换被接受"):
+            dst.patch_string_value(blob, b"dark_mode", "LIGHT")
+
+        # --- 伪键位拒绝：键名前不是 `0a <键长>` 条目头（同名文本蹭在值区里） ---
+        sneaky = _str_entry(b"note", b"see dark_mode here")
+        self.assertEqual(sneaky.count(b"dark_mode"), 1, "夹具应保证键名唯一（红的是条目头断言）")
+        with self.assertRaises(dst.DatastorePatchError, msg="值区里的同名文本被当成键位"):
+            dst.find_string_value_span(sneaky, b"dark_mode")
+
+    def test_set_string_key_out_of_span_write_judged_red_with_rollback(self):
+        """⑪ 设备读回出现值文本区**外**差异 ⇒ 判红（exit 1）+ 自动回滚被行使。
+
+        离线 monkeypatch 设备层：`_apply` 只记账不碰 adb；`device_read` 第一次读回
+        「补丁写错位置」的字节（W70 形态：改到了别的条目），回滚读回快照。
+        """
+        snap_blob = make_string_blob(b"SYSTEM")
+        apply_calls = []
+        reads = []
+
+        def fake_apply(adb, pkg, local_path):
+            apply_calls.append(local_path)
+
+        def fake_read(adb, pkg, rel):
+            if not reads:
+                # 写后读回：差异落在**别的条目**（前置 bool 条目头）⇒ 越界
+                tampered = bytearray(snap_blob)
+                tampered[2] ^= 0xFF
+                reads.append(1)
+                return bytes(tampered)
+            # 回滚后读回：与快照逐字节一致
+            reads.append(2)
+            return snap_blob
+
+        old_apply, old_read = dst._apply, dst.device_read
+        dst._apply, dst.device_read = fake_apply, fake_read
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                snap = _write_temp(tmp, "snap.pb", snap_blob)
+                code, out = self._run(["set-string-key", "dark_mode", "LIGHT!",
+                                       "--snap", snap])
+        finally:
+            dst._apply, dst.device_read = old_apply, old_read
+
+        self.assertEqual(code, dst.EXIT_RED, "越界写入未判红：%s" % out)
+        self.assertIn("之外", out)
+        self.assertEqual(len(apply_calls), 2, "回滚未行使（_apply 应被调 2 次：写+回滚）")
+        self.assertIn("已自动回滚", out)
+
+        # 对照绿面：设备读回 = 补丁本体（差异全在值文本区）⇒ exit 0
+        snap_blob2 = make_string_blob(b"SYSTEM")
+        reads2 = []
+
+        def fake_read_ok(adb, pkg, rel):
+            if not reads2:
+                reads2.append(1)
+                head = _bool_entry(b"has_seen_intro", True)
+                return head + _str_entry(b"dark_mode", b"LIGHT!")
+            return snap_blob2
+
+        old_read2 = dst.device_read
+        dst.device_read = fake_read_ok
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                snap2 = _write_temp(tmp, "snap.pb", snap_blob2)
+                code2, out2 = self._run(["set-string-key", "dark_mode", "LIGHT!",
+                                         "--snap", snap2])
+        finally:
+            dst.device_read = old_read2
+        self.assertEqual(code2, dst.EXIT_OK, "绿面被判红：%s" % out2)
+        self.assertIn("补丁完成", out2)
 
 
 if __name__ == "__main__":

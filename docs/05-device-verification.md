@@ -192,6 +192,8 @@ python scripts/datastore_tool.py restore --snap _w72_dev/ds_pre.pb
 ⚠️ 还原后**必须逐字节 diff**，不能只查「UUID 子串存在」—— 子串在错误位置也会"通过"（W71 实例）。
 ⚠️ 设备真原值以设备索引为准，不以交接文档为准。
 
+🔴 **工具缺命令时，先扩工具再实验，禁手写绕行**（W73 G2 / N-1）：要写 `set-active-model` 之外的设置位 ⇒ 先给 `scripts/datastore_tool.py` 加命令（W73 G2 范式：**字段白名单制**——白名单 = `SettingsRepository` 全部已知设置键；编译态定位 + 等长替换 + 值区 diff + 越界回滚四护栏随命令落、随单测钉），再上设备。⛔ 「就这一次」的一次性脚本 = W70/W71 三犯的共同入口（手写复活）。
+
 ### B. 日志判据：关键词必须排除「自家文案」
 
 W72 实例：驱动脚本用 `NOT_FOUND` / `Unsupported model type` 做旗标，结果命中的是**本仓 knownBroken 预设的警告文案**（`[WARN] 激活态重校验提示：已知不可用：0.17.1 引擎初始化 NOT_FOUND（…）`），一度把「已修复」误读成「未修复」。

@@ -46,18 +46,43 @@ start, end = m.start(), m.end()        # ⇒ start/end 也是**绝对**位置
 
     snapshot        --out FILE                     读设备 datastore 落盘为快照（打印字节数 + 当前 UUID）
     set-active-model --uuid UUID --snap FILE [...] 等长替换 active_model_id（强制快照 + 强制 diff + 超范围自动回滚）
+    set-string-key  KEY VALUE --snap FILE [...]   等长替换**白名单内**字符串设置键的值（W73 G2 通用写路径）
     restore         --snap FILE [...]              用快照覆盖设备 datastore（逐字节断言，不等即 exit 1）
     verify          --snap FILE [...]              只读比对（打印差异位置）
 
 退出码：`0` 成功 / `1` 判红（补丁越界、还原不等、设备读取失败）/ `2` **拒绝执行**
-（缺 `--snap`、UUID 非法、UUID 不在模型索引里、索引取不到 —— 一律 fail-closed，绝不带病写）。
+（缺 `--snap`、UUID 非法、UUID 不在模型索引里、索引取不到、键不在白名单、
+新旧值非等长 —— 一律 fail-closed，绝不带病写）。
+
+## `set-string-key` 的字段白名单（W73 G2，N-1 坐实后的通用写路径）
+
+第十六审 N-1：写命令面此前只有 `set-active-model` 一个 ⇒ 缝隙通向「就这一次」的
+手写脚本（W70/W71 三犯的共同入口）。本命令把「写别的设置位」变成**受许路径**，
+入口收窄靠**字段白名单制**：
+
+  - 白名单 = `core-data/.../SettingsRepository.kt` 里 `preferencesKey(...)` 声明的
+    全部已知设置键（W73 grep 实拉 18 键，见 [KNOWN_SETTINGS_KEYS]）；
+  - 白名单**外**的键一律拒绝（exit 2）—— 键名不在仓内设置键表里 = 要么打错、
+    要么撞上 protobuf 结构字节，两者都不该写；
+  - ⚠️ `active_model_id` **刻意不在白名单**：它有专用命令 `set-active-model`
+    （UUID 格式校验 + 设备模型索引对账）—— 通用路径绕过那两个护栏就是
+    W70「错一位」事故的复活入口；
+  - 布尔 / 浮点键（`has_seen_intro` 等）在白名单内 = 「已知键」，但其值区不是
+    字符串载荷（Value 无 field 5 串）⇒ 定位阶段 fail-closed 拒绝，提示走 UI。
+
+**非 UUID 键的写后判据（ UUID 跨度判据不可直搬，按计划 §二.13 重设计）**：
+差异必须落在该键的**值文本区** `[text_start, text_end)` 内（即 Value 子消息
+field 5 载荷，`0x2a <tlen> <text>` 的 text 段）；等长替换下标签 / 长度前缀 /
+其它条目逐字节不变。越界 ⇒ 判红 + 自动回滚（与 `set-active-model` 同机制）。
 
 ## 不变量（`scripts/tests/test_datastore_tool.py` 钉死）
 
-1. 替换**等长**：写入后字节数必须与快照一致（UUID 恒 36 字符，长度前缀不变）。
-2. 差异**只允许落在 UUID 区**：`[uuid_start, uuid_end)` 之外的任何差异字节 ⇒ 判红 + 自动回滚。
-   （W71 实测的正常切换 = UUID 区 28 字节差；本工具不硬编码 28，只钉「不得越界」，
-   因为差几个字节取决于新旧 UUID 有几个字符相同。）
+1. 替换**等长**：写入后字节数必须与快照一致（UUID 恒 36 字符，长度前缀不变；
+   `set-string-key` 同样只支持等长 —— 非等长会改 map 条目的长度前缀）。
+2. 差异**只允许落在值区内**：`set-active-model` 的值区 = UUID 跨度
+   `[uuid_start, uuid_end)`；`set-string-key` 的值区 = 值文本区
+   `[text_start, text_end)`。两命令都不硬编码「差异字节数」（W71 实测的正常
+   切换 = UUID 区 28 字节差，字节数随新旧值相似度变化），只钉「不得越界」。
 3. `restore` / `verify` 的判据是**逐字节**，不是「UUID 子串在不在」—— 子串在错误位置
    也会「通过」，那正是 W70/W71 写坏后看起来「成功」的原因。
 
@@ -67,6 +92,7 @@ start, end = m.start(), m.end()        # ⇒ start/end 也是**绝对**位置
     python scripts/datastore_tool.py set-active-model \\
         --uuid 0e0d75b0-36c0-49ed-b97e-5f4be8103ee0 --snap /tmp/ds_snap.pb \\
         --model-index /tmp/models_index.json
+    python scripts/datastore_tool.py set-string-key dark_mode DARK__ --snap /tmp/ds_snap.pb
     python scripts/datastore_tool.py verify --snap /tmp/ds_snap.pb
     python scripts/datastore_tool.py restore --snap /tmp/ds_snap.pb
 """
@@ -96,6 +122,34 @@ DEFAULT_ADB = "D:/WBfil/2026-09-18-18-27-37/_j2env/sdk/platform-tools/adb.exe"
 KEY = b"active_model_id"
 #: UUID 文本长度（含 4 个连字符）。等长替换的前提。
 UUID_LEN = 36
+#: W73 G2（N-1）：`set-string-key` 的**字段白名单** —— 仓内已知设置键全表。
+#: 来源 = `core-data/src/main/java/com/rickeal/agent/core/data/SettingsRepository.kt`
+#: 的 `preferencesKey(...)` 声明（W73 grep 实拉；`active_model_id` 有专用写命令，
+#: 刻意不收）。类型标注供定位期 fail-closed 判据用：str = 字符串值区（本命令目标）；
+#: bool / float = 值区非字符串载荷，定位阶段拒绝（提示走 UI）。
+#: ⚠️ 新增设置键时同步本表（漏同步 = 该键不可写 ⇒ 逼人绕道手写，N-1 复发）。
+KNOWN_SETTINGS_KEYS = frozenset({
+    # --- str（stringPreferencesKey）---
+    "inference_config",         # str：推理配置 JSON
+    "dark_mode",                # str：主题
+    "haptic_level",             # str：触感档位
+    "capability_mode",          # str：工具能力模式
+    "disclosure_mode",          # str：披露模式
+    "wallpaper_path",           # str：壁纸路径
+    # --- bool（booleanPreferencesKey）---
+    "reduce_motion",            # bool
+    "enable_noise",             # bool
+    "allow_metered_download",   # bool
+    "generation_notification",  # bool
+    "has_seen_onboarding",      # bool
+    "is_tos_accepted",          # bool
+    "is_gemma_terms_accepted",  # bool
+    "has_seen_intro",           # bool：W70/W71 两次写坏的受害字段（首启标记）
+    # --- float（floatPreferencesKey）---
+    "glass_intensity",          # float
+    "overlay_opacity",          # float
+    "overlay_blur_radius",      # float
+})
 
 #: UUID 模式。`pos` 参数语义见模块头注 —— 这是本文件唯一允许的定位方式。
 UUID_PATTERN = re.compile(
@@ -158,6 +212,108 @@ def read_active_model_id(blob: bytes, key: bytes = KEY) -> Optional[str]:
     except DatastorePatchError:
         return None
     return blob[start:end].decode("ascii")
+
+
+# ---------------------------------------------------------------------------
+# W73 G2（N-1）：通用字符串设置键的定位 / 等长替换（编译态定位，禁切片法）
+# ---------------------------------------------------------------------------
+def _read_varint(blob: bytes, pos: int) -> Tuple[int, int]:
+    """解码 protobuf varint，返回 `(值, 下一位置)`；畸形 ⇒ [DatastorePatchError]。
+
+    为什么必须自己解：`inference_config` 这类长字符串值的 vlen/tlen 是**多字节**
+    varint（实测快照：`12 d9 03` = 473、`2a d6 03` = 470）—— 按「1 字节长度」硬编码
+    会把长值区的定位算错（又是「差一字节」族的坑）。
+    """
+    result = 0
+    shift = 0
+    while True:
+        if pos >= len(blob):
+            raise DatastorePatchError(
+                "varint 解码越界（位置 %d ≥ 快照 %d 字节）—— 结构不符" % (pos, len(blob))
+            )
+        byte = blob[pos]
+        result |= (byte & 0x7F) << shift
+        pos += 1
+        if not byte & 0x80:
+            return result, pos
+        shift += 7
+        if shift > 28:
+            raise DatastorePatchError("varint 超过 5 字节（位置 %d）—— 结构不符" % (pos - 1))
+
+
+def find_string_value_span(blob: bytes, key: bytes) -> Tuple[int, int]:
+    """定位字符串设置键的**值文本区** `[start, end)`（绝对偏移；禁切片法）。
+
+    结构（preferences_pb 的 map<string, Value> 条目，与设备快证实测一致）：
+        0a <elen> 0a <klen> "<key>" | 12 <vlen> | 2a <tlen> "<text>"
+    值文本区 = 最后的 `<text>` 段（Value 子消息 field 5 / wire type 2 的载荷）。
+
+    断言（fail-closed，任一不成立抛 [DatastorePatchError]）：
+      ① 键名唯一（count != 1 ⇒ 结构歧义拒绝）；
+      ② 键名前 2 字节 = `0a <len(key)>`（键标签 + 键长）—— 命中处必须是**真 map
+         条目键位**，不是某个值区载荷里蹭进来的同名文本（防伪键命中）；
+      ③ 键尾必须是 `12`（条目标签）+ `2a`（字符串值载荷标签）—— 布尔 / 浮点键
+         在此拒绝（值区非字符串载荷 ⇒ 提示走 UI）；
+      ④ varint 解码成功且文本区不越界。
+    """
+    count = blob.count(key)
+    if count != 1:
+        raise DatastorePatchError(
+            "键 %r 在快照里出现 %d 次，结构歧义拒绝" % (key.decode("ascii", "replace"), count)
+        )
+    ki = blob.find(key)
+    if ki < 2 or blob[ki - 2] != 0x0A or blob[ki - 1] != len(key):
+        raise DatastorePatchError(
+            "键 %r（偏移 %d）之前不是 `0a <键长>` 条目头 —— 命中处不是 map 条目键位"
+            "（疑似同名文本蹭在别的值区里）；拒绝继续" % (key.decode("ascii", "replace"), ki)
+        )
+    cursor = ki + len(key)
+    if cursor >= len(blob) or blob[cursor] != 0x12:
+        raise DatastorePatchError(
+            "键 %r 之后不是条目标签 0x12 —— datastore 结构与预期不符" % key.decode("ascii", "replace")
+        )
+    _, cursor = _read_varint(blob, cursor + 1)
+    if cursor >= len(blob) or blob[cursor] != 0x2A:
+        raise DatastorePatchError(
+            "键 %r 的值区不是字符串载荷（缺 0x2a 串标签）—— 布尔 / 浮点键请走 UI，"
+            "本命令只写字符串键" % key.decode("ascii", "replace")
+        )
+    text_len, text_start = _read_varint(blob, cursor + 1)
+    text_end = text_start + text_len
+    if text_end > len(blob):
+        raise DatastorePatchError(
+            "键 %r 的值文本区越界（[%d, %d) 超出快照 %d 字节）"
+            % (key.decode("ascii", "replace"), text_start, text_end, len(blob))
+        )
+    return text_start, text_end
+
+
+def patch_string_value(blob: bytes, key: bytes, new_value: str) -> Tuple[bytes, Tuple[int, int]]:
+    """把白名单字符串键的值**等长**替换为 `new_value`，返回 `(patched, (start, end))`。
+
+    断言（任一不成立抛 [DatastorePatchError]）：
+      ① 定位通过（见 [find_string_value_span] 四条）；
+      ② **等长**：`len(new_value.encode()) == 原文本长` —— 非等长会改 map 条目的
+         vlen/tlen（长度前缀），本工具不做条目重建，只支持等长；
+      ③ 替换后总字节数与入参逐字节等长（同 UUID 路径的不变量）。
+    """
+    start, end = find_string_value_span(blob, key)
+    try:
+        new_bytes = new_value.encode("utf-8", "strict")
+    except UnicodeEncodeError:
+        raise DatastorePatchError("新值编码失败：%r（非法码点？）" % new_value)
+    if len(new_bytes) != end - start:
+        raise DatastorePatchError(
+            "非等长替换拒绝：新值 %d 字节 ≠ 原值 %d 字节（键 %r）—— 改长度会动 map 条目"
+            "的长度前缀，本工具只做等长替换" % (len(new_bytes), end - start,
+                                      key.decode("ascii", "replace"))
+        )
+    patched = blob[:start] + new_bytes + blob[end:]
+    if len(patched) != len(blob):
+        raise DatastorePatchError(
+            "等长替换失败：%d → %d 字节（必须相等）" % (len(blob), len(patched))
+        )
+    return patched, (start, end)
 
 
 def patch_active_model_id(blob: bytes, new_uuid: str) -> Tuple[bytes, Tuple[int, int]]:
@@ -340,11 +496,23 @@ def _remote_name(local_path: str) -> str:
     return "%s/%s" % (REMOTE_TMP, os.path.basename(local_path) or "datastore_patch.pb")
 
 
+def _cleanup_remote(adb: str, remote_path: str) -> None:
+    """清理 `/data/local/tmp` 中转临时件（W73 P4-b：设备侧不留残件）。
+
+    best-effort：清理失败只警告、**不改本次判定**（补丁判据由写后逐字节 diff
+    独立成立，不依赖清理结果）—— 防「清理失败把已成功的补丁拖成判红」。
+    """
+    proc = run_adb(adb, ["shell", "rm", "-f", remote_path])
+    if proc.returncode != 0:
+        print("⚠️ 设备临时件清理失败（不影响本次判定）：%s" % remote_path)
+
+
 def _apply(adb: str, pkg: str, local_path: str) -> None:
     """push + run-as cp 回原位（快照、补丁、回滚三条路径共用同一段编排）。"""
     remote = _remote_name(local_path)
     device_push(adb, local_path, remote)
     device_copy_back(adb, pkg, remote, DATASTORE_REL)
+    _cleanup_remote(adb, remote)
 
 
 def load_index(adb: str, pkg: str, model_index: Optional[str]) -> Optional[object]:
@@ -442,8 +610,88 @@ def cmd_set_active_model(args) -> int:
         _rollback(args)
         return EXIT_RED
     if report.count == 0:
+        # P4-b（W73）：零差异路径此前会**紧接着**再打一条「✅ 补丁完成：UUID 区 0
+        # 字节差」—— 同一轮输出里 ⚠️ 与 ✅ 并呈（双消息），人会被误导以为写了。
+        # 订正 = 零差异即短路返回，第二条消息不再出现。
         print("⚠️ 设备 UUID 已是目标值（零差异）—— 无操作完成，快照保留在 %s。" % args.snap)
+        return EXIT_OK
     print("✅ 补丁完成：UUID 区 %d 字节差，全部落在 [%d, %d) 内。" % (report.count, span[0], span[1]))
+    print("   快照保留在 %s（需要复位时跑 restore --snap %s）。" % (args.snap, args.snap))
+    return EXIT_OK
+
+
+def cmd_set_string_key(args) -> int:
+    """W73 G2（N-1）：白名单内字符串设置键的等长替换（四护栏，与 UUID 路径同机制）。
+
+    护栏序（fail-closed，任一不过即拒 / 判红）：
+      ① 字段白名单（[KNOWN_SETTINGS_KEYS]）—— 白名单外 exit 2；
+      ② 强制快照（无快照 = 无回滚锚点 = 拒绝执行，exit 2）；
+      ③ 编译态定位 + 等长替换（纯函数先算完再碰设备；算不出来一个字节都不写）；
+      ④ 写后自动逐字节 diff —— 差异必须落在该键**值文本区**内（UUID 跨度判据
+         不可直搬；越界 ⇒ 判红 + 自动回滚，exit 1）。
+    """
+    # ① 字段白名单（最先判：白名单外的键连快照都不要求 —— 拒绝要趁早、趁纯）
+    if args.key not in KNOWN_SETTINGS_KEYS:
+        print("⛔ 拒绝执行：键 %r 不在已知设置键白名单里（共 %d 个已知键）。"
+              % (args.key, len(KNOWN_SETTINGS_KEYS)))
+        print("   白名单来源 = core-data SettingsRepository 的 preferencesKey 声明；")
+        print("   理由：键名不在仓内设置键表里 = 要么打错、要么撞上 protobuf 结构字节。")
+        if args.key == KEY.decode("ascii"):
+            print("   ⚠️ active_model_id 有专用命令 set-active-model（UUID 校验 + 索引对账），不走本命令。")
+        return EXIT_REFUSED
+
+    # ② 强制快照（与 set-active-model 同理由：没有快照就没有回滚锚点）
+    if not args.snap:
+        print("⛔ 拒绝执行：set-string-key 必须带 --snap <快照文件>。")
+        print("   理由：没有快照就没有回滚锚点 —— W70/W71 两次写坏都是靠事前快照救回来的。")
+        print("   先跑：python scripts/datastore_tool.py snapshot --out <file>")
+        return EXIT_REFUSED
+    try:
+        snap = read_bytes(args.snap)
+    except OSError as exc:
+        print("⛔ 拒绝执行：快照不可读（%s）" % exc)
+        return EXIT_REFUSED
+
+    # ③ 定位 + 等长替换（纯函数，先算完再碰设备）
+    try:
+        patched, span = patch_string_value(snap, args.key.encode("ascii", "replace"), args.value)
+    except DatastorePatchError as exc:
+        print("⛔ 拒绝执行：%s" % exc)
+        return EXIT_REFUSED
+    old_value = snap[span[0]:span[1]].decode("utf-8", "replace")
+
+    # ④ 写设备：先写补丁字节，再读回逐字节核验（diff 判据 = 只落值文本区）
+    print("快照：%s（%d 字节，%s 值区 [%d, %d)）"
+          % (args.snap, len(snap), args.key, span[0], span[1]))
+    print("值：%r → %r（等长 %d 字节）" % (old_value, args.value, span[1] - span[0]))
+    patched_path = args.snap + ".patched"
+    write_bytes(patched_path, patched)
+    try:
+        _apply(args.adb, args.pkg, patched_path)
+        device_now = device_read(args.adb, args.pkg, DATASTORE_REL)
+    except DatastorePatchError as exc:
+        print("⛔ 写入/读回失败：%s" % exc)
+        _rollback(args)
+        return EXIT_RED
+
+    report = classify_diff(snap, device_now, span)
+    print("diff（设备现状 vs 快照）：%s" % report.describe())
+    if report.length_changed:
+        print("⛔ 判红：设备文件长度变了（%d → %d）—— 结构性损坏。" % (len(snap), len(device_now)))
+        _rollback(args)
+        return EXIT_RED
+    if report.out_of_span:
+        print("⛔ 判红：有差异落在 %s 值文本区之外 —— 补丁写错了位置（W70/W71 同型）。"
+              % args.key)
+        _rollback(args)
+        return EXIT_RED
+    if report.count == 0:
+        # 与 set-active-model 的零差异路径同口径：短路返回，不打「✅ 完成」双消息。
+        print("⚠️ 设备 %s 已是目标值（零差异）—— 无操作完成，快照保留在 %s。"
+              % (args.key, args.snap))
+        return EXIT_OK
+    print("✅ 补丁完成：%s 值区 %d 字节差，全部落在 [%d, %d) 内。"
+          % (args.key, report.count, span[0], span[1]))
     print("   快照保留在 %s（需要复位时跑 restore --snap %s）。" % (args.snap, args.snap))
     return EXIT_OK
 
@@ -541,6 +789,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_set.add_argument("--model-index", default=None,
                        help="本地 models.json（缺省从设备 %s 拉）" % INDEX_REL)
     p_set.set_defaults(func=cmd_set_active_model)
+
+    p_str = sub.add_parser(
+        "set-string-key", parents=[common],
+        help="等长替换白名单内字符串设置键的值（W73 G2；白名单外拒绝）",
+    )
+    p_str.add_argument("key", help="设置键名（必须在 KNOWN_SETTINGS_KEYS 白名单内）")
+    p_str.add_argument("value", help="新值（必须与原值等长，UTF-8 编码）")
+    # 与 set-active-model 同理：缺 --snap 要走到本工具自己的「拒绝执行」文案 + exit 2，
+    # 而不是 argparse 的通用 usage 报错（判据要能被人和脚本同时读懂）。
+    p_str.add_argument("--snap", default=None, help="事前快照（必填，缺则 exit 2 拒绝执行）")
+    p_str.set_defaults(func=cmd_set_string_key)
 
     p_restore = sub.add_parser("restore", parents=[common], help="用快照覆盖设备 datastore")
     p_restore.add_argument("--snap", required=True, help="快照文件")
