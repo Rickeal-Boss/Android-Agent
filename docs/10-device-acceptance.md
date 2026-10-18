@@ -767,7 +767,7 @@ Wave 33 起累计的验收项 **55 条**（逐条见 §11.0.1 台账，均附证
 
 ### 11.8 仍未纳入本清单的历史挂账（**无需真机，但需知道**）
 
-原生工具通道「同 run 内恢复」｜**工具 schema 形状的真机实证（R1）**——已单列 §11.10（真机窗口前置硬条件），不再挂账｜记忆向量检索（禁引新依赖）/ 去重 / 分区｜路径 B 列表回看优化（`DrawBackdropModifier` 每帧全量重录，待真机帧时间实测）｜i18n / RTL｜法务 `TODO(legal)` ×4｜**`termsVersion`（时序风险：必须先于任何法务文本替换落地）**｜**M4 多模态 NPU 段：⛔ 无设备不可验证**（samplerConfig=null 约束在案 + 现役唯一真机 OPPO A13 无 NPU 能力 ⇒ 台账 docs/15 W73-02 parked，重启前提 = NPU 能力设备到位；同项音频段另有 W73 section dd 微取证在途，结论归 §11 补登）｜0 tags / 0 releases。
+原生工具通道「同 run 内恢复」｜**工具 schema 形状的真机实证（R1）**——已单列 §11.10（真机窗口前置硬条件），不再挂账｜记忆向量检索（禁引新依赖）/ 去重 / 分区｜路径 B 列表回看优化（`DrawBackdropModifier` 每帧全量重录，待真机帧时间实测）｜i18n / RTL｜法务 `TODO(legal)` ×4｜**`termsVersion`（时序风险：必须先于任何法务文本替换落地）**｜**M4 多模态 NPU 段：⛔ 无设备不可验证**（samplerConfig=null 约束在案 + 现役唯一真机 OPPO A13 无 NPU 能力 ⇒ 台账 docs/15 W73-02 parked，重启前提 = NPU 能力设备到位；同项音频段 W73 section dd 微取证**已完成**：E2B-it/E4B-it 容器 AUDIO section 在档 ⇒ audio=true 非虚高，结论见 §11.11）｜0 tags / 0 releases。
 
 ---
 
@@ -816,3 +816,16 @@ R1 是**唯一无法离线验证项**、决定原生工具通道成败，故从 
 
 - **触发条件**：层 1 或层 3 失败（转换件不支持），或层 2 失败（模型能力不足）
 - **降级动作**：保持原生通道开关**默认关闭**（默认值不翻转），文本协议继续作为交付路径；登记「该转换件 / 模型组合不支持原生通道」进 handoff；层 2 失败另需评估**提示词协议强化**是否立项
+
+---
+
+### 11.11 W73 内核验证批（2026-10-18，OPPO A13，结论入档；原件 `_research/w73-kernel-verification.md`）
+
+| 项 | 判定 | 证据要点 |
+|---|---|---|
+| 振荡检测 A/B 交替（W30 剧本） | ⚠️ **未行使** | 四次诱导全记录：题干 `;` 截断（设备 shell 命令分隔符，已修：单引号包裹）/ 模型批量调用被文本协议静默 0 执行 / 幻觉脱稿。**离线 `ToolOscillationDetectorTest` 保持触发链权威判据**（W69-10 先例）。负结果不得记 ✅ |
+| ask_actor 子 run 全链 | ⚠️ **部分行使** | planner 双证齐全（父 journal tool obs ok=true + logcat「子代理 planner 完成：0 轮，输出 194/204 字符」×2）；子 run 后父 run re-prefill 读数 `firstTokenLatencyMillis=21885ms`（无子 run 对照 0.9–1.4s）。critic/summarizer 未行使（0 行 = 空命中语义成立） |
+| 音频 section dd 微取证 | ✅ **虚高排除** | E2B-it 与 E4B-it 容器 head 扫描 AUDIO section（`tf_lite_audio_adapter`/`tf_lite_audio_encoder_hw`/`tf_lite_end_of_audio`）在档，同窗 VISION_ENCODER 可见 = 窗口有效性 ⇒ `ModelHeuristics` GEMMA_3N `audio=true` 非虚高（W73-03 销账）。section 表只证能力位展示口径，不作音频行为承诺 |
+| M4 NPU | ⛔ **无设备不可验证** | 注记在 §11.8；台账 W73-02 parked |
+| **P0 事故（用户报告「同意用户协议后闪退」）** | ✅ **根除** | 根因 = 测试夹具缺外层 protobuf 包裹 + 测试 ⑪ 绿面漏 mock `_apply` ⇒ 带设备跑测试把夹具写进真机 datastore ⇒ DataStore CorruptionException 崩溃循环。修复 = `validate_preferences_blob` 整文件结构闸 + `_apply` 写前闸 + 夹具修正 + run_adb 绊线（3ccb3ad / 6727b7e）；设备恢复 927B 逐字节一致、App 健康。**测试套件离线契约从此机械化** |
+| 附带行为发现（非验收项） | 记录 | 模型批量多工具调用 ⇒ App 文本协议**静默 0 执行**（复现 3 次：osc6/actor1/actor3，journal rounds=0、无 TOOL 消息、无错误提示）⇒ 建议 UI 波评估「批量调用不支持」的可见提示 |
