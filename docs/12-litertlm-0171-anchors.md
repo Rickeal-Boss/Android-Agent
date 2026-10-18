@@ -133,4 +133,35 @@ tokenizer 资产 ⇒ 标 SKIP 不计入（不拿异族 tokenizer 凑数）；样
 
 **薄窗口落档（W68 C2，复检 Q-3）**：native 失效兜底（判定③）的实际覆盖 = **半预算档 × r ∈ (4.5, 5.06)，宽仅 0.56**；轴档案档（1536/2048）兜底阈 **r > 6.75 > r_max 5.06 ⇒ 对 CJK 密集文本实际失守**——由锚 #5 墙钟（:39）+ N-2 warn 承担，链条闭合、可接受。KDoc「实测英文思维链 profile（r≈4.5–5.1）恰好可触发」的「恰好」二字正说明窗口极窄，特此落档备查。**落点选 docs/12 而非 `ThinkingBudget.kt`**：该文件 128/150 余 22 为全表最紧引信（G5），本段长文不入（W68 负面清单同款纪律）。
 
-—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）；W66 A5 追加 r 测量方法；W67 B1 回填重测结论；W68 B3 增补锚 #14（knownBroken / GPU 白名单运行时时效复审）。
+#### W73 K4 移入：`THINKING_CHARS_PER_TOKEN_CEIL` KDoc 推导长段归档（原文照搬）
+
+> **移入缘由（K4 触发制件）**：`ThinkingBudget.kt` 总行数 128/150 余 22 = 行数表全表最紧引信，而 bump 准备 / C6 材料回填都要写此文件 ⇒ W73 把该常量 KDoc 的推导长段（约 43 行）整体搬迁至本归档段，文件内只留结论 + 文字版复现规程指针（出落户内自查：文件约 129 → 约 90 行，见 `bash scripts/line-table.sh`）。
+> **出处**（原文照搬；W64 K-1 / W65 D1 / W66 E5 / W67 B1 四波沉淀）：`core-engine/src/main/java/com/rickeal/agent/core/engine/local/ThinkingBudget.kt` 中 `THINKING_CHARS_PER_TOKEN_CEIL` 常量的 KDoc（W73 移出前版本）。⚠️ 文件顶部「三处同步单」纪律块（core-engine 常量 / core-model 字面量 / 双不变式测试 / 轴档案）按计划**禁搬**，仍留文件内。
+
+thinking 字符预算相对 native token 预算的**字符当量上界系数**（chars/token，W64 K-1 治本；W67 B1 按离线重测结论重新标定 16 → 9）。
+
+出处与推导（禁无据拍值）：
+
+- **W62 原始上界 8.4 已被 W67 离线重测证伪（口径伪影）**：`README.md` W62 段「2048 字符 ≈ 244 token」的 244 不可能是 thinking token 数 —— 引擎 `completionTokens` 实为**内容 chunk 数**、且 thinking chunk 根本不计入（见 `LiteRtLmEngine` 的 usage 计算）；同样本用 gemma 官方 tokenizer 离线精确计数：2051 字符 = **469 token**（r = 4.37），2010 字符 = 495 token（r = 4.06）；换 Qwen tokenizer 复核 464 / 479 token（r ≈ 4.2–4.4）⇒ 两种 tokenizer 下 8.4 均不成立。
+- **W67 全量实测 r_max = 5.06**（W62/W65/W66 三波 31 个 thinking 样本，禁挑样本：R1 中文思维链 1.35–2.26、gemma 英文思维链 3.0–5.06；≥500 字符主样本段 r_max = 4.53）。方法学自证：W66 E5 落档 4 值（318 / 268 / 330 / 1042）被同一脚本逐位复现 ⇒ 尺子可信；
+- ×≈1.8 余量 ⇒ 取整 **9**；
+- **故障不对称**：系数取小 ⇒ 字符守卫早于 native 抢跑（= W62 病灶：native 优雅路径被硬截）；取大 ⇒ 退化为纯兜底（native 先优雅收尾）⇒ 必须**向上**取。
+
+**安全窗口**（W65 D1 前半立、W67 B1 按实测重标定）：`C ∈ (r_max, 2×r_max) = (5.06, 10.11)`，其中 r_max = W67 离线实测 chars/token 上界 5.06：
+
+- **下界**（C > 5.06）：健康 native 下阈值 = budget×C > budget×r_max ≥ thinklen ⇒ 守卫数学不可达，不误触发（W62 病灶防线）；
+- **上界**（C < 10.11）：native 失效（bump 删符号 / .so 缺编）时思考可吃满 maxTokens，超阈需 r > C/2 = 4.5 —— 实测英文思维链 profile（r ≈ 4.5–5.1）恰好仍可触发 ⇒ 兜底能力不失；
+  - ⚠️ **轴档案条件化**（W65 M-1）：`configured > 0`（R1/MiniCPM5 = 1536，maxTokens=2048）时失效兜底阈 = C×budget/maxTokens ⇒ r > 9×1536/2048 = **6.75** —— 高于 W67 实测 r_max 5.06 ⇒「判定③ = native 失效兜底」对两个轴档案**条件性收窄**（同型样本在新预算档不触发思考判据，由锚 #5 墙钟 + N-2 warn（`thinkingOnlyEmptyDiagnostic`，全仓唯一生产落点）兜底承担）。半预算档（configured=0）不受影响，仍为 r > 4.5；
+- **C=9 的取法**：窗口上部带余量取值（= 1.78×r_max，与原设计 16/8.4 = 1.90× 同量级）。不取 C=10：贴上界 2×r_max = 10.11 仅 0.11 余量（取整即出界），且半预算兜底阈 r > 5.0 ≈ 实测上界 ⇒ 兜底对已实测 profile 失效；不取 C≤8：对未实测文本的守卫余量低于原设计 Ratio，「向上取」纪律不允许。
+
+🔴 **r 的测量方法（W66 E5 落档、W67 B1 完成首次全量重测）** —— 历史两个软样本（W62 的 8.4 / W65 补丁臂的 2.0）已淘汰；现役口径：
+
+1. **native usage 分通道：⛔ 不可用** —— 引擎 `completionTokens` 实为内容 **chunk 数**（见 `LiteRtLmEngine` 的 usage 计算），**无 thinking 通道 token 数**；
+2. **离线 tokenizer 计数（现役硬证据）**：从 journal 抽 thinking 全文，用模型官方 tokenizer（gemma 侧 / Qwen 侧各一份，W66 E5 同款资产）**离线精确计数**，得 `r = thinking 字符数 / thinking token 数`。W67 复测脚本 `_ci-tools/_w67_r_retest.py`（仓外 CI 工具，结论表见 W67 回报）：全量 31 样本，与 W66 E5 落档值逐位复现；
+3. **`TokenEstimator.estimate` 估算：仅旁证** —— 字符启发式（英文 3.2 字/token、CJK 1 字/token），**不得当硬证据**。
+
+判定口径（已执行）：W67 实测 r_max = 5.06 ⇒ 历史声称的 8.4 系口径伪影（证伪）⇒ 窗口下界 8.4 → 5.06、C 16 → 9（同步单见原文件顶部注释块）。
+
+> **回落判据**：本归档段为历史推导存档；现役口径以 `ThinkingBudgetInvariantTest` 钉住的常量（C = 9 / 窗口 (5.06, 10.11) / `THINKING_CHAR_BUDGET` = 4608）与代码为准，冲突时以现役值为准并回查本段。文件内指针保留**文字版复现规程**（journal thinking 全文 + 官方 tokenizer 离线计数），不依赖仓外脚本存活。
+
+—— W59 A5 成文（方案席沈思远定稿 / 开发席柯码成落地）；W66 A5 追加 r 测量方法；W67 B1 回填重测结论；W68 B3 增补锚 #14（knownBroken / GPU 白名单运行时时效复审）；**W73 K4 追加 `THINKING_CHARS_PER_TOKEN_CEIL` KDoc 推导长段归档（「W73 K4 移入」小节，原文照搬 + K4 瘦身指针互换）**。
