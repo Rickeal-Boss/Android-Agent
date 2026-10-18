@@ -220,6 +220,46 @@ if [ -z "$PY" ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# W73 G3（N-3 机械化）：case 编号查重机械位 —— 防「两个不同 case 同号撞车」
+# ---------------------------------------------------------------------------
+# 背景：编号分配长期靠人肉记（「下一个空闲号」是人肉结论），历史已出过同号
+# 撞车事故 —— 全量跑时两个不同 case 同名输出，PASS/FAIL 计数与可读性双双失真。
+# 本检查是**自测网自查机制**（不是 case）：不占 case 编号、不进 PASS/FAIL
+# 计数；编号一撞立即判红终局，绝不静默放行（空转放行 = 本机制死亡）。
+#
+# 口径（按 guard 区块切分，防误报）：
+#   · 一个 `if guard_selected` 区块 = 一个 case 家族区；区内同一编号的多次
+#     提及（同 case 的多次 assert 调用 / PASS-FAIL 回显标签 / fixture 目录名）
+#     归一为一处 —— 那是**同一 case 的正常重复**，不是撞号；
+#   · **跨区块**出现同一编号 ⇒ 两个不同 case 同号 ⇒ 撞号，判红；
+#   · 标签位 = assert 首参 / `[caseNN]` 回显标签 / `$TMP/caseNN` 目录名；
+#     注释行不计（注释里引用别的 case 号是文档行为，不是定义）。
+# 判红时输出撞号清单（::error:: 行，GitHub 可注解）。
+SELFTEST_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+CASE_DUPES="$(awk '
+  function flush_region() { for (id in seen) print id; delete seen }
+  /^if guard_selected/ { flush_region(); inreg = 1; next }
+  inreg && !/^[[:space:]]*#/ {
+    line = $0
+    if (match(line, /assert_[A-Za-z_]+[[:space:]]+"case[0-9]+[a-z]?/)) {
+      id = substr(line, RSTART, RLENGTH); sub(/^assert_[A-Za-z_]+[[:space:]]+"/, "", id); seen[id] = 1
+    }
+    while (match(line, /\[case[0-9]+[a-z]?/)) {
+      id = substr(line, RSTART + 1, RLENGTH - 1); seen[id] = 1; line = substr(line, RSTART + RLENGTH)
+    }
+    if (match(line, /\$TMP\/case[0-9]+[a-z]?/)) {
+      id = substr(line, RSTART, RLENGTH); sub(/^\$TMP\//, "", id); seen[id] = 1
+    }
+  }
+  END { flush_region() }
+' "$SELFTEST_SELF" | sort | uniq -d)"
+if [ -n "$CASE_DUPES" ]; then
+  echo "::error::[G3 查重机械位] case 编号跨区块撞号：$(printf '%s' "$CASE_DUPES" | tr '\n' ' ')" >&2
+  echo "::error::[G3 查重机械位] 同一编号被两个不同 case 使用 ⇒ 全量输出同名两行；重命名其一再跑（历史同型：人肉编号分配撞车）" >&2
+  exit 1
+fi
+
 TMP="$(mktemp -d)"
 # 清理失败不影响判定（某些环境里 rm 被包装/受限）：吞掉错误，绝不改退出码。
 trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
