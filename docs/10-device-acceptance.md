@@ -829,3 +829,29 @@ R1 是**唯一无法离线验证项**、决定原生工具通道成败，故从 
 | M4 NPU | ⛔ **无设备不可验证** | 注记在 §11.8；台账 W73-02 parked |
 | **P0 事故（用户报告「同意用户协议后闪退」）** | ✅ **根除** | 根因 = 测试夹具缺外层 protobuf 包裹 + 测试 ⑪ 绿面漏 mock `_apply` ⇒ 带设备跑测试把夹具写进真机 datastore ⇒ DataStore CorruptionException 崩溃循环。修复 = `validate_preferences_blob` 整文件结构闸 + `_apply` 写前闸 + 夹具修正 + run_adb 绊线（3ccb3ad / 6727b7e）；设备恢复 927B 逐字节一致、App 健康。**测试套件离线契约从此机械化** |
 | 附带行为发现（非验收项） | 记录 | 模型批量多工具调用 ⇒ App 文本协议**静默 0 执行**（复现 3 次：osc6/actor1/actor3，journal rounds=0、无 TOOL 消息、无错误提示）⇒ 建议 UI 波评估「批量调用不支持」的可见提示 |
+
+### 11.12 W74 内核定版批（2026-10-18，OPPO A13；原件 `_plans/w74-device-report.md`）
+
+> 用户指令：「深度审查近期的改动。进行本地测试以及 adb 调试，如果真机测试后基本没有问题内核部分就收尾。」
+> 门槛线（方案席 `_plans/w74-plan.md` §3.0，主理人裁 U6=接受）：**必过 8 条（K1–K8）/ 可挂 ⚠️ 3 条（K9–K11）/ ⛔ vacuous 3 条（V1–V3）**。
+
+| 判据 | 实测 | 判定 |
+|---|---|---|
+| **K1 启动健康** | `FATAL EXCEPTION`=0、`CorruptionException`=0、`已知不可用`=0、进程存活、`topResumedActivity` 含 app（隔离窗口证据 `_w74/k1_isolated.log`：3685 行 / 三缓冲 / `logcat -c` 后启动 12s） | ✅ |
+| **K2 持久化往返** | UI 切主题 SYSTEM→DARK（927→925B）→ force-stop → 重启 → 读回 `DARK`；再切回 SYSTEM | ✅ |
+| **K3 三闸不误杀真实数据** | 927B 真机快照：`validate_preferences_blob` PASS、`find_key_offset`=107、`gap=4`、`read_active_model_id` 正确 | ✅ |
+| **K4 引擎链路** | 模型加载成功；Q1 `OK`、Q5 415 字符 / 72 tok / 6.94 tok/s；`useNativeTools=false`（Qwen 文本协议，符合预设） | ✅ |
+| **K5 工具链路** | 单工具**真实执行**（`file_list` `ok=true`、output `[FILE] a.txt (1 B)`、1ms）；模型 8 轮重复同一调用 ⇒ `MaxRounds` 收束 | ⚠️ **部分**（模型面，非内核面；安全网生效） |
+| **K6 多轮续航（W73 缺口）** | 同会话两轮：`Remember the number 47.` → `What number did I ask you to remember?` ⇒ 答 `47` | ✅ **缺口闭合** |
+| **K7 长文本 / 思考链路** | 415 字符 / 3 句 / `finishReason=STOP` / 无重复熔断 / `appFatal=0` | ✅ |
+| **K8 `set-string-key` 只读路径** | `--help` 正常；白名单外键 ⇒ exit 2；非等长值 ⇒ exit 2 | ✅ |
+| K9–K11（振荡真机诱导 / ask_actor critic·summarizer / 批量工具） | 未行使（K5 的模型不收敛使多工具结果不可归因） | ⚠️ 挂账 |
+| V1–V3（NPU / 音频端到端 / 多模态） | ⛔ vacuous | 未验证 |
+
+**内核定版声明（W74）**：K1–K4、K6–K8 全绿；K5 部分行使且失败形态归因为模型能力面；V1–V3 ⛔ 未验证。**内核面自本波起冻结**，除 P0 外不再改动，下一波转 UI 全方位改进。
+
+**本波真机新增两条实证（非原计划判据，价值最高）**：
+1. 🔴 **工具 ✅ ≠ 设置生效**（W74-02）：`set-string-key dark_mode DARK!!`（6B 等长）被工具接受、真写入、exit 0，而 App `runCatching { DarkMode.valueOf(...) }` **静默回退 SYSTEM** ⇒ 工具侧零值域校验 = 假绿陷阱。
+2. 🟠 **K5 的失败形态是「模型不收敛」而非「工具不执行」**：8 轮 `ok=true`、output 非空、1ms/轮；与 W73「批量调用静默 0 执行」是**两个不同缺陷**，禁合并叙述。
+
+**设备状态订正（W73 遗留，本波发现）**：W73 真机批收尾把激活模型留成了 knownBroken `gemma-4-E4B-it-gpu`（`984937bb`），且 W73 交接未申报。W74 开工即订正；收尾定为 **Qwen2.5-1.5B**（R1 实测 17 s/token + 回显题面，不可用）。终态 927B、与开工基线仅 30 字节差且全在 `[126,162)` UUID 区。
