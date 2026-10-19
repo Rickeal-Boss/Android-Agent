@@ -22,6 +22,21 @@ data class GlassColorScheme(
     val onGlass: Color,
     val onGlassMuted: Color,
     val onGlassSubtle: Color,
+    /**
+     * 覆盖层（抽屉 / 工作区面板 / 推理参数 sheet / 对话框）上的主文本。
+     *
+     * **不是 onGlass 的直接搬运**：onGlass 随主题翻转（浅色深字 / 深色白字），
+     * 而覆盖层表面**恒为深色** —— THICK 玻璃 + 内 scrim + 平台 dim 三层压暗，
+     * 浅色模式下实测面板亮度仍只有 #59~#7F（overlayOpacity 0.02~0.45 全量程
+     * 几乎相同）⇒ 深色 onGlass 在这些面板上对比度仅约 3.9:1，标题 / 正文不可读。
+     * 故 onOverlay 恒取白色族，light / dark 两套同值；dark 模式原 onGlass 本就
+     * 是白族，统一后观感不变（刻意收敛）。
+     */
+    val onOverlay: Color,
+    /** 覆盖层上的次级文本（同族白色降 alpha）。 */
+    val onOverlayMuted: Color,
+    /** 覆盖层上的弱文本（同族白色再降 alpha）。 */
+    val onOverlaySubtle: Color,
     /** 强调色（发送按钮、选中态） */
     val accent: Color,
     val accentMuted: Color,
@@ -51,6 +66,12 @@ fun lightGlassColorScheme(): GlassColorScheme = GlassColorScheme(
     // 深色那套（0xB3 / 0x80 的白）本来就 ≈4.7:1，不动。
     onGlassMuted = Color(0xCC10121A),
     onGlassSubtle = Color(0xB310121A),
+    // 覆盖层文字恒白（UI-1019 Batch 1）：覆盖层面板实测亮度 #59~#7F
+    // （THICK 玻璃 + 内 scrim + 平台 dim，overlayOpacity 全量程几乎相同），
+    // 深色 onGlass 在其上对比度仅约 3.9:1。理由与判据见 onOverlay 的 KDoc。
+    onOverlay = Color(0xFFFFFFFF),
+    onOverlayMuted = Color(0xB3FFFFFF),
+    onOverlaySubtle = Color(0x8FFFFFFF),
     accent = Color(0xFF2B6BFF),
     accentMuted = Color(0x332B6BFF),
     onAccent = Color(0xFFFFFFFF),
@@ -77,6 +98,12 @@ fun darkGlassColorScheme(): GlassColorScheme = GlassColorScheme(
     onGlass = Color(0xFFF4F5FA),
     onGlassMuted = Color(0xB3F4F5FA),
     onGlassSubtle = Color(0x80F4F5FA),
+    // 覆盖层文字恒白：与 light 同值（覆盖层表面恒深色，见 onOverlay KDoc）。
+    // dark 原 onGlass 本就是白族（#F4F5FA / 0xB3 / 0x80），统一为纯白族后
+    // 主文本 #F4F5FA→#FFFFFF、弱文本 0x80→0x8F，亮度微升，属刻意收敛。
+    onOverlay = Color(0xFFFFFFFF),
+    onOverlayMuted = Color(0xB3FFFFFF),
+    onOverlaySubtle = Color(0x8FFFFFFF),
     accent = Color(0xFF6E9BFF),
     accentMuted = Color(0x3D6E9BFF),
     onAccent = Color(0xFF0B0D12),
@@ -88,3 +115,20 @@ fun darkGlassColorScheme(): GlassColorScheme = GlassColorScheme(
     wallpaperBottom = Color(0xFF071620),
     isDark = true,
 )
+
+/**
+ * 覆盖层配色：文本族换成恒白的 [GlassColorScheme.onOverlay] 族。
+ *
+ * 用于抽屉 / 工作区面板 / 推理参数 sheet / 对话框这类**表面恒深色**的覆盖层：
+ * 它们在浅色主题下也渲染为深灰板（THICK 玻璃 + 内 scrim + 平台 dim，实测亮度
+ * #59~#7F，overlayOpacity 全量程几乎相同），onGlass 的深色文字对比度仅约
+ * 3.9:1。只 copy onGlass 三件套 —— accent / glassShadow / glassTint 等一律
+ * 不动，故 scrim、强调色、玻璃本体观感零变化。
+ *
+ * 典型用法（放在玻璃表面绘制之后、内容之前，不要包到玻璃修饰符外面）：
+ * `CompositionLocalProvider(LocalGlassColors provides colors.asOverlayColors())`
+ *
+ * 幂等：对已覆盖化的 scheme 再调一次结果不变（onOverlay 字段不被 copy 触碰）。
+ */
+fun GlassColorScheme.asOverlayColors(): GlassColorScheme =
+    copy(onGlass = onOverlay, onGlassMuted = onOverlayMuted, onGlassSubtle = onOverlaySubtle)

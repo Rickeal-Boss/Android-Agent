@@ -106,7 +106,13 @@ fun LiquidDialog(
     actions: (@Composable (dismiss: () -> Unit) -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
-    val colors = LocalGlassColors.current
+    // 覆盖层根取色（UI-1019 Batch 1）：弹窗是恒深色的覆盖层面板（平台 dim +
+    // THICK 底色，实测 #595F6B），深色 onGlass 在其上对比度仅约 3.9:1 ⇒ 直采的
+    // colors 取 overlay 白族。只换 onGlass 三件套：drawBackdrop 的 glassTint /
+    // accent 不被 copy 触碰（且 liquid 全链不读 LocalGlassColors），玻璃本体
+    // 像素级不变。嵌套的 content / actions（GlassButton 等）在自身组合期读
+    // LocalGlassColors，由下面 Column 内的 CompositionLocalProvider 继承。
+    val colors = LocalGlassColors.current.asOverlayColors()
     val tokens = LocalGlassTokens.current
     val spec = GlassMaterials.of(material)
     val density = LocalDensity.current
@@ -235,52 +241,62 @@ fun LiquidDialog(
                     }
                     .padding(20.dp),
             ) {
-                if (hasHeader) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (icon != null) {
-                            Icon(
-                                imageVector = icon,
-                                // 装饰性图标：语义由 title 承担，避免读两遍。
-                                contentDescription = null,
-                                tint = colors.accent,
-                                modifier = Modifier.size(28.dp),
-                            )
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            if (title != null) {
-                                Text(
-                                    text = title,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = colors.onGlass,
+                // 覆盖层文字恒白（UI-1019 Batch 1）：drawBackdrop 在 modifier 上，
+                // provider 放 Column 内不会碰到玻璃本体取色（liquid 全链不读
+                // LocalGlassColors）。上面直采的 colors 已取 overlay 版；这里向
+                // 子树再提供一份，让 content / actions 里在自身组合期读
+                // LocalGlassColors 的嵌套组件（GlassButton 等）继承白族文本色。
+                // 对已是 overlay 版的入参幂等。
+                CompositionLocalProvider(
+                    LocalGlassColors provides colors.asOverlayColors(),
+                ) {
+                    if (hasHeader) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (icon != null) {
+                                Icon(
+                                    imageVector = icon,
+                                    // 装饰性图标：语义由 title 承担，避免读两遍。
+                                    contentDescription = null,
+                                    tint = colors.accent,
+                                    modifier = Modifier.size(28.dp),
                                 )
                             }
-                            if (subtitle != null) {
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = colors.onGlassMuted,
-                                    modifier = Modifier.padding(top = 4.dp),
-                                )
+                            Column(modifier = Modifier.weight(1f)) {
+                                if (title != null) {
+                                    Text(
+                                        text = title,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        color = colors.onGlass,
+                                    )
+                                }
+                                if (subtitle != null) {
+                                    Text(
+                                        text = subtitle,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = colors.onGlassMuted,
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
+                                }
                             }
                         }
                     }
-                }
-                Box(modifier = Modifier.padding(top = if (hasHeader) 12.dp else 0.dp)) {
-                    content()
-                }
-                if (actions != null) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 20.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
-                    ) {
-                        // 把内部 dismiss 入口交给动作区：调用方用它关闭才能保住出场动画。
-                        actions { requestDismiss() }
+                    Box(modifier = Modifier.padding(top = if (hasHeader) 12.dp else 0.dp)) {
+                        content()
+                    }
+                    if (actions != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                        ) {
+                            // 把内部 dismiss 入口交给动作区：调用方用它关闭才能保住出场动画。
+                            actions { requestDismiss() }
+                        }
                     }
                 }
             }

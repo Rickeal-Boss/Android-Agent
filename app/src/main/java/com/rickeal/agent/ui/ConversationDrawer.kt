@@ -27,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +47,7 @@ import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.asOverlayColors
 import com.rickeal.agent.core.model.ConversationMeta
 
 /**
@@ -102,7 +104,13 @@ internal fun ConversationDrawerContent(
     onDeleteConversation: (String) -> Unit,
     onOpenSandbox: () -> Unit,
 ) {
-    val colors = LocalGlassColors.current
+    // 覆盖层根取色（UI-1019 Batch 1）：本组件整块就是覆盖层面板 —— 表面恒深色
+    // （THICK 玻璃 + 内 scrim + 平台 dim，实测亮度 #59~#7F），深色 onGlass 在
+    // 其上对比度仅约 3.9:1，见 GlassColorScheme.asOverlayColors 的 KDoc。
+    // 只换 onGlass 三件套：scrim 的 glassShadow、accent 不被 copy 触碰。
+    // 嵌套组件（GlassButton / ConversationRow）在自身组合期读 LocalGlassColors，
+    // 由下面 content 里的 CompositionLocalProvider 继承 overlay 版。
+    val colors = LocalGlassColors.current.asOverlayColors()
     val tokens = LocalGlassTokens.current
 
     // 待确认删除的会话（W69 C3）。非 null ⇒ 弹确认对话框。
@@ -118,6 +126,8 @@ internal fun ConversationDrawerContent(
         // 贴左缘、通顶到底的抽屉：直角，不做胶囊。
         cornerRadius = 0.dp,
         contentPadding = PaddingValues(0.dp),
+        // 覆盖层面板：柔化白描边与高光，消除深色面板上的"白框"隔开感。
+        overlayPanel = true,
     ) {
         // 覆盖层 scrim（Wave 21）：alpha 由 GlassConfig.overlayOpacity 驱动（设置页
         // 「覆盖层不透明度」，与 LiquidDialog / 推理参数面板共用同一配置）。
@@ -129,175 +139,184 @@ internal fun ConversationDrawerContent(
                 .matchParentSize()
                 .background(colors.glassShadow.copy(alpha = LocalGlassConfig.current.overlayOpacity)),
         )
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                // ⚠️ 吃掉抽屉内**空白区**的点击：`LiquidGlassSurface` 这里没传 `onClick` ⇒
-                // 没有 pointerInput 节点 ⇒ 点击会穿透到 M3 的遮罩上，而遮罩的 onClick 就是
-                // 「关抽屉」⇒ 在抽屉空白处点一下会误关。空 `onClick` 只为占住这个节点
-                // （不给 indication —— 玻璃上不该有材质涟漪，与项目里多处同写法）。
-                // 子项（会话行 / 按钮）先命中，不受影响。
-                .clickable(
-                    interactionSource = null,
-                    indication = null,
-                    onClick = {},
-                ),
+        // 覆盖层文字恒白（UI-1019 Batch 1）：包在玻璃表面绘制之后、内容之前
+        // （不碰 liquidGlass 修饰符，玻璃本体取色不受影响）。上面直采的 colors
+        // 已取 overlay 版；这里再向子树提供一份，让在自身组合期读
+        // LocalGlassColors 的嵌套组件（GlassButton / ConversationRow / 弹窗）
+        // 继承白族文本色。对已是 overlay 版的入参幂等。
+        CompositionLocalProvider(
+            LocalGlassColors provides colors.asOverlayColors(),
         ) {
-
-            // ── 头部：本地工作区（WorkBuddy「云端▾」的降级物）──────────────────
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 14.dp),
-            ) {
-                Text(
-                    text = "本地工作区",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = colors.onGlass,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "端侧运行 · 数据不出设备",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.onGlassSubtle,
-                )
-            }
+                    .fillMaxSize()
+                    // ⚠️ 吃掉抽屉内**空白区**的点击：`LiquidGlassSurface` 这里没传 `onClick` ⇒
+                    // 没有 pointerInput 节点 ⇒ 点击会穿透到 M3 的遮罩上，而遮罩的 onClick 就是
+                    // 「关抽屉」⇒ 在抽屉空白处点一下会误关。空 `onClick` 只为占住这个节点
+                    // （不给 indication —— 玻璃上不该有材质涟漪，与项目里多处同写法）。
+                    // 子项（会话行 / 按钮）先命中，不受影响。
+                    .clickable(
+                        interactionSource = null,
+                        indication = null,
+                        onClick = {},
+                    ),
+                ) {
 
-            // ── 新建任务 ────────────────────────────────────────────────────
-            GlassButton(
-                text = "新建任务",
-                onClick = onNewConversation,
-                // P1-1：忙时禁用（新建同样会销毁旧 VM ⇒ 半截回答静默丢失）。
-                enabled = !engineBusy,
-                icon = {
-                    Icon(
-                        imageVector = Icons.Filled.Add,
-                        contentDescription = null,
-                        tint = if (engineBusy) colors.onGlassSubtle else colors.onGlass,
-                        modifier = Modifier.size(18.dp),
+                // ── 头部：本地工作区（WorkBuddy「云端▾」的降级物）──────────────────
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 14.dp),
+                ) {
+                    Text(
+                        text = "本地工作区",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.onGlass,
                     )
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-            )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "端侧运行 · 数据不出设备",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                    )
+                }
 
-            Spacer(Modifier.height(tokens.gapMd))
+                // ── 新建任务 ────────────────────────────────────────────────────
+                GlassButton(
+                    text = "新建任务",
+                    onClick = onNewConversation,
+                    // P1-1：忙时禁用（新建同样会销毁旧 VM ⇒ 半截回答静默丢失）。
+                    enabled = !engineBusy,
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = null,
+                            tint = if (engineBusy) colors.onGlassSubtle else colors.onGlass,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                )
 
-            // ── 任务列表 ────────────────────────────────────────────────────
-            Text(
-                text = "任务",
-                style = MaterialTheme.typography.labelSmall,
-                color = colors.onGlassMuted,
-                modifier = Modifier.padding(start = 20.dp, bottom = 4.dp),
-            )
-            // P1-1：忙时禁用切换并给一句可行动提示 —— 与存储空间页
-            // 「正在生成，暂不可清理」**同一形态**。权威闸门在调用方的回调里再判一次，
-            // 这里只是 UI 便利层。
-            if (engineBusy) {
+                Spacer(Modifier.height(tokens.gapMd))
+
+                // ── 任务列表 ────────────────────────────────────────────────────
                 Text(
-                    text = "正在生成，暂不可切换会话",
+                    text = "任务",
                     style = MaterialTheme.typography.labelSmall,
-                    color = colors.onGlassSubtle,
-                    modifier = Modifier.padding(start = 20.dp, bottom = 6.dp),
+                    color = colors.onGlassMuted,
+                    modifier = Modifier.padding(start = 20.dp, bottom = 4.dp),
                 )
-            }
-            if (metas.isEmpty()) {
-                Text(
-                    text = "还没有会话",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.onGlassSubtle,
-                    modifier = Modifier.padding(start = 20.dp, top = 8.dp),
-                )
-                Spacer(Modifier.weight(1f))
-            } else {
-                LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(metas, key = { it.id }) { meta ->
-                        ConversationRow(
-                            meta = meta,
-                            enabled = !engineBusy,
-                            onClick = { onOpenConversation(meta.id) },
-                            onDelete = { pendingDelete = meta },
+                // P1-1：忙时禁用切换并给一句可行动提示 —— 与存储空间页
+                // 「正在生成，暂不可清理」**同一形态**。权威闸门在调用方的回调里再判一次，
+                // 这里只是 UI 便利层。
+                if (engineBusy) {
+                    Text(
+                        text = "正在生成，暂不可切换会话",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(start = 20.dp, bottom = 6.dp),
+                    )
+                }
+                if (metas.isEmpty()) {
+                    Text(
+                        text = "还没有会话",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(start = 20.dp, top = 8.dp),
+                    )
+                    Spacer(Modifier.weight(1f))
+                } else {
+                    LazyColumn(modifier = Modifier.weight(1f)) {
+                        items(metas, key = { it.id }) { meta ->
+                            ConversationRow(
+                                meta = meta,
+                                enabled = !engineBusy,
+                                onClick = { onOpenConversation(meta.id) },
+                                onDelete = { pendingDelete = meta },
+                            )
+                        }
+                    }
+                }
+
+                // ── 底部：沙箱工作区（WorkBuddy「空间(N)」的降级物）────────────────
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = null,
+                                indication = null,
+                                role = Role.Button,
+                                onClick = onOpenSandbox,
+                            )
+                            .padding(horizontal = 8.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Folder,
+                            contentDescription = null,
+                            tint = colors.onGlassSubtle,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            text = "沙箱工作区",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onGlass,
                         )
                     }
                 }
-            }
 
-            // ── 底部：沙箱工作区（WorkBuddy「空间(N)」的降级物）────────────────
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(
-                            interactionSource = null,
-                            indication = null,
-                            role = Role.Button,
-                            onClick = onOpenSandbox,
-                        )
-                        .padding(horizontal = 8.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Folder,
-                        contentDescription = null,
-                        tint = colors.onGlassSubtle,
-                        modifier = Modifier.size(20.dp),
+                // ── 删除确认对话框（W69 C3）───────────────────────────────────────
+                // 独立窗口（[LiquidDialog]），叠在抽屉之上；三条取消路径（「取消」按钮 /
+                // 点弹窗外 / 返回键）都汇入 LiquidDialog 内部的 requestDismiss ⇒ 不回调
+                // [onDeleteConversation]，只有「删除」按钮才上报「已确认」。
+                // **默认焦点 = 取消**（cancelFocusRequester）：防误删的最后一层 —— 用户
+                // 误触删除图标后，直接回车 / 确认动作落在取消而非删除上。
+                pendingDelete?.let { target ->
+                    val cancelFocus = remember(target.id) { FocusRequester() }
+                    LiquidDialog(
+                        onDismissRequest = { pendingDelete = null },
+                        icon = Icons.Filled.Delete,
+                        title = "删除会话",
+                        subtitle = "「${target.title}」及其运行记录将被永久删除，不可恢复。",
+                        actions = { dismiss ->
+                            GlassButton(
+                                text = "取消",
+                                onClick = dismiss,
+                                material = GlassMaterial.THIN,
+                                modifier = Modifier.focusRequester(cancelFocus),
+                            )
+                            GlassButton(
+                                text = "删除",
+                                onClick = {
+                                    // 先上报「已确认」，再走 dismiss —— **不要**在这里直接
+                                    // `pendingDelete = null`：那会让 `pendingDelete?.let`
+                                    // 立刻变 null、弹窗瞬间从组合里消失（跳过出场动画）。
+                                    // 关闭统一由 dismiss → onDismissRequest 在动画播完后置空。
+                                    onDeleteConversation(target.id)
+                                    dismiss()
+                                },
+                            )
+                        },
+                        content = {},
                     )
-                    Text(
-                        text = "沙箱工作区",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.onGlass,
-                    )
+                    // 组合完成后请求焦点（节点此刻已挂载）。包 runCatching：焦点请求在
+                    // 极少数「节点未就绪」时抛 IllegalStateException，不该因此崩掉抽屉。
+                    LaunchedEffect(target.id) {
+                        runCatching { cancelFocus.requestFocus() }
+                    }
                 }
-            }
-
-            // ── 删除确认对话框（W69 C3）───────────────────────────────────────
-            // 独立窗口（[LiquidDialog]），叠在抽屉之上；三条取消路径（「取消」按钮 /
-            // 点弹窗外 / 返回键）都汇入 LiquidDialog 内部的 requestDismiss ⇒ 不回调
-            // [onDeleteConversation]，只有「删除」按钮才上报「已确认」。
-            // **默认焦点 = 取消**（cancelFocusRequester）：防误删的最后一层 —— 用户
-            // 误触删除图标后，直接回车 / 确认动作落在取消而非删除上。
-            pendingDelete?.let { target ->
-                val cancelFocus = remember(target.id) { FocusRequester() }
-                LiquidDialog(
-                    onDismissRequest = { pendingDelete = null },
-                    icon = Icons.Filled.Delete,
-                    title = "删除会话",
-                    subtitle = "「${target.title}」及其运行记录将被永久删除，不可恢复。",
-                    actions = { dismiss ->
-                        GlassButton(
-                            text = "取消",
-                            onClick = dismiss,
-                            material = GlassMaterial.THIN,
-                            modifier = Modifier.focusRequester(cancelFocus),
-                        )
-                        GlassButton(
-                            text = "删除",
-                            onClick = {
-                                // 先上报「已确认」，再走 dismiss —— **不要**在这里直接
-                                // `pendingDelete = null`：那会让 `pendingDelete?.let`
-                                // 立刻变 null、弹窗瞬间从组合里消失（跳过出场动画）。
-                                // 关闭统一由 dismiss → onDismissRequest 在动画播完后置空。
-                                onDeleteConversation(target.id)
-                                dismiss()
-                            },
-                        )
-                    },
-                    content = {},
-                )
-                // 组合完成后请求焦点（节点此刻已挂载）。包 runCatching：焦点请求在
-                // 极少数「节点未就绪」时抛 IllegalStateException，不该因此崩掉抽屉。
-                LaunchedEffect(target.id) {
-                    runCatching { cancelFocus.requestFocus() }
                 }
-            }
         }
     }
 }

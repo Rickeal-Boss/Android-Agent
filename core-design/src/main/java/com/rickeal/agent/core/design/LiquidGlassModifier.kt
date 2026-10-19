@@ -89,6 +89,15 @@ private const val NOISE_POINT_COUNT = 150
  *   位移/拉伸"。它直接透传给 `drawBackdrop`，在玻璃节点的最外层 `graphicsLayer` 上生效，
  *   所以位移/缩放会连内容一起动（文本不会被单独拉扯）。
  *   见 `liquid/interactive/DampedDragAnimation` 与 `InteractiveHighlight`。
+ * @param overlayPanel 覆盖层面板模式（默认 **false**）。传 true 的场合：
+ *   **表面恒深色的覆盖层面板** —— 左侧抽屉、工作区面板、推理参数 sheet。
+ *   这些面板在浅色主题下也渲染为深灰板（THICK 玻璃 + 内 scrim + 平台 dim），
+ *   常态白描边（glassBorderTop × borderAlpha，THICK = 0.72）叠在深色面板上
+ *   像"贴上去的白色框"，把面板从内容里隔开。true 时：内描边顶色压到
+ *   borderAlpha × 0.34、底色 × 0.5（柔化边缘峰值），高光 alpha 再乘 0.35
+ *   （压制边缘方向性白光）—— 面板边缘与面板同族，不再有"白框"隔开感。
+ *   默认 false：非覆盖层组件（按钮 / 卡片 / 气泡 / 页签）需要原版高白光边，
+ *   那是液态玻璃观感的组成部分，不能被一并压暗 ⇒ 70+ 既有调用点零行为变化。
  */
 @Composable
 fun Modifier.liquidGlass(
@@ -106,6 +115,7 @@ fun Modifier.liquidGlass(
     pressProgress: () -> Float = { 0f },
     shapeOverride: Shape? = null,
     layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
+    overlayPanel: Boolean = false,
 ): Modifier {
     val tokens = LocalGlassTokens.current
     val colors = LocalGlassColors.current
@@ -192,7 +202,12 @@ fun Modifier.liquidGlass(
                     alpha = 1f,
                     style = HighlightStyle.DefaultStyle.copy(
                         color = colors.glassSpecular.copy(
-                            alpha = (spec.specularAlpha * safeIntensity).coerceIn(0f, 1f)
+                            // 覆盖层面板再乘 0.35：深色面板上的方向性白光会勾勒出
+                            // "白框"边缘（与内描边同源），面板模式一并柔化。
+                            alpha = (
+                                spec.specularAlpha * safeIntensity *
+                                    if (overlayPanel) 0.35f else 1f
+                                ).coerceIn(0f, 1f)
                         ),
                         angle = tokens.specularAngle
                     )
@@ -244,11 +259,16 @@ fun Modifier.liquidGlass(
         onDrawFront = {
             // 内描边：顶亮底暗
             val borderAlpha = (spec.borderAlpha * safeIntensity).coerceIn(0f, 1f)
+            // 覆盖层面板：压低白边峰值（顶 × 0.34、底 × 0.5），使边缘与面板同族 ——
+            // THICK 常态 0.72 的纯白描边叠在深灰面板上像贴了层白框（真机取样实锤）。
+            val borderTopAlpha = if (overlayPanel) borderAlpha * 0.34f else borderAlpha
+            val borderBottomAlpha =
+                if (overlayPanel) borderAlpha * 0.5f else (borderAlpha * 0.8f).coerceIn(0f, 1f)
             val borderBrush = Brush.verticalGradient(
                 colors = listOf(
-                    colors.glassBorderTop.copy(alpha = borderAlpha),
+                    colors.glassBorderTop.copy(alpha = borderTopAlpha),
                     Color.Transparent,
-                    colors.glassBorderBottom.copy(alpha = (borderAlpha * 0.8f).coerceIn(0f, 1f)),
+                    colors.glassBorderBottom.copy(alpha = borderBottomAlpha),
                 ),
                 startY = 0f,
                 endY = size.height,

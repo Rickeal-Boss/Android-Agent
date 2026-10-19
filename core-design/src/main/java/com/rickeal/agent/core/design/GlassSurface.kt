@@ -67,6 +67,10 @@ import java.util.Locale
  *   开销），默认开会让"没显式传"的调用点**悄悄吃掉 7 倍** —— 对话气泡这类长列表
  *   一屏十几条，开着必掉帧。大面积容器（Card / Dialog / 气泡）一律关；
  *   扛得住的极小控件再显式传 `true`。
+ * @param overlayPanel 覆盖层面板模式，透传给 `liquidGlass`（默认 false ⇒ 现有
+ *   调用点行为零变化）。抽屉 / 工作区面板 / 推理参数 sheet 这类表面恒深色的
+ *   覆盖层面板传 true：柔化白描边与高光，消除深色面板上的"白框"隔开感。
+ *   详见 `liquidGlass` 的同名参数 KDoc。
  */
 @Composable
 fun LiquidGlassSurface(
@@ -85,6 +89,7 @@ fun LiquidGlassSurface(
     refractionAmount: Dp? = null,
     layerBlock: (GraphicsLayerScope.() -> Unit)? = null,
     gestureModifier: Modifier = Modifier,
+    overlayPanel: Boolean = false,
     content: @Composable BoxScope.() -> Unit,
 ) {
     // 按压进度 → 传给玻璃，让它在按下时"变实"（模糊减弱 + 折射增强 + 高光变亮）。
@@ -138,6 +143,7 @@ fun LiquidGlassSurface(
             // 绘制期取值（不是组合期的 Float）：按下动画每帧只失效绘制。
             pressProgress = { pressProgress.value },
             layerBlock = layerBlock,
+            overlayPanel = overlayPanel,
         )
         // 手势挂在整个链的**最后**（与 GlassButton / Chip / Fab / Segmented 一致）：
         // 它在内侧，真拖动时 consume 掉事件会让外层 clickable 取消按压；

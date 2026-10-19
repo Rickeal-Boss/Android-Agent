@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -41,6 +42,7 @@ import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalOverlayBlurState
 import com.rickeal.agent.core.design.OverlayBlurScope
+import com.rickeal.agent.core.design.asOverlayColors
 import com.rickeal.agent.feature.settings.tools.SandboxFilesContent
 import com.rickeal.agent.feature.settings.tools.SandboxFilesPreviewDialog
 import com.rickeal.agent.feature.settings.tools.SandboxFilesViewModel
@@ -118,7 +120,12 @@ internal fun WorkspaceOverlay(
     close: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val colors = LocalGlassColors.current
+    // 覆盖层根取色（UI-1019 Batch 1）：面板表面恒深色（THICK + scrim + 平台
+    // dim，实测亮度 #59~#7F），深色 onGlass 对比度仅约 3.9:1 ⇒ 直采的 colors
+    // 取 overlay 白族。只换 onGlass 三件套：scrim 的 glassShadow、accent 不动。
+    // 嵌套内容（SandboxFilesContent / 预览弹窗）在自身组合期读 LocalGlassColors，
+    // 由下面 content 里的 CompositionLocalProvider 继承 overlay 版。
+    val colors = LocalGlassColors.current.asOverlayColors()
     val glassCfg = LocalGlassConfig.current
     // 只读离散值（锚点两侧翻转，一次手势至多两次），不读逐帧的 offset/progress：
     // 本 composable 的重组频率因此与「面板开关」同频，不会每帧重组。
@@ -194,6 +201,8 @@ internal fun WorkspaceOverlay(
             // 贴右缘、通顶到底的面板：直角，不做胶囊（左抽屉同款）。
             cornerRadius = 0.dp,
             contentPadding = PaddingValues(0.dp),
+            // 覆盖层面板：柔化白描边与高光，消除深色面板上的"白框"隔开感。
+            overlayPanel = true,
         ) {
             // 覆盖层 scrim（同 ConversationDrawerContent）：压在玻璃上、内容之下。
             Box(
@@ -201,71 +210,79 @@ internal fun WorkspaceOverlay(
                     .matchParentSize()
                     .background(colors.glassShadow.copy(alpha = glassCfg.overlayOpacity)),
             )
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    // 吃掉面板内空白区的点击，防止穿透到 scrim 误关（左抽屉同款）；
-                    // 子项（文件行 / 按钮）先命中，不受影响。
-                    .clickable(
-                        interactionSource = null,
-                        indication = null,
-                        onClick = {},
-                    ),
+            // 覆盖层文字恒白（UI-1019 Batch 1）：包在玻璃表面绘制之后、内容之前
+            // （不碰 liquidGlass 修饰符）。让在自身组合期读 LocalGlassColors 的
+            // 嵌套组件（GlassIconButton / SandboxFilesContent / 预览弹窗）继承
+            // 白族文本色；直采的 colors 上面已取 overlay 版，对入参幂等。
+            CompositionLocalProvider(
+                LocalGlassColors provides colors.asOverlayColors(),
             ) {
-                // ── 头部：标题 + 关闭钮（inset 用法照抄左抽屉：statusBarsPadding）──
-                Row(
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "沙箱工作区",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = colors.onGlass,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = "Agent 工具产出的文件",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.onGlassSubtle,
-                        )
-                    }
-                    GlassIconButton(
-                        icon = Icons.Filled.Close,
-                        contentDescription = "关闭工作区",
-                        onClick = close,
-                        contentColor = colors.onGlassSubtle,
-                        pressOnly = true,
-                    )
-                }
-
-                // ── 内容：与全屏子页共用同一渲染面（SandboxFilesContent）────────
-                // 底部避让在内容块内部（navigationBarsPadding + 悬浮页签 84dp 占位，
-                // 末尾条目能滚出页签区 —— 与抽屉/各屏的既有语义一致）。
-                val vm = viewModel
-                if (vm != null) {
-                    val filesState by vm.uiState.collectAsState()
-                    SandboxFilesContent(
-                        state = filesState,
-                        sandboxRoot = sandboxRoot,
-                        viewModel = vm,
+                        .fillMaxSize()
+                        // 吃掉面板内空白区的点击，防止穿透到 scrim 误关（左抽屉同款）；
+                        // 子项（文件行 / 按钮）先命中，不受影响。
+                        .clickable(
+                            interactionSource = null,
+                            indication = null,
+                            onClick = {},
+                        ),
+                    ) {
+                    // ── 头部：标题 + 关闭钮（inset 用法照抄左抽屉：statusBarsPadding）──
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                    )
-                    // 预览弹层与全屏子页同一枚组件（VM 状态驱动，关闭归还给 VM）。
-                    val preview = filesState.selectedPreview
-                    if (preview != null) {
-                        SandboxFilesPreviewDialog(
-                            preview = preview,
-                            sandboxRoot = sandboxRoot,
-                            onDismiss = vm::onDismissPreview,
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "沙箱工作区",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = colors.onGlass,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = "Agent 工具产出的文件",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                            )
+                        }
+                        GlassIconButton(
+                            icon = Icons.Filled.Close,
+                            contentDescription = "关闭工作区",
+                            onClick = close,
+                            contentColor = colors.onGlassSubtle,
+                            pressOnly = true,
                         )
                     }
-                }
+
+                    // ── 内容：与全屏子页共用同一渲染面（SandboxFilesContent）────────
+                    // 底部避让在内容块内部（navigationBarsPadding + 悬浮页签 84dp 占位，
+                    // 末尾条目能滚出页签区 —— 与抽屉/各屏的既有语义一致）。
+                    val vm = viewModel
+                    if (vm != null) {
+                        val filesState by vm.uiState.collectAsState()
+                        SandboxFilesContent(
+                            state = filesState,
+                            sandboxRoot = sandboxRoot,
+                            viewModel = vm,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                        )
+                        // 预览弹层与全屏子页同一枚组件（VM 状态驱动，关闭归还给 VM）。
+                        val preview = filesState.selectedPreview
+                        if (preview != null) {
+                            SandboxFilesPreviewDialog(
+                                preview = preview,
+                                sandboxRoot = sandboxRoot,
+                                onDismiss = vm::onDismissPreview,
+                            )
+                        }
+                    }
+                    }
             }
         }
     }
