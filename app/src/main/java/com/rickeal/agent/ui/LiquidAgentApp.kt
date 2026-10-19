@@ -446,18 +446,17 @@ private fun MainShell() {
         active = { overlayBlurState.shellActive },
         enabled = overlayBlurEnabled,
     )
-    // 页签条专用：参数面板在 NavHost 内部 ⇒ 上面那条 body 级模糊不会生效（会糊到面板自己），
-    // 于是单独给页签补一轮。SHELL 级生效时它归零 —— 那时 body 级模糊已经把页签包含在内，
-    // 叠加就是「糊两次」（观感偏重、白烧一遍全屏高斯）；抽屉开着同理（body 级已包含页签）。
-    // ⚠️ drawerState.isOpen 是在 snapshotFlow 的协程里读的（不是组合期），不会引发重组。
-    val navBarBlurProgress = rememberOverlayBlurProgress(
-        active = {
-            overlayBlurState.anyActive &&
-                !overlayBlurState.shellActive &&
-                !drawerState.isOpen
-        },
-        enabled = overlayBlurEnabled,
-    )
+    // 页签条的 PANEL 场景补糊已撤除（UI-1019 Batch 2）。
+    //
+    // 旧逻辑：参数面板在 NavHost 内部 ⇒ body 级模糊罩不到它也不能罩（会糊到面板自己），
+    // 于是给页签单独补一轮高斯，避免「一条清晰的玻璃页签浮在糊背景上」。
+    //
+    // 撤除理由（与用户需求「覆盖层延伸至底部 + 与底部 Tab 栏隔断」直接相关）：
+    // sheet 现在通底（玻璃直达屏幕底、含导航栏区），页签不再浮在"糊背景"上，
+    // 而是浮在 **sheet 自身的玻璃** 上。继续补糊会让页签与 sheet 融成一片灰雾 ——
+    // 正是用户要消除的"隔开感"的反面。撤掉后页签保持自身清晰的玻璃边界，
+    // 加上 sheet 内容底部 12dp 间隙 ⇒ 两者是**两个独立元素**（隔断成立）。
+    // SHELL 场景（抽屉/对话框）不受影响：那条由 body 级模糊统一覆盖页签。
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -737,15 +736,11 @@ private fun MainShell() {
                                 modifier = Modifier
                                     .align(Alignment.BottomCenter)
                                     .fillMaxWidth()
-                                    .navigationBarsPadding()
-                                    // 仅参数面板场景生效（见上方 navBarBlurProgress 的说明）：
-                                    // 面板在 NavHost 内部，外壳 body 级模糊罩不到它、也不能罩
-                                    // （会连面板一起糊），页签这条得单独补。
-                                    .overlayBackdropBlur(
-                                        progress = navBarBlurProgress,
-                                        radius = overlayBlurRadius,
-                                        enabled = overlayBlurEnabled,
-                                    ),
+                                    .navigationBarsPadding(),
+                                // PANEL 场景的页签补糊已撤除（UI-1019 Batch 2）：
+                                // sheet 通底后页签浮在 sheet 玻璃上，补糊会让两者融成
+                                // 一片灰雾，与「与底部 Tab 栏隔断」需求相反。
+                                // 撤除理由与 SHELL 场景的边界见上方同名说明。
                             )
                         }
                     }

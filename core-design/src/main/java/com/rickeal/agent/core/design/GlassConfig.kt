@@ -65,6 +65,26 @@ data class GlassConfig(
     val overlayBlurRadius: Float = 20f,
 )
 
+/**
+ * 覆盖层白族文本的**对比度下限**（覆盖层自身 scrim 的最小 alpha）。
+ *
+ * 2026-10-19（UI-1019 Batch 2）真机像素实测（浅色模式、玻璃质感 1.00、
+ * overlayOpacity=0.45）：
+ *  - 沙箱工作区面板 bg `#7F8591` ⇒ 白字对比度 **3.7:1**
+ *  - 推理参数 sheet bg `#8B909A` ⇒ **3.2:1**
+ *  - 对照：会话抽屉 `#6B707D` ⇒ 5.2:1（M3 `ModalNavigationDrawer` 自带的页面
+ *    scrim 额外压暗，所以抽屉不需要这条下限）
+ *
+ * 本仓 W51 曾以「4.22:1 < AA 4.5」为由撤销过一套配色 ⇒ 这里口径一致：
+ * 覆盖层文字已统一为恒白族（见 `GlassColorScheme.onOverlay`），白字必须站得住。
+ * 0.62 使上面两块面板落到 `#6E7789` 一带（白字 4.5:1 以上，实测 sheet 顶部
+ * 渐变区从 4.26 → ≈4.5），同时仍低于"闷死玻璃"的程度 —— 再高会看不到折射。
+ *
+ * 语义：覆盖层内层 scrim 取 `max(用户滑条值, 本常量)` —— **不改滑条本身**，
+ * 用户仍可在 0.62~1.0 区间继续加深；低于 0.62 的滑条值被这条可读性下限接管。
+ */
+const val OVERLAY_TEXT_MIN_SCRIM = 0.62f
+
 val LocalGlassTokens: ProvidableCompositionLocal<GlassTokens> =
     staticCompositionLocalOf { GlassDefaults.Tokens }
 

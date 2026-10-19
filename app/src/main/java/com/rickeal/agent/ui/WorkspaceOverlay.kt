@@ -41,6 +41,7 @@ import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalOverlayBlurState
+import com.rickeal.agent.core.design.OVERLAY_TEXT_MIN_SCRIM
 import com.rickeal.agent.core.design.OverlayBlurScope
 import com.rickeal.agent.core.design.asOverlayColors
 import com.rickeal.agent.feature.settings.tools.SandboxFilesContent
@@ -205,10 +206,19 @@ internal fun WorkspaceOverlay(
             overlayPanel = true,
         ) {
             // 覆盖层 scrim（同 ConversationDrawerContent）：压在玻璃上、内容之下。
+            // 取 max(用户滑条, OVERLAY_TEXT_MIN_SCRIM)：白族文字的可读性下限 ——
+            // 实测 0.45 时本面板 #7F8591、白字仅 3.7:1（判据见该常量 KDoc）。
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .background(colors.glassShadow.copy(alpha = glassCfg.overlayOpacity)),
+                    .background(
+                        colors.glassShadow.copy(
+                            alpha = maxOf(
+                                LocalGlassConfig.current.overlayOpacity,
+                                OVERLAY_TEXT_MIN_SCRIM,
+                            ),
+                        ),
+                    ),
             )
             // 覆盖层文字恒白（UI-1019 Batch 1）：包在玻璃表面绘制之后、内容之前
             // （不碰 liquidGlass 修饰符）。让在自身组合期读 LocalGlassColors 的

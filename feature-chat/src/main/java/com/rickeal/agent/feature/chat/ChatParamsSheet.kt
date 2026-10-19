@@ -42,6 +42,7 @@ import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.OVERLAY_TEXT_MIN_SCRIM
 import com.rickeal.agent.core.design.asOverlayColors
 import com.rickeal.agent.core.design.liquidGlass
 import com.rickeal.agent.core.model.InferenceConfig
@@ -88,18 +89,21 @@ fun ChatParamsSheet(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(colors.glassShadow.copy(alpha = 0.35f))
+                    // 页面压暗 0.35 → 0.45（UI-1019 Batch 2）：sheet 改为通底后，
+                    // 它自身的玻璃采样的是**更亮的页面区域**（原先被页签/导航栏占位
+                    // 抬起的部分不复存在），压暗不足会让白字对比度掉到 AA 以下。
+                    // 该 dim 压的是 sheet 背后的页面，与 sheet 自身 scrim 是两回事。
+                    .background(colors.glassShadow.copy(alpha = 0.45f))
                     .pointerInput(onDismiss) { detectTapGestures { onDismiss() } },
             )
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    // 底部悬浮玻璃页签浮在 sheet 之上（真机截图实锤：页签直接压进
-                    // 参数行）。整个 sheet 上抬到页签上沿：先 navigationBarsPadding
-                    // 再 padding(overlay)，顺序与 GlassScaffold 对 FAB 的处理同构 ——
-                    // 先吃系统导航栏，再垫悬浮页签占位，两层互不吞并。
-                    .navigationBarsPadding()
-                    .padding(bottom = if (imeVisible) 0.dp else LocalBottomBarOverlay.current)
+                    // 通底（UI-1019 Batch 2，用户需求「覆盖层应当延伸至底部」）：
+                    // 玻璃底边直达屏幕底（含系统导航栏区域），底角保持直角
+                    // （shapeOverride 只圆上两角）。**不再**用 navigationBarsPadding /
+                    // 页签占位把整块 sheet 抬起来 —— 那是旧形态（sheet 悬在页签上沿，
+                    // 底部漏一条页面底色，看起来"没铺满"）。
                     .fillMaxWidth()
                     .fillMaxHeight(0.78f)
                     .clip(RoundedCornerShape(topStart = tokens.radiusXl, topEnd = tokens.radiusXl))
@@ -120,16 +124,23 @@ fun ChatParamsSheet(
                     ),
             ) {
                 // 覆盖层自身压实 scrim：THICK 材质在壁纸/聊天内容上偏"透"，
-                // 参数行文字对比度不足（与 :66 的全屏 dim Box 是两回事 —— 那个
+                // 参数行文字对比度不足（与上面全屏 dim Box 是两回事 —— 那个
                 // 压暗的是 sheet 背后的页面，这里压的是 sheet 自己，后者保留）。
-                // 不透明度由设置页「覆盖层不透明度」经 LocalGlassConfig 驱动，
-                // 此处只读消费（GlassConfig.overlayOpacity，并行成员接线中）。
+                // 取 max(用户滑条, OVERLAY_TEXT_MIN_SCRIM)：白族文字的可读性下限，
+                // 实测 0.45 时 sheet 面板 #8B909A 仅 3.2:1（判据见该常量 KDoc）。
                 // matchParentSize 是 BoxScope 成员：玻璃 Box 就是 Box，直接可用，
                 // 且不像 fillMaxSize 会反过来撑大父容器。
                 Box(
                     modifier = Modifier
                         .matchParentSize()
-                        .background(colors.glassShadow.copy(alpha = LocalGlassConfig.current.overlayOpacity)),
+                        .background(
+                            colors.glassShadow.copy(
+                                alpha = maxOf(
+                                    LocalGlassConfig.current.overlayOpacity,
+                                    OVERLAY_TEXT_MIN_SCRIM,
+                                ),
+                            ),
+                        ),
                 )
                 // 覆盖层文字恒白（UI-1019 Batch 1）：包在玻璃表面绘制之后、内容之前
                 // （不碰 liquidGlass 修饰符）。让在自身组合期读 LocalGlassColors 的
@@ -170,15 +181,26 @@ fun ChatParamsSheet(
                                 .fillMaxSize()
                                 .verticalScroll(rememberScrollState())
                                 // 项目走了 setDecorFitsSystemWindows(false)（edge-to-edge），
-                                // 抽屉底部 78% 高度 + 键盘几乎必然重叠，最下面的「系统提示词」
-                                // 输入框会被键盘盖住。顺序为「先 ime 后 nav」：API 30+ 的
-                                // Type.ime() 只报键盘自身高度、不含导航栏，两者相加才对
-                                // （与 ChatInputBar 的做法一致）。
+                                // sheet 通底后内容必须自己避让两层 inset：
+                                //  - imePadding：键盘弹出时把内容顶起来；
+                                //  - navigationBarsPadding：手势条 / 三键导航区。
+                                // 顺序「先 ime 后 nav」：API 30+ 的 Type.ime() 只报键盘
+                                // 自身高度、不含导航栏，两者相加才对（与 ChatInputBar 一致）。
                                 //
-                                // 2026-09-26：删掉 navigationBarsPadding —— sheet 底边已经在
-                                // 玻璃 Box 上抬到页签上沿（含导航栏），内容层再垫一次是双倍
-                                // 空隙；imePadding 保留，键盘弹出时继续顶内容。
+                                // 末尾再垫「悬浮页签占位 + 12dp」——这是用户要求的
+                                // **与底部 Tab 栏隔断**：页签是 MainShell 的悬浮玻璃，
+                                // 绘制序在 NavHost 之后、天然浮在 sheet 之上；12dp 间隙
+                                // 让最后一行控件与页签之间有可见的分界，而不是贴死/被压。
+                                // 键盘弹出时页签被键盘完全遮住 ⇒ 该占位归零（Wave 51 F1）。
                                 .imePadding()
+                                .navigationBarsPadding()
+                                .padding(
+                                    bottom = if (imeVisible) {
+                                        0.dp
+                                    } else {
+                                        LocalBottomBarOverlay.current + 12.dp
+                                    },
+                                )
                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                         )
                     }

@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -29,7 +31,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassChip
@@ -42,6 +46,8 @@ import com.rickeal.agent.core.data.DeviceCapability
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.ModelDescriptor
+import com.rickeal.agent.core.model.ModelGpuSupport
+import com.rickeal.agent.core.model.ModelPresets
 
 // FlowRow 在 foundation 1.10.3 仍是 @ExperimentalLayoutApi（BOM 2026.02.00），显式 OptIn。
 @OptIn(ExperimentalLayoutApi::class)
@@ -103,21 +109,17 @@ fun ModelCard(
     var confirmBrokenLoad by rememberSaveable { mutableStateOf(false) }
 
     GlassCard(
-        modifier = modifier.fillMaxWidth(),
+        // 横向长条（UI-1019 Batch 3）：宽度由调用方给（`fillParentMaxWidth(0.94f)`，
+        // 露出下一张的一条边作为可横滑的 affordance）。卡内**不再**自滚 ——
+        // 嵌套 verticalScroll 会与外层 LazyRow 抢手势，而横条给了整屏宽，
+        // 长模型名两行内就能读完（双列半宽卡曾把名字截成 6 行）。
+        // min 高度保证轮播里各条等高；内容超长时由文字 maxLines 收敛，不撑高。
+        modifier = modifier.heightIn(min = 248.dp),
         material = if (isActive) GlassMaterial.THICK else GlassMaterial.REGULAR,
         cornerRadius = tokens.radiusMd,
         onClick = if (isActive) null else onSelect,
     ) {
-        // 高度上限 420dp：常规内容约 300dp 永不触发滚动，只兜住大字号 / 长文件名 /
-        // NPU 警告等极端内容 —— 超高时在卡内滚动，而不是把网格撑出一整屏高的行
-        // （行高超过视口时 LazyVerticalGrid 按行滚，卡片下半截永远看不到）。
-        // 卡内 verticalScroll（父）与玻璃控件（子）的手势共存已由轴向锁定处理：
-        // DampedDragAnimation / InteractiveHighlight 判定纵向意图就让位给父级滚动。
-        Column(
-            modifier = Modifier
-                .heightIn(max = 420.dp)
-                .verticalScroll(rememberScrollState()),
-        ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -377,6 +379,100 @@ fun ModelCard(
                 text = "该容器在当前运行时已知不可用：$knownBrokenOn。仍要尝试？",
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.onGlass,
+            )
+        }
+    }
+}
+
+/**
+ * 模型库的**横向长条轮播**（UI-1019 Batch 3）。
+ *
+ * 用户需求：「各个模型的文本较长，模型列表应该更改为横向长条 Liquid scroll」。
+ * 原双列 `LazyVerticalGrid` 的卡片只有半屏宽，`Qwen2.5-1.5B-Instruct_multi-prefill-
+ * seq_q8_ekv4096` 这类名字会被截成 6 行、布局破碎（真机截图实锤）。
+ *
+ * 形态：
+ *  - `LazyRow` + **吸附**（[rememberSnapFlingBehavior]）：一次滑一条、松手归位，
+ *    这是"Liquid scroll"的骨架；
+ *  - 每条宽 `fillParentMaxWidth(0.94f)` —— 右侧露出下一条的一小条边，可横滑是
+ *    看得见的（不是靠猜）；
+ *  - 跟手缩放/淡出在 `graphicsLayer` 的 lambda 里读 [LazyListState.layoutInfo]
+ *    （**绘制期**读取，滚动时每帧只失效绘制、不重组整列）；
+ *  - 卡片内容仍是 [ModelCard]（已改为横条布局），全部既有能力（GPU 白名单、
+ *    knownBroken 确认、探测、删除、能力位编辑）原样保留。
+ *
+ * 回调带 `ModelDescriptor` 参数：轮播内部按条目分发，调用方（ModelsScreen）
+ * 只提供「拿到模型后做什么」，不必为每个条目另建 lambda 表。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ModelStripCarousel(
+    models: List<ModelDescriptor>,
+    activeModelId: String?,
+    loadingModelId: String?,
+    loadedModelId: String?,
+    backend: InferenceBackend,
+    onSelect: (ModelDescriptor) -> Unit,
+    onLoad: (ModelDescriptor) -> Unit,
+    onUnload: () -> Unit,
+    onProbe: (ModelDescriptor) -> Unit,
+    onDelete: (ModelDescriptor, Boolean) -> Unit,
+    onBackendChange: (InferenceBackend) -> Unit,
+    onEditCapabilities: (ModelDescriptor) -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
+    LazyRow(
+        state = listState,
+        flingBehavior = flingBehavior,
+        // 与 ModelsScreen 的网格边距对齐（14dp），条目间距 12dp 与网格同口径。
+        contentPadding = PaddingValues(horizontal = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        itemsIndexed(items = models, key = { _, model -> model.id }) { itemIndex, model ->
+            // 下标由 itemsIndexed 提供（LazyItemScope 没有 index 属性）。
+            val preset = ModelPresets.findByFileName(model.fileName)
+            ModelCard(
+                model = model,
+                isActive = model.id == activeModelId,
+                isLoading = model.id == loadingModelId,
+                isLoaded = model.id == loadedModelId,
+                backend = backend,
+                // GPU 白名单口径与 ModelsScreen 原实现逐字一致（W69 C5 同源化）：
+                // 白名单放行/禁用，无预设的导入模型从严。
+                gpuAllowed = ModelGpuSupport.isGpuVerified(model.fileName),
+                gpuBasis = preset?.backendBasis.orEmpty(),
+                knownBrokenOn = preset?.knownBrokenOn,
+                onSelect = { onSelect(model) },
+                onLoad = { onLoad(model) },
+                onUnload = onUnload,
+                onProbe = { onProbe(model) },
+                onDelete = { deleteFile -> onDelete(model, deleteFile) },
+                onBackendChange = onBackendChange,
+                onEditCapabilities = { onEditCapabilities(model) },
+                modifier = Modifier
+                    .fillParentMaxWidth(0.94f)
+                    // 绘制期读取滚动位置：离视口中心越远 → 略缩小、略淡。
+                    // 幅度刻意很小（4% / 8%），只做"聚焦感"，不做花哨转场。
+                    .graphicsLayer {
+                        val info = listState.layoutInfo
+                        val item = info.visibleItemsInfo.firstOrNull { it.index == itemIndex }
+                        val viewport = (info.viewportEndOffset - info.viewportStartOffset)
+                            .toFloat()
+                            .coerceAtLeast(1f)
+                        val distance = if (item == null) {
+                            1f
+                        } else {
+                            val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
+                            val itemCenter = item.offset + item.size / 2f
+                            (abs(itemCenter - center) / viewport).coerceIn(0f, 1f)
+                        }
+                        val shrink = 1f - distance * 0.04f
+                        scaleX = shrink
+                        scaleY = shrink
+                        alpha = 1f - distance * 0.08f
+                    },
             )
         }
     }

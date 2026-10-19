@@ -211,31 +211,25 @@ fun ModelsScreen(
                     )
                 }
             }
-            items(items = state.visibleModels, key = { it.id }) { model ->
-                // GPU 白名单（2026-09-26；W69 C5 判据同源；W72 了断）：按 `ModelGpuSupport`
-                // 白名单放行/禁用 GPU —— 官方无 Android GPU 验证证据的一律禁（native 崩溃
-                // catch 不住）；无预设的导入模型从严。判据直接用
-                // `ModelGpuSupport.isGpuVerified(fileName)`（白名单口径），与 ModelsViewModel
-                // 加载兜底、引擎保命道同源。⚠️ 历史上曾多绕一层 `preset.gpuSupported`
-                // （预设侧的二次投影），W69 C5 同源化后该属性零消费方、W72 已删除 ——
-                // 不要再把判定搬回预设层，两层判定必漂移。
-                val preset = ModelPresets.findByFileName(model.fileName)
-                ModelCard(
-                    model = model,
-                    isActive = model.id == state.activeModelId,
-                    isLoading = model.id == state.loadingModelId,
-                    isLoaded = model.id == state.loadedModelId,
+            // 模型列表：横向长条轮播（UI-1019 Batch 3）。
+            // 用户需求「各个模型的文本较长 ⇒ 改为横向长条 Liquid scroll」：
+            // 原 `items(...)` 双列卡片把长模型名截成 6 行；现在整行 item 内是
+            // 一条 LazyRow（吸附滚动、0.94 屏宽一条），名字有整屏宽度可读。
+            // 全部回调与 GPU 白名单/knownBroken 判据在 ModelStripCarousel 内原样保留。
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                ModelStripCarousel(
+                    models = state.visibleModels,
+                    activeModelId = state.activeModelId,
+                    loadingModelId = state.loadingModelId,
+                    loadedModelId = state.loadedModelId,
                     backend = state.backend,
-                    gpuAllowed = ModelGpuSupport.isGpuVerified(model.fileName),
-                    gpuBasis = preset?.backendBasis.orEmpty(),
-                    knownBrokenOn = preset?.knownBrokenOn,
-                    onSelect = { viewModel.onSelect(model.id) },
-                    onLoad = { viewModel.onLoad(model.id) },
+                    onSelect = { model -> viewModel.onSelect(model.id) },
+                    onLoad = { model -> viewModel.onLoad(model.id) },
                     onUnload = viewModel::onUnload,
-                    onProbe = { viewModel.onProbe(model.id) },
-                    onDelete = { deleteFile -> viewModel.onDelete(model.id, deleteFile) },
+                    onProbe = { model -> viewModel.onProbe(model.id) },
+                    onDelete = { model, deleteFile -> viewModel.onDelete(model.id, deleteFile) },
                     onBackendChange = viewModel::onBackendChange,
-                    onEditCapabilities = {
+                    onEditCapabilities = { model ->
                         editingCapsModel = model
                         editingCaps = model.capabilities
                     },
