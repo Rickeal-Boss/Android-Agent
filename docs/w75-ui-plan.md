@@ -123,3 +123,26 @@
 ---
 
 *本方案为 UI 波单一事实源；交接只写 delta（销账/新增/顺延 + 判据），不整表重抄。U1–U5 裁决后回填 §1。*
+
+---
+
+## 8. scene#56 批次 delta（W76，2026-10-19）
+
+> 用户 scene#56 的七项诉求已落地，逐项判据/坑点见
+> `docs/handoff-20261019-wave76-ui-scene56.md`。本节只登记**对 §1–§5 的增量**。
+
+| 项 | 状态 | 落点 |
+|---|---|---|
+| 覆盖层文字恒白 + 白描边同步色 | ✅ `e8060b6` | `GlassColorScheme.onOverlay*` / `asOverlayColors()` / `liquidGlass(overlayPanel)` |
+| 推理参数通底 + Tab 隔断 | ✅ `663e47b` | `ChatParamsSheet` / 撤 PANEL 页签补糊 / `OVERLAY_TEXT_MIN_SCRIM` |
+| 模型库横向长条 Liquid scroll | ✅ `663e47b` | `ModelStripCarousel` + `ModelCard` 横条布局 |
+| 附件"文件"入口（txt/md） | ✅ `332ac55` | `rememberFilePicker` / `onAttachFile` / `AppContainer.readTextAttachment` |
+| 液态控件垂直拖出不失动态 | ✅ `d5e6e88` | `InteractiveHighlight.continuousOnVertical` |
+| 沙箱工作区模糊 → 缩略图管线 | ✅ 已存在 | `OverlayBackdropBlur.kt`（SHELL 缩略图管线，2026-09-27） |
+
+**新增设计常量**：`OVERLAY_TEXT_MIN_SCRIM = 0.62f`（白族文本对比度下限，覆盖层 scrim
+取 `max(滑条, 下限)`）。若将来改覆盖层配色/玻璃材质，必须重跑本常量 KDoc 里的
+对比度实测口径（工作区/sheet 面板亮度 + 白字比值）。
+
+**§5 守卫影响**：本批零触顶（ChatRunCoordinator / AgentRunner / ChatViewModel /
+引擎均未改；ChatViewModel 仅 +30 行）。lint baseline 未见新增豁免需求。
