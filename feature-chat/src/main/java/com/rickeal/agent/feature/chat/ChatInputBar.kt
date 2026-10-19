@@ -48,6 +48,7 @@ fun ChatInputBar(
     isGenerating: Boolean,
     onPickImage: () -> Unit,
     onPickAudio: () -> Unit,
+    onPickFile: () -> Unit,
     modifier: Modifier = Modifier,
     supportsImages: Boolean = true,
     supportsAudio: Boolean = true,
@@ -167,18 +168,35 @@ fun ChatInputBar(
                             onClick = { onPickAudio(); dismiss() },
                         )
                     }
+                    // 文件入口（UI-1019 Batch 4）：**不受 supportsImages / supportsAudio
+                    // 门控** —— txt / markdown 走的是 Attachment.Text 内联进提示词，
+                    // 与视觉/音频模态无关，任何模型都能吃。用户需求原话：
+                    // 「添加附件应当加入文件按钮并且弹出文件选择（txt 和 markdown）」。
+                    GlassButton(
+                        text = "文件",
+                        onClick = { onPickFile(); dismiss() },
+                        material = GlassMaterial.THIN,
+                    )
                 },
                 content = {
-                    Text(
-                        text = when {
-                            supportsImages && supportsAudio -> "图片和音频会随下一条消息一起发送。"
-                            supportsImages -> "当前模型不支持音频输入，只能添加图片。"
-                            supportsAudio -> "当前模型不支持图片输入，只能添加音频。"
-                            else -> "当前模型不支持图片和音频输入。"
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.onGlassMuted,
-                    )
+                    Column {
+                        Text(
+                            text = when {
+                                supportsImages && supportsAudio -> "图片和音频会随下一条消息一起发送。"
+                                supportsImages -> "当前模型不支持音频输入，只能添加图片。"
+                                supportsAudio -> "当前模型不支持图片输入，只能添加音频。"
+                                else -> "当前模型不支持图片和音频输入。"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onGlassMuted,
+                        )
+                        Text(
+                            text = "文本文件（.txt / .md）会读成文本随消息发送，任何模型都可用。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onGlassSubtle,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
                 },
             )
         }

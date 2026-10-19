@@ -14,6 +14,7 @@ import com.rickeal.agent.core.agent.plan.PlanStep
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.engine.EngineSessionDiagnostics
 import com.rickeal.agent.core.engine.local.EngineLoadDegrade
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.EngineKind
@@ -382,6 +383,34 @@ class ChatViewModel(
                     attachments = state.attachments + Attachment.Audio(
                         uri = stored ?: uriString,
                         name = name.ifBlank { "音频" },
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * 文本 / Markdown 文件附件（UI-1019 Batch 4）。
+     *
+     * 读成 `Attachment.Text` 而不是 `Attachment.File`：引擎对 File 是 no-op
+     * （`is Attachment.File -> Unit`），Text 才会被内联进提示词 —— 这是内核
+     * 定版冻结下让模型真正读到文件内容的唯一路径（见 AppContainer.readTextAttachment）。
+     *
+     * 读取失败（provider 拒绝 / 空文件 / 编码异常）时**不添加空附件**，只留一条
+     * 日志：给用户一个点不开的占位 chip 比静默不添加更糟。
+     */
+    fun onAttachFile(uriString: String, name: String) {
+        viewModelScope.launch {
+            val text = container.readTextAttachment(uriString)
+            if (text.isNullOrBlank()) {
+                AgentLogStore.warn("文件附件读取失败或为空，已跳过：${name.ifBlank { uriString }}")
+                return@launch
+            }
+            _uiState.update { state ->
+                state.copy(
+                    attachments = state.attachments + Attachment.Text(
+                        text = text,
+                        name = name.ifBlank { "文件" },
                     ),
                 )
             }

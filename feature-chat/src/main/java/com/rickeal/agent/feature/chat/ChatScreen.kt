@@ -137,6 +137,8 @@ fun ChatScreen(
 
     val pickImage = rememberImagePicker { uri, name -> viewModel.onAttachImage(uri, name) }
     val pickAudio = rememberAudioPicker { uri, name -> viewModel.onAttachAudio(uri, name) }
+    // 文本 / Markdown 文件（UI-1019 Batch 4）：选中后由 VM 读成 Attachment.Text。
+    val pickFile = rememberFilePicker { uri, name -> viewModel.onAttachFile(uri, name) }
 
     // 附件门控（Wave 44 P2-1 收口）：静态能力位（模型描述符）× 加载期 / 会话创建期模态降级事实。
     // 此前只读 `capabilities.image` —— 那是**模型描述符**的静态位，容器缺 section 时
@@ -282,6 +284,7 @@ fun ChatScreen(
                     isGenerating = state.isGenerating,
                     onPickImage = pickImage,
                     onPickAudio = pickAudio,
+                    onPickFile = pickFile,
                     supportsImages = supportsImages,
                     supportsAudio = supportsAudio,
                     modifier = Modifier

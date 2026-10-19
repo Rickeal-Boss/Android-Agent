@@ -535,6 +535,48 @@ class AppContainer(
         }
 
     /**
+     * 读取 SAF 选中的文本文件内容（UI-1019 Batch 4，txt / markdown 附件）。
+     *
+     * 为什么读成字符串而不是复制原文件：引擎把 `Attachment.File` 当 no-op
+     * （`LiteRtLmEngine` 的 `is Attachment.File -> Unit`），只有 `Attachment.Text`
+     * 会被内联进提示词。内核已定版冻结 ⇒ UI 波走「读文本 → Attachment.Text」这条
+     * 零内核改动的路径。
+     *
+     * 边界：
+     *  - **必须 suspend + IO**：几十 KB 的读取虽小，但 content:// 可能落在慢速
+     *    云盘 provider 上，主线程直读会掉帧；
+     *  - **按字节上限流式读**（[maxBytes]，默认 128 KiB ≈ 数万汉字），绝不
+     *    `readBytes()` 整读 —— 用户选中一个几百 MB 的日志文件时那会直接 OOM；
+     *  - 解码固定 UTF-8（txt/md 的主流编码；解码失败按替换字符处理，不抛）；
+     *  - 任何失败返回 null（调用方跳过附件并留日志），不把异常抛到 UI 层。
+     */
+    suspend fun readTextAttachment(uriString: String, maxBytes: Int = 128 * 1024): String? =
+        withContext(Dispatchers.IO) {
+            val raw = uriString.trim()
+            if (raw.isBlank()) return@withContext null
+            runCatching {
+                val uri = raw.toUri()
+                val input = context.contentResolver.openInputStream(uri) ?: return@runCatching null
+                val buffer = ByteArray(8 * 1024)
+                val out = java.io.ByteArrayOutputStream()
+                var total = 0
+                input.use { source ->
+                    while (total < maxBytes) {
+                        val read = source.read(buffer, 0, minOf(buffer.size, maxBytes - total))
+                        if (read <= 0) break
+                        out.write(buffer, 0, read)
+                        total += read
+                    }
+                }
+                val bytes = out.toByteArray()
+                if (bytes.isEmpty()) return@runCatching null
+                val text = String(bytes, Charsets.UTF_8)
+                // 触顶说明还有剩余内容：明确标注截断，避免模型把半截文件当全文。
+                if (total >= maxBytes) "$text\n…（文件超过 ${maxBytes / 1024} KiB，已截断）" else text
+            }.getOrNull()
+        }
+
+    /**
      * 当前可用内存（字节）。用于「加载模型前的内存闸门」：
      * 4B 模型加载失败在 native 层表现为 SIGSEGV / OOM，用户感知是「闪退」，
      * 与其等几十秒后崩溃，不如提前拦下并给出可执行的建议。
