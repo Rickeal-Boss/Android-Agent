@@ -134,3 +134,24 @@ no-op ⇒ 不存在"全分辨率 backdrop blur 开销"可优化。**本项无需
 - 覆盖层 scrim 下限 0.62 与「覆盖层不透明度」滑条的关系已在 `GlassConfig.kt`
   写明（滑条 <0.62 时被下限接管）；若用户希望完全由滑条决定，可去掉下限并
   改回深色文字族 —— 属产品取舍，需裁决。
+
+---
+
+## 六、闸门实测结果（本波收尾）
+
+| 闸门 | 命令 | 结果 |
+|---|---|---|
+| arch-guard 42 项 | `bash scripts/arch-guard.sh` | **全绿 exit 0** |
+| 全量单测 | `bash scripts/fulltest.sh`（必须注入 JAVA_HOME/ANDROID_HOME/GRADLE_USER_HOME） | **9 模块 tests=740 / failures=1**（唯一 = `SandboxFileScannerTest` 符号链接，Windows 本机假红、CI 绿，与既有基线一致） |
+| lint（CI 口径） | `bash _ci-tools/localbuild.sh :app:lintDebug`（checkDependencies=true，覆盖 app + 8 个库模块） | **BUILD SUCCESSFUL exit 0**，无新增豁免 |
+| 构建 | `bash _ci-tools/localbuild.sh assembleDebug` | 5 批全部成功 |
+
+> ⚠️ 单独在根跑 `lintDebug` 会在 `core-data` 报 `MissingPermission(ACCESS_NETWORK_STATE)`
+> —— 那是**库模块脱离 app 清单**的假红（app/src/main/AndroidManifest.xml:22 已声明），
+> CI 与本地都必须用 `:app:lintDebug` 口径，别被它误导。
+
+**深色模式回归**：抽屉/工作区在深色主题下仍为白字深板（截图 `_w76ui/72_dark_drawer.png`、
+`73_dark_ws.png`），onOverlay 白族在 dark 下与原 onGlass 同族，观感一致。真机验证后
+主题已还原为「跟随系统」、覆盖层不透明度 0.45。
+
+**推送**：`origin/UI-change-1019` = `69e70c4`（`b29a771..69e70c4`，5 个提交）。
