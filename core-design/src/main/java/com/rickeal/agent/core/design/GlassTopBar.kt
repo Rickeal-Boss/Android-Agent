@@ -64,7 +64,7 @@ fun GlassTopBar(
     //   7 个调用点 0 处传参 ⇒ 该分支恒为 false，属死代码，已整链删除。）
     val material = GlassMaterial.ULTRA_THIN
     val animationScope = rememberCoroutineScope()
-    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
+    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope, continuousOnVertical = true) }
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(

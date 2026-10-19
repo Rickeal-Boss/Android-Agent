@@ -157,7 +157,7 @@ fun GlassIconButton(
     val config = LocalGlassConfig.current
     val tokens = LocalGlassTokens.current
     val animationScope = rememberCoroutineScope()
-    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
+    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope, continuousOnVertical = true) }
     val interactive = enabled
     val capsule = shape == GlassIconButtonShape.Capsule
     val clipShape = if (capsule) Capsule else CircleShape

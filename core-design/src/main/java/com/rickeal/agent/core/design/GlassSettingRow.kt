@@ -44,7 +44,7 @@ fun GlassSettingRow(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val animationScope = rememberCoroutineScope()
-    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
+    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope, continuousOnVertical = true) }
     val interactive = onClick != null && enabled
 
     LiquidGlassSurface(

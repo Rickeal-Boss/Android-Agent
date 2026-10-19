@@ -92,15 +92,32 @@ private const val VERTICAL_INTENT_TAN30 = 0.577f
  * `.then(gestureModifier)` **在后**。调换后 `clickable` 会先吃掉手势，
  * 玻璃的跟手位移就没了（静态截图看不出来，真机一按就露馅）。
  *
- * 对齐 Kyant0 `catalog/utils/InteractiveHighlight`（Apache-2.0）。
+ * ## 纵向意图：两条路径（UI-1019 Batch 5）
+ *
+ * 上游 Kyant0 的 `InteractiveHighlight` 用 `inspectDragGestures` —— 它**从不消费**
+ * 事件、也**不按轴向打断**：手指往哪儿拖都继续跟手，直到抬手才归位。本仓旧实现
+ * 在判定纵向意图时直接 `break`，于是「手指往竖向拖出控件范围」的那一刻按压高光
+ * 与跟手位移一起消失（Liquid Button 上最明显，真机用户反馈）。
+ *
+ * 但"不打断"不能无条件套到所有控件：滑块 / 开关的拖动会**改数值**，一边滚页面
+ * 一边改数值是明确要避免的（见下方轴向锁定注释）。所以拆成两条路径：
+ *  - [continuousOnVertical] = false（默认，滑块/开关/页签等）：保持旧语义 ——
+ *    纵向意图即 `break`，让位给父级滚动；
+ *  - [continuousOnVertical] = true（纯视觉控件：按钮 / Chip / FAB / 图标钮 /
+ *    设置行）：纵向意图时**不消费也不 break**，继续跟手（只影响视觉），父级滚动
+ *    照常接管；抬手才归位。点击不会被误触发 —— 父级滚动容器消费事件后，
+ *    `clickable` 的 Final pass 复查消费态会取消按压（与旧 break 路径同一条
+ *    取消机制）。
  *
  * @param position 高光中心的计算方式。默认跟随手指落点；
  *   需要让高光跟随**别的状态**（例如 BottomTabs 跟随选中项而不是手指）时传入自定义实现。
+ * @param continuousOnVertical 纵向拖动时是否保持跟手（见上）。纯视觉控件传 true。
  */
 @Stable
 class InteractiveHighlight(
     private val animationScope: CoroutineScope,
-    private val position: ((size: Size, offset: Offset) -> Offset)? = null
+    private val position: ((size: Size, offset: Offset) -> Offset)? = null,
+    private val continuousOnVertical: Boolean = false,
 ) {
 
     private val pressAnimatable = Animatable(0f)
@@ -180,6 +197,9 @@ class InteractiveHighlight(
             // 两轴分开记 —— 纵向累积更大时判定为"用户想滚列表"，本手势让位。
             var accumulatedX = 0f
             var accumulatedY = 0f
+            // 一旦判定为纵向让位，本次手势的剩余部分不再消费（见 continuousOnVertical）：
+            // 否则用户先竖后横时按钮会把页面滚动抢回来，页面滚到一半卡住。
+            var yielding = false
             // ⚠️ slop 必须在**循环外**取一次快照（pin）。
             // viewConfiguration 来自 CompositionLocal，手势跑到后面时 composition
             // 可能已经 dispose，此时再取值会抛 IllegalStateException（CompositionLocal 越界）。
@@ -243,7 +263,20 @@ class InteractiveHighlight(
                         val reach = Offset(abs(accumulatedX), abs(accumulatedY)).getDistance()
                         if (reach >= slop) {
                             if (abs(accumulatedY) > abs(accumulatedX) * VERTICAL_INTENT_TAN30) {
-                                break
+                                if (continuousOnVertical) {
+                                    // 纯视觉控件（按钮/Chip/FAB/图标钮/设置行）：纵向意图
+                                    // ⇒ **不消费、不 break**，继续跟手直到抬手。
+                                    // 与上游 inspectDragGestures 的语义一致：父级滚动容器
+                                    // 在 Main pass 消费事件（子级先拿到未消费事件，仍能读
+                                    // position），所以"页面在滚 + 按钮继续形变"可以并存。
+                                    // 点击不会误触发：父级消费后 clickable 的 Final pass
+                                    // 复查 `isConsumed` 会取消按压（旧 break 路径同一条机制）。
+                                    yielding = true
+                                } else {
+                                    // 数值型控件（滑块/开关/页签）：保持旧语义 —— 让位后
+                                    // 立刻结束本次手势，避免"一边滚页面一边改数值"。
+                                    break
+                                }
                             }
                         }
 
@@ -257,7 +290,7 @@ class InteractiveHighlight(
                         //   会把 P0 那次修复（越 slop 才消费、点击不被取消）改回去。
                         // `>=` 与 `>` 在 8dp 下的差别只是正好等于阈值的那一帧，
                         // 不影响行为，保持现状。
-                        if (abs(accumulatedX) >= slop) {
+                        if (!yielding && abs(accumulatedX) >= slop) {
                             change.consume()
                         }
                         // 跟手位移与是否消费无关，照常累加 —— 手感不受影响。
