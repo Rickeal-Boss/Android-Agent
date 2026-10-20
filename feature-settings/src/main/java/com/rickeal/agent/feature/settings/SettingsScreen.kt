@@ -41,6 +41,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.rickeal.agent.core.design.GlassBackdropBlurOverride
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
@@ -77,6 +78,13 @@ fun SettingsScreen(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val context = LocalContext.current
+
+    // 从系统设置页返回时重读「电池优化豁免」状态（W77）：用户可能刚在系统里改完，
+    // 不刷新就会一直显示离开前那一态。读的是系统态、不落盘，代价可忽略。
+    LifecycleResumeEffect(Unit) {
+        viewModel.refreshBackgroundRestriction()
+        onPauseOrDispose { }
+    }
 
     // 「生成速度通知」的运行时权限（API 33+）。
     // 只在用户**显式打开**开关且尚未授权时才请求 —— 反过来（关开关、或已授权）都
@@ -596,6 +604,82 @@ fun SettingsScreen(
                 }
             }
 
+            /* ------------------------------------- 后台运行保障（W77） */
+            // 这一卡解决的是「模型跑着，用户切后台/锁屏，进程被冻结」。
+            // 诚实口径（与 knownBroken 红字同一设计哲学）：
+            //   * 白名单**不保证**不被杀 —— 它放宽 Doze，不防 LMK；
+            //   * 后台生成**确实**更耗电、更热（散热条件比前台差）；
+            //   * 真被杀也不是白干：恢复卡会带着已写出的部分继续。
+            // 绝不写「设置后永不被杀」这类承诺 —— 那是把系统行为说成我们的能力。
+            GlassCard(
+                modifier = Modifier.staggeredPageItem(itemIndex = 4),
+                contentPadding = PaddingValues(14.dp),
+            ) {
+                Column {
+                    GroupTitle("后台运行保障")
+                    Text(
+                        text = if (state.batteryOptimizationIgnored) {
+                            "已加入电池优化豁免"
+                        } else {
+                            "未加入电池优化豁免"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onGlass,
+                    )
+                    Text(
+                        text = if (state.batteryOptimizationIgnored) {
+                            "切后台或锁屏时，系统更不容易冻结本应用"
+                        } else {
+                            "锁屏或长时间留在后台时，系统可能冻结本应用，生成会中断"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    Text(
+                        // 逐厂商路径（W77）：ColorOS / HyperOS / EMUI / MagicOS / OriginOS /
+                        // One UI / Flyme / AOSP 各一套。不写「设置后永不被杀」——
+                        // 真机实测 ColorOS 即使加入 AOSP doze 白名单，仍会在灭屏后
+                        // 强制回收第三方 WakeLock（OplusProxyWakeLock）。
+                        text = if (state.oemName.isBlank()) {
+                            state.oemGuideText
+                        } else {
+                            "${state.oemName}：${state.oemGuideText}"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    Text(
+                        text = "路径可能因系统版本略有差异。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Row(
+                        modifier = Modifier.padding(top = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        GlassButton(
+                            text = "去系统设置",
+                            onClick = { viewModel.onOpenBatteryOptimizationSettings() },
+                        )
+                        GlassButton(
+                            text = "应用详情",
+                            onClick = { viewModel.onOpenAppDetails() },
+                            material = GlassMaterial.THIN,
+                        )
+                    }
+                    Text(
+                        text = "后台生成会增加耗电与发热；即使加白名单也不能保证不被系统强制回收，" +
+                            "中断后可从恢复卡继续。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onGlassSubtle,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                }
+            }
+
             /* ---------------------------------------------------- AI 能力 */
             // AI 能力档位（Wave 26）：Operit2 四层能力模型的第 2 层，裁剪为单设备版本。
             // 它解耦了「工具危不危险」（工具自身的危险标记）与「我今天允许 AI 做到哪」
@@ -603,7 +687,7 @@ fun SettingsScreen(
             // 副文案按档位切换，点明代价与边界；「完整权限」必须说清它不是提权，
             // 否则用户会以为选了它 App 就拿到了系统没给的能力。
             GlassCard(
-                modifier = Modifier.staggeredPageItem(itemIndex = 4),
+                modifier = Modifier.staggeredPageItem(itemIndex = 5),
                 contentPadding = PaddingValues(14.dp),
             ) {
                 Column {
@@ -651,7 +735,7 @@ fun SettingsScreen(
             // 卡刻意分开放：那张卡管**权限面**，这张管**提示词预算与工具可见性**。
             // 二者语义不同 —— 混在一起会让用户以为「按需检索」也是一种权限限制。
             GlassCard(
-                modifier = Modifier.staggeredPageItem(itemIndex = 5),
+                modifier = Modifier.staggeredPageItem(itemIndex = 6),
                 contentPadding = PaddingValues(14.dp),
             ) {
                 Column {
@@ -705,7 +789,7 @@ fun SettingsScreen(
             // 若哪天改了那边的判据或删掉那一行，本卡的这句承诺就成了假承诺 ——
             // 用户勾了开关却永远等不到那行说明。两侧都留了指向对方的注释。
             GlassCard(
-                modifier = Modifier.staggeredPageItem(itemIndex = 6),
+                modifier = Modifier.staggeredPageItem(itemIndex = 7),
                 contentPadding = PaddingValues(14.dp),
             ) {
                 Row(

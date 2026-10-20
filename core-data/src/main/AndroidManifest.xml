@@ -1,3 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ===================================================================== -->
+    <!-- W77：run 期间的后台保活前台服务                                        -->
+    <!--                                                                        -->
+    <!-- 为什么声明在 core-data：控制器（AgentRunForegroundController）与通知出口  -->
+    <!-- 都在本模块，服务与它们同包才能共享 id / 常量而不必反向依赖 app。          -->
+    <!-- 权限（FOREGROUND_SERVICE / FOREGROUND_SERVICE_SPECIAL_USE / WAKE_LOCK）  -->
+    <!-- 声明在 :app 的 manifest —— 权限是安装期契约，跟最终产物走。              -->
+    <!--                                                                        -->
+    <!-- foregroundServiceType="specialUse"：                                    -->
+    <!--   * 官方 Runtime prerequisites = None（只需该类型权限 + 下面的 property） -->
+    <!--   * 语义：端侧 LLM 推理不属于 media / dataSync / location 等任何既有类型  -->
+    <!--   * property 的 value 必须与 RunForegroundPolicy.SPECIAL_USE_SUBTYPE     -->
+    <!--     逐字一致（arch-guard #43 双向钉死；只改一处会静默漂移）               -->
+    <!--                                                                        -->
+    <!-- stopWithTask 显式写 true（虽是默认值）：                                 -->
+    <!--   用户从最近任务划掉 = 显式终止意图 ⇒ 服务随任务销毁，run 走 onStop()     -->
+    <!--   干净收尾。把它写出来，是为了让「刻意不保活划卡场景」在清单里可见。      -->
+    <!-- ===================================================================== -->
+    <application>
+        <service
+            android:name=".background.AgentForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="on_device_llm_inference_completion" />
+        </service>
+    </application>
+
 </manifest>

@@ -239,7 +239,15 @@ class ChatViewModel(
      * - scope 传 [viewModelScope]（**不新建 scope**，否则 VM 销毁时 run 不会被取消）；
      * - [_uiState] 共享同一实例（Coordinator 持引用并 `update`，避免 UI 状态分叉）。
      */
-    private val run = ChatRunCoordinator(container, viewModelScope, _uiState, initialConversationId)
+    private val run = ChatRunCoordinator(
+        container,
+        viewModelScope,
+        // W77：落库走进程级 scope —— onCleared 之后 viewModelScope 已取消，
+        // 半截答案的写入不能被它带走（见 ChatRunCoordinator 构造参数 KDoc）。
+        container.processScope,
+        _uiState,
+        initialConversationId,
+    )
 
     /** 流式通道：转发 Coordinator 的同一 StateFlow（`ChatScreen` 拿到的实例不变）。 */
     val streaming: StateFlow<StreamingState> get() = run.streaming
@@ -527,7 +535,14 @@ class ChatViewModel(
     fun onStop() = run.onStop()
 
     override fun onCleared() {
-        run.cancel()
+        // W77：这里原先只 `run.cancel()` —— 裸取消走不到任何终态收口，
+        // 半截回答**既不显示也不落库，界面与日志零报错**（报告 B §六 的真发现）。
+        // 端侧生成慢，切一次会话/按一次返回的代价是几十秒算力白烧，必须收尾。
+        //
+        // 改成 onStop() 后语义与「用户点停止」完全一致：flush 缓冲 → 取 partial/thinking
+        // 快照 → cancel → resetStreaming → commitAssistant（Cancelled 语义）。
+        // ⚠️ 落库必须走 processScope，否则本修复是假的（见 Coordinator 构造参数 KDoc）。
+        run.onStop()
         // VM 销毁 = 界面已不存在，正在显示的「生成中」通知必须撤掉：run 协程的
         // CancellationException 被 onFailure 静默吞掉（取消不是错误），不会走到任何
         // 终态收口 —— 不补这一句，生成中退出 App 会残留一条 ongoing、划不掉的通知，

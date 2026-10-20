@@ -31,6 +31,8 @@ import com.rickeal.agent.core.agent.subagent.SubagentSessionStore
 import com.rickeal.agent.core.agent.token.InMemoryRunTokenLedger
 import com.rickeal.agent.core.agent.token.RunTokenLedger
 import com.rickeal.agent.core.data.thermal.ThermalGovernor
+import com.rickeal.agent.core.data.background.AgentRunForegroundController
+import com.rickeal.agent.core.data.background.BackgroundRestrictionStatus
 import com.rickeal.agent.core.engine.DefaultEngineFactory
 import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
@@ -315,6 +317,43 @@ class AppContainer(
                 ?: Int.MIN_VALUE
         },
     )
+
+    /**
+     * 进程级「不可取消」作用域（W77）。
+     *
+     * 与 [observationScope] 的分工：后者只跑低频观察、可以随容器一起死；本 scope 承载
+     * **「已经产出的东西必须落盘」**这类不可取消的收尾 —— 具体来说就是
+     * `ChatRunCoordinator` 在 ViewModel 销毁后仍要完成的 `appendMessage`。
+     *
+     * 为什么必须独立于 `viewModelScope`：`onCleared()` 执行时 VM 的 scope **已经取消**，
+     * 任何 `scope.launch { repository.appendMessage(...) }` 都会被立刻取消 ⇒
+     * 「半截答案」只更新了内存 UI、磁盘零写入（W77 §4 的假修复陷阱）。
+     * IO 调度器：落库是文件写，与 UI 无关。
+     */
+    val processScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 后台保活控制器（W77）：观察 [AgentRunner.isBusy]，忙则起前台服务、闲则宽限后停。
+     *
+     * 与 [thermalGovernor] 共用 [observationScope]（同一套「应用级低频 collect」范式）。
+     * 控制器本身**不碰 run 生命周期** —— run 仍挂在 viewModelScope 上，服务只负责
+     * 「进程别被冻结 / 锁屏别断 CPU」。
+     */
+    val backgroundRunController: AgentRunForegroundController = AgentRunForegroundController(
+        context = context.applicationContext,
+        isBusy = agentRunner.isBusy,
+        scope = observationScope,
+        smallIconRes = generationIconRes,
+    )
+
+    /** 「后台运行保障」的免权限检测与引导跳转（W77）。 */
+    val backgroundRestrictionStatus: BackgroundRestrictionStatus =
+        BackgroundRestrictionStatus(context)
+
+    init {
+        // 容器构造 = 进程级单例诞生 ⇒ 开始观察。无关闭语义（与 ThermalGovernor 同款）。
+        backgroundRunController.start()
+    }
 
     // ---- 子代理框架（ZCode Actor / Octop ask_agent 移植）----
     // 顺序有讲究：先建 runner，再把 ask_actor 注册进 registry（工具内部引用 runner）。

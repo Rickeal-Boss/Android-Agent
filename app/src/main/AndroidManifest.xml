@@ -28,6 +28,29 @@
          API 33+ 为运行时权限，仅在用户显式打开 App 内开关时才请求。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- ================================================================== -->
+    <!-- W77：run 期间的后台 / 锁屏持续运行                                    -->
+    <!--                                                                    -->
+    <!-- FOREGROUND_SERVICE                                                   -->
+    <!--   前台服务的基础权限（API 28+）。没有它 startForeground 直接抛。       -->
+    <!-- FOREGROUND_SERVICE_SPECIAL_USE                                       -->
+    <!--   API 34+ 起 targetSdk≥34 的应用**必须**为每种 FGS 类型声明配对权限。  -->
+    <!--   本应用没有 media / dataSync / location 等任何既有类型的语义，        -->
+    <!--   端侧 LLM 推理属于 specialUse（官方定义：未被其它类型覆盖的合法用途）。 -->
+    <!--   低于 34 的平台不认识这条权限，声明是无害的（安装期忽略）。            -->
+    <!-- WAKE_LOCK                                                            -->
+    <!--   PARTIAL_WAKE_LOCK 的普通权限，无运行时授权弹窗。用途仅限「run 进行中  -->
+    <!--   锁屏时保持 CPU」——服务 onDestroy 与 6.5 分钟超时双重释放，            -->
+    <!--   不存在「常驻持锁」形态。                                            -->
+    <!--                                                                    -->
+    <!-- 刻意不声明 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS：                      -->
+    <!--   那会让「电池优化白名单」变成受限设置（Play 需申报）。本波只做          -->
+    <!--   免权限检测 + 跳系统设置页引导，见 BackgroundRestrictionStatus。        -->
+    <!-- ================================================================== -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- 存储权限：本应用**刻意不申请任何存储权限**。
          模型与附件的读取全部走系统文件选择器（ACTION_OPEN_DOCUMENT），由用户显式授权，
          既不需要运行时权限，也不会触发应用商店对敏感权限的审核。

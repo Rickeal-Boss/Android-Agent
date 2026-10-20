@@ -7,9 +7,6 @@ import android.content.ComponentCallbacks2
 import com.rickeal.agent.core.data.AppContainer
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.model.AgentLogStore
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
@@ -19,8 +16,11 @@ import kotlinx.coroutines.launch
  */
 class LiquidAgentApplication : Application() {
 
-    /** 进程级作用域：与 Application 同生命周期，用于冷启动预热这类「不该被取消」的任务。 */
-    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // W77：原先这里自持一个 applicationScope，现统一收编到 AppContainer.processScope ——
+    // 进程级作用域**全仓只能有一个**。理由不是洁癖：ChatRunCoordinator 的落库收尾
+    // （onCleared 之后仍要写盘）也用同一个 scope，两处各自 new 一个 SupervisorJob
+    // 会让「进程退出时还有哪些协程在跑」无法从单点回答。
+    // 字段删除后行为不变：容器在 onCreate 里已被强制创建（generationNotifier.stop()）。
 
     val container: AppContainer by lazy {
         AppContainer(this, generationIconRes = R.drawable.ic_stat_generation)
@@ -51,7 +51,7 @@ class LiquidAgentApplication : Application() {
         // 任何残留通知都是脏数据 —— 且 ongoing 通知在 Android 13 及以下用户划不掉，
         // 不能指望用户手动清理。stop() 幂等，无残留时 no-op。
         container.generationNotifier.stop()
-        applicationScope.launch {
+        container.processScope.launch {
             // 绝不裸吞：`bootstrap()` 内部虽然已把三个仓库各自隔离（见 AppContainer），
             // 但它自己并不覆盖「三个都成功、却在别处炸了」以及协程被取消之外的异常。
             // 这里补一条 ERROR —— 冷启动预热是**静默失败**的典型：用户只会看到

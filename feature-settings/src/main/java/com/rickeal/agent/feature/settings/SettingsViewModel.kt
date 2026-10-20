@@ -34,6 +34,22 @@ data class SettingsUiState(
      * 「省点上下文」与「收紧 AI 权限」变成同一条落盘路径。
      */
     val disclosureMode: ToolDisclosureMode = ToolDisclosureMode.FULL,
+    /**
+     * 系统是否已把本应用加入电池优化豁免（W77「后台运行保障」卡）。
+     *
+     * 与 [generationNotification] 的区别：那个是**用户偏好**（落 DataStore），
+     * 这个是**系统状态**（每次进设置页重新读，绝不缓存/落盘）—— 用户可能在系统
+     * 设置里改了又改，落盘副本迟早失配，而失配的表现是「卡上说已豁免、实际被杀」。
+     */
+    val batteryOptimizationIgnored: Boolean = false,
+    /**
+     * 当前 OEM 的后台保活设置路径（W77）。各国产 ROM 的后台管控独立于 AOSP：
+     * ColorOS / HyperOS / EMUI / MagicOS / OriginOS / One UI / Flyme 各有一套，
+     * 由 `OemBackgroundPolicy` 按 `Build.MANUFACTURER`+`BRAND` 归类后给出。
+     */
+    val oemGuideText: String = "",
+    /** 厂商家族可读名（"ColorOS / realme UI" 等），用于卡片副标题。 */
+    val oemName: String = "",
     val message: String? = null,
     val error: String? = null,
 )
@@ -71,6 +87,36 @@ class SettingsViewModel(
                 _uiState.update { it.copy(disclosureMode = mode) }
             }
         }
+        // 系统态只在进页面时读一次（免权限）；离开设置页去系统设置改完回来，
+        // 由 SettingsScreen 的 ON_RESUME 再调 refreshBackgroundRestriction() 刷新。
+        refreshBackgroundRestriction()
+    }
+
+    /**
+     * 重新读系统的电池优化豁免状态（W77）。
+     *
+     * 刻意**不落盘、不缓存**：这是系统态，不是用户偏好。缓存副本只会在用户改了
+     * 系统设置后变成假信息 —— 而「卡上说已豁免、实际仍被杀」正是最伤信任的形态。
+     */
+    fun refreshBackgroundRestriction() {
+        val status = container.backgroundRestrictionStatus
+        _uiState.update {
+            it.copy(
+                batteryOptimizationIgnored = status.isBatteryOptimizationIgnored(),
+                oemGuideText = status.backgroundGuideText(),
+                oemName = status.oemDisplayName(),
+            )
+        }
+    }
+
+    /** 打开系统「电池优化」列表页（免权限）。 */
+    fun onOpenBatteryOptimizationSettings() {
+        container.backgroundRestrictionStatus.openBatteryOptimizationSettings()
+    }
+
+    /** 兜底：打开本应用的应用详情页。 */
+    fun onOpenAppDetails() {
+        container.backgroundRestrictionStatus.openAppDetails()
     }
 
     /**

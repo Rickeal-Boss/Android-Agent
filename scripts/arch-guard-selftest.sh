@@ -68,7 +68,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -108,9 +108,14 @@ affected_guards_for_file() {
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentRunnerLoopHelpers.kt) echo "37" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentEvents.kt)          echo "13" ;;
     core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt) echo "34 39 40 41" ;;
-    feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt)    echo "18" ;;
+    feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt)    echo "18 44" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunCoordinator.kt) echo "20 30" ;;
     feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatRunRecovery.kt) echo "38" ;;
+    # W77：FGS 声明契约（#43）与控制器装配（#44）的核对面。
+    core-data/src/main/AndroidManifest.xml)                                      echo "43" ;;
+    app/src/main/AndroidManifest.xml)                                            echo "43" ;;
+    core-data/src/main/java/com/rickeal/agent/core/data/AppContainer.kt)          echo "44" ;;
+    core-data/src/main/java/com/rickeal/agent/core/data/background/RunForegroundPolicy.kt) echo "43" ;;
     .github/workflows/build.yml)                                                   echo "22 23 26" ;;
     docs/15-backlog.md)                                                 echo "42" ;;
     docs/handoff-*)                                                     echo "42" ;;
@@ -310,6 +315,10 @@ scaffold() {
   cat > "$root/app/src/main/AndroidManifest.xml" <<'XML'
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- W77 第 43 条核对面：FGS 类型与权限必须成对，骨架铺齐才保持干净树绿。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 </manifest>
 XML
   write_runner "$root" 5
@@ -373,6 +382,43 @@ class ModelRepository {
                 capabilitiesSource = CapabilitySource.USER,
             ),
         )
+    }
+}
+KT
+  # 第 43/44 条（W77，后台保活 FGS）—— 两条都是 fail-closed 形态：
+  #   #43 要求 core-data manifest 的 specialUse 声明、app manifest 的权限、
+  #       以及 subtype 与 RunForegroundPolicy 常量**逐字一致**；
+  #   #44 要求 AppContainer 里恰有 1 处 `backgroundRunController.start()`。
+  # ⇒ 骨架必须把三件铺齐，否则干净树会被误红（与 #20/#38 同款「漏铺 ⇒ 全红」）。
+  mkdir -p "$root/core-data/src/main/java/com/rickeal/agent/core/data/background"
+  cat > "$root/core-data/src/main/AndroidManifest.xml" <<'XML'
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <service
+            android:name=".background.AgentForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="on_device_llm_inference_completion" />
+        </service>
+    </application>
+</manifest>
+XML
+  cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/background/RunForegroundPolicy.kt" <<'KT'
+package com.rickeal.agent.core.data.background
+
+internal object RunForegroundPolicy {
+    const val SPECIAL_USE_SUBTYPE: String = "on_device_llm_inference_completion"
+}
+KT
+  cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/AppContainer.kt" <<'KT'
+package com.rickeal.agent.core.data
+
+class AppContainer {
+    init {
+        backgroundRunController.start()
     }
 }
 KT
@@ -4610,6 +4656,58 @@ else
 fi
 
 fi
+# ---------------------------------------------------------------------------
+# case 77 / 78：W77 —— 后台保活 FGS 的两条静态契约（#43 / #44）。
+#   case77：subtype 漂移（manifest 与 RunForegroundPolicy 常量不再逐字一致）⇒ 必红。
+#           本机是 Android 13，类型强制面无法真机取证 ⇒ 这条静态判据是唯一防线，
+#           必须证明它真的会响（而不是一条只在干净树上「绿着」的僵尸规则）。
+#   case78：onCleared 回退成裸 run.cancel() ⇒ 必红。这是 W77 修掉的缺陷的回归面。
+# ---------------------------------------------------------------------------
+if guard_selected 43; then
+d="$TMP/case77-specialuse-subtype-drift"
+scaffold "$d"
+sed -i 's/on_device_llm_inference_completion/on_device_llm_inference_drifted/' \
+  "$d/core-data/src/main/AndroidManifest.xml"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case77 specialUse subtype 与代码常量漂移 (第 43 条)" "$rc" "$out" \
+  "W77 后台保活：service 类型/权限成对，且 subtype 与代码常量逐字一致"
+if printf '%s\n' "$out" | grep -qF "subtype 漂移"; then
+  echo "PASS [case77b] 红来自真命中（输出含 subtype 漂移 归因 + 两侧取值）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case77b] 守卫判红但输出不含 subtype 漂移 归因（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+if guard_selected 44; then
+d="$TMP/case78-oncleared-bare-cancel"
+scaffold "$d"
+cat > "$d/feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt" <<'KT'
+package com.rickeal.agent.feature.chat
+
+class ChatViewModel {
+    private val run = ChatRunCoordinator()
+
+    fun onCleared() {
+        run.cancel()
+    }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+assert_red "case78 onCleared 裸 cancel 回退 (第 44 条)" "$rc" "$out" \
+  "W77 保活控制器装配单点 + VM 销毁走 onStop 收尾（禁裸 cancel 回退）"
+if printf '%s\n' "$out" | grep -qF "裸 run.cancel()"; then
+  echo "PASS [case78b] 红来自真命中（输出含 裸 run.cancel() 归因）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case78b] 守卫判红但输出不含裸 cancel 归因（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
 # ---------------------------------------------------------------------------
 echo "-----------------------------------------"
 echo "自测结果：PASS=$PASS FAIL=$FAIL"

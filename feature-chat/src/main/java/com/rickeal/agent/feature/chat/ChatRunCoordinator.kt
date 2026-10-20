@@ -49,6 +49,8 @@ import kotlinx.coroutines.withContext
  *
  * - [scope] 由 VM 传 [androidx.lifecycle.viewModelScope] —— **不新建 scope**，否则 VM 销毁时
  *   run 协程不被取消（引擎 native 会话会在后台继续跑 / 泄漏）。
+ * - [persistScope] 由 VM 传 `AppContainer.processScope`（W77）—— 只用于落库。它**不是**
+ *   run 的宿主：run 的生命周期仍严格由 [scope] 决定，两者不可互换（见构造参数 KDoc）。
  * - [uiState] 是 VM 的 `_uiState` **同一实例**（共享引用并 `update`）—— 若自持副本，VM 的
  *   `uiState` 与本类更新会**分叉**，UI 看不到流式 / 工具轨迹且无报错。
  * - engine / repository 等一律经 [container] 出口，**不新增 DI**（DI 只走 AppContainer，红线）。
@@ -66,6 +68,12 @@ import kotlinx.coroutines.withContext
 internal class ChatRunCoordinator(
     private val container: AppContainer,
     private val scope: CoroutineScope,
+    // W77：落库专用作用域。与 [scope] 的职责**必须分开** ——
+    //   * scope = run 生命周期（VM 销毁即取消，引擎会话不能泄漏）；
+    //   * persistScope = 「已经吐出来的字必须落盘」这一件不可取消的事。
+    // onCleared() 执行时 viewModelScope 已被取消，若 commit() 仍用 scope.launch，
+    // 半截答案只会更新内存 UI、磁盘零写入（W77 §4 的假修复陷阱）。
+    private val persistScope: CoroutineScope,
     private val uiState: MutableStateFlow<ChatUiState>,
     // C3（Wave 50）所有权声明：本字段**唯一写点 = 本 Coordinator** —— `ensureConversation`
     // （首条消息建会话时写入）/ `resetForNewConversation`（新会话清空）；VM 侧**只读**
@@ -1147,7 +1155,9 @@ internal class ChatRunCoordinator(
      */
     private fun commit(message: ChatMessage, conversationId: String) {
         uiState.update { state -> state.copy(messages = state.messages + message) }
-        scope.launch {
+        // W77：走 [persistScope] 而不是 [scope] —— 见构造参数 KDoc。正常终态两者等价
+        // （VM 还活着），差别只在 onCleared 之后：那时 scope 已取消，落库仍必须发生。
+        persistScope.launch {
             container.conversationRepository.appendMessage(conversationId, message)
         }
     }
@@ -1238,8 +1248,6 @@ internal class ChatRunCoordinator(
         resetStreaming(role = null, isStreaming = false)
     }
 
-    /** VM 销毁时取消在跑 run（[ChatViewModel.onCleared] 调）；不负责撤通知（那是 VM 的事）。 */
-    fun cancel() {
-        runJob?.cancel()
-    }
+    // W77：原 `fun cancel()`（裸 runJob?.cancel()）已删除 —— 它是「半截答案不落库」的
+    // 入口本身。VM 销毁现在走 onStop()，取消权只保留给用户显式停止（onStop 同一路径）。
 }

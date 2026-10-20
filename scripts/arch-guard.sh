@@ -1104,6 +1104,55 @@ check "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏�
            if [ ! -f \"$GUARD_DIR/check-preset-profile-parity.py\" ]; then echo \"::error::check-preset-profile-parity.py 不存在（第 41 条守卫面已失效）\"; exit 1; fi
            python \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\" \"\$D\" || python3 \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\" \"\$D\""
 
+# ---------------------------------------------------------------------------
+# 第 43 条（W77）：后台保活前台服务的**声明契约**
+#
+# 为什么需要这条：FGS 的类型声明是「三处必须同时成立」的契约 ——
+#   ① manifest 的 `android:foregroundServiceType="specialUse"`
+#   ② 与类型配对的权限 `FOREGROUND_SERVICE_SPECIAL_USE`（A14+ 起缺它 = SecurityException）
+#   ③ `<property PROPERTY_SPECIAL_USE_FGS_SUBTYPE>` 的 value 与代码常量逐字一致
+# 三处任一漂移都不会在编译期报错：① 缺失要到 A14+ 真机 startForeground 才炸，
+# ③ 漂移只是 Play 申报文案与代码对不上（人审可见、开发期完全静默）。
+# 本机是 Android 13 ⇒ 类型强制面**无法真机取证**，静态守卫是唯一防线。
+#
+# 反向断言（必须存在）一律自己 echo 一行 —— 见脚本头部 `check()` 契约说明。
+# ---------------------------------------------------------------------------
+check "W77 后台保活：service 类型/权限成对，且 subtype 与代码常量逐字一致" \
+  bash -c 'M=core-data/src/main/AndroidManifest.xml
+           A=app/src/main/AndroidManifest.xml
+           P=core-data/src/main/java/com/rickeal/agent/core/data/background/RunForegroundPolicy.kt
+           [ -f "$M" ] || echo "$M 不存在（W77 第 43 条守卫面失效）"
+           [ -f "$A" ] || echo "$A 不存在（W77 第 43 条守卫面失效）"
+           [ -f "$P" ] || echo "$P 不存在（W77 第 43 条守卫面失效）"
+           grep -q "android:foregroundServiceType=\"specialUse\"" "$M" || echo "core-data manifest 缺 foregroundServiceType=specialUse（A14+ startForeground 会抛 SecurityException）"
+           grep -q "FOREGROUND_SERVICE_SPECIAL_USE" "$A" || echo "app manifest 缺 FOREGROUND_SERVICE_SPECIAL_USE 权限（类型与权限必须成对）"
+           grep -q "android.permission.FOREGROUND_SERVICE\"" "$A" || echo "app manifest 缺 FOREGROUND_SERVICE 基础权限"
+           grep -q "android.permission.WAKE_LOCK" "$A" || echo "app manifest 缺 WAKE_LOCK 权限（PARTIAL_WAKE_LOCK 必需）"
+           mv=$(grep -o "android:value=\"[^\"]*\"" "$M" | head -1 | sed "s/.*=\"//;s/\"//")
+           cv=$(grep -o "SPECIAL_USE_SUBTYPE: String = \"[^\"]*\"" "$P" | sed "s/.*= \"//;s/\"//")
+           [ "$mv" = "$cv" ] || echo "specialUse subtype 漂移：manifest=$mv 代码=$cv"' 
+
+# ---------------------------------------------------------------------------
+# 第 44 条（W77）：保活控制器必须被**装配**，VM 销毁必须走**收尾**
+#
+# 两个都是「代码在、但没接上」形态的静默失效：
+#   ① 控制器写了但没人 `start()` ⇒ 服务永不启动，切后台照旧被冻结（功能假绿）；
+#   ② `onCleared` 回退成裸 `run.cancel()` ⇒ 半截答案再次静默丢失（W77 修的正是它）。
+# ②是回归面：删掉一行 `run.onStop()` 编译照过、测试照绿，只有真机切会话才看得出来。
+#
+# ⚠️ 判据必须钉**行首代码形态**（`^[[:space:]]*run\.onStop\(\)`），不能裸 grep 子串：
+#    本波实摔一次 —— `onCleared` 的注释里写着「这里原先只 run.cancel()」，裸 grep
+#    把自家说明文字判成了违规（「关键词判据必须排除自家文案」的第 N 次复发）。
+#    注释行以 `//` 开头、代码调用行以缩进开头 ⇒ 行首锚点天然把两者分开。
+# ---------------------------------------------------------------------------
+check "W77 保活控制器装配单点 + VM 销毁走 onStop 收尾（禁裸 cancel 回退）" \
+  bash -c 'C=core-data/src/main/java/com/rickeal/agent/core/data/AppContainer.kt
+           V=feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatViewModel.kt
+           n=$(grep -c "backgroundRunController.start()" "$C")
+           [ "$n" = "1" ] || echo "AppContainer 中 backgroundRunController.start() 调用点数=$n（必须恰好 1；0=服务永不启动，>1=重复观察）"
+           if grep -q "onCleared" "$V"; then grep -qE "^[[:space:]]*run\.onStop\(\)" "$V" || echo "ChatViewModel.onCleared 未走 run.onStop()（半截答案会再次静默丢失）"; fi
+           if grep -qE "^[[:space:]]*run\.cancel\(\)" "$V"; then echo "ChatViewModel 出现裸 run.cancel() 调用（W77 已删除该路径，回退即丢答案）"; fi'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"
