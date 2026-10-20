@@ -40,7 +40,11 @@ on:
   push:
     # improve（Wave 48，2026-10-03）：主开发分支 harness 的分改善线，与 harness-improve
     # 同规格 —— 仅 push 触发（不进 pull_request.branches，同 harness-improve）。
-    branches: [main, UI, harness, harness-improve, improve]
+    # UI-change-1019（W77，2026-10-20）：UI 波分支。**此前一直不在列表里 ⇒ W76/W77
+    # 的全部推送都没触发过 CI**（本波核对触发面时发现，本仓铁律「新建/切换分支第一件事」）。
+    # 注意：release.yml 的 branches 白名单**未**同步加本分支 —— 那是带签名密钥的双轨
+    # 产物流水线，UI 波按需手动 dispatch 即可，不占常规 CI 配额。
+    branches: [main, UI, harness, harness-improve, improve, UI-change-1019]
     # paths-ignore：纯文档改动（docs/、任意 *.md、issue 模板）跳过本流水线 ——
     # 省掉「docs-only 要攒着一起推」的人工 workaround。
     # ⚠️ 若本流水线将来被设为分支保护的 required check，纯文档 PR 会因「无
