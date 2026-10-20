@@ -156,3 +156,25 @@ ColorOS / realme UI：设置 → 电池 → 应用耗电管理 → 本应用 →
 2. A14+ 真机到位后补类型合规真机臂（W77-01）。
 3. 若后台 run 成为常用路径，再考虑通知「停止」action（W77-02）。
 4. UI 波剩余项（U1–U5 用户裁决）不受本波影响。
+
+---
+
+## 八、自查（审查席两次因模型拥挤失败，主理人接手）
+
+审查席（code-quality-reviewer）两次派单均因上游 429 失败，按配额纪律由主理人自查。核过的点与结论：
+
+| 面 | 核法 | 结论 |
+|---|---|---|
+| `flushNow` 是否依赖已取消的 scope | 读实现（:157-168，全同步，无 `launch`） | ✅ onCleared 路径可正常排空缓冲 |
+| `commit` 落库作用域 | 读 `commit`（`persistScope.launch`）+ `onStop` 调用链 | ✅ VM 销毁后仍能写盘 |
+| 双提交竞态 | `persistState.shouldCommitAssistant` 两条判据（id + run 级文本） | ✅ 未改判据，onStop 与 Cancelled 互斥 |
+| `AppContainer.init` 顺序 | 属性声明序：`observationScope` → `agentRunner` → `thermalGovernor` → 控制器 → `init` | ✅ 无前向引用 |
+| FGS 异常路径 | `catch (RuntimeException)` → 解锁 + `stopSelf` + WARN | ✅ 不会打崩 App，降级为「无保活」 |
+| 类型分派 | `usesTypedForeground(34)` + 单测 7 例 | ✅ 33 不传、34+ 传 |
+
+**两条已知限制（P2，不阻塞）**
+
+1. `ChatViewModel.onCleared` 会 `generationNotifier.stop()`（cancel 1001），而服务还要走 10s 宽限才停 ⇒ 宽限窗内可能出现「服务仍在前台、通知已撤」的 ≤10s 空窗。无功能影响，且服务随后销毁。
+2. 控制器的 `started` 是「我们认为服务在跑」，不等于系统里的真实存活；若服务被系统单独杀掉，要等下一次 `isBusy` 翻转才会重新拉起（此时 run 本身多半也已结束，走 journal 恢复）。
+
+**CI 触发面修正（同波）**：`UI-change-1019` 从 W76 起就不在 `build.yml` 的 `on.push.branches` 里 ⇒ 这两波推送**从未触发 CI**。已在 `d2dd023` 补入（`release.yml` 不同步，避免签名双轨占配额）。
