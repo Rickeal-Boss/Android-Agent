@@ -6,9 +6,14 @@ package com.rickeal.agent.core.data.background
  * ## 为什么需要一张独立的表
  *
  * Android 官方只给了 `isIgnoringBatteryOptimizations` 这一条**AOSP 口径**的豁免。
- * 真机实测（OPPO PDRM00 / ColorOS，2026-10-20）证明：即使把应用加入 AOSP doze 白名单，
- * ColorOS 的 `OplusProxyWakeLock` 仍在灭屏约 10 秒后把第三方 `PARTIAL_WAKE_LOCK`
- * 强制回收（`adb logcat -b system` 可见 `... to FroceReleaseWakeLock list`）。
+ * 真机实测（OPPO PDRM00 / ColorOS，2026-10-20 两轮 A/B）：
+ * ① 仅加 AOSP doze 白名单：ColorOS 的 `OplusProxyWakeLock` 仍在灭屏约 10 秒后把
+ *    第三方 `PARTIAL_WAKE_LOCK` 强制回收（`adb logcat -b system` 可见
+ *    `... to FroceReleaseWakeLock list`）⇒ TTFT 从秒级恶化到 200.9s。
+ * ② 手动开启 ColorOS「耗电行为控制 → 允许完全后台行为」后：四轮灭屏实验（窗口
+ *    30–63s/轮）`LiquidAgent::Run` 全程 held=true、对本应用 0 条 force-release、
+ *    run 全部正常结算 ⇒ **下方 COLOR_OS 路径文案指向的设置确实有效**。
+ *    （判据与限定见 `docs/15-backlog.md` W77-04 与 wave77 交接 §九。）
  *
  * 也就是说：**各家 ROM 的后台管控是独立于 AOSP 的第二套系统**，路径、粒度、是否
  * 允许自启动/关联启动/后台高耗电，全都不一样。应用无法程序化设置它们（无公开 API），
