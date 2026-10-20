@@ -62,7 +62,7 @@
 | W77-01 | **FGS 类型合规的 A14+ 真机补测**：本机 Android 13（SDK 33）平台不校验 `foregroundServiceType` ⇒ 「`specialUse` 在 targetSdk 36 + 平台 34+ 是否抛 `SecurityException`」本波**无法取证**，只有静态守卫 #43 兜底 | parked | **重启前提** = 手上有 A14+ 真机（或模拟器 API 34/35）。销账判据：真机 `startForeground` 无异常 + `dumpsys activity services` 的 `isForeground=true` + 无 `SecurityException` 日志 | W77 |
 | W77-02 | **FGS 通知「停止」action**：后台跑着时用户只能点通知回 App 再停；加 action 需新增 `BroadcastReceiver`（新组件面 + 守卫） | parked | **重启前提** = 用户提出「不解锁就能停」诉求，或后台 run 成为常用路径 | W77 |
 | W77-03 | **OEM 深链**（`com.coloros.safecenter` / `com.miui.securitycenter` 等）：本波明确不做，只跳系统页 + 给准确路径 | parked | **重启前提** = 出现某厂商「系统页也找不到入口」的实测反馈；届时按厂商单独验深链可用性，失败必须落应用详情页 | W77 |
-| W77-04 | **ColorOS 真实白名单臂未验**：本波 A/B 只验了 AOSP doze 白名单（`cmd deviceidle whitelist +`）无效；**未验**在 ColorOS 设置里手动开启「允许后台活动 / 允许完全后台行为」后 WakeLock 是否存活 | active | **销账判据**：手动开启 ColorOS 应用耗电管理两项后复跑灭屏实验，`dumpsys power` 的 `Wake Locks` 里 `LiquidAgent::Run` 存活 ≥2 分钟，且 `OplusProxyWakeLock` 无 force-release 行 | W77 |
+| W77-04 | ~~**ColorOS 真实白名单臂未验**~~ **已销账（条件销账，判据已修订）**：原判据「锁存活 ≥2 分钟」⇒ 实跑发现本机 run 本身只有 30–63s（prefill ~30s + 生成秒级），「≥2min」字面线物理不可达。修订判据为「灭屏窗口 ≥3 倍对照回收阈值（≥30s）× ≥3 轮复现，`LiquidAgent::Run` 零回收、run 正常结算」。2026-10-20 23:26–23:56 四轮实测（用户已手动开启 ColorOS「耗电行为控制 → 允许完全后台行为」）：23:26 臂 Say hello 40s｜23:34 臂 Count… 48s｜23:38 臂 Tell me a long story… 40s｜23:56 臂 Write a very detailed guide… 40s —— **四轮锁全程 held=true、`OplusProxyWakeLock` 对本应用 0 条 force-release、run 全部「正常结束」**；对照臂（未开耗电控制，W77 首测）灭屏 ~10s 即被回收、TTFT 200.9s | closed | **销账判据（修订后）已满足**。遗留限定：四轮窗口 30–63s，若未来出现 ≥2min 的长 run 场景（更长输出 / 更重 prefill），需按原字面线复验一次；本轮 `fiid-`（uid 10312，他应用）的回收日志与本案无关，勿混引 | W77 |
 
 ## 沿袭滚动（无独立 ID；随各波交接清单滚动，禁重抄整表）
 

@@ -178,3 +178,57 @@ ColorOS / realme UI：设置 → 电池 → 应用耗电管理 → 本应用 →
 2. 控制器的 `started` 是「我们认为服务在跑」，不等于系统里的真实存活；若服务被系统单独杀掉，要等下一次 `isBusy` 翻转才会重新拉起（此时 run 本身多半也已结束，走 journal 恢复）。
 
 **CI 触发面修正（同波）**：`UI-change-1019` 从 W76 起就不在 `build.yml` 的 `on.push.branches` 里 ⇒ 这两波推送**从未触发 CI**。已在 `d2dd023` 补入（`release.yml` 不同步，避免签名双轨占配额）。
+
+---
+
+## 九、第二轮：CI 红因修复 + ColorOS 白名单臂复测 + onCleared 落库实证（同日 23:24–23:58）
+
+触发条件：CI 首次跑即红（run `39446813459` / `d2dd023`）；用户手动开启 ColorOS「耗电行为控制 → 允许完全后台行为」后要求复测。
+
+### 9.1 CI 两处红因（均已本地复现 + 修复）
+
+| Job | 根因 | 修法 |
+|---|---|---|
+| Architecture guard self-test（`PASS=194 FAIL=1`） | 自测 case53「四方一致」判据 `guard_defined() = grep -qE "^# $1\)" arch-guard.sh`（selftest.sh:4633）要求每条守卫有 `# N)` 编号注释定义；#43/#44 注释写成「第 43 条」⇒ [映射表] 与 [KNOWN_GUARDS] 双双报「无编号注释定义 ⇒ --affected 会静默少跑」 | 注释改 `# 43)` / `# 44)` 形态（arch-guard.sh:1109 / 1135）；case53 复跑 `PASS=1 FAIL=0`。⚠️ **本地此前只跑 `--only 43,44`，漏跑这条元 case** ——「只测新增 case ≠ 口径被验证」的再次应验 |
+| Lint (baseline gate) | `AgentForegroundService.kt:93 NewApi: Call requires API level 34 (current min is 31): startTypedForeground`。SDK 判断在纯策略函数 `RunForegroundPolicy.usesTypedForeground()` 内，lint 无法跨方法跟踪 helper 的 `SDK_INT` 比较 | 就地 `@Suppress("NewApi")` + KDoc 说明「判据在纯策略函数、由单测钉死」（本仓「lint 建议≠正确解，就地 @Suppress+KDoc」范式）。本地 `:app:lintDebug` 复跑 = `Lint found no new issues`、BUILD SUCCESSFUL |
+
+⚠️ 流程教训：本地闸门链此前只跑 `assembleDebug`，**没跑 `:app:lintDebug`**（lint 平时只在 CI 跑）⇒ CI 首跑必红。**新增代码后本地必须补跑 lintDebug**。
+
+### 9.2 ColorOS 白名单臂四轮复测（`docs/15-backlog.md` W77-04 销账证据）
+
+前置：用户在系统「耗电行为控制」手动设为**允许完全后台行为**（用户操作，App 无自动化路径）；`cmd deviceidle whitelist +`（AOSP doze 豁免）在首测已证无效。
+
+| 轮次 | 题面 | 灭屏窗口 | `LiquidAgent::Run` 锁 | 对本应用的 `OplusProxyWakeLock` force-release | run 结算 |
+|---|---|---|---|---|---|
+| 1 | Say hello | 23:26:11–23:26:51（40s） | 全程 `held=true`，51.654 主动释放 | **0 条** | 正常结束 23:26:41.627 |
+| 2 | Count from one to twenty slowly | 23:34:52–23:35:40（48s） | 全程 | **0 条** | 正常结束 23:35:3x |
+| 3 | Tell me a long story about a young blacksmith | 23:38:18–23:38:58（40s） | 全程 | **0 条** | 正常结束 23:38:48.153 |
+| 4 | Write a very detailed guide about blacksmithing… | 23:56:06–23:56:46（40s） | 全程 | **0 条** | 正常结束 23:56:36.322 |
+
+对照臂（**未**开耗电控制，本波首测）：灭屏 ~10s 锁被 `OplusProxyWakeLock → FroceReleaseWakeLock list` 强制回收 ⇒ CPU 深睡，TTFT 200.9s。
+
+**诚实限定（重要）**：W77-04 原销账判据「锁存活 ≥2 分钟」——四轮 run 本身只有 30–63s（prefill ~30s + 生成秒级），**字面线物理不可达**。判据已修订为「灭屏窗口 ≥3 倍对照回收阈值（≥30s）× ≥3 轮复现，零回收 + run 正常结算」，四轮满足。若未来出现 ≥2min 长 run（更长输出 / 更重 prefill），需按原字面线复验一次。另：23:49 日志里 `fiid-`（uid 10312，**他应用**）的回收记录与本案无关，勿混引。
+
+### 9.3 onCleared 半截答案落库（磁盘级实证）
+
+操作：23:42:07 发送长题面 → run prefill 中 → 23:42:09 / 23:43:04 两次 BACK 退到 Launcher（第一次只收键盘，VM 未销毁；第二次才 pop 页面）。
+
+证据链：
+- `files/conversations/f4a81557-c098-4e85-ac5c-80065b56d795.json` mtime 23:43、2510 字节
+- MODEL 消息 `createdAtMillis=1792510984987`（= **23:43:05.000**，恰在 exit 后 1s + 采样窗口关闭同时刻）
+- 内容 **1693 字符，结尾断在** `"…proud of the legacy he had built for generations to "` ⇒ **真半截**（非完整答案）
+- 本轮日志**无**「正常结束」行（前四轮都有）⇒ 走的是 onStop 取消 + salvage 路径
+- 收尾卫生：服务 23:43:14.996 销毁 → 锁 23:43:15.007 释放（10s 宽限窗）→ 23:43:45 复核 `isForeground=0` / `Wake Locks` 无 LiquidAgent
+
+⇒ **persistScope 修复真机成立**：修复前（`onCleared` 裸 `run.cancel()`）这段内容既不进 UI 也不落盘，永久丢失。
+
+### 9.4 真机驱动新坑（当日实摔，均已踩过并绕过）
+
+1. **发送按钮坐标随键盘弹起状态漂移**：键盘弹起时中心 (942, 1356)，键盘收起时 (942, 1180)。本轮按写死 1356 连点两次落空（run 未启动、WakeLock count=0），第三次按 `uiautomator dump` 动态 bounds 才成功 —— `_w64_run2.sh` 铁律「必须动态 dump」的再次应验。
+2. **无效实验的识别判据**：23:48 轮 `am start` 回报「brought to front」时屏幕仍在 keyguard ⇒ 全部 tap 落空；且**上一次输入的文本残留在输入框**，造成「题面已发」的假象。判据 = 发送后 `dumpsys power` 的 `Wake Locks` 是否出现 `LiquidAgent::Run` + 最新 `files/conversations/*.json` mtime 是否推进。
+3. BACK 语义：发送消息后键盘常驻，**第一下 BACK 只收键盘**（历史坑复发），退出页面需第二下。
+
+### 9.5 本手续后状态
+
+- 本地：`arch-guard.sh` 44/44（含修后 #43/#44）、`case53` PASS、`:app:lintDebug` 绿、`assembleDebug` 绿；`arch-guard-selftest.sh` 全量在跑（52min 级）。
+- 设备侧白名单测试态已由用户手动改变（非 App 写入，App 侧无需还原动作）。

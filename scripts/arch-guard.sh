@@ -1105,7 +1105,7 @@ check "ModelPresets 与 ModelSamplingProfiles 文件名双向一致（预设漏�
            python \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\" \"\$D\" || python3 \"$GUARD_DIR/check-preset-profile-parity.py\" \"\$P\" \"\$S\" \"\$D\""
 
 # ---------------------------------------------------------------------------
-# 第 43 条（W77）：后台保活前台服务的**声明契约**
+# 43) 后台保活前台服务的**声明契约**（W77）
 #
 # 为什么需要这条：FGS 的类型声明是「三处必须同时成立」的契约 ——
 #   ① manifest 的 `android:foregroundServiceType="specialUse"`
@@ -1133,7 +1133,7 @@ check "W77 后台保活：service 类型/权限成对，且 subtype 与代码常
            [ "$mv" = "$cv" ] || echo "specialUse subtype 漂移：manifest=$mv 代码=$cv"' 
 
 # ---------------------------------------------------------------------------
-# 第 44 条（W77）：保活控制器必须被**装配**，VM 销毁必须走**收尾**
+# 44) 保活控制器必须被**装配**，VM 销毁必须走**收尾**（W77）
 #
 # 两个都是「代码在、但没接上」形态的静默失效：
 #   ① 控制器写了但没人 `start()` ⇒ 服务永不启动，切后台照旧被冻结（功能假绿）；

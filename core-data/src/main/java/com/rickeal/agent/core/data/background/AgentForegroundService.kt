@@ -90,6 +90,11 @@ class AgentForegroundService : Service() {
     private fun startInForeground(iconRes: Int) {
         val notification = buildNotification(iconRes)
         if (RunForegroundPolicy.usesTypedForeground(Build.VERSION.SDK_INT)) {
+            // lint 的 NewApi 只认同一方法内的字面量 SDK_INT 比较，无法跨方法跟踪
+            // `usesTypedForeground()`（纯策略函数，分派判据由 RunForegroundPolicyTest
+            // 单测钉死）⇒ 就地 @Suppress 而非把 SDK 判断摊回这里摊薄测试面。
+            // API 31~33 走 else 三参重载（type 被 ServiceCompat 兼容层忽略）。
+            @Suppress("NewApi")
             startTypedForeground(notification)
         } else {
             // API 31~33：不传类型位（平台不认识 specialUse，传了反而可能被拒）。
