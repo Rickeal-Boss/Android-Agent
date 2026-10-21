@@ -45,10 +45,15 @@ import com.rickeal.agent.core.model.AgentLogStore
 class AgentForegroundService : Service() {
 
     /**
-     * WakeLock 持有者 + 续期（W78 D9）。C5 从本服务外提为独立类 —— 逻辑逐字搬迁，行为零变更：
-     * 服务回到「只做壳」，[RunWakeLockKeeper] 负责锁与 30min 上限（判据见该类 KDoc）。
+     * WakeLock 持有者 + 续期（W78 D9）。C5 从本服务外提为独立类，服务回到「只做壳」。
+     *
+     * ⚠️ **必须在 `onCreate` 里注入，不得写成字段初始化**（C6 的 P0 教训）：`Service` 由系统
+     * `Class.newInstance()` 构造，**构造期 `attachBaseContext()` 还没调用** ⇒ 字段初始化里的
+     * `getSystemService()` 拿到的 base Context 为 null，抛 NPE 后被包成
+     * `RuntimeException: Unable to create service` **直接打死整个进程**。lint 查不出（API 用法
+     * 合法，错的是时机）、JVM 单测也不构造 Service ⇒ 三层闸门全绿、只有真机能看见。
      */
-    private val wakeLockKeeper = RunWakeLockKeeper(getSystemService(PowerManager::class.java))
+    private lateinit var wakeLockKeeper: RunWakeLockKeeper
 
     /** 状态栏小图标（`onStartCommand` 写入）：刷新常驻通知时要复用同一个值。 */
     private var iconRes: Int = 0
@@ -71,6 +76,10 @@ class AgentForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // 只能在 onCreate 注入：Service 构造期 base Context 为 null，getSystemService 会 NPE。
+        // onCreate 必然早于 onStartCommand ⇒ 后两处（onStartCommand / onDestroy / 降级路径）
+        // 直接使用本字段是安全的。
+        wakeLockKeeper = RunWakeLockKeeper(getSystemService(PowerManager::class.java))
         AgentLogStore.info("后台保活服务创建（前台化前）")
         wakeLockKeeper.acquire()
         wakeLockKeeper.startRenewal()

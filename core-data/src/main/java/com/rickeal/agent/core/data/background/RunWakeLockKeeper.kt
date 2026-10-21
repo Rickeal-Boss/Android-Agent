@@ -13,7 +13,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * run 期间的 `PARTIAL_WAKE_LOCK` 持有者 + 周期续期（W78 D9，C5 从服务外提，纯搬迁）。
+ * run 期间的 `PARTIAL_WAKE_LOCK` 持有者 + 周期续期（W78 D9，C5 从服务外提）。
+ *
+ * ⚠️ **不得在字段初始化阶段构造本类**（W78 C6 实摔的 P0）：`Service` 由系统
+ * `Class.newInstance()` 构造，构造期 `attachBaseContext()` 尚未调用 ⇒ 字段初始化里调
+ * `getSystemService()` 拿到 null base Context，抛 NPE 并被包成
+ * `RuntimeException: Unable to create service`，**直接打死整个进程**。必须由宿主在 `onCreate`
+ * 里注入 `PowerManager`（本类只接受已取到的 `PowerManager?`，正是为了让注入点显式可见）。
  *
  * ## 为什么需要续期
  * 审批挂起无超时上限（`ToolApprovalHandler` 是裸 suspend）且挂起时长被加回预算 ⇒ run 的墙钟
