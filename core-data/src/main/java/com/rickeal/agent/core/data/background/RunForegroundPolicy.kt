@@ -39,12 +39,38 @@ internal object RunForegroundPolicy {
     const val WAKE_LOCK_TAG: String = "LiquidAgent::Run"
 
     /**
-     * FGS 通知 id —— **与 `AndroidGenerationNotifier` 的 1001 共用**。
+     * FGS 常驻通知 id。**必须与速度通知 id（1001）不同** —— 后者会被
+     * `GenerationNotifier.stop()` cancel（全仓 8 处调用点）。
      *
-     * 同 id 覆盖语义：速度 tick 刷新的是同一条通知，不会在通知栏堆两条
-     * （「生成中」+「后台运行中」）。见 `docs/w77-bg-run-design.md` §五。
+     * W78 D2 的裁决：id 共用 = 互相 cancel。run1 终态 `stop()` 会把 FGS 通知一起撤掉，
+     * 而控制器在宽限窗内不会重新 `startForeground()` ⇒ 第二轮起「已前台化但用户不可见」。
+     * 去重由「**单写者 + 借道刷新**」解决（FGS 通知只由服务写，速度文案经
+     * `OngoingNotificationSlot` 交给服务刷新同一条），**不由 id 共用解决**。
      */
-    const val ONGOING_NOTIFICATION_ID: Int = 1001
+    const val ONGOING_NOTIFICATION_ID: Int = 1002
+
+    /**
+     * WakeLock 续期周期（W78 D9）。
+     *
+     * 取值依据 = **容错比 ≥3**：`WAKE_LOCK_TIMEOUT_MILLIS(390s) / 120s = 3.25`
+     * ⇒ 连续错过 2 次续期（Doze 让 delay 推迟 / OEM 抖动）仍不会断锁；
+     * 同时 120s ≫ ColorOS 灭屏 ~10s 的回收阈值 ⇒ 不会变成「每秒抢锁」的耗电循环。
+     *
+     * 下界约束：常规 run 生命期 ≈ 生成 30–63s + [GRACE_MILLIS] 10s ⇒ ≤73s 的周期会让
+     * 每一次普通 run 都触发续期（纯噪声）⇒ 周期必须 > 73s；上界 = `超时 / 3 = 130s`。
+     */
+    const val WAKE_LOCK_RENEW_INTERVAL_MILLIS: Long = 120_000L
+
+    /**
+     * 单次服务生命期内 WakeLock 的**总持有上限**（含续期）= 30 分钟（W78 D9）。
+     *
+     * 为什么必须有这条：续期会把「390s 物理断路器」的兜底效果取消（锁可以被无限续下去），
+     * 所以必须另立一个上界。30min = 6 个完整墙钟预算：
+     *  - 合法侧：审批挂起无超时上限，用户放下手机半小时再批准是真实场景；
+     *  - 故障侧：控制器卡死时最坏 30min PARTIAL_WAKE_LOCK ≈ 1–2% 电量，且有界。
+     * 达上限后停止续期 ⇒ **行为退回今天**（锁自然到期），并留一行日志。
+     */
+    const val WAKE_LOCK_MAX_HOLD_MILLIS: Long = 1_800_000L
 
     /** Service Intent 里携带状态栏小图标的 extra（app 层传 `R.drawable.ic_stat_generation`）。 */
     const val EXTRA_SMALL_ICON: String =
@@ -77,4 +103,12 @@ internal object RunForegroundPolicy {
 
     /** 服务是否应当进入宽限窗倒计时：已启动且已转闲。 */
     fun shouldScheduleStop(isBusy: Boolean, started: Boolean): Boolean = !isBusy && started
+
+    /**
+     * 是否还应续期 WakeLock（纯函数，JVM 可测）。
+     *
+     * 到达 [WAKE_LOCK_MAX_HOLD_MILLIS] 即返回 false ⇒ 续期协程 `break`，锁退回「自然到期」
+     * 的物理断路器语义（W30）—— 续期**不得**把断路器架空成「无限持有」。
+     */
+    fun shouldRenewWakeLock(heldMillis: Long): Boolean = heldMillis < WAKE_LOCK_MAX_HOLD_MILLIS
 }

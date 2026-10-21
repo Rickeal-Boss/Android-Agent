@@ -53,11 +53,15 @@ interface GenerationNotifier {
 /**
  * 基于 `NotificationManagerCompat` 的实现。
  *
- * 同一个 `NOTIFICATION_ID` 反复 `notify()` 是**覆盖**语义：通知栏上始终只有一条，
- * 内容随速度刷新 —— 这就是"吐字速度"的实现方式，不需要前台服务
- * （推理在进程内进行，进程活着通知就有效；进程死亡后的残留由
+ * 同一个 id（[OngoingNotificationSlot.SPEED_NOTIFICATION_ID] = 1001）反复 `notify()` 是
+ * **覆盖**语义：通知栏上始终只有一条，内容随速度刷新 —— 这就是"吐字速度"的实现方式，
+ * 不需要前台服务（推理在进程内进行，进程活着通知就有效；进程死亡后的残留由
  * `LiquidAgentApplication.onCreate` 的兜底 `stop()` 清理 —— ongoing 通知在
  * Android 13 及以下用户划不掉，不能依赖用户手动清理）。
+ *
+ * ⚠️ W78 D2：本 id 与 FGS 常驻通知的 1002 **必须不同**。FGS 活跃期间速度文案走
+ * [OngoingNotificationSlot] 借道服务刷新同一条常驻通知，本类不再自己发 —— 这样既不会
+ * 出现「两条划不掉的常驻通知」，也不会被 [stop] 连带 cancel 掉前台通知。
  *
  * @param smallIconRes 状态栏小图标。**必须由 app 层传入**（core-data 不能引 app 的 R），
  *   状态栏小图标要求纯白 + alpha 的单色矢量。
@@ -111,8 +115,20 @@ class AndroidGenerationNotifier(
             return
         }
 
-        // 文案主体 = 既有形态（逐字节不变）；有性能样本时追加观测后缀（Wave 30）。
-        // 文案变更属有意交付（方案 §2.2），commit message 已申报。
+        val text = buildText(tps, ttftMillis)
+        // W78 D2：FGS 活跃 ⇒ 借道服务的常驻通知（同一条 id 1002），不再另发一条。
+        // publish 返回 false（无活跃 FGS / 刷新失败）⇒ 回落自己发 1001，行为与 W77 一致。
+        if (OngoingNotificationSlot.publish(text)) return
+        postGenerationNotification(text)
+    }
+
+    /**
+     * 文案主体（W78 D2 从 [postGenerationNotification] 里逐字节抽出）。
+     *
+     * 抽出的唯一理由是「借道」：同一段文案要能被**两个写者**复用 —— 服务刷新常驻通知、
+     * notifier 自己发速度通知。文案内容本身零变化（有性能样本时追加观测后缀，Wave 30）。
+     */
+    private fun buildText(tps: Float, ttftMillis: Long): String {
         var text = String.format(Locale.US, "%.1f token/s · 首字 %d ms", tps, ttftMillis)
         val perfSample = perfSampleProvider()
         if (perfSample != null) {
@@ -121,7 +137,7 @@ class AndroidGenerationNotifier(
             }
             text += " · PSS ${perfSample.pssKb / 1024} MB"
         }
-        postGenerationNotification(text)
+        return text
     }
 
     /**
@@ -146,7 +162,10 @@ class AndroidGenerationNotifier(
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .build()
-        runCatching { NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification) }
+        runCatching {
+            NotificationManagerCompat.from(context)
+                .notify(OngoingNotificationSlot.SPEED_NOTIFICATION_ID, notification)
+        }
             .onFailure { throwable ->
                 // 走到这里通常是权限被撤销 / 渠道被删（SecurityException）。通知失败不落
                 // ERROR 级（会刷屏），但也不能完全无声 —— 用户开了开关却看不到通知时，
@@ -158,8 +177,18 @@ class AndroidGenerationNotifier(
             }
     }
 
+    /**
+     * 撤掉速度通知。
+     *
+     * **只 cancel 速度通知自己的 id（1001），永远不得 cancel FGS 的 id（1002）** ——
+     * 8 处调用点（run 终态 / 会话销毁 / 冷启动兜底）都在 FGS 可能仍活跃的时刻发生，
+     * 一旦 cancel 到 1002，用户会看到「服务在前台、通知栏什么都没有」（W78 D2 的缺陷面）。
+     */
     override fun stop() {
-        runCatching { NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID) }
+        runCatching {
+            NotificationManagerCompat.from(context)
+                .cancel(OngoingNotificationSlot.SPEED_NOTIFICATION_ID)
+        }
         // 归零：下次 run 从头开始节流窗口，避免旧节奏把首条通知吞掉。
         lastEmitAt = 0L
     }
@@ -201,9 +230,6 @@ class AndroidGenerationNotifier(
 
         /** 渠道 id：与 LiquidAgentApplication.onCreate 里创建的渠道一致，改名 = 老用户丢设置。 */
         const val CHANNEL_ID = "generation_speed"
-
-        /** 同一 id 反复 notify = 覆盖刷新（通知栏上恒一条）。 */
-        private const val NOTIFICATION_ID = 1001
 
         /** 通知刷新节流：onTick 数据流 ~120ms 一次，通知 1s 一次足够，再密就是状态栏闪烁。 */
         private const val THROTTLE_MS = 1000L

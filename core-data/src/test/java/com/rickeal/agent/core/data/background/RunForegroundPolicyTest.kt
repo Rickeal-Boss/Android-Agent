@@ -1,7 +1,9 @@
 package com.rickeal.agent.core.data.background
 
+import com.rickeal.agent.core.data.notify.OngoingNotificationSlot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -10,7 +12,8 @@ import org.junit.Test
  *
  * 为什么这些值值得被测试钉死：它们全部是**跨层契约**，改错的后果都不在编译期暴露 ——
  * - [RunForegroundPolicy.WAKE_LOCK_TIMEOUT_MILLIS] 调大 = 耗电兜底失效（锁可能长持）；
- * - [RunForegroundPolicy.ONGOING_NOTIFICATION_ID] 与 notifier 的 1001 分叉 = 通知栏两条；
+ * - [RunForegroundPolicy.ONGOING_NOTIFICATION_ID] 与速度通知 id 同值 = 「第二轮起 FGS 无通知」
+ *   （W78 D2 改为 `assertNotEquals`，钉属性而不是钉 1001 这个手段）；
  * - [RunForegroundPolicy.usesTypedForeground] 阈值写错 = A14+ 上缺类型位（SecurityException）
  *   或 A13 上传了平台不认识的位。
  *
@@ -61,14 +64,60 @@ class RunForegroundPolicyTest {
     }
 
     @Test
-    fun ongoingNotificationIdIsSharedWithSpeedNotifier() {
-        // 与 AndroidGenerationNotifier.NOTIFICATION_ID 同源（1001）。分叉会在通知栏
-        // 留下「生成中」+「后台运行中」两条常驻通知，且用户划不掉。
-        assertEquals(1001, RunForegroundPolicy.ONGOING_NOTIFICATION_ID)
+    fun ongoingNotificationIdMustDifferFromSpeedNotificationId() {
+        // 属性：FGS 通知 id 与速度通知 id 必须不同 —— 速度通知的 stop() 会 cancel 自己的 id，
+        // 共用即「第二轮起 FGS 无通知」。改回同值 = 这条红。
+        assertNotEquals(
+            OngoingNotificationSlot.SPEED_NOTIFICATION_ID,
+            RunForegroundPolicy.ONGOING_NOTIFICATION_ID,
+        )
     }
 
     @Test
     fun graceWindowIsTenSeconds() {
         assertEquals(10_000L, RunForegroundPolicy.GRACE_MILLIS)
+    }
+
+    @Test
+    fun wakeLockRenewIntervalToleratesTwoMissedRenewals() {
+        // 属性：390s 超时 / 120s 周期 ≥ 3 —— 连续错过 2 次续期（Doze 推迟 delay / OEM 抖动）
+        // 仍不断锁。周期改大到 ≥195s 或超时改小 = 这条红。
+        val tolerance = RunForegroundPolicy.WAKE_LOCK_TIMEOUT_MILLIS /
+            RunForegroundPolicy.WAKE_LOCK_RENEW_INTERVAL_MILLIS
+        assertTrue("容错比 $tolerance < 3：一次续期丢失就可能断锁", tolerance >= 3)
+    }
+
+    @Test
+    fun wakeLockRenewalStopsAtHoldCap() {
+        // 属性：续期有硬上限，到点必须停 —— 否则物理断路器被续期架空。
+        assertTrue(RunForegroundPolicy.shouldRenewWakeLock(0L))
+        assertTrue(
+            RunForegroundPolicy.shouldRenewWakeLock(
+                RunForegroundPolicy.WAKE_LOCK_MAX_HOLD_MILLIS - 1,
+            ),
+        )
+        assertFalse(
+            RunForegroundPolicy.shouldRenewWakeLock(
+                RunForegroundPolicy.WAKE_LOCK_MAX_HOLD_MILLIS,
+            ),
+        )
+        // 上限必须显著大于单次超时（否则续期毫无意义），且 ≤ 6 个墙钟预算（故障侧耗电有界）。
+        assertTrue(
+            RunForegroundPolicy.WAKE_LOCK_MAX_HOLD_MILLIS >
+                RunForegroundPolicy.WAKE_LOCK_TIMEOUT_MILLIS,
+        )
+        assertTrue(
+            RunForegroundPolicy.WAKE_LOCK_MAX_HOLD_MILLIS <=
+                6 * RunForegroundPolicy.HARD_WALL_CLOCK_MILLIS,
+        )
+    }
+
+    @Test
+    fun wakeLockRenewalLogVolumeIsBounded() {
+        // 属性：续期日志条数由结构保证有界 —— AgentLogStore 只有 200 条环形缓冲，
+        // 若上限/周期被改成几百条，run 的诊断日志会被冲掉。
+        val maxLines = RunForegroundPolicy.WAKE_LOCK_MAX_HOLD_MILLIS /
+            RunForegroundPolicy.WAKE_LOCK_RENEW_INTERVAL_MILLIS
+        assertTrue("续期日志上限 $maxLines 条，超过环形缓冲容量的 1/10", maxLines <= 20)
     }
 }

@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.ComponentCallbacks2
 import com.rickeal.agent.core.data.AppContainer
+import com.rickeal.agent.core.data.background.AgentForegroundService
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.model.AgentLogStore
 import kotlinx.coroutines.launch
@@ -47,10 +48,27 @@ class LiquidAgentApplication : Application() {
         }
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(channel)
+        // 「后台运行」常驻通知渠道（W78 D2）。**必须独立于上面的速度通知渠道**：
+        // 用户关掉「端侧生成速度」时，FGS 的常驻通知不能跟着消失 —— 那正是
+        // 「已前台化但用户不可见」的形态。IMPORTANCE_LOW = 无声、无横幅；
+        // 幂等（渠道已存在时 createNotificationChannel 是 no-op）。
+        val backgroundChannel = NotificationChannel(
+            AgentForegroundService.NOTIFICATION_CHANNEL_ID,
+            "后台运行",
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = "生成期间保持进程与 CPU 不被系统冻结"
+            setShowBadge(false)
+        }
+        getSystemService(NotificationManager::class.java)
+            .createNotificationChannel(backgroundChannel)
         // 进程死亡兜底（审查 P2-1）：冷启动时界面上不可能有合法的「生成中」，
         // 任何残留通知都是脏数据 —— 且 ongoing 通知在 Android 13 及以下用户划不掉，
         // 不能指望用户手动清理。stop() 幂等，无残留时 no-op。
         container.generationNotifier.stop()
+        // W78 D10①：FGS 常驻通知（id 1002）的同口径清理。FGS 通知通常随服务销毁由 AMS
+        // 撤掉 ⇒ 本调用是**纵深防御**而非缺陷修复（kill -9 后若本无残留即为 vacuous）。
+        AgentForegroundService.clearStaleNotification(this)
         container.processScope.launch {
             // 绝不裸吞：`bootstrap()` 内部虽然已把三个仓库各自隔离（见 AppContainer），
             // 但它自己并不覆盖「三个都成功、却在别处炸了」以及协程被取消之外的异常。
