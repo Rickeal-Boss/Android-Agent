@@ -59,6 +59,30 @@ class BackgroundRestrictionStatus(context: Context) {
     fun oemDisplayName(): String = OemBackgroundPolicy.displayName(oemFamily())
 
     /**
+     * 当前设备是否有独立于 AOSP 的厂商后台管控（W78 D3）。
+     *
+     * 卡片限定行用：有厂商层时只能说「本项只覆盖 Android 系统层面」，不能说效果承诺 ——
+     * 厂商层**不可程序化检测**（无公开 API），所以这是「是否有第二套系统」的静态事实，
+     * 不是二态状态。
+     */
+    fun hasVendorBackgroundLayer(): Boolean =
+        OemBackgroundPolicy.isVendorManaged(oemFamily())
+
+    /**
+     * 当前族引导路径的证据强度，转成一句用户可读的括注（W78 D5；不含枚举名）。
+     *
+     * 用户不需要知道我们的内部分级，需要知道「这条路可信到什么程度」。
+     * `OFFICIAL` 的措辞刻意**不带「厂商」二字** —— AOSP 族的官方源是 Google，
+     * 写「厂商官方说明」在那里读不通。
+     */
+    fun backgroundEvidenceNote(): String =
+        when (OemBackgroundPolicy.evidence(oemFamily())) {
+            OemBackgroundPolicy.OemEvidence.MEASURED -> "本机已实测"
+            OemBackgroundPolicy.OemEvidence.OFFICIAL -> "官方说明，未在本机实测"
+            OemBackgroundPolicy.OemEvidence.COMMUNITY -> "社区经验，未在本机实测"
+        }
+
+    /**
      * 打开系统的「电池优化」列表页（**免权限**）。
      *
      * 失败（部分 ROM 裁剪了该页面）时落到应用详情页，保证按钮永远有反馈。

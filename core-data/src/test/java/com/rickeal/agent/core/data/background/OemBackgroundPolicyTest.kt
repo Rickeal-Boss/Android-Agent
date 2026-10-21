@@ -2,6 +2,7 @@ package com.rickeal.agent.core.data.background
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -113,11 +114,61 @@ class OemBackgroundPolicyTest {
     }
 
     @Test
-    fun recentsLockOnlyForFamiliesThatSupportIt() {
-        assertTrue(OemBackgroundPolicy.supportsRecentsLock(OemBackgroundPolicy.OemFamily.COLOR_OS))
-        assertTrue(OemBackgroundPolicy.supportsRecentsLock(OemBackgroundPolicy.OemFamily.HYPER_OS))
-        assertTrue(OemBackgroundPolicy.supportsRecentsLock(OemBackgroundPolicy.OemFamily.ORIGIN_OS))
-        assertFalse(OemBackgroundPolicy.supportsRecentsLock(OemBackgroundPolicy.OemFamily.AOSP))
-        assertFalse(OemBackgroundPolicy.supportsRecentsLock(OemBackgroundPolicy.OemFamily.ONE_UI))
+    fun recentsLockHintOnlyForSupportedFamilies() {
+        // W78 D1：旧的「该族是否支持加锁」布尔访问器已删（曾是「第二事实源」），事实回到文案本身 ⇒
+        // 用 9/9 全量断言把「哪些族写加锁」钉死，堵住旧测试只断言 5/8 的漏测洞。
+        val supporting = setOf(
+            OemBackgroundPolicy.OemFamily.COLOR_OS,
+            OemBackgroundPolicy.OemFamily.HYPER_OS,
+            OemBackgroundPolicy.OemFamily.EMUI_HARMONY,
+            OemBackgroundPolicy.OemFamily.MAGIC_OS,
+            OemBackgroundPolicy.OemFamily.ORIGIN_OS,
+            OemBackgroundPolicy.OemFamily.NUBIA,
+        )
+        OemBackgroundPolicy.OemFamily.values().forEach { family ->
+            val text = OemBackgroundPolicy.guideText(family)
+            if (family in supporting) {
+                assertTrue("$family 支持最近任务加锁，文案必须提示：$text", text.contains("加锁"))
+            } else {
+                assertFalse("$family 未确认支持加锁，文案不得写：$text", text.contains("加锁"))
+            }
+        }
+    }
+
+    @Test
+    fun everyFamilyHasEvidenceLevel() {
+        // W78 D5：每族必须有一档证据 + 一行锚点（数据表，不是注释）。漏填 = 卡片括注空白。
+        OemBackgroundPolicy.OemFamily.values().forEach { family ->
+            assertNotNull("$family 缺证据档", OemBackgroundPolicy.evidence(family))
+            assertTrue(
+                "$family 的取证锚点为空",
+                OemBackgroundPolicy.evidenceAnchor(family).isNotBlank(),
+            )
+        }
+    }
+
+    @Test
+    fun measuredFamiliesCarryWaveAnchor() {
+        // 「没测过却说测过」是证据面最贵的错误：MEASURED 必须能指认本仓波次锚点。
+        val waveAnchor = Regex("W\\d\\d")
+        OemBackgroundPolicy.OemFamily.values().forEach { family ->
+            if (OemBackgroundPolicy.evidence(family) == OemBackgroundPolicy.OemEvidence.MEASURED) {
+                val anchor = OemBackgroundPolicy.evidenceAnchor(family)
+                assertTrue("$family 标了 MEASURED 但锚点没有波次号：$anchor", waveAnchor.containsMatchIn(anchor))
+            }
+        }
+    }
+
+    @Test
+    fun nubiaFamilyClassified() {
+        // W78 D4：中兴系有独立于 AOSP 的「智能耗电保护」，归 AOSP = 给出已知不足的建议。
+        assertEquals(
+            OemBackgroundPolicy.OemFamily.NUBIA,
+            OemBackgroundPolicy.classify("ZTE", "RedMagic"),
+        )
+        assertEquals(
+            OemBackgroundPolicy.OemFamily.NUBIA,
+            OemBackgroundPolicy.classify("nubia", "nubia"),
+        )
     }
 }

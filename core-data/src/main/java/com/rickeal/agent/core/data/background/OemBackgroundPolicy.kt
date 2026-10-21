@@ -1,28 +1,41 @@
 package com.rickeal.agent.core.data.background
 
 /**
- * 国产 OEM 的「后台保活」差异矩阵（W77）。
+ * 国产 OEM 的「后台保活」差异矩阵（W77 / W78）。
  *
  * ## 为什么需要一张独立的表
  *
  * Android 官方只给了 `isIgnoringBatteryOptimizations` 这一条**AOSP 口径**的豁免。
- * 真机实测（OPPO PDRM00 / ColorOS，2026-10-20 两轮 A/B）：
+ * 真机实测（OPPO PDRM00 / ColorOS，2026-10-20 两轮 + W77-04 四轮 A/B）：
  * ① 仅加 AOSP doze 白名单：ColorOS 的 `OplusProxyWakeLock` 仍在灭屏约 10 秒后把
  *    第三方 `PARTIAL_WAKE_LOCK` 强制回收（`adb logcat -b system` 可见
  *    `... to FroceReleaseWakeLock list`）⇒ TTFT 从秒级恶化到 200.9s。
- * ② 手动开启 ColorOS「耗电行为控制 → 允许完全后台行为」后：四轮灭屏实验（窗口
- *    30–63s/轮）`LiquidAgent::Run` 全程 held=true、对本应用 0 条 force-release、
- *    run 全部正常结算 ⇒ **下方 COLOR_OS 路径文案指向的设置确实有效**。
- *    （判据与限定见 `docs/15-backlog.md` W77-04 与 wave77 交接 §九。）
+ * ② 手动开启 ColorOS「耗电行为控制 → 允许完全后台行为」后：`LiquidAgent::Run` 全程
+ *    held=true、对本应用 0 条 force-release、run 全部正常结算 ⇒ COLOR_OS 路径确实有效。
  *
  * 也就是说：**各家 ROM 的后台管控是独立于 AOSP 的第二套系统**，路径、粒度、是否
  * 允许自启动/关联启动/后台高耗电，全都不一样。应用无法程序化设置它们（无公开 API），
  * 唯一能做的是「按厂商给准确的引导文案 + 诚实说明不确定性」。
  *
+ * ## W78 的两处结构性变化
+ *
+ * ① 「最近任务下拉加锁」这条知识**回到文案本身**：9 族里加锁的**位置**不同 ——
+ *    ColorOS/HyperOS/OriginOS/MagicOS/NUBIA 是末尾**增强**，EMUI_HARMONY 在
+ *    HarmonyOS 5+ 是**替代路径**（不是增强）。统一后缀会与 5+ 分叉文案冲突，
+ *    所以删掉了那个「该族是否支持加锁」的布尔访问器（它曾是「第二事实源」，与文案漂移
+ *    就是 bug 的形态）。
+ * ② 每族带**一档证据强度 + 一行取证锚点**，落在 [EVIDENCE] 数据表里（不是注释）。
+ *    两个消费者：卡片路径行的括注（用户可见的人话）与守卫 #46（机械判据）。
+ *    `evidenceAnchor` 零生产读点但**不是死代码** —— 它的消费者是判据，与
+ *    `ModelPresets.evidenceLevel` 的现状同构。
+ *
  * ## 设计约束
  *
  * 本文件**不含任何 Android 依赖**（厂商名以字符串传入）⇒ 可纯 JVM 单测。
  * 分类与文案是「跨机型契约」，写错了用户会照着找不到路径 —— 这比崩溃更难发现。
+ *
+ * ⚠️ [EVIDENCE] **一行一族**、行首形态固定，守卫 #46 用行首正则机械提取 ⇒
+ * **禁止在注释 / KDoc 里写完整示例行**（会污染提取，这是该守卫自带的已知面）。
  */
 internal object OemBackgroundPolicy {
 
@@ -34,7 +47,7 @@ internal object OemBackgroundPolicy {
         /** 小米 / Redmi / POCO：HyperOS / MIUI 系。 */
         HYPER_OS,
 
-        /** 华为 / 荣耀旧机型：EMUI / HarmonyOS 4 及以下（HarmonyOS NEXT 不适用本路径）。 */
+        /** 华为 / 荣耀旧机型：EMUI / HarmonyOS（5+ 菜单已改版，文案里半句分叉）。 */
         EMUI_HARMONY,
 
         /** 荣耀独立后：MagicOS。 */
@@ -42,6 +55,9 @@ internal object OemBackgroundPolicy {
 
         /** vivo / iQOO：OriginOS / FuntouchOS。 */
         ORIGIN_OS,
+
+        /** nubia / RedMagic / ZTE 系（W78 新增）：官方协议页背书的独立「智能耗电保护」。 */
+        NUBIA,
 
         /** 三星：One UI。 */
         ONE_UI,
@@ -53,11 +69,26 @@ internal object OemBackgroundPolicy {
         AOSP,
     }
 
+    /** 每族引导文案的证据强度（W78 D5）。3 档，边界按「来源是否厂商官方」切分。 */
+    enum class OemEvidence {
+        /** 本仓真机实测：锚点必须指向本仓波次（波次号形态）。 */
+        MEASURED,
+
+        /** 厂商官方文档 / 官方支持页 / 官方协议页背书，**未在本机实测**。 */
+        OFFICIAL,
+
+        /** 仅社区 / 三方资料口径。 */
+        COMMUNITY,
+    }
+
     /**
      * 由 `Build.MANUFACTURER` / `Build.BRAND` 归类。
      *
      * 判定顺序有讲究：先看 brand（子品牌信息更具体，如 Redmi 的 manufacturer 仍是 Xiaomi），
      * 再看 manufacturer。两边都小写比较 —— ROM 厂商的大小写并不统一（`realme` / `HONOR`）。
+     *
+     * ⚠️ 已知面（v22-F3）：[containsAny] 是子串匹配，`zte` 理论上可命中含该子串的怪厂商名，
+     * 实测影响 ≈0。改匹配算法要动全部 9 族判定，回归面远大于收益 ⇒ 本波不修。
      */
     fun classify(manufacturer: String, brand: String): OemFamily {
         val m = manufacturer.trim().lowercase()
@@ -75,6 +106,9 @@ internal object OemBackgroundPolicy {
             containsAny(both, "vivo", "iqoo") -> OemFamily.ORIGIN_OS
             containsAny(both, "samsung") -> OemFamily.ONE_UI
             containsAny(both, "meizu") -> OemFamily.FLYME
+            // W78：中兴系（nubia / 红魔）有独立于 AOSP 的「智能耗电保护」，
+            // 归到 AOSP 等于给出**已知不足**的建议。红魔是游戏向机型，恰是端侧 AI 目标用户。
+            containsAny(m, "nubia", "zte") || containsAny(b, "nubia", "redmagic") -> OemFamily.NUBIA
             else -> OemFamily.AOSP
         }
     }
@@ -82,52 +116,82 @@ internal object OemBackgroundPolicy {
     /**
      * 该家族「让应用在后台/锁屏继续跑」的设置路径（用户可照着点）。
      *
-     * 文案纪律：
-     * - 只写**路径**，不承诺效果（「设置后永不被杀」是假话，各家仍可能回收）；
-     * - 末尾统一提示「路径可能因系统版本略有差异」——ROM 每年都在改菜单层级；
-     * - 能加「最近任务下拉加锁」的厂商一并写（这是 MIUI/ColorOS/OriginOS 的通用增强）。
+     * 只返回**路径本身**（不含 [displayName] 前缀）：卡片自己拼「族名（证据括注）：路径」，
+     * 免得两处各自拼前缀。文案纪律：只写路径，不承诺效果；「路径可能因系统版本略有差异」
+     * 与通用搜索兜底由设置卡统一渲染（不塞进 9 族文案，否则每族各长 45 字符）。
      */
-    fun guideText(family: OemFamily): String = when (family) {
-        OemFamily.COLOR_OS ->
-            "设置 → 电池 → 应用耗电管理 → 本应用 → 允许后台活动 + 允许完全后台行为；" +
-                "最近任务里下拉卡片加锁"
-        OemFamily.HYPER_OS ->
-            "设置 → 应用设置 → 应用管理 → 本应用 → 省电策略 → 无限制；" +
-                "最近任务里下拉卡片加锁"
-        OemFamily.EMUI_HARMONY ->
-            "手机管家 → 应用启动管理 → 本应用 → 关闭「自动管理」，" +
-                "允许自启动 / 关联启动 / 后台活动"
-        OemFamily.MAGIC_OS ->
-            "手机管家 → 应用启动管理 → 本应用 → 手动管理，" +
-                "允许自启动 / 关联启动 / 后台活动"
-        OemFamily.ORIGIN_OS ->
-            "设置 → 电池 → 后台耗电管理 → 本应用 → 允许后台高耗电；" +
-                "i 管家 → 自启动管理 → 允许自启动"
-        OemFamily.ONE_UI ->
-            "设置 → 电池 → 后台使用限制 → 把本应用加入「从不休眠的应用」"
-        OemFamily.FLYME ->
-            "手机管家 → 权限管理 → 后台管理 → 本应用 → 允许后台运行"
-        OemFamily.AOSP ->
-            "设置 → 电池 → 电池优化 → 本应用 → 不优化"
-    }
+    fun guideText(family: OemFamily): String = guide(family).path
 
-    /** 该家族是否支持「最近任务下拉加锁」这一通用增强（用于文案是否提示）。 */
-    fun supportsRecentsLock(family: OemFamily): Boolean = when (family) {
-        OemFamily.COLOR_OS, OemFamily.HYPER_OS, OemFamily.ORIGIN_OS -> true
-        else -> false
-    }
+    /** 厂商家族 → 用户可读名（设置卡路径行的前缀）。 */
+    fun displayName(family: OemFamily): String = guide(family).displayName
 
-    /** 厂商家族 → 用户可读名（设置卡标题后缀用）。 */
-    fun displayName(family: OemFamily): String = when (family) {
-        OemFamily.COLOR_OS -> "ColorOS / realme UI"
-        OemFamily.HYPER_OS -> "HyperOS / MIUI"
-        OemFamily.EMUI_HARMONY -> "EMUI / HarmonyOS"
-        OemFamily.MAGIC_OS -> "MagicOS"
-        OemFamily.ORIGIN_OS -> "OriginOS / FuntouchOS"
-        OemFamily.ONE_UI -> "One UI"
-        OemFamily.FLYME -> "Flyme"
-        OemFamily.AOSP -> "Android"
-    }
+    /** 该族引导文案的证据强度（W78 D5；卡片括注的取值来源）。 */
+    fun evidence(family: OemFamily): OemEvidence = evidenceRow(family).first
+
+    /** 该族证据的取证锚点（守卫 #46 的机械判据：`MEASURED` 必须带本仓波次号）。 */
+    fun evidenceAnchor(family: OemFamily): String = evidenceRow(family).second
+
+    /** 该族是否有独立于 AOSP 的厂商后台管控（AOSP = false ⇒ 卡片限定行换一句）。 */
+    fun isVendorManaged(family: OemFamily): Boolean = family != OemFamily.AOSP
+
+    private data class Guide(val displayName: String, val path: String)
+
+    private val GUIDES: Map<OemFamily, Guide> = mapOf(
+        OemFamily.COLOR_OS to Guide(
+            displayName = "ColorOS / realme UI / OxygenOS",
+            path = "设置 → 电池 → 应用耗电管理 → 本应用 → 允许后台活动 + 允许应用自启动 + 允许关联启动 + 允许完全后台行为；最近任务下拉加锁",
+        ),
+        OemFamily.HYPER_OS to Guide(
+            displayName = "HyperOS / MIUI",
+            path = "设置 → 应用设置 → 应用管理 → 本应用 → 省电策略 / 应用智能省电 → 无限制；应用权限 → 后台自启动 → 允许；最近任务下拉加锁",
+        ),
+        OemFamily.EMUI_HARMONY to Guide(
+            displayName = "EMUI / HarmonyOS",
+            path = "手机管家 → 应用启动管理 → 本应用 → 关闭「自动管理」，允许自启动/关联启动/后台活动；HarmonyOS 5+ 改用下拉加锁 + 关闭省电模式",
+        ),
+        OemFamily.MAGIC_OS to Guide(
+            displayName = "MagicOS",
+            path = "手机管家 → 应用启动管理 → 本应用 → 关闭「自动管理」，允许自启动/关联启动/后台活动；电池优化 → 本应用 → 不允许；最近任务下拉加锁",
+        ),
+        OemFamily.ORIGIN_OS to Guide(
+            displayName = "OriginOS / FuntouchOS",
+            path = "设置 → 电池 → 后台耗电管理 → 允许后台高耗电；i 管家 → 自启动管理 → 允许；i 管家 → 省电管理 → 加速白名单 → 加入；最近任务下拉加锁",
+        ),
+        OemFamily.NUBIA to Guide(
+            displayName = "nubia / RedMagic（中兴系）",
+            path = "设置 → 电池 → 智能耗电保护 → 关闭，或自定义 → 允许后台运行；最近任务下拉加锁",
+        ),
+        OemFamily.ONE_UI to Guide(
+            displayName = "One UI",
+            path = "设置 → 电池 → 后台使用限制 → 从不休眠的应用 → 添加本应用；或：应用信息 → 电池 → 不受限制",
+        ),
+        OemFamily.FLYME to Guide(
+            displayName = "Flyme",
+            path = "手机管家 → 隐私权限（部分版本叫「权限管理」）→ 后台管理 → 允许后台运行；自启动 → 允许",
+        ),
+        OemFamily.AOSP to Guide(
+            displayName = "Android",
+            path = "设置 → 电池 → 电池优化 → 本应用 → 不优化",
+        ),
+    )
+
+    /** 家族 × 证据档 × 取证锚点（#46 的数据面；一行一族，供机械解析）。 */
+    private val EVIDENCE: Map<OemFamily, Pair<OemEvidence, String>> = mapOf(
+        OemFamily.COLOR_OS to (OemEvidence.MEASURED to "W77-04 四轮灭屏 A/B：允许完全后台行为后零回收（其余两开关未单独实测）"),
+        OemFamily.HYPER_OS to (OemEvidence.OFFICIAL to "小米开发者文档 pId=1628/1624（PowerKeeper / 自启动权限）"),
+        OemFamily.EMUI_HARMONY to (OemEvidence.OFFICIAL to "华为支持页：启动管理三开关；HarmonyOS 5+ 另有一套"),
+        OemFamily.MAGIC_OS to (OemEvidence.OFFICIAL to "荣耀官方支持页 zh-cn00406916：启动管理 + 电池优化两步"),
+        OemFamily.ORIGIN_OS to (OemEvidence.OFFICIAL to "vivo 官方适配指南 + 支持文档：后台高耗电 + 自启动 + 加速白名单"),
+        OemFamily.NUBIA to (OemEvidence.OFFICIAL to "红魔装备库官方协议页：智能耗电保护 + 最近任务加锁"),
+        OemFamily.ONE_UI to (OemEvidence.OFFICIAL to "三星开发者文档 app-management：四列表 + 应用信息→电池→不受限制"),
+        OemFamily.FLYME to (OemEvidence.COMMUNITY to "魅族无官方后台管控文档；社区三方口径（手机管家→隐私权限→后台管理）"),
+        OemFamily.AOSP to (OemEvidence.OFFICIAL to "Android 官方：电池优化豁免（AOSP 标准路径）"),
+    )
+
+    /** 缺失即抛（fail-closed）：漏填家族的后果是「设置卡点开就崩」，不是「静默给错路径」。 */
+    private fun guide(family: OemFamily): Guide = GUIDES.getValue(family)
+
+    private fun evidenceRow(family: OemFamily): Pair<OemEvidence, String> = EVIDENCE.getValue(family)
 
     private fun containsAny(haystack: String, vararg needles: String): Boolean =
         needles.any { haystack.contains(it) }
