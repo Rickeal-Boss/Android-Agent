@@ -11,21 +11,12 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.os.SystemClock
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import com.rickeal.agent.core.data.notify.OngoingNotificationSlot
 import com.rickeal.agent.core.model.AgentLogStore
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 
 /**
  * 「run 期间保活」的前台服务壳（W77 / W78）。
@@ -53,19 +44,14 @@ import kotlinx.coroutines.launch
  */
 class AgentForegroundService : Service() {
 
-    private var wakeLock: PowerManager.WakeLock? = null
+    /**
+     * WakeLock 持有者 + 续期（W78 D9）。C5 从本服务外提为独立类 —— 逻辑逐字搬迁，行为零变更：
+     * 服务回到「只做壳」，[RunWakeLockKeeper] 负责锁与 30min 上限（判据见该类 KDoc）。
+     */
+    private val wakeLockKeeper = RunWakeLockKeeper(getSystemService(PowerManager::class.java))
 
     /** 状态栏小图标（`onStartCommand` 写入）：刷新常驻通知时要复用同一个值。 */
     private var iconRes: Int = 0
-
-    // ---- W78 D9：续期协程的作用域（服务私有，onDestroy 必取消）----
-
-    // 私有 + onDestroy 里 cancel ⇒ 结构上不可能比服务活得久（不接任何长生命周期作用域）。
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var renewJob: Job? = null
-
-    /** 本次服务生命期开始持锁的时刻（`elapsedRealtime` 基准），用于 30min 总持有上限。 */
-    private var wakeLockHeldSince: Long = 0L
 
     // ---- W78 硬点 1：通知刷新的线程模型（主线程串行 + 合并 + 销毁后不复活）----
 
@@ -86,14 +72,14 @@ class AgentForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         AgentLogStore.info("后台保活服务创建（前台化前）")
-        acquireWakeLock()
-        startWakeLockRenewal()
+        wakeLockKeeper.acquire()
+        wakeLockKeeper.startRenewal()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         iconRes = intent?.getIntExtra(RunForegroundPolicy.EXTRA_SMALL_ICON, 0) ?: 0
         // 幂等补锁：onCreate 的 acquire 可能因系统回收 / 与上一轮 onDestroy 交错而没生效。
-        acquireWakeLock()
+        wakeLockKeeper.acquire()
         return try {
             startInForeground(iconRes, BASE_TEXT)
             // W78 D2：登记速度文案刷新口。幂等 —— 重复 onStartCommand 覆盖同一个 sink。
@@ -106,69 +92,24 @@ class AgentForegroundService : Service() {
             AgentLogStore.warn(
                 "后台保活服务未能进入前台（${e.javaClass.simpleName}）：本次 run 可能在切后台后被系统冻结",
             )
-            releaseWakeLock()
+            wakeLockKeeper.release()
             stopSelf(startId)
             START_NOT_STICKY
         }
     }
 
     override fun onDestroy() {
-        // 顺序不得调换：① 置 destroyed + 清队列（让已 post 的刷新自我作废）② 停续期
-        // ③ 注销槽 ④ 撤前台 ⑤ 解锁。若先 stopForeground 再置位，队列里的刷新会把通知
-        // 「复活」成一条没人撤的常驻通知。
+        // 顺序不得调换：① 置 destroyed + 清队列（让已 post 的刷新自我作废）② 注销槽
+        // ③ 撤前台 ④ 释放锁（keeper 内部先停续期再解锁，见 RunWakeLockKeeper.release）。
+        // 若先 stopForeground 再置 destroyed，队列里的刷新会把通知「复活」成常驻通知。
         destroyed = true
         mainHandler.removeCallbacksAndMessages(null)
-        renewJob?.cancel()
-        renewJob = null
-        serviceScope.cancel()
         // 注销刷新口：不清掉的话 notifier 会把速度文案投进已销毁的服务（僵尸 sink）。
         OngoingNotificationSlot.detach(this)
         AgentLogStore.info("后台保活服务销毁（撤前台 + 解锁）")
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        releaseWakeLock()
+        wakeLockKeeper.release()
         super.onDestroy()
-    }
-
-    // ---- W78 D9：WakeLock 周期续期 ----
-
-    /**
-     * 每 [RunForegroundPolicy.WAKE_LOCK_RENEW_INTERVAL_MILLIS] 续一次，直到
-     * [RunForegroundPolicy.WAKE_LOCK_MAX_HOLD_MILLIS]（30min）为止。
-     *
-     * **为什么无条件 acquire**：OEM（如 ColorOS 的 `OplusProxyWakeLock`）在系统侧回收锁，
-     * 客户端 `isHeld` 仍为 true ⇒「按 isHeld 判断」永远判不出被回收。
-     *
-     * 日志有界：30min / 120s = 最多 15 行（`AgentLogStore` 是 200 条环形缓冲）。
-     * 诚实限定：续期不能替代 OEM 白名单 —— 未开「允许完全后台行为」时它把「永远深睡」
-     * 变成「每 120s 有 10s CPU 的间歇窗口」：是缓解，不是修复。
-     */
-    private fun startWakeLockRenewal() {
-        if (renewJob != null) return
-        wakeLockHeldSince = SystemClock.elapsedRealtime()
-        renewJob = serviceScope.launch {
-            while (isActive) {
-                delay(RunForegroundPolicy.WAKE_LOCK_RENEW_INTERVAL_MILLIS)
-                val held = SystemClock.elapsedRealtime() - wakeLockHeldSince
-                if (!RunForegroundPolicy.shouldRenewWakeLock(held)) {
-                    AgentLogStore.info(
-                        "WakeLock 续期已达上限（已持 ${held}ms / 上限 " +
-                            "${RunForegroundPolicy.WAKE_LOCK_MAX_HOLD_MILLIS}ms），不再续期：锁将自然到期",
-                    )
-                    break
-                }
-                renewWakeLock(held)
-            }
-        }
-    }
-
-    private fun renewWakeLock(heldMillis: Long) {
-        // 锁对象被 releaseWakeLock 置空 ⇒ 重新申请一个，下一周期再续。
-        val lock = wakeLock ?: return acquireWakeLock()
-        // 非引用计数锁的 acquire(timeout)：AOSP 对 `!mRefCounted` 分支即使 mHeld==true 也会
-        // 重新向系统申请并重置超时（原文：这类锁并不总能被正确释放）⇒ 正好是本处所需。
-        runCatching { lock.acquire(RunForegroundPolicy.WAKE_LOCK_TIMEOUT_MILLIS) }
-            .onFailure { AgentLogStore.warn("WakeLock 续期失败（${it.javaClass.simpleName}）") }
-        AgentLogStore.info("WakeLock 续期（已持 ${heldMillis}ms，held=${lock.isHeld}）")
     }
 
     // ---- 前台化（startForeground 的两条分支）----
@@ -244,33 +185,6 @@ class AgentForegroundService : Service() {
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .apply { contentIntent?.let { setContentIntent(it) } }
             .build()
-    }
-
-    private fun acquireWakeLock() {
-        // 幂等：onCreate 与 onStartCommand 都会调（双保险），已持有则直接返回。
-        if (wakeLock?.isHeld == true) return
-        val powerManager = getSystemService(PowerManager::class.java) ?: run {
-            AgentLogStore.warn("后台保活：PowerManager 不可用，锁屏后推理可能被挂起")
-            return
-        }
-        wakeLock = powerManager
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, RunForegroundPolicy.WAKE_LOCK_TAG)
-            .apply {
-                // 非引用计数：onDestroy 一次 release 必然彻底释放。带超时的 acquire = 物理兜底，
-                // W78 D9 的续期**不动这个超时**，只在「被重置」上做文章。
-                setReferenceCounted(false)
-                acquire(RunForegroundPolicy.WAKE_LOCK_TIMEOUT_MILLIS)
-            }
-        AgentLogStore.info(
-            "WakeLock 已获取（超时 ${RunForegroundPolicy.WAKE_LOCK_TIMEOUT_MILLIS}ms，held=${wakeLock?.isHeld}）",
-        )
-    }
-
-    private fun releaseWakeLock() {
-        val lock = wakeLock ?: return
-        AgentLogStore.info("WakeLock 释放（held=${lock.isHeld}）")
-        runCatching { if (lock.isHeld) lock.release() }
-        wakeLock = null
     }
 
     companion object {
