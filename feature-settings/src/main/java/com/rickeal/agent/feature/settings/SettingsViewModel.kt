@@ -50,6 +50,23 @@ data class SettingsUiState(
     val oemGuideText: String = "",
     /** 厂商家族可读名（"ColorOS / realme UI" 等），用于卡片副标题。 */
     val oemName: String = "",
+    /**
+     * 该族是否有独立于 AOSP 的厂商后台管控（W78 D3）：决定限定行说哪一句。
+     *
+     * 厂商层**不可程序化检测**（无公开 API），所以这是「本机有没有第二套系统」的
+     * 静态事实，不是二态状态 —— 它随家族走，**不随** [batteryOptimizationIgnored] 变。
+     * 这正是语义解耦的要点：状态行只报 AOSP 事实，效果限定由本字段决定措辞。
+     */
+    val oemVendorManaged: Boolean = false,
+    /** 当前族引导路径的证据强度（人话括注，如「本机已实测」），W78 D5。 */
+    val oemEvidenceNote: String = "",
+    /**
+     * 通知不可见时的诚实提示（W78 D10②）：**null = 通知可见 ⇒ UI 不渲染这一块**。
+     *
+     * 用 `null` 而不是空串表达「无需提示」：两者语义不同（空串是「有提示但没内容」，
+     * 会渲染出一行空白），所以 UI 侧只判 null，不做 `isNotBlank()`。
+     */
+    val backgroundNotificationHint: String? = null,
     val message: String? = null,
     val error: String? = null,
 )
@@ -93,10 +110,13 @@ class SettingsViewModel(
     }
 
     /**
-     * 重新读系统的电池优化豁免状态（W77）。
+     * 重新读系统的电池优化豁免状态（W77）+ 卡面三条静态/可检测事实（W78）。
      *
      * 刻意**不落盘、不缓存**：这是系统态，不是用户偏好。缓存副本只会在用户改了
      * 系统设置后变成假信息 —— 而「卡上说已豁免、实际仍被杀」正是最伤信任的形态。
+     *
+     * W78 追加的三项同样是「每次进页面重读」：通知权限/渠道是用户随时可改的系统态，
+     * 缓存它会让卡面第 7 块（通知不可见披露）长期停在过期状态。
      */
     fun refreshBackgroundRestriction() {
         val status = container.backgroundRestrictionStatus
@@ -105,6 +125,9 @@ class SettingsViewModel(
                 batteryOptimizationIgnored = status.isBatteryOptimizationIgnored(),
                 oemGuideText = status.backgroundGuideText(),
                 oemName = status.oemDisplayName(),
+                oemVendorManaged = status.hasVendorBackgroundLayer(),
+                oemEvidenceNote = status.backgroundEvidenceNote(),
+                backgroundNotificationHint = status.backgroundNotificationHint(),
             )
         }
     }

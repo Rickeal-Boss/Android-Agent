@@ -604,54 +604,71 @@ fun SettingsScreen(
                 }
             }
 
-            /* ------------------------------------- 后台运行保障（W77） */
+            /* ------------------------- 后台运行保障（W77 建卡 / W78 语义解耦） */
             // 这一卡解决的是「模型跑着，用户切后台/锁屏，进程被冻结」。
             // 诚实口径（与 knownBroken 红字同一设计哲学）：
-            //   * 白名单**不保证**不被杀 —— 它放宽 Doze，不防 LMK；
+            //   * **AOSP 电池优化豁免 ≠ OEM 后台管控**：前者只是 Android 系统层面的事实，
+            //     厂商（ColorOS/HyperOS/EMUI/MagicOS/OriginOS/nubia/One UI/Flyme）另有
+            //     一整套独立的后台管控，且**不可程序化检测**（无公开 API）；
+            //   * 所以本卡拆成三段，各自只说自己的事实：状态行只报 AOSP 二态、限定行
+            //     声明覆盖面、路径行给准确路径 + **证据强度**（本机已实测 / 官方说明 /
+            //     社区经验）—— 不假装验证过没验证过的族；
+            //   * 白名单**不保证**不被杀 —— 它放宽 Doze，不防 LMK，也管不了 OEM 层；
             //   * 后台生成**确实**更耗电、更热（散热条件比前台差）；
             //   * 真被杀也不是白干：恢复卡会带着已写出的部分继续。
             // 绝不写「设置后永不被杀」这类承诺 —— 那是把系统行为说成我们的能力。
+            // W78 删掉的两句旧文案（**故意不在此复述原文**，避免任何按文案做的判据
+            // 被自家注释污染，W77 实摔过的形态）：一句把 AOSP 豁免说成「更不容易被
+            // 冻结」= **效果承诺**（已被 W77 真机 A/B 在 ColorOS 上证伪：AOSP 白名单
+            // 为 true 时 OplusProxyWakeLock 仍在灭屏 ~10s 后被回收）；另一句把「冻结」
+            // 与「电池优化开关」绑成因果（冻结是 app-freezer / OEM 层，不是它的直接结果）。
             GlassCard(
                 modifier = Modifier.staggeredPageItem(itemIndex = 4),
                 contentPadding = PaddingValues(14.dp),
             ) {
                 Column {
                     GroupTitle("后台运行保障")
+                    // ① 状态行：只报 AOSP 事实，不做效果承诺（W78 D3）。
                     Text(
                         text = if (state.batteryOptimizationIgnored) {
-                            "已加入电池优化豁免"
+                            "已加入系统电池优化豁免"
                         } else {
-                            "未加入电池优化豁免"
+                            "未加入系统电池优化豁免"
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.onGlass,
                     )
+                    // ② 限定行：恒定，随「该族有没有厂商层」二选一 —— 与上面的二态
+                    // 无关（用户把 AOSP 白名单设完，覆盖面不会因此变大）。
                     Text(
-                        text = if (state.batteryOptimizationIgnored) {
-                            "切后台或锁屏时，系统更不容易冻结本应用"
+                        text = if (state.oemVendorManaged) {
+                            "仅 Android 系统层面；厂商可能另有独立的后台管控（见下方路径），本项不覆盖。"
                         } else {
-                            "锁屏或长时间留在后台时，系统可能冻结本应用，生成会中断"
+                            "仅 Android 系统层面；本机为接近原生的系统，无额外厂商管控。"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onGlassSubtle,
                         modifier = Modifier.padding(top = 2.dp),
                     )
+                    // ③ 路径行：族名 + 证据括注 + 路径（W78 D5）。逐厂商路径
+                    // （ColorOS / HyperOS / EMUI / MagicOS / OriginOS / nubia /
+                    // One UI / Flyme / AOSP 各一套）。证据括注是本波对「未验证的路径
+                    // 与已验证的路径口吻相同」这一问题的处置：不假装验证，而是把
+                    // 「未在本机实测」这件事本身产品化。
                     Text(
-                        // 逐厂商路径（W77）：ColorOS / HyperOS / EMUI / MagicOS / OriginOS /
-                        // One UI / Flyme / AOSP 各一套。不写「设置后永不被杀」——
-                        // 真机实测 ColorOS 即使加入 AOSP doze 白名单，仍会在灭屏后
-                        // 强制回收第三方 WakeLock（OplusProxyWakeLock）。
                         text = if (state.oemName.isBlank()) {
                             state.oemGuideText
                         } else {
-                            "${state.oemName}：${state.oemGuideText}"
+                            "${state.oemName}（${state.oemEvidenceNote}）：${state.oemGuideText}"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onGlassSubtle,
                         modifier = Modifier.padding(top = 8.dp),
                     )
+                    // ④ 导航兜底行：路径随版本漂移时给一条不依赖具体菜单名的出路。
                     Text(
-                        text = "路径可能因系统版本略有差异。",
+                        text = "路径可能因系统版本略有差异；找不到时，在设置顶部搜索框输入" +
+                            "「电池优化」或「应用启动管理」。",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onGlassSubtle,
                         modifier = Modifier.padding(top = 4.dp),
@@ -670,9 +687,22 @@ fun SettingsScreen(
                             material = GlassMaterial.THIN,
                         )
                     }
+                    // ⑤ 通知不可见披露（W78 D10②）：**条件渲染** —— null（通知可见）
+                    // 时一行都不出现，绝大多数用户零噪音；只有真的受影响（未授予
+                    // POST_NOTIFICATIONS / 「后台运行」渠道被关）才多这 1 行。
+                    // 只说事实，不承诺「一定有通知」，也不说「影响保活」（FGS 照跑）。
+                    state.backgroundNotificationHint?.let { hint ->
+                        Text(
+                            text = hint,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onGlassSubtle,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                    }
+                    // ⑥ 尾注：效果免责（耗电 / 不保证不被回收 / 灭屏后限 CPU）+ 恢复路径。
                     Text(
-                        text = "后台生成会增加耗电与发热；即使加白名单也不能保证不被系统强制回收，" +
-                            "中断后可从恢复卡继续。",
+                        text = "后台生成会增加耗电与发热；即使完成上述设置，切后台后仍可能被冻结或回收，" +
+                            "部分机型还会在灭屏后限制 CPU。中断后可从恢复卡继续。",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onGlassSubtle,
                         modifier = Modifier.padding(top = 10.dp),
