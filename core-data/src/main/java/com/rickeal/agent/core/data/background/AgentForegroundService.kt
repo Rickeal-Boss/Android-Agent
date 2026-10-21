@@ -7,7 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import androidx.annotation.RequiresApi
@@ -28,34 +30,26 @@ import kotlinx.coroutines.launch
 /**
  * 「run 期间保活」的前台服务壳（W77 / W78）。
  *
- * ## 它只做四件事
- *
- * 1. `startForeground` —— 把进程从 cached 态抬到前台服务优先级，**免于 A12+ 的
- *    应用冻结器**（这是「切后台继续跑」的正面机制，不是「防杀」的银弹）；
- * 2. 持 `PARTIAL_WAKE_LOCK` —— 锁屏后 CPU 不进入 suspend，推理不中断；
- * 3. **周期续期 WakeLock**（W78 D9）—— 审批挂起无超时上限（`ToolApprovalHandler` 是裸
- *    suspend），run 的墙钟存活时间可远超 390s，而锁原本只在 onCreate/onStartCommand 各
- *    acquire 一次、390s 后静默自释且无重取路径 ⇒ 用户放下手机超过 6.5 分钟再回来批准，
- *    CPU 已深睡。续期见 [startWakeLockRenewal]。
- * 4. 终态释放 —— `onDestroy` 里撤通知 + 解锁，**且锁本身仍带 6.5 分钟超时兜底**。
+ * 做四件事：① `startForeground` 把进程抬到前台服务优先级（免于 A12+ 应用冻结器 —— 这是
+ * 「切后台继续跑」的正面机制，不是「防杀」银弹）；② 持 `PARTIAL_WAKE_LOCK`（锁屏后 CPU
+ * 不 suspend）；③ **周期续期 WakeLock**（W78 D9：审批挂起无超时上限 ⇒ run 的墙钟存活可
+ * 远超 390s，而锁只 acquire 一次、390s 后静默自释且无重取路径 ⇒ 见 [startWakeLockRenewal]）；
+ * ④ 终态释放（`onDestroy` 撤通知 + 解锁，锁仍带 6.5 分钟超时兜底）。
  *
  * ## 通知所有权（W78 D2）
  *
- * FGS 通知 id 是 1002（[RunForegroundPolicy.ONGOING_NOTIFICATION_ID]），与速度通知的
- * 1001（`OngoingNotificationSlot.SPEED_NOTIFICATION_ID`）**分离**。速度文案不另发一条，
- * 而是经 [OngoingNotificationSlot] 借道本服务刷新**同一条** —— 本服务是这条通知的
- * **唯一写者**（两个 builder 写同一个 id 会把 FGS 通知刷成点不动的死通知）。
+ * FGS 通知 id = 1002（[RunForegroundPolicy.ONGOING_NOTIFICATION_ID]），与速度通知的 1001
+ * （`OngoingNotificationSlot.SPEED_NOTIFICATION_ID`）**分离**。速度文案经
+ * [OngoingNotificationSlot] 借道本服务刷新**同一条** —— 本服务是它的唯一写者（两个 builder
+ * 写同一个 id 会把 FGS 通知刷成点不动的死通知）。
  *
- * ## 刻意不做的事
+ * ## 刻意不做
  *
- * - **不接管 run 生命周期**：run 仍挂在 `ChatRunCoordinator` 的 `viewModelScope` 上。
- *   用户划掉任务 = 显式终止意图 ⇒ `stopWithTask`（默认 true）让服务随任务销毁。
- * - **不 sticky**：推理不可盲重启，进程真死了走既有 journal 恢复卡（W2/W47）。
- * - **不申请电池优化豁免**：见 [BackgroundRestrictionStatus] 的 KDoc。
+ * 不接管 run 生命周期（run 仍挂 `viewModelScope`，划掉任务 = 显式终止 ⇒ `stopWithTask`）；
+ * 不 sticky（推理不可盲重启，进程真死了走 journal 恢复卡 W2/W47）；不申请电池优化豁免。
  *
- * ## 类型声明（合规面，真机不可验）
- *
- * 本机是 Android 13（SDK 33），平台**不校验** FGS 类型 ⇒ 只能靠 manifest 声明 + 守卫 #43 钉死。
+ * 合规面：本机 Android 13（SDK 33）平台**不校验** FGS 类型 ⇒ 类型合规只能靠 manifest 声明
+ * + 守卫 #43 静态钉死，真机到 A14+ 补测。
  */
 class AgentForegroundService : Service() {
 
@@ -66,15 +60,26 @@ class AgentForegroundService : Service() {
 
     // ---- W78 D9：续期协程的作用域（服务私有，onDestroy 必取消）----
 
-    /**
-     * 续期协程的作用域。私有 + `onDestroy` 里 cancel ⇒ **结构上不可能比服务活得久**
-     * （不接 `applicationScope`、不接任何长生命周期作用域）。
-     */
+    // 私有 + onDestroy 里 cancel ⇒ 结构上不可能比服务活得久（不接任何长生命周期作用域）。
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var renewJob: Job? = null
 
     /** 本次服务生命期开始持锁的时刻（`elapsedRealtime` 基准），用于 30min 总持有上限。 */
     private var wakeLockHeldSince: Long = 0L
+
+    // ---- W78 硬点 1：通知刷新的线程模型（主线程串行 + 合并 + 销毁后不复活）----
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 合并：只留最新一帧；队列里最多一个 Runnable；销毁即作废（见 [refreshOngoing]）。
+    @Volatile
+    private var pendingText: String? = null
+
+    @Volatile
+    private var refreshScheduled: Boolean = false
+
+    @Volatile
+    private var destroyed: Boolean = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -87,9 +92,7 @@ class AgentForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         iconRes = intent?.getIntExtra(RunForegroundPolicy.EXTRA_SMALL_ICON, 0) ?: 0
-        // 幂等补锁：若 onCreate 的 acquire 因任何原因没生效（例如被系统回收 / 上一轮
-        // onDestroy 与本轮 onCreate 交错），这里补一次 —— 保活的核心是「run 期间 CPU 不睡」，
-        // 不能因为一次 acquire 失败就整轮失效。
+        // 幂等补锁：onCreate 的 acquire 可能因系统回收 / 与上一轮 onDestroy 交错而没生效。
         acquireWakeLock()
         return try {
             startInForeground(iconRes, BASE_TEXT)
@@ -98,10 +101,8 @@ class AgentForegroundService : Service() {
             AgentLogStore.info("后台保活服务已进入前台（startId=$startId）")
             START_NOT_STICKY
         } catch (e: RuntimeException) {
-            // 走到这里通常是 ① API 34+ 缺 FOREGROUND_SERVICE_SPECIAL_USE 权限 / manifest
-            // 类型不成对 ⇒ SecurityException（守卫 #43 就是为这条存在的）② 极窄竞态下
-            // startForeground 超时。降级语义：本次 run 退化成「没有保活」，与 W77 之前一致，
-            // 不会更差；但必须留痕，否则用户只看到「切后台就停」而查不到原因。
+            // ① API 34+ 缺权限 / manifest 类型不成对 ⇒ SecurityException（守卫 #43）② 竞态下
+            // startForeground 超时。降级 = 本次 run「没有保活」（与 W77 前一致），但必须留痕。
             AgentLogStore.warn(
                 "后台保活服务未能进入前台（${e.javaClass.simpleName}）：本次 run 可能在切后台后被系统冻结",
             )
@@ -112,13 +113,15 @@ class AgentForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        // 顺序（W78）：先停续期与注销槽，再撤前台，最后解锁 —— 反过来的话续期协程可能在
-        // 「已解锁」的窗口里把锁又抢回来（D9 的泄漏面）。
+        // 顺序不得调换：① 置 destroyed + 清队列（让已 post 的刷新自我作废）② 停续期
+        // ③ 注销槽 ④ 撤前台 ⑤ 解锁。若先 stopForeground 再置位，队列里的刷新会把通知
+        // 「复活」成一条没人撤的常驻通知。
+        destroyed = true
+        mainHandler.removeCallbacksAndMessages(null)
         renewJob?.cancel()
         renewJob = null
-        // 结构上保证续期协程不活得比服务久（SupervisorJob + cancel 双保险）。
         serviceScope.cancel()
-        // 注销刷新口：不清掉的话 notifier 会把速度文案投进已销毁的服务（R1 僵尸 sink）。
+        // 注销刷新口：不清掉的话 notifier 会把速度文案投进已销毁的服务（僵尸 sink）。
         OngoingNotificationSlot.detach(this)
         AgentLogStore.info("后台保活服务销毁（撤前台 + 解锁）")
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -132,15 +135,12 @@ class AgentForegroundService : Service() {
      * 每 [RunForegroundPolicy.WAKE_LOCK_RENEW_INTERVAL_MILLIS] 续一次，直到
      * [RunForegroundPolicy.WAKE_LOCK_MAX_HOLD_MILLIS]（30min）为止。
      *
-     * **为什么无条件 acquire 而不是「只在 !isHeld 时补」**：OEM（如 ColorOS 的
-     * `OplusProxyWakeLock`）是在系统侧把锁回收，客户端 `isHeld` 仍为 true ⇒
-     * 「按 isHeld 判断」永远判不出被回收。无条件重申请才既重置超时又抢回被回收的锁。
+     * **为什么无条件 acquire**：OEM（如 ColorOS 的 `OplusProxyWakeLock`）在系统侧回收锁，
+     * 客户端 `isHeld` 仍为 true ⇒「按 isHeld 判断」永远判不出被回收。
      *
-     * **日志有界**：30min / 120s = 最多 15 行（`AgentLogStore` 是 200 条环形缓冲），
-     * 不会冲掉 run 的诊断日志。
-     *
-     * **诚实限定**：续期不能替代 OEM 白名单 —— 未开「允许完全后台行为」时，它把
-     * 「永远深睡」变成「每 120s 有 10s CPU 的间歇窗口」：是缓解，不是修复。
+     * 日志有界：30min / 120s = 最多 15 行（`AgentLogStore` 是 200 条环形缓冲）。
+     * 诚实限定：续期不能替代 OEM 白名单 —— 未开「允许完全后台行为」时它把「永远深睡」
+     * 变成「每 120s 有 10s CPU 的间歇窗口」：是缓解，不是修复。
      */
     private fun startWakeLockRenewal() {
         if (renewJob != null) return
@@ -162,63 +162,71 @@ class AgentForegroundService : Service() {
     }
 
     private fun renewWakeLock(heldMillis: Long) {
-        val lock = wakeLock ?: run {
-            // 锁对象本身被回收（releaseWakeLock 置空）⇒ 重新申请一个，下一周期再续。
-            acquireWakeLock()
-            return
-        }
-        // 非引用计数锁的 acquire(timeout)：AOSP 对 `!mRefCounted` 分支即使 mHeld==true
-        // 也会重新向系统申请并重置超时（注释原文：这类锁并不总能被正确释放）⇒ 正好是本处所需。
+        // 锁对象被 releaseWakeLock 置空 ⇒ 重新申请一个，下一周期再续。
+        val lock = wakeLock ?: return acquireWakeLock()
+        // 非引用计数锁的 acquire(timeout)：AOSP 对 `!mRefCounted` 分支即使 mHeld==true 也会
+        // 重新向系统申请并重置超时（原文：这类锁并不总能被正确释放）⇒ 正好是本处所需。
         runCatching { lock.acquire(RunForegroundPolicy.WAKE_LOCK_TIMEOUT_MILLIS) }
             .onFailure { AgentLogStore.warn("WakeLock 续期失败（${it.javaClass.simpleName}）") }
         AgentLogStore.info("WakeLock 续期（已持 ${heldMillis}ms，held=${lock.isHeld}）")
     }
 
-    // ---- 前台化 ----
+    // ---- 前台化（startForeground 的两条分支）----
 
     private fun startInForeground(iconRes: Int, text: String) {
         val notification = buildNotification(iconRes, text)
         if (RunForegroundPolicy.usesTypedForeground(Build.VERSION.SDK_INT)) {
             // lint 的 NewApi 只认同一方法内的字面量 SDK_INT 比较，无法跨方法跟踪
-            // `usesTypedForeground()`（分派判据由 RunForegroundPolicyTest 钉死）⇒ 就地 @Suppress。
+            // `usesTypedForeground()`（判据由 RunForegroundPolicyTest 钉死）⇒ 就地 @Suppress。
             @Suppress("NewApi")
             startTypedForeground(notification)
         } else {
-            // API 31~33：不传类型位（平台不认识 specialUse，传了反而可能被拒）。
+            // API 31~33：不传类型位（平台不认识 specialUse）。
             startForeground(RunForegroundPolicy.ONGOING_NOTIFICATION_ID, notification)
         }
     }
 
     @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    private fun startTypedForeground(notification: Notification) {
-        ServiceCompat.startForeground(
-            this,
-            RunForegroundPolicy.ONGOING_NOTIFICATION_ID,
-            notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-        )
-    }
+    private fun startTypedForeground(notification: Notification) = ServiceCompat.startForeground(
+        this,
+        RunForegroundPolicy.ONGOING_NOTIFICATION_ID,
+        notification,
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+    )
 
     /**
-     * 刷新常驻通知文本（W78 D2 的借道出口）。返回 false ⇒ notifier 回落自己发 1001。
+     * 刷新常驻通知文本（**主线程串行 + 合并**，W78 硬点 1）。
      *
-     * 用 `startForeground` 而不是 `notify`：前者同时保持「前台服务 ↔ 通知」的绑定，
-     * 且 [startInForeground] 的 `usesTypedForeground` 分派可复用（A14+ 类型位不丢）。
+     * 返回值 = **「已受理」而非「已上屏」**：`false` 只表示「无活跃 FGS / 已销毁」⇒ notifier
+     * 才回落发 1001。**刷新失败不回 false** —— 否则 notifier 再发一条 1001 ⇒ 两条常驻通知，
+     * 比丢一帧速度文案糟得多（1s 后下一 tick 自愈）。
+     *
+     * 必须自己切主线程：`publish` 可能在任意线程，而后台线程的 `startForeground` 与主线程
+     * `onDestroy` 的 `stopForeground(REMOVE)` 并发时，刷新可能落在撤前台**之后**把通知「复活」。
+     * `pendingText` + `refreshScheduled` 保证主线程队列长度恒 ≤1（合并，不堆积）。
      */
-    private fun refreshOngoing(text: String): Boolean =
-        runCatching {
-            startInForeground(iconRes, text)
-            true
+    private fun refreshOngoing(text: String): Boolean {
+        if (destroyed) return false
+        pendingText = text
+        if (refreshScheduled) return true
+        refreshScheduled = true
+        mainHandler.post {
+            refreshScheduled = false
+            val latest = pendingText ?: return@post
+            // 双重检查：从 post 到执行之间服务可能已销毁 ⇒ 不能把通知「复活」。
+            if (destroyed) return@post
+            runCatching { startInForeground(iconRes, latest) }
+                .onFailure {
+                    // OEM 限流 / 渠道被关 / 竞态：只留痕，不重试、不改道去发 1001。
+                    AgentLogStore.warn("后台保活通知刷新失败（${it.javaClass.simpleName}）：停留上一帧")
+                }
         }
-            .onFailure {
-                AgentLogStore.warn("后台保活通知刷新失败（${it.javaClass.simpleName}）")
-            }
-            .getOrDefault(false)
+        return true
+    }
 
     /** FGS 的常驻通知：id 1002，渠道 [NOTIFICATION_CHANNEL_ID]（独立于速度通知渠道）。 */
     private fun buildNotification(iconRes: Int, text: String): Notification {
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        val contentIntent = launchIntent?.let {
+        val contentIntent = packageManager.getLaunchIntentForPackage(packageName)?.let {
             PendingIntent.getActivity(
                 this,
                 0,
@@ -227,7 +235,7 @@ class AgentForegroundService : Service() {
             )
         }
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            // 兜底图标：app 层没传时（理论上不会）也不能传 0，否则 startForeground 直接抛。
+            // 兜底图标：app 层没传时也不能传 0，否则 startForeground 直接抛。
             .setSmallIcon(if (iconRes != 0) iconRes else android.R.drawable.stat_sys_download)
             .setContentTitle("端侧生成中")
             .setContentText(text)
@@ -237,8 +245,6 @@ class AgentForegroundService : Service() {
             .apply { contentIntent?.let { setContentIntent(it) } }
             .build()
     }
-
-    // ---- WakeLock ----
 
     private fun acquireWakeLock() {
         // 幂等：onCreate 与 onStartCommand 都会调（双保险），已持有则直接返回。
@@ -250,8 +256,7 @@ class AgentForegroundService : Service() {
         wakeLock = powerManager
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, RunForegroundPolicy.WAKE_LOCK_TAG)
             .apply {
-                // 非引用计数：onDestroy 一次 release 必然彻底释放（多次 acquire 语义
-                // 会让「谁忘了 release」变成难查的泄漏源）。带超时的 acquire = 物理兜底；
+                // 非引用计数：onDestroy 一次 release 必然彻底释放。带超时的 acquire = 物理兜底，
                 // W78 D9 的续期**不动这个超时**，只在「被重置」上做文章。
                 setReferenceCounted(false)
                 acquire(RunForegroundPolicy.WAKE_LOCK_TIMEOUT_MILLIS)
@@ -270,19 +275,16 @@ class AgentForegroundService : Service() {
 
     companion object {
         /**
-         * FGS 常驻通知渠道 id（W78 D2）。**独立于** `AndroidGenerationNotifier.CHANNEL_ID`
-         * （"generation_speed"）：用户关掉速度通知渠道时 FGS 通知不能跟着消失 —— 那正是
-         * 「已前台化但用户不可见」的形态。渠道由 `LiquidAgentApplication.onCreate` 幂等创建。
-         * 放这里而不是 `RunForegroundPolicy`：后者是 internal，app 模块看不见。
+         * FGS 常驻通知渠道 id（W78 D2）。**独立于** `AndroidGenerationNotifier.CHANNEL_ID`：
+         * 用户关掉速度通知渠道时 FGS 通知不能跟着消失（那正是「已前台化但用户不可见」）。
+         * 放这里而非 `RunForegroundPolicy`：后者 internal，app 模块看不见。
          */
         const val NOTIFICATION_CHANNEL_ID: String = "background_run"
 
         /**
-         * 冷启动清理 FGS 常驻通知（W78 D10①）。
-         *
-         * 普通 `notify()` 通知跨进程存活，FGS 通知则通常随服务销毁由 AMS 撤掉 ⇒ 本方法是
-         * **纵深防御**，不是缺陷修复（依据与既有 P2-1 同口径：冷启动时不可能有合法的
-         * 「生成中」，任何残留都是脏数据）。调用点：`LiquidAgentApplication.onCreate`。
+         * 冷启动清理 FGS 常驻通知（W78 D10①）。FGS 通知通常随服务销毁由 AMS 撤掉 ⇒ 本方法
+         * 是**纵深防御**而非缺陷修复（同 P2-1 口径：冷启动时不可能有合法的「生成中」）。
+         * 调用点：`LiquidAgentApplication.onCreate`。
          */
         fun clearStaleNotification(context: Context) {
             runCatching {

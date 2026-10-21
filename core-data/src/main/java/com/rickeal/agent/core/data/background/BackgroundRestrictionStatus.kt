@@ -1,10 +1,13 @@
 package com.rickeal.agent.core.data.background
 
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 
 /**
@@ -83,6 +86,39 @@ class BackgroundRestrictionStatus(context: Context) {
         }
 
     /**
+     * 后台运行期间「通知可能不可见」的诚实提示（W78 D10② / 硬点 3）。
+     *
+     * 两个成因**都可检测**，所以不写成一句模糊的免责：
+     *  ① 未授予 `POST_NOTIFICATIONS`（API 33+ 运行时权限）；
+     *  ② 用户把 `background_run` 渠道关掉了（`getNotificationChannel(...).importance == NONE`，
+     *    免权限）。刻意**不用** `areNotificationsEnabled()` —— 那是全局口径，不是本渠道。
+     *
+     * 返回 null = 通知可见 ⇒ 调用方**不渲染**任何提示（绝大多数用户零噪音）。
+     *
+     * ⚠️ 措辞纪律：只说事实（通知栏不会有提示），**不承诺**「一定有通知」，也不说
+     * 「会影响保活」—— FGS 在 A13/A14 上都会继续跑，说「影响保活」同样是错的。
+     */
+    fun backgroundNotificationHint(): String? {
+        val permissionMissing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(appContext, PERMISSION_POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        return when {
+            permissionMissing -> "未授予通知权限：后台运行仍会继续，但通知栏不会显示常驻通知。"
+            isBackgroundRunChannelBlocked() ->
+                "「后台运行」通知渠道已被关闭：后台运行仍会继续，但通知栏不会显示常驻通知。"
+            else -> null
+        }
+    }
+
+    /** `background_run` 渠道是否被用户关闭（免权限；API 26+ 才有渠道概念，minSdk 31 ⇒ 恒可用）。 */
+    internal fun isBackgroundRunChannelBlocked(): Boolean {
+        val manager = appContext.getSystemService(NotificationManager::class.java) ?: return false
+        val channel = manager.getNotificationChannel(AgentForegroundService.NOTIFICATION_CHANNEL_ID)
+            ?: return false
+        return channel.importance == NotificationManager.IMPORTANCE_NONE
+    }
+
+    /**
      * 打开系统的「电池优化」列表页（**免权限**）。
      *
      * 失败（部分 ROM 裁剪了该页面）时落到应用详情页，保证按钮永远有反馈。
@@ -101,5 +137,16 @@ class BackgroundRestrictionStatus(context: Context) {
             "package:${appContext.packageName}".toUri(),
         ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { appContext.startActivity(intent) }
+    }
+
+    private companion object {
+        /**
+         * `POST_NOTIFICATIONS` 的权限名（API 33 新增）。
+         *
+         * 刻意写成字符串字面量而不是 `Manifest.permission.POST_NOTIFICATIONS`：后者是 API 33
+         * 才有的编译期常量，本模块 minSdk 31 ⇒ lint 判 InlinedApi（本仓 warningsAsErrors）。
+         * 与 `AndroidGenerationNotifier` 同名常量各写一次（不为此新建公共面）。
+         */
+        const val PERMISSION_POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS"
     }
 }
