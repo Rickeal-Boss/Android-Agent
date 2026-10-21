@@ -98,24 +98,27 @@ class BackgroundRestrictionStatus(context: Context) {
      * ⚠️ 措辞纪律：只说事实（通知栏不会有提示），**不承诺**「一定有通知」，也不说
      * 「会影响保活」—— FGS 在 A13/A14 上都会继续跑，说「影响保活」同样是错的。
      */
-    fun backgroundNotificationHint(): String? {
-        val permissionMissing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(appContext, PERMISSION_POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        return when {
-            permissionMissing -> "未授予通知权限：后台运行仍会继续，但通知栏不会显示常驻通知。"
-            isBackgroundRunChannelBlocked() ->
-                "「后台运行」通知渠道已被关闭：后台运行仍会继续，但通知栏不会显示常驻通知。"
-            else -> null
-        }
+    fun backgroundNotificationHint(): String? = when {
+        !hasPostNotificationsPermission() ->
+            "未授予通知权限：后台运行仍会继续，但通知栏不会显示常驻通知。"
+        isBackgroundRunChannelBlocked() ->
+            "「后台运行」通知渠道已被关闭：后台运行仍会继续，但通知栏不会显示常驻通知。"
+        else -> null
     }
 
+    /** API 33+ 的 `POST_NOTIFICATIONS` 是否已授予（32 及以下安装即授予 ⇒ 恒 true）。 */
+    private fun hasPostNotificationsPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                appContext,
+                PERMISSION_POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+
     /** `background_run` 渠道是否被用户关闭（免权限；API 26+ 才有渠道概念，minSdk 31 ⇒ 恒可用）。 */
-    internal fun isBackgroundRunChannelBlocked(): Boolean {
+    private fun isBackgroundRunChannelBlocked(): Boolean {
         val manager = appContext.getSystemService(NotificationManager::class.java) ?: return false
-        val channel = manager.getNotificationChannel(AgentForegroundService.NOTIFICATION_CHANNEL_ID)
-            ?: return false
-        return channel.importance == NotificationManager.IMPORTANCE_NONE
+        return manager.getNotificationChannel(AgentForegroundService.NOTIFICATION_CHANNEL_ID)
+            ?.importance == NotificationManager.IMPORTANCE_NONE
     }
 
     /**

@@ -28,7 +28,14 @@ internal object OngoingNotificationSlot {
     private var owner: Any? = null
     private var sink: ((String) -> Boolean)? = null
 
-    /** 服务进入前台后登记刷新口。`sink` 返回 false 表示「刷新失败」，调用方需自行兜底。 */
+    /**
+     * 服务进入前台后登记刷新口。
+     *
+     * `sink` 的返回值语义（W78 硬点 1）= **「已受理」而非「已上屏」**：`true` = 已受理（可能仍在
+     * 服务的主线程队列里）；`false` **只表示**「无活跃 FGS / 服务已销毁」⇒ 调用方（notifier）才
+     * 回落自己发 1001。**刷新本身失败不回 false** —— 否则 notifier 会再发一条 1001 ⇒ 通知栏两条
+     * 常驻通知，比丢一帧速度文案糟得多（1s 后下一 tick 自愈）。
+     */
     fun attach(owner: Any, sink: (String) -> Boolean) {
         synchronized(lock) {
             this.owner = owner
@@ -49,7 +56,13 @@ internal object OngoingNotificationSlot {
     /** FGS 是否活跃（= 有服务登记了刷新口）。 */
     fun isActive(): Boolean = synchronized(lock) { sink != null }
 
-    /** 把速度文案交给 FGS 通知。返回 false = 无活跃 FGS 或刷新抛异常 ⇒ 调用方自行发 1001。 */
+    /**
+     * 把速度文案交给 FGS 通知。`false` = **无活跃 FGS**（无 sink）⇒ 调用方自行发 1001。
+     *
+     * 下面的 `runCatching{}.getOrDefault(false)` 是**最后兜底**而非常态：sink 自己已把刷新失败
+     * 吞成 warn（见 `AgentForegroundService.refreshOngoing`），所以正常路径上不会走到这里；
+     * 真走到（sink 自身抛异常）时回 false 是唯一安全选择 —— 总比让 onTick 把推理打崩好。
+     */
     fun publish(text: String): Boolean {
         val target = synchronized(lock) { sink } ?: return false
         return runCatching { target(text) }.getOrDefault(false)
