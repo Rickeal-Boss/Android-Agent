@@ -14,6 +14,7 @@ import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.core.net.toUri
 import com.rickeal.agent.core.agent.AgentRunner
+import com.rickeal.agent.core.agent.FreezeClock
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.agent.ToolContext
 import com.rickeal.agent.core.agent.ToolRegistry
@@ -33,6 +34,7 @@ import com.rickeal.agent.core.agent.token.RunTokenLedger
 import com.rickeal.agent.core.data.thermal.ThermalGovernor
 import com.rickeal.agent.core.data.background.AgentRunForegroundController
 import com.rickeal.agent.core.data.background.BackgroundRestrictionStatus
+import com.rickeal.agent.core.data.background.ScreenStateMonitor
 import com.rickeal.agent.core.engine.DefaultEngineFactory
 import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
@@ -278,10 +280,18 @@ class AppContainer(
         installPlanTools(this, agentPlanStore)
     }
 
+    /**
+     * 屏幕状态监测 / 冻结时段累计（W78-12）。实现 [FreezeClock]，喂给 [AgentRunner] 让
+     * 生成本轮超时剔除灭屏冻结时段 —— 长锁屏 / 后台下「首字延迟 + 思考」都不会被单调钟误掐。
+     * 进程级单例，与 AppContainer 同终，不注销。
+     */
+    val screenStateMonitor: FreezeClock = ScreenStateMonitor(context)
+
     val agentRunner: AgentRunner = AgentRunner(
         engineFactory = engineFactory,
         toolRegistry = toolRegistry,
         environment = engineEnvironment,
+        freezeClock = screenStateMonitor,
     )
 
     /**

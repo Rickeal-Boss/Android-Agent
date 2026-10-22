@@ -38,12 +38,15 @@ import com.rickeal.agent.core.agent.schema.ToolArgsValidator
 import com.rickeal.agent.core.agent.thermal.ThermalDecision
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -55,7 +58,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -187,6 +189,67 @@ private const val WALL_CLOCK_SOFT_MILLIS = 180_000L
  * 取消语义改动，超出本波「机械保守」约束。
  */
 private const val WALL_CLOCK_HARD_MILLIS = 300_000L
+
+/**
+ * 冻结感知超时的看门狗轮询步长（W78-12）。步长越小冻结计时越准，但空转开销越大；
+ * 250ms 足够：即便进程被冻结，解冻后首轮轮询即能给出正确判据，误差 ≤250ms 对
+ * 300s 级预算可忽略。
+ */
+private const val FREEZE_AWARE_WATCHDOG_STEP_MS = 250L
+
+/**
+ * 单轮生成「可运行时长」超预算时抛出的取消信号（W78-12）。
+ *
+ * 语义同 kotlinx 的 `TimeoutCancellationException`：表示生成超预算，应走「生成超时 → 重建引擎
+ * + 重试一次」链路。[runGenerationRound] 的 `catch` 直接消费本异常。kotlinx 的
+ * `TimeoutCancellationException(message)` 构造器为 **internal**，无法在模块外构造，故用等价
+ * 自定义类型（同样继承 [CancellationException]，故上层 `ensureActive()` 竞态加固、以及
+ * `catch (t: Throwable) { if (t is CancellationException) throw t }` 的取消透传都原样成立）。
+ */
+internal class GenerationTimeoutCancelledException(message: String) : CancellationException(message)
+
+/**
+ * 冻结感知的「带超时」原语（W78-12）：行为等价于 `withTimeout(budgetMs)`，但计时剔除冻结
+ * 时段 —— 进程被 OEM 冻结（灭屏后 cgroup 级）期间不消耗预算。
+ *
+ * 实现：启动一个看门狗协程周期检查 [FreezeClock.runnableElapsedNanos]；一旦可运行时长超预算，
+ * 看门狗直接抛 [GenerationTimeoutCancelledException]，经作用域取消传播到 [block]（与
+ * `withTimeout` 同款取消语义），故 [runGenerationRound] 现有的 `catch (to: ...)` 直接复用，
+ * 走「生成超时 → 重建引擎 + 重试一次」既有链路。
+ *
+ * 为什么不用 `withTimeout`：其截止时刻由 OS 单调钟决定，冻结期间单调钟照走，解冻瞬间若
+ * 「墙钟流逝 > 预算」会立即误取消 —— 正是「锁屏 / 首字延迟期间思考被掐断」的根因。
+ */
+internal suspend fun <T> freezeAwareTimeout(
+    budgetMs: Long,
+    clock: FreezeClock,
+    block: suspend CoroutineScope.() -> T,
+): T = coroutineScope {
+    val scopeJob = requireNotNull(coroutineContext[Job]) { "freezeAwareTimeout requires a Job in context" }
+    val startedNanos = clock.nowNanos()
+    val budgetNanos = budgetMs * 1_000_000L
+    val watcher = launch {
+        while (true) {
+            delay(FREEZE_AWARE_WATCHDOG_STEP_MS)
+            if (clock.runnableElapsedNanos(startedNanos) >= budgetNanos) {
+                // 与 withTimeout 同款取消语义：把超预算信号作为「取消原因」挂到作用域 Job 上，
+                // 而非在看门狗子协程里直接 throw —— 直接 throw 会被 block 自身的 delay 取消异常
+                // 覆盖，导致外层收不到 GenerationTimeoutCancelledException（W78-12 单测踩过）。
+                scopeJob.cancel(
+                    GenerationTimeoutCancelledException(
+                        "generation runnable timeout after ${budgetMs}ms (freeze-aware)"
+                    )
+                )
+                return@launch
+            }
+        }
+    }
+    try {
+        block()
+    } finally {
+        watcher.cancel()
+    }
+}
 
 /**
  * 墙钟 evidence 的「时长」措辞（用户可见：诊断卡逐条渲染 [BreakerLedger] 的 evidence），
@@ -456,6 +519,12 @@ class AgentRunner(
     private val environment: EngineEnvironment,
     private val compressor: ContextCompressor = WindowContextCompressor(),
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /**
+     * 冻结感知时钟（W78-12）：生成本轮计时剔除 OEM 灭屏冻结时段，避免长锁屏后超时误掐。
+     * 默认 [MonotonicFreezeClock]（不剔除）；生产路径由 [com.rickeal.agent.core.data.background.ScreenStateMonitor]
+     * 注入（累计灭屏时长）。JVM 单测用受控 FakeClock 覆盖。
+     */
+    private val freezeClock: FreezeClock = MonotonicFreezeClock,
 ) {
 
     /**
@@ -1414,7 +1483,9 @@ class AgentRunner(
             try {
                 // Wave 31 6b：单轮生成墙钟上限（默认 300s）—— native 生成真卡死时
                 // 轮头检查要等下一轮才生效，本超时能在**轮内**先打断。
-                withTimeout(policy.generationTimeoutMillis) {
+                // W78-12：改走冻结感知超时 —— 灭屏冻结时段不计入预算，长锁屏后思考不会
+                // 被单调钟误掐（详见 [freezeAwareTimeout] 与 [FreezeClock]）。
+                freezeAwareTimeout(policy.generationTimeoutMillis, freezeClock) {
                     engine.generateStream(generationRequest).collect { chunk ->
                         accumulator.append(chunk)
                         // 检测器只消费增量 delta（O(delta)，无全文扫描）：text / thinking
@@ -1452,9 +1523,10 @@ class AgentRunner(
                 )
                 loopMarker = loop.signature
                 break
-            } catch (to: TimeoutCancellationException) {
-                // Wave 31 6c：生成超时 ≠ 用户取消。TimeoutCancellationException 是
-                // CancellationException 子类，若不在此显式接住，会被下方
+            } catch (to: GenerationTimeoutCancelledException) {
+                // Wave 31 6c：生成超时 ≠ 用户取消。GenerationTimeoutCancelledException 是
+                // CancellationException 子类（W78-12 取代 internal 的 TimeoutCancellationException），
+                // 若不在此显式接住，会被下方
                 // `t is CancellationException` 当成静默取消上抛 —— 既无 Failed 也无诊断卡。
                 // 语义与「生成失败」完全一致：走重建 + 重试一次；重试仍超时 → Failed + 诊断卡。
                 //
