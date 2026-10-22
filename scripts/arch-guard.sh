@@ -1153,6 +1153,94 @@ check "W77 保活控制器装配单点 + VM 销毁走 onStop 收尾（禁裸 can
            if grep -q "onCleared" "$V"; then grep -qE "^[[:space:]]*run\.onStop\(\)" "$V" || echo "ChatViewModel.onCleared 未走 run.onStop()（半截答案会再次静默丢失）"; fi
            if grep -qE "^[[:space:]]*run\.cancel\(\)" "$V"; then echo "ChatViewModel 出现裸 run.cancel() 调用（W77 已删除该路径，回退即丢答案）"; fi'
 
+# ---------------------------------------------------------------------------
+# 45) `background/` 包级行数上限：合计 ≤ 1000 且**单文件 ≤ 300**（W78 D8）
+#
+# 为什么是包级：#35（「新文件当波补守卫」）管的是单文件，#25 家族管的是几个已知
+#   god-file —— 两者都看不见「包里悄悄多出第 6、第 7 个文件」。W78 正是该包的膨胀波
+#   （+2 文件、+2 文件改写）⇒ 只有跨文件规模面能提前报警。
+# 阈值推导（W78 落地实测，**行数是移动值、勿写死进判据**）：现役 6 文件 899 行 /
+#   最大文件 `AgentForegroundService.kt` 221 行（C6 把 WakeLock 抽成
+#   `RunWakeLockKeeper.kt` 116 行后，服务从 298 降到 221）⇒ 1000 = 合计 ×1.11、
+#   300 = 最大文件 ×1.36。合计面余量 101 行 ≈ 一个新文件类头的量级 ⇒ 下一个新文件
+#   进场前先看这条；单文件面余量 79 行。
+#   ⚠️ 触顶的正确处置是**启动 background 拆分评审**，不是把阈值改大 ——
+#   调阈值等于把守卫变成「记录当前值」的装饰。
+#
+# fail-closed 三条（「0 命中 ≠ 通过」）：目录缺失 / 提取为空 / 计数非数字 ⇒ 一律红。
+#   缺了这三条，目录被改名或 wc 输出形态变化都会让本条**静默变绿**。
+# ---------------------------------------------------------------------------
+check "W78 background 包行数上限（合计 ≤1000 / 单文件 ≤300；触顶 = 启动 background 拆分评审，非改阈值）" \
+  bash -c 'D=core-data/src/main/java/com/rickeal/agent/core/data/background
+           if [ ! -d "$D" ]; then echo "::error::$D 不存在（第 45 条守卫面已失效）"; exit 0; fi
+           n=$(wc -l "$D"/*.kt 2>/dev/null | tail -1 | awk "{print \$1}")
+           case "${n:-}" in
+             ""|*[!0-9]*) echo "::error::$D 行数提取失败（n=${n:-空}：提取为空或非数字 ⇒ 禁 fail-open）"; exit 0 ;;
+           esac
+           [ "$n" -gt 0 ] || { echo "::error::$D 未扫到 .kt（合计 0 行 ⇒ 禁 fail-open）"; exit 0; }
+           [ "$n" -le 1000 ] || echo "background/ 合计 $n 行，超 1000 行上限（触顶 = 启动 background 拆分评审，非改阈值）"
+           for f in "$D"/*.kt; do
+             m=$(wc -l < "$f" 2>/dev/null | tr -d " ")
+             case "${m:-}" in
+               ""|*[!0-9]*) echo "::error::$f 行数提取失败（m=${m:-空} ⇒ 禁 fail-open）"; continue ;;
+             esac
+             [ "$m" -le 300 ] || echo "$(basename "$f") $m 行，超单文件 300 行上限（触顶 = 拆分评审）"
+           done'
+
+# ---------------------------------------------------------------------------
+# 46) OEM 引导全 schema：枚举 ↔ 证据表双向一致 + 档位合法 + MEASURED 带 W## 锚点（W78 D5/D8）
+#
+# 为什么需要这条：`OemFamily`（9 族）与 `EVIDENCE`（每族一档证据 + 一行锚点）是**两张
+#   手写表**，任一方向漂移都不会在编译期报错 ——
+#     ① 枚举加了族、表里漏填 ⇒ `EVIDENCE.getValue` 在**设置卡点开时**抛
+#        NoSuchElementException（用户侧崩溃，不是编译错误）；
+#     ② 表里留了已删族的孤儿条目 ⇒ 死数据，且「每族一档」的承诺静默破缺；
+#     ③ 档位写成 `MEASURE` / `measured` ⇒ 编译不过（好），但写成 `MEASURED` 却**没有
+#        波次锚点** ⇒ 编译过、单测过，而「本机实测」这句话失去可追溯出处（这正是
+#        W66 B3 给 ModelPresets 加同款判据的原因，两条同族）。
+#   ④ 数据面的载体蒸发（文件/表被删）⇒ 与 #39 同族，必须 fail-closed。
+#
+# ⚠️ 判据必须钉**行首代码形态**，不能裸 grep 子串（W77 实摔第 N 次）：
+#   枚举值 `^[[:space:]]{8}[A-Z][A-Z0-9_]*`、证据行 `^[[:space:]]*OemFamily\.X to (OemEvidence.Y to "`
+#   ⇒ KDoc / 注释里的说明文字天然不命中。
+#   **本条自带的已知面（照此写死，勿删）**：因此**禁止在 KDoc 里写完整示例行**
+#   （如 `OemFamily.XXX to (OemEvidence.OFFICIAL to "…")`）—— 写了会被当成真实数据行
+#   参与提取，污染「枚举 ↔ 表」一致性判定（假红或假绿两种方向都可能）。
+#   同理 `GUIDES` 表用的是 `to Guide(` 形态，与本条正则不交叉（两表互不污染）。
+#
+# 四个判据（缺一不可）：① 枚举值集合 == 表键集合（双向：缺档与孤儿都红）；
+#   ② 档位只允许 MEASURED/OFFICIAL/COMMUNITY；③ MEASURED 条目必须含 `W##` 波次锚点；
+#   ④ 任一提取面为空 ⇒ `::error::` 判红（禁 fail-open）。
+#
+# ⚠️ ④ 为什么是「防判据假绿」而不是防御性编程：本条的枚举提取锚在**精确 8 空格缩进**
+#   （`[[:space:]]{8}` 是「恰好 8」，不是「至少 8」—— 本机实测：值行落在 12 空格时
+#   grep 不命中）。枚举体一旦被挪动（移出 object 顶层化 / 塞进嵌套 object / 被格式化
+#   工具重排），提取面就**静默返回空**。此时若脚本走「空 ⇒ 跳过比对」，本条会输出
+#   「OK」—— 判据还在、但再也不行使，正是 W77「判据在但不行使」事故的复发面。
+#   三个提取面（`fams` 枚举值 / `rows` 证据行 / `keys` 表键）**任一为空**都必须
+#   `::error::` + 判红；触发面由 selftest case80c（枚举提取为空）与 case80d
+#   （+4 嵌套缩进 ⇒ 提取到错值）双向钉住。
+# ---------------------------------------------------------------------------
+check "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓取证锚点" \
+  bash -c 'F=core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt
+           if [ ! -f "$F" ]; then echo "::error::$F 不存在（第 46 条守卫面已失效）"; exit 0; fi
+           fams=$(awk "/enum class OemFamily \{/,/^    \}/" "$F" \
+                  | grep -oE "^[[:space:]]{8}[A-Z][A-Z0-9_]*" | tr -d " " | sort -u)
+           if [ -z "$fams" ]; then echo "::error::未能提取 OemFamily 枚举值（第 46 条守卫面失效，禁 fail-open）：提取锚 = 精确 8 空格缩进，枚举体缩进漂移（移出 object / 嵌套 / 重排）即返回空，空 = 不再比对 = 判据假绿"; exit 0; fi
+           rows=$(grep -oE "^[[:space:]]*OemFamily\.[A-Z][A-Z0-9_]* to \(OemEvidence\.[A-Z]+ to \"" "$F" \
+                  | sed -E "s/.*OemFamily\.([A-Z0-9_]+) to \(OemEvidence\.([A-Z]+) to \"/\1 \2/")
+           if [ -z "$rows" ]; then echo "::error::未能提取证据表行（第 46 条守卫面失效，禁 fail-open）：提取锚 = 行首 OemFamily.X to (OemEvidence.Y to \"，表被删 / 行形态漂移即返回空"; exit 0; fi
+           keys=$(printf "%s\n" "$rows" | awk "{print \$1}" | sed "/^$/d" | sort -u)
+           if [ -z "$keys" ]; then echo "::error::证据表键提取为空（第 46 条守卫面失效，禁 fail-open）"; exit 0; fi
+           [ "$fams" = "$keys" ] || echo "OemFamily 枚举值与证据表键不一致（缺档或孤儿）：枚举=[$(echo $fams)] 表=[$(echo $keys)]"
+           bad=$(printf "%s\n" "$rows" | awk "\$2!=\"MEASURED\" && \$2!=\"OFFICIAL\" && \$2!=\"COMMUNITY\" && NF>0 {print}")
+           [ -z "$bad" ] || echo "证据档位取值非法（只允许 MEASURED/OFFICIAL/COMMUNITY）：$bad"
+           grep -oE "^[[:space:]]*OemFamily\.[A-Z][A-Z0-9_]* to \(OemEvidence\.MEASURED to \"[^\"]*\"" "$F" \
+             | while IFS= read -r line; do
+                 printf "%s" "$line" | grep -qE "W[0-9][0-9]" \
+                   || echo "MEASURED 条目缺本仓取证锚点（W##）：$line"
+               done'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

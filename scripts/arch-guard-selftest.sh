@@ -68,7 +68,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -115,7 +115,13 @@ affected_guards_for_file() {
     core-data/src/main/AndroidManifest.xml)                                      echo "43" ;;
     app/src/main/AndroidManifest.xml)                                            echo "43" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/AppContainer.kt)          echo "44" ;;
-    core-data/src/main/java/com/rickeal/agent/core/data/background/RunForegroundPolicy.kt) echo "43" ;;
+    # W78：`background/` 包级行数（#45）与 OEM 引导全 schema（#46）。
+    # ⚠️ **具体行必须排在下面的 `background/*` 通配行之前**（bash `case` 先匹配先赢）：
+    #    OemBackgroundPolicy.kt 同时受 #45（它在包内）与 #46（它是数据面载体）约束，
+    #    放在通配行之后就会被降级成只跑 #45 ⇒ #46 的 case 静默少跑。
+    core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt) echo "45 46" ;;
+    core-data/src/main/java/com/rickeal/agent/core/data/background/RunForegroundPolicy.kt) echo "43 45" ;;
+    core-data/src/main/java/com/rickeal/agent/core/data/background/*)              echo "45" ;;
     .github/workflows/build.yml)                                                   echo "22 23 26" ;;
     docs/15-backlog.md)                                                 echo "42" ;;
     docs/handoff-*)                                                     echo "42" ;;
@@ -411,6 +417,43 @@ package com.rickeal.agent.core.data.background
 
 internal object RunForegroundPolicy {
     const val SPECIAL_USE_SUBTYPE: String = "on_device_llm_inference_completion"
+}
+KT
+  # 第 45/46 条（W78）—— 两条都是 fail-closed 形态：
+  #   #45 目录缺失 / 提取为空 ⇒ 红（目录已由上面 mkdir -p 铺出）；
+  #   #46 文件缺失 / 枚举或证据表提取为空 ⇒ 红。
+  # ⇒ 骨架必须提供一个**形态合法**的 OemBackgroundPolicy.kt，否则干净树被误红
+  #   （与 #20/#38/#43 同款「漏铺 ⇒ 全红」）。
+  # 形态要求（与真文件逐字同构，改动前先读 §二.9）：
+  #   · `enum class OemFamily {` 起、`    }`（4 空格）收 —— awk 的区间锚点；
+  #   · 枚举值**恰好 8 空格**缩进 —— 提取正则 `^[[:space:]]{8}[A-Z][A-Z0-9_]*`；
+  #   · 证据行 `OemFamily.X to (OemEvidence.Y to "…")` 行首形态，一行一族；
+  #   · NUBIA 一族必须留着：case80 靠**删掉它这一行**行使「枚举↔表不一致」判据。
+  #   · ⚠️ 本夹具里**不许写** KDoc 示例行（会污染提取，见 arch-guard #46 注释）。
+  cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt" <<'KT'
+package com.rickeal.agent.core.data.background
+
+internal object OemBackgroundPolicy {
+
+    enum class OemFamily {
+        COLOR_OS,
+        HYPER_OS,
+        NUBIA,
+        AOSP,
+    }
+
+    enum class OemEvidence {
+        MEASURED,
+        OFFICIAL,
+        COMMUNITY,
+    }
+
+    private val EVIDENCE: Map<OemFamily, Pair<OemEvidence, String>> = mapOf(
+        OemFamily.COLOR_OS to (OemEvidence.MEASURED to "W77-04 灭屏 A/B 实测（fixture）"),
+        OemFamily.HYPER_OS to (OemEvidence.OFFICIAL to "小米开发者文档（fixture）"),
+        OemFamily.NUBIA to (OemEvidence.OFFICIAL to "红魔官方协议页（fixture）"),
+        OemFamily.AOSP to (OemEvidence.OFFICIAL to "Android 官方（fixture）"),
+    )
 }
 KT
   cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/AppContainer.kt" <<'KT'
@@ -4703,6 +4746,167 @@ if printf '%s\n' "$out" | grep -qF "裸 run.cancel()"; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case78b] 守卫判红但输出不含裸 cancel 归因（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case 79 / 79b / 80 / 80b：W78 —— background 包规模面（#45）与 OEM 引导 schema（#46）。
+#
+# ⚠️ 编号纪律（W77 实摔，写死在此）：arch-guard.sh 里的编号注释必须是 `# 45)` / `# 46)`
+#   形态；写成「第 45 条」会让 case53 的四方一致判据（`^# <N>\)`）判红 —— 判据只在
+#   **编号注释**这一处认号，正文里写「第 45 条」是给人看的、不算定义。
+#
+# case79（#45 触发面）：往 `background/` 注入 1 个巨型假 `.kt` ⇒ 单文件面与合计面
+#   同时越限。**行数口径与设计文档不同的原因（如实申报，非判据变更）**：§二.9 写
+#   「注入 350 行」是按**真实现役树**（762 行基数）算的 762+350=1112；本 selftest 的
+#   scaffold 是合成小树（基数 ~29 行），350 行**越不了合计面** ⇒ 合计判据会变成
+#   「有 case 但从未被行使」的死判据。故夹具取 1050 行：单文件 1050 > 300、
+#   合计 29+1050 > 1000，**一次夹具同时行使两条判据**（判据语义、阈值均未变）。
+# case79b：断言两条**事实行**都在（`超 1000 行上限` + `超单文件 300 行上限`）——
+#   只按守卫名匹配证明不了「判据真命中」，这正是 W77 的教训（守卫报红 ≠ 真命中）。
+#
+# case80（#46 判据①）：删掉 NUBIA 的证据行 ⇒ 枚举有族、表无档 ⇒ 必红。
+# case80b（#46 判据③）：把 AOSP 的档位改写成 MEASURED 但锚点不含 W## ⇒ 必红。
+#   ⚠️ 为什么是**改写已有行**而不是「新增一条孤儿行」：新增孤儿行会同时踩判据①
+#   （枚举↔表不一致），两条判据混在一起就无法证明判据③**单独**会响。隔离行使才有意义。
+#
+# case80c / case80d（#46 判据④，fail-closed 面，**比正常路径更重要**）：
+#   枚举提取锚在**精确 8 空格缩进**（`[[:space:]]{8}` 是「恰好 8」不是「至少 8」，
+#   本机实测：值行落到 12 空格时 grep 不命中）⇒ 枚举体缩进一漂移，提取面就静默返回空，
+#   脚本若走「空 ⇒ 跳过比对」就是**判据假绿**（W77「判据在但不行使」的复发面）。
+#   case80c 钉「提取为空」：整份文件 dedent 4 格（模拟枚举被移出 object 顶层化 /
+#     被格式化工具重排）⇒ `fams` 空 ⇒ 必须 `::error::` + 判红，**断言那条事实行**
+#     （不能只看退出码：守卫自身 rc=2 也让「退出码非 0」成立 ⇒ 假绿，本仓 assert_red
+#     的老坑），并断言输出里**没有**「架构守卫全部通过」。
+#   case80d 钉「提取到错值」：只把 `enum class OemFamily { … }` 整块 +4 格（模拟被挪进
+#     嵌套 object）⇒ 值行落到 12 空格不再命中，awk 区间继续吞掉后面的 `OemEvidence`
+#     值 ⇒ `fams` = {MEASURED,OFFICIAL,COMMUNITY}（非空但错）⇒ 走判据①红。
+#     **实测结论**（不是推演）：+4 嵌套并不会让 `fams` 为空，所以它证明的是「错值也红」，
+#     与 case80c 的「空也红」是两个不同方向，缺一条就有一个假绿口子。
+#   两个夹具都用 `cp` 备份 → 改 → 跑 → `cp` 还原 → `diff` 复核逐字节一致（不 sed 就地改）。
+# 两条 case 的夹具都在独立临时树里（scaffold 复制），跑完随 $TMP 一起删除 ⇒ 天然可回滚；
+# 全程不触碰真实工作树（与 case77/78 同款写法，未自创）。
+# ---------------------------------------------------------------------------
+if guard_selected 45; then
+d="$TMP/case79-background-package-size"
+scaffold "$d"
+{
+  echo 'package com.rickeal.agent.core.data.background'
+  echo ''
+  echo 'internal object Padding {'
+  i=1
+  while [ "$i" -le 1050 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$d/core-data/src/main/java/com/rickeal/agent/core/data/background/Padding.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case79 background 包规模越限 (第 45 条)" "$rc" "$out" \
+  "W78 background 包行数上限（合计 ≤1000 / 单文件 ≤300；触顶 = 启动 background 拆分评审，非改阈值）"
+missing=""
+printf '%s\n' "$out" | grep -qF "超 1000 行上限" || missing="$missing 合计面事实行(超 1000 行上限)"
+printf '%s\n' "$out" | grep -qF "超单文件 300 行上限" || missing="$missing 单文件面事实行(超单文件 300 行上限)"
+if [ -z "$missing" ]; then
+  echo "PASS [case79b] 两条判据同时命中（合计越 1000 + 单文件越 300 的事实行都在）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case79b] 守卫判红但缺事实行：$missing（假红 / 判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+if guard_selected 46; then
+d="$TMP/case80-oem-evidence-missing-row"
+scaffold "$d"
+sed -i '/OemFamily\.NUBIA to (OemEvidence\.OFFICIAL/d' \
+  "$d/core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case80 证据表缺 NUBIA 行（枚举↔表不一致）(第 46 条)" "$rc" "$out" \
+  "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓取证锚点"
+if printf '%s\n' "$out" | grep -qF "枚举值与证据表键不一致"; then
+  echo "PASS [case80] 红来自真命中（输出含 枚举值与证据表键不一致 归因）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case80] 守卫判红但输出不含不一致归因（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case80b-measured-without-anchor"
+scaffold "$d"
+sed -i 's/OemFamily\.AOSP to (OemEvidence\.OFFICIAL to "Android 官方（fixture）")/OemFamily.AOSP to (OemEvidence.MEASURED to "Android 官方（无波次锚点）")/' \
+  "$d/core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case80b MEASURED 缺 W## 锚点 (第 46 条)" "$rc" "$out" \
+  "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓取证锚点"
+if printf '%s\n' "$out" | grep -qF "MEASURED 条目缺本仓取证锚点"; then
+  echo "PASS [case80b] 红来自真命中（输出含 MEASURED 条目缺本仓取证锚点 归因）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case80b] 守卫判红但输出不含锚点归因（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+# case80c：枚举提取面为空 ⇒ fail-closed 必须判红（判据④；防「判据在但不行使」）
+d="$TMP/case80c-enum-extraction-empty"
+scaffold "$d"
+OEMF="$d/core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt"
+cp "$OEMF" "$OEMF.orig"
+# 整份 dedent 4 格：枚举值落到 4 空格 ⇒ 8 空格锚点失配 ⇒ fams 为空
+sed -i 's/^    //' "$OEMF"
+out="$(run_guard "$d")"; rc=$?
+restore_rc=0
+cp "$OEMF.orig" "$OEMF" || restore_rc=1
+if diff -q "$OEMF.orig" "$OEMF" >/dev/null 2>&1 && [ "$restore_rc" -eq 0 ]; then
+  echo "PASS [case80c] 夹具已逐字节还原（cp 备份 + diff 复核一致，未 sed 就地改真文件）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case80c] 夹具还原失败（diff 不一致）⇒ 后续 case 可能被污染"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case80c 枚举提取为空必须 fail-closed (第 46 条)" "$rc" "$out" \
+  "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓取证锚点"
+# 事实行断言（不能只看退出码：守卫自身 rc=2 也让「退出码非 0」成立）
+if printf '%s\n' "$out" | grep -qF "未能提取 OemFamily 枚举值"; then
+  echo "PASS [case80c] 红来自真命中（输出含 未能提取 OemFamily 枚举值 fail-closed 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case80c] 守卫判红但输出不含 fail-closed 事实行（可能只是守卫自身炸了，非判据响）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+if printf '%s\n' "$out" | grep -qF "架构守卫全部通过"; then
+  echo "FAIL [case80c] 输出含「架构守卫全部通过」——守卫面失效被当成通过（假绿）"
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS [case80c] 输出不含「架构守卫全部通过」（无假绿面）"
+  PASS=$((PASS + 1))
+fi
+
+# case80d：枚举被 +4 嵌套 ⇒ 提取到错值 ⇒ 判据①必须红（与 case80c 互补的另一方向）
+d="$TMP/case80d-enum-nested-indent"
+scaffold "$d"
+OEMF="$d/core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt"
+cp "$OEMF" "$OEMF.orig"
+sed -i '/^    enum class OemFamily {/,/^    }$/s/^/    /' "$OEMF"
+out="$(run_guard "$d")"; rc=$?
+cp "$OEMF.orig" "$OEMF" || true
+if diff -q "$OEMF.orig" "$OEMF" >/dev/null 2>&1; then
+  echo "PASS [case80d] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case80d] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case80d 枚举 +4 嵌套缩进提取到错值 (第 46 条)" "$rc" "$out" \
+  "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓取证锚点"
+if printf '%s\n' "$out" | grep -qF "枚举值与证据表键不一致"; then
+  echo "PASS [case80d] 红来自真命中（错值也走判据①红，非静默跳过比对）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case80d] 守卫判红但输出不含不一致归因（假红或归因丢失）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
