@@ -4,7 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.PowerManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.rickeal.agent.core.agent.FreezeClock
 import java.util.concurrent.atomic.AtomicLong
 
@@ -48,13 +50,18 @@ internal class ScreenStateMonitor(context: Context) : FreezeClock {
     }
 
     init {
+        // 进程在「屏幕已灭」时冷启（如被冻结期间被杀后重启）：把当前灭屏段也计入冻结窗口，
+        // 否则首段冻结会被误算作可运行（offAtNanos 默认 -1，SCREEN_ON 不触发累加 ⇒ 该段空白）。
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (powerManager?.isInteractive == false) {
+            offAtNanos.set(System.nanoTime())
+        }
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
         }
-        // 与 AppContainer 既有 2-arg 注册写法一致（进程内接收，不被外部唤起）。
-        @Suppress("UnspecifiedRegisterReceiverFlag")
-        context.registerReceiver(receiver, filter)
+        // 进程内接收，不被外部唤起；API 33+ 必须显式 RECEIVER_NOT_EXPORTED（ContextCompat 跨版本安全）。
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     override fun nowNanos(): Long = System.nanoTime()
