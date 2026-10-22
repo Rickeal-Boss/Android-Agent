@@ -15,16 +15,13 @@ import kotlinx.coroutines.launch
 /**
  * run 期间的 `PARTIAL_WAKE_LOCK` 持有者 + 周期续期（W78 D9，C5 从服务外提）。
  *
- * ⚠️ **不得在字段初始化阶段构造本类**（W78 C6 实摔的 P0）：`Service` 由系统
- * `Class.newInstance()` 构造，构造期 `attachBaseContext()` 尚未调用 ⇒ 字段初始化里调
- * `getSystemService()` 拿到 null base Context，抛 NPE 并被包成
- * `RuntimeException: Unable to create service`，**直接打死整个进程**。必须由宿主在 `onCreate`
- * 里注入 `PowerManager`（本类只接受已取到的 `PowerManager?`，正是为了让注入点显式可见）。
+ * ⚠️ **不得在字段初始化阶段构造本类**（W78 C6 P0）：Service 构造期 `attachBaseContext()`
+ * 未调用 ⇒ 字段里 `getSystemService()` 拿到 null base Context ⇒ NPE 被包成
+ * `Unable to create service` 打死进程。宿主必须在 `onCreate` 注入 `PowerManager?`。
  *
  * ## 为什么需要续期
- * 审批挂起无超时上限（`ToolApprovalHandler` 是裸 suspend）且挂起时长被加回预算 ⇒ run 的墙钟
- * 存活时间**无上界**；而锁原本只在 onCreate/onStartCommand 各 acquire 一次、390s 后静默自释
- * 且全仓无第二处 acquire ⇒ 用户放下手机超 6.5 分钟再批准，CPU 已深睡。
+ * 审批挂起无超时（裸 suspend）且挂起时长加回预算 ⇒ run 墙钟存活无上界；锁原本只 acquire
+ * 一次、390s 自释 ⇒ 放下手机超 6.5min 再批准，CPU 已深睡。
  *
  * ## 三个不变量（搬迁不许走样，改一条 = 判据失效）
  * 1. **物理断路器保留**：非引用计数 + `acquire(timeoutMillis)`，控制器全挂也不会变成耗电事故。
@@ -33,11 +30,11 @@ import kotlinx.coroutines.launch
  * 3. **续期有硬上限**：到 [maxHoldMillis]（默认 30min）即 break，行为退回「今天」（锁自然
  *    到期）；否则续期会把第 1 条的断路器架空成「无限持有」。
  *
- * 周期 120s 的推导：容错比 390/120 = 3.25（连续错过 2 次续期仍不断锁）；下界 73s = 常规 run
- * 的生成 30–63s + 10s 宽限窗（周期小于它 = 每次普通 run 都白续一次）。日志条数由
- * `maxHoldMillis / renewIntervalMillis` 结构保证 ≤15 行，不冲掉 run 的诊断日志。
- * 诚实限定：续期**不能替代** OEM 白名单 —— 未开「允许完全后台行为」时它把「永远深睡」变成
- * 「每 120s 有 10s CPU 的间歇窗口」，是缓解不是修复。
+ * 周期 120s 推导：容错比 390/120 = 3.25；下界 73s = 常规 run 生成 30–63s + 宽限 10s（周期
+ * 小于它 = 每轮白续一次）。日志条数由 maxHold/renewInterval 结构保证 ≤15 行。
+ * 诚实限定（2026-10-22 真机修订）：续期**不能对抗** OEM 冻结。ColorOS 灭屏约 10s 会冻结
+ * 本进程（cgroup 级，见 docs/w78-bg-run-design.md R15），冻结期间协程不执行、锁也进不去；
+ * 解冻后本循环立即补锁。故续期的正确定位是「冻结窗口外保持 + 解冻后补锁」。
  */
 internal class RunWakeLockKeeper(
     private val powerManager: PowerManager?,
@@ -63,18 +60,16 @@ internal class RunWakeLockKeeper(
             return
         }
         wakeLock = manager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, tag).apply {
-            // 非引用计数：release() 一次必然彻底释放。带超时的 acquire = 物理兜底。
             setReferenceCounted(false)
             acquire(timeoutMillis)
         }
         AgentLogStore.info("WakeLock 已获取（超时 ${timeoutMillis}ms，held=$isHeld）")
     }
 
-    /** 每 [renewIntervalMillis] 续一次，直到 [maxHoldMillis] 为止（幂等）。 */
+    /** 每 [renewIntervalMillis] 续一次直到 [maxHoldMillis]（幂等）；无锁可续则不空转。 */
     fun startRenewal() {
         if (renewJob != null) return
-        // 无锁可续 ⇒ 不空转（PowerManager 缺失时 acquire() 已 warn 过，不重复刷屏）。
-        if (powerManager == null) return
+        if (powerManager == null) return   // acquire() 已 warn 过，不重复刷屏
         wakeLockHeldSince = SystemClock.elapsedRealtime()
         renewJob = serviceScope.launch {
             while (isActive) {
@@ -107,8 +102,7 @@ internal class RunWakeLockKeeper(
 
     private fun renew(heldMillis: Long) {
         val lock = wakeLock ?: return acquire()
-        // 非引用计数锁的 acquire(timeout)：AOSP 对 `!mRefCounted` 分支即使 mHeld==true 也会
-        // 重新向系统申请并重置超时（原文：这类锁并不总能被正确释放）⇒ 正好是本处所需。
+        // 非引用计数锁：AOSP 对 !mRefCounted 分支即使 mHeld==true 也重新申请并重置超时。
         runCatching { lock.acquire(timeoutMillis) }
             .onFailure { AgentLogStore.warn("WakeLock 续期失败（${it.javaClass.simpleName}）") }
         AgentLogStore.info("WakeLock 续期（已持 ${heldMillis}ms，held=${lock.isHeld}）")

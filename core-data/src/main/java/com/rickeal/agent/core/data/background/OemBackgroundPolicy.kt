@@ -10,8 +10,14 @@ package com.rickeal.agent.core.data.background
  * ① 仅加 AOSP doze 白名单：ColorOS 的 `OplusProxyWakeLock` 仍在灭屏约 10 秒后把
  *    第三方 `PARTIAL_WAKE_LOCK` 强制回收（`adb logcat -b system` 可见
  *    `... to FroceReleaseWakeLock list`）⇒ TTFT 从秒级恶化到 200.9s。
- * ② 手动开启 ColorOS「耗电行为控制 → 允许完全后台行为」后：`LiquidAgent::Run` 全程
- *    held=true、对本应用 0 条 force-release、run 全部正常结算 ⇒ COLOR_OS 路径确实有效。
+ * ② 手动开启 ColorOS「耗电行为控制 → 允许完全后台行为」后：路径**确实引导到正确页面**
+ *    （有截图为证），W77-04 四轮灭屏 A/B 的 run 均结算。
+ * ③ 2026-10-22 复测（`docs/w78-bg-run-design.md` R15，六项控制变量）：**即使开着「允许
+ *    完全后台行为」，灭屏约 10s 仍会冻结本进程**（cgroup 级：`OplusHansManager` →
+ *    `SM_EVENT_LCD_OFF_UNIFIED_FREEZE` → `freeze uid`），且**锁被强制回收的时刻 =
+ *    进程被冻结的时刻**，不受 FGS / WakeLock（390s + 120s 续期）/ AOSP 豁免 / 飞行模式
+ *    影响 ⇒ W77-04 当时依据的「锁态判据」是段位检测的假绿，故 [EVIDENCE] 的 COLOR_OS
+ *    锚点已按此修订：路径有效 ≠ 开启后不被冻结。
  *
  * 也就是说：**各家 ROM 的后台管控是独立于 AOSP 的第二套系统**，路径、粒度、是否
  * 允许自启动/关联启动/后台高耗电，全都不一样。应用无法程序化设置它们（无公开 API），
@@ -177,7 +183,7 @@ internal object OemBackgroundPolicy {
 
     /** 家族 × 证据档 × 取证锚点（#46 的数据面；一行一族，供机械解析）。 */
     private val EVIDENCE: Map<OemFamily, Pair<OemEvidence, String>> = mapOf(
-        OemFamily.COLOR_OS to (OemEvidence.MEASURED to "W77-04 四轮灭屏 A/B：允许完全后台行为后零回收（其余两开关未单独实测）"),
+        OemFamily.COLOR_OS to (OemEvidence.MEASURED to "W77-04 四轮灭屏 A/B：允许完全后台行为后 run 均结算（锁态判据后被 W78-08 推翻，段位检测假绿；未测 TTFT）"),
         OemFamily.HYPER_OS to (OemEvidence.OFFICIAL to "小米开发者文档 pId=1628/1624（PowerKeeper / 自启动权限）"),
         OemFamily.EMUI_HARMONY to (OemEvidence.OFFICIAL to "华为支持页：启动管理三开关；HarmonyOS 5+ 另有一套"),
         OemFamily.MAGIC_OS to (OemEvidence.OFFICIAL to "荣耀官方支持页 zh-cn00406916：启动管理 + 电池优化两步"),
