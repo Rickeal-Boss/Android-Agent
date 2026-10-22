@@ -1,6 +1,6 @@
 # W78 后台保活强化波 — 交接（2026-10-22）
 
-> 分支 `UI-change-1019`，`92f65d6..5fd319d` 共 11 提交，CI run 318/319/320 三连 success。
+> 分支 `UI-change-1019`，`92f65d6..5fd319d` 共 11 提交，CI run 318/319/320 三连 success；**后续 `ee0df65` + `12bef26` 为 W78-12 跟进批（冻结感知生成超时），本地三闸门全绿但未推 CI（本环境无 GitHub 凭据，见 §七）**。
 > 本波设计权威 = `docs/w78-bg-run-design.md`（1090 行，r1–r12）；挂账权威 = `docs/15-backlog.md`。
 
 ## 一、本波交付（按提交序）
@@ -17,8 +17,10 @@
 | `26195e4` | W78-11 设置卡尾注点名「锁屏后数秒内冻结本进程」机制 |
 | `4377495` | 订正代码里两处被真机推翻的表述 + keeper 压回 110 行 |
 | `5fd319d` | W78-10 已答 + W78-09 开放问题入账（纯文档，0 run 正常） |
+| `ee0df65` | **W78-12 跟进批①（断点续跑而非误掐）**：新增 `FreezeClock` 接口 + `MonotonicFreezeClock`、`ScreenStateMonitor`（灭屏累计，过近似冻结窗口）、`AgentRunner.freezeAwareTimeout`（看门狗 `scopeJob.cancel(GenerationTimeoutCancelledException)`，复用「超时→重建引擎+重试一次」链路）、`FreezeAwareTimeoutTest` 3 例、`AppContainer` 注入 `screenStateMonitor` 为 `freezeClock`；`@Test` baseline 764→767 |
+| `12bef26` | **W78-12 跟进批②（再测试 + 改进）**：`ScreenStateMonitor` 冷启灭屏态预置（`PowerManager.isInteractive==false` 时 `offAtNanos` 起算，防首段冻结被误算可运行）+ 注册升级 `ContextCompat.registerReceiver(..., RECEIVER_NOT_EXPORTED)`（API33+ 强制显式 flag） |
 
-**门禁基线**：arch-guard **46/46**；`@Test` **764** = `build.yml` baseline；`supportsRecentsLock` **0 命中**（D1 删除干净）；`background/` 包 **884/1000**、服务 **212/300**、keeper **110**（余量 0，硬上限）。
+**门禁基线**：arch-guard **46/46**；`@Test` **767** = `build.yml` baseline（W78-12 新增 3 例，764→767）；`supportsRecentsLock` **0 命中**（D1 删除干净）；`background/` 包 **974/1000**（W78-12 新增 `ScreenStateMonitor` 75 行）、服务 **212/300**、keeper **110**（余量 0，硬上限）；`AgentRunner.kt` **2815/2900**（#31 守卫余 85）。
 
 ## 二、🔴 本波最重要的发现（下波必读）
 
@@ -77,3 +79,29 @@
 3. 🔴 **台账行数必须随每次改动复核**。C6 把 keeper 加到 117，开发席如实报 116，但方案席 r6/r9 与主理人沿用 C5 旧值 110 ⇒ 台账失真（非实现超标）。教训：**行数是快照，不是常量**。
 4. **三层闸门全绿 ≠ 服务能被创建**（C6 P0）：编译不执行、单测不构造 Service、lint 无生命周期时机规则。框架实例化组件在字段初始化期碰系统服务，必须真机冷启验证。
 5. **「纯搬迁」的判据是执行时机等价，不是代码行等价**（C5→C6）：代码逐字等价，但执行时机从 `onCreate` 前移到字段初始化 ⇒ 崩溃。
+
+## 七、W78-12 跟进：冻结感知生成超时（再测试 + 改进，2026-10-22 收尾）
+
+> 交付提交 `ee0df65`（主体）+ `12bef26`（跟进改进）；台账 **W78-09 → closed-done**、**W78-12 → closed-done**（均见 `docs/15-backlog.md`）。本项**不防冻结**（W78-08 硬上限不可破），只保「冻结期间不消耗超时预算 ⇒ 解冻后生成继续、不误掐」。
+
+### 1. 根因（用户要的「思考 / 首字延迟时锁屏不断线」）
+原 `withTimeout(generationTimeoutMillis)` 的截止时刻由 OS 单调钟决定。ColorOS 灭屏 ~10s 后 cgroup 级冻结线程全停、但单调钟照走；长锁屏解冻瞬间「墙钟流逝 > 预算」→ 误取消 run → 用户感知「断线」。W78-08 已坐实冻结期间协程不执行、只拉长 TTFT（47 倍），故正确语义应是「超时预算剔除冻结时段」。
+
+### 2. 机制落位（双模块分层）
+- **`core-agent`（平台无关）**：`FreezeClock` 接口（`nowNanos()` / `runnableElapsedNanos(startedNanos)`）+ `MonotonicFreezeClock`。`AgentRunner.freezeAwareTimeout(budgetMs, clock, block)` 用 `coroutineScope` 起看门狗 `launch`，每 `FREEZE_AWARE_WATCHDOG_STEP_MS` 查 `clock.runnableElapsedNanos(startedNanos) >= budgetNanos` → `scopeJob.cancel(GenerationTimeoutCancelledException(...))`（与 kotlinx `withTimeout` 同款取消传播，避免子协程 `throw` 被 `block` 自身 `delay` 取消异常覆盖、外层收不到类型的坑）。自定义 `GenerationTimeoutCancelledException` 复用原「超时→重建引擎 + 重试一次」链路。
+- **`core-data`（Android 实现）**：`ScreenStateMonitor(context): FreezeClock` 承接 `FreezeClock`，进程级单例不注销（与 `RunWakeLockKeeper` / `ThermalGovernor` 同口径）。监听 `ACTION_SCREEN_ON/OFF`，灭屏记 `offAtNanos`、亮屏把 `(now-off)` 累加进 `screenOffAccumNanos`；`runnableElapsedNanos = nowNanos() - startedNanos - screenOffAccumNanos`。**灭屏整段算冻结是安全的过近似**（只让计时更宽松，绝不会误掐在跑生成；与 W78-05「续期不能对抗冻结」结论一致）。`AppContainer` 在 `LiquidAgentApplication.onCreate`（主线程，有 Looper）构造 ⇒ `registerReceiver` 无 C6 式崩溃风险。
+
+### 3. 跟进改进 `12bef26`（再测试发现的两条风险）
+- **冷启灭屏态**：进程在「屏幕已灭」时被冻结杀死后重启，`offAtNanos` 默认 -1 致首段冻结被误算可运行。构造时读 `PowerManager.isInteractive`，若 false 则 `offAtNanos.set(System.nanoTime())` 起算首段。
+- **注册 API 升级**：API 33+ 必须显式 `RECEIVER_NOT_EXPORTED`。改用 `ContextCompat.registerReceiver(ctx, receiver, filter, RECEIVER_NOT_EXPORTED)` 跨版本安全，替代旧 `context.registerReceiver(receiver, filter)` + `@Suppress("UnspecifiedRegisterReceiverFlag")`。进程内接收、不被外部唤起，语义不变。
+
+### 4. 验证（本地三闸门全绿）
+- **单测**：`FreezeAwareTimeoutTest` **3/3**（monotonicClockFiresWhenBudgetExceeded / completesWhenWithinBudget / frozenIntervalDoesNotConsumeBudget）—— 证明超时剔除冻结时段、预算内不误杀、冻结视角恒 0 不超时（首字延迟/思考期间锁屏存活）。
+- **编译**：`:core-agent:testDebugUnitTest` 全量 + `:app:assembleDebug` BUILD SUCCESSFUL；`:app:lintDebug` 无新增。
+- **守卫**：arch-guard **46/46** 全过（含 `@Test`=767、`background/` 包 974≤1000、单文件 `ScreenStateMonitor` 75≤300）；`build.yml` baseline 764→767 同步并写变更注释。
+
+### 5. 真机复验（设备 `13309cc8` / OPPO PDRM00 / Android 13 / ColorOS）
+用 **FQCN** `com.rickeal.agent.debug/com.rickeal.agent.MainActivity` 启动（debug `applicationId=com.rickeal.agent.debug` 与源码包 `com.rickeal.agent` 错位，直接写 `...debug/.MainActivity` 报 Error type 3 不存在）。结果：进程 `com.rickeal.agent.debug` pid 30529 **存活**（证明主线程 `registerReceiver` 无 C6 式崩溃）；屏幕熄灭后 logcat 出现 `LiquidAgent/Freeze: screen OFF — freeze window started` ⇒ `ScreenStateMonitor` 真机收到广播、冻结窗口计时接通。这是「三层闸门全绿但真机崩」未知面的排除。
+
+### 6. 推送状态（环境限制，待用户）
+本环境无 GitHub 凭据（`git push --dry-run` 报 `could not read Username for 'https://github.com': terminal prompts disabled`）。两提交留在本地分支 `UI-change-1019`，需用户给 PAT 或手动 `git push origin UI-change-1019` 触发 CI（run 318/319/320 之后续跑）。
