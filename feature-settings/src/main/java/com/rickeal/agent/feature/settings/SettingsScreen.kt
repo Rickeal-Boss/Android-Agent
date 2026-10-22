@@ -699,10 +699,12 @@ fun SettingsScreen(
                             modifier = Modifier.padding(top = 10.dp),
                         )
                     }
-                    // ⑥ 尾注：效果免责（耗电 / 不保证不被回收 / 灭屏后限 CPU）+ 恢复路径。
+                    // ⑥ 尾注：效果免责（耗电 / 不保证不被回收 / 锁屏后数秒内可能被冻结）+
+                    // 恢复路径。W78-11（r12）：点名「部分机型锁屏后数秒内冻结本进程」机制，
+                    // 只说部分机型、不带秒数、不写必然保证。
                     Text(
-                        text = "后台生成会增加耗电与发热；即使完成上述设置，切后台后仍可能被冻结或回收，" +
-                            "部分机型还会在灭屏后限制 CPU。中断后可从恢复卡继续。",
+                        text = "后台生成会增加耗电与发热；即使完成上述设置，切后台后仍可能被冻结或回收；" +
+                            "部分机型会在锁屏后数秒内冻结本进程，此时生成会暂停、解锁后自动继续。中断后可从恢复卡继续。",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onGlassSubtle,
                         modifier = Modifier.padding(top = 10.dp),
