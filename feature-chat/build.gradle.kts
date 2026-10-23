@@ -12,6 +12,13 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// W80-02：Compose 编译器稳定性报告 + 外部模块（core-model）稳定性声明。
+// reportsDestination 产物在 build/ 下（不入库）；stability.conf 见同目录文件。
+composeCompiler {
+    reportsDestination = layout.buildDirectory.dir("compose_reports")
+    stabilityConfigurationFiles.add(layout.projectDirectory.file("stability.conf"))
+}
+
 android {
     namespace = "com.rickeal.agent.feature.chat"
 

@@ -30,7 +30,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,6 +54,8 @@ import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.TokenUsage
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 /**
  * 传给 `animateScrollToItem` 的 scrollOffset：一个「足够大」的值，把列表顶到最底部。
@@ -109,7 +110,15 @@ fun ChatMessageList(
     listState: LazyListState = rememberLazyListState(),
 ) {
     val tokens = LocalGlassTokens.current
-    val streaming by streamingFlow.collectAsState()
+    // W80-02 流式收窄：body 顶层只订阅低频的 isStreaming（distinct 后仅在
+    // 开始/结束各变一次）。全量 StreamingState（120ms flush，~8Hz）若在顶层
+    // 订阅会让整个 body 每 flush 重组一次、全列表 MessageRow 陪跑；现在全量
+    // 订阅下移到流式 item 作用域内，flush 只重组那个气泡。
+    // 初值取 flow 当前值（remember 内一次性读，规避 StateFlowValueCalledInComposition）：
+    // 会话中途返回、流已在跑时首帧即正确显示流式气泡，不闪空态。
+    val isStreaming by remember(streamingFlow) {
+        streamingFlow.map { it.isStreaming }.distinctUntilChanged()
+    }.collectAsState(remember(streamingFlow) { streamingFlow.value.isStreaming })
     // 「用户是否贴着底部」必须用 derivedStateOf 包住：layoutInfo 每次滚动都会更新，
     // 直接在组合里读会让整个列表跟着每一帧滚动重组。
     val atBottom by remember {
@@ -133,21 +142,20 @@ fun ChatMessageList(
         }
     }
 
-    // 流式跟随（A 项节流改造）：key 在低频的 isStreaming / toolTraces.size 上
-    // （原来 key 在 streamingText 上 —— 每 token 重启协程；现在文本经 120ms 收敛，
-    // 仍可用但没必要）。协程体内用 snapshotFlow 读文本长度变化驱动滚动，
+    // 流式跟随（A 项节流 + W80-02 收窄）：key 在低频的 isStreaming / toolTraces.size
+    // 上。原来协程体内 snapshotFlow 直读顶层 streaming 对象；顶层改订阅 isStreaming
+    // 后拿不到文本，改为直接订阅 streamingFlow 的文本长度（distinct 去抖），
     // collectLatest 保证滚动动画慢于 flush 节奏时取消上一次，不堆积。
-    LaunchedEffect(streaming.isStreaming, toolTraces.size) {
-        if (!streaming.isStreaming) return@LaunchedEffect
-        snapshotFlow { streaming.text.length }
-            .collectLatest {
-                if (atBottom) {
-                    val lastIndex = listState.layoutInfo.totalItemsCount - 1
-                    if (lastIndex >= 0) {
-                        listState.animateScrollToItem(lastIndex, scrollOffset = SCROLL_TO_TAIL_SLACK)
-                    }
+    LaunchedEffect(isStreaming, toolTraces.size) {
+        if (!isStreaming) return@LaunchedEffect
+        streamingFlow.map { it.text.length }.distinctUntilChanged().collectLatest {
+            if (atBottom) {
+                val lastIndex = listState.layoutInfo.totalItemsCount - 1
+                if (lastIndex >= 0) {
+                    listState.animateScrollToItem(lastIndex, scrollOffset = SCROLL_TO_TAIL_SLACK)
                 }
             }
+        }
     }
 
     LazyColumn(
@@ -156,7 +164,7 @@ fun ChatMessageList(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
     ) {
-        if (messages.isEmpty() && !streaming.isStreaming) {
+        if (messages.isEmpty() && !isStreaming) {
             item(key = "empty") {
                 Box(modifier = Modifier.fillParentMaxHeight(0.7f), contentAlignment = Alignment.Center) {
                     // 空态两出口：都去模型页（导入本地文件 / 从推荐列表下载）。
@@ -183,8 +191,11 @@ fun ChatMessageList(
                 onToggleThinking = onToggleMessageThinking,
             )
         }
-        if (streaming.isStreaming) {
+        if (isStreaming) {
             item(key = "streaming", contentType = 1) {
+                // 全量订阅只在这里（W80-02）：flush 到来时仅重组本 item，
+                // 列表其余 item 不受牵连。
+                val streaming by streamingFlow.collectAsState()
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     // 工具过程折叠组（F 项）：连续完结轨迹折叠成组，RUNNING/FAILED
                     // 独立渲染；toolTraces 引用不变时 remember 跳过分组计算。
@@ -214,10 +225,14 @@ fun ChatMessageList(
                     }
                     // 展示前净化 + <think> 拆分（见 splitThinkAndClean）：
                     // 流式未闭合时整段算思考，闭合后自动归位正文区。
-                    val (streamThink, streamAnswer) = splitThinkAndClean(
-                        streaming.text,
-                        streaming.thinking.ifBlank { null },
-                    )
+                    // remember 覆盖全部输入（W80-02）：flush 期间 text/thinking
+                    // 变了自然重算，不变则复用上一次结果，不重复扫描全文。
+                    val (streamThink, streamAnswer) = remember(streaming.text, streaming.thinking) {
+                        splitThinkAndClean(
+                            streaming.text,
+                            streaming.thinking.ifBlank { null },
+                        )
+                    }
                     GlassBubble(
                         text = streamAnswer,
                         isUser = false,
@@ -267,13 +282,15 @@ private fun MessageRow(
             GlassBubble(
                 text = message.text,
                 isUser = true,
-                attachments = message.attachments.map { it.toGlassAttachment() },
+                // remember(message)：映射结果随 message 内容缓存，message 换了
+                // 自动重算 —— 该行在消息稳定后不再随列表其他位置重组重算。
+                attachments = remember(message) { message.attachments.map { it.toGlassAttachment() } },
             )
         }
 
         else -> {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val resultsById = message.toolResults.associateBy { it.callId }
+                val resultsById = remember(message) { message.toolResults.associateBy { it.callId } }
                 for (call in message.toolCalls) {
                     val result = resultsById[call.id]
                     ChatToolCard(
