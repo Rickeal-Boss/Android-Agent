@@ -212,10 +212,14 @@ internal class GenerationTimeoutCancelledException(message: String) : Cancellati
  * 冻结感知的「带超时」原语（W78-12）：行为等价于 `withTimeout(budgetMs)`，但计时剔除冻结
  * 时段 —— 进程被 OEM 冻结（灭屏后 cgroup 级）期间不消耗预算。
  *
- * 实现：启动一个看门狗协程周期检查 [FreezeClock.runnableElapsedNanos]；一旦可运行时长超预算，
+ * 实现：启动一个看门狗协程周期检查 [FreezeClock.runnableNanosSince]；一旦可运行时长超预算，
  * 看门狗直接抛 [GenerationTimeoutCancelledException]，经作用域取消传播到 [block]（与
  * `withTimeout` 同款取消语义），故 [runGenerationRound] 现有的 `catch (to: ...)` 直接复用，
  * 走「生成超时 → 重建引擎 + 重试一次」既有链路。
+ *
+ * 🔴 W79：可运行时长的**冻结基线必须在起点与 `startedNanos` 同时取一次**
+ * （`clock.frozenNanos()`），否则 [FreezeClock.frozenNanos] 是**进程级累计**、含起点之前的
+ * 灭屏 ⇒ 历史冻结被从本轮预算扣掉（灭屏 416s 后开跑 ⇒ 预算当场变负 ⇒ 解冻即取消）。
  *
  * 为什么不用 `withTimeout`：其截止时刻由 OS 单调钟决定，冻结期间单调钟照走，解冻瞬间若
  * 「墙钟流逝 > 预算」会立即误取消 —— 正是「锁屏 / 首字延迟期间思考被掐断」的根因。
@@ -227,11 +231,14 @@ internal suspend fun <T> freezeAwareTimeout(
 ): T = coroutineScope {
     val scopeJob = requireNotNull(coroutineContext[Job]) { "freezeAwareTimeout requires a Job in context" }
     val startedNanos = clock.nowNanos()
+    val frozenBaselineNanos = clock.frozenNanos()
     val budgetNanos = budgetMs * 1_000_000L
     val watcher = launch {
         while (true) {
             delay(FREEZE_AWARE_WATCHDOG_STEP_MS)
-            if (clock.runnableElapsedNanos(startedNanos) >= budgetNanos) {
+            // 判据刻意是 `>=`（恰等于预算即超时）。无边界用例：生产时钟下 `>` 只延后
+            // 一个 tick（250ms），补例需冻结时钟钉比较符 = 过度规格化。见 docs/w79-core-fix-design.md §1.6。
+            if (clock.runnableNanosSince(startedNanos, frozenBaselineNanos) >= budgetNanos) {
                 // 与 withTimeout 同款取消语义：把超预算信号作为「取消原因」挂到作用域 Job 上，
                 // 而非在看门狗子协程里直接 throw —— 直接 throw 会被 block 自身的 delay 取消异常
                 // 覆盖，导致外层收不到 GenerationTimeoutCancelledException（W78-12 单测踩过）。
@@ -1530,11 +1537,12 @@ class AgentRunner(
                 // `t is CancellationException` 当成静默取消上抛 —— 既无 Failed 也无诊断卡。
                 // 语义与「生成失败」完全一致：走重建 + 重试一次；重试仍超时 → Failed + 诊断卡。
                 //
-                // 竞态加固：TimeoutCancellationException 与「父协程被取消」在竞态下可能
-                // 同时发生（例如用户在超时那一刻点了停止）。若本次取消其实来自父协程，
+                // 竞态加固：[GenerationTimeoutCancelledException] 与「父协程被取消」在竞态下
+                // 可能同时发生（例如用户在超时那一刻点了停止）。若本次取消其实来自父协程，
                 // 下方会先跑完 rebuildEngine（4B 权重重新 load，数十秒）才在 emit 上撞到
                 // 取消 —— 白烧一次全量重载。故取消语义优先：ensureActive 在上下文已取消时
-                // 抛出该上下文自己的取消原因；真超时时 withTimeout 只取消它自己的子作用域，
+                // 抛出该上下文自己的取消原因；真超时时 [freezeAwareTimeout] 用
+                // `scopeJob.cancel(GenerationTimeoutCancelledException)` 只取消**本轮**作用域，
                 // 外层上下文仍 active ⇒ 本行不抛，继续走重建 + 重试。
                 currentCoroutineContext().ensureActive()
                 AgentLogStore.error(
