@@ -572,6 +572,19 @@ internal class LiteRtLmEngineLoader(
                     }
                 }
                 lastError?.let { t ->
+                    // 终态失败现场留档（W79 / issue #1326 ①）：`next == null` 的 break 发生在
+                    // 上方留档块**之前**，故「第几次尝试、带哪些模态、哪个容器」原本全不落日志。
+                    // 🔴 只陈述事实、不做归因翻译（上游明确否决「通用 NOT_FOUND ⇒ GPU 不兼容」
+                    // 这类文案 helper）：拿到 exact failing EngineConfig 供事后归因即可，不改行为。
+                    AgentLogStore.warn(
+                        "LiteRT-LM 加载终态失败（事实留档）：attempt=$attemptIndex，" +
+                            "backend=${current.backend}，visionBackend=${current.visionBackend}，" +
+                            "audioBackend=${current.audioBackend}，" +
+                            "degraded=${current.degraded.joinToString("/").ifEmpty { "无" }}，" +
+                            "contextLength=${config.config.contextLength}，" +
+                            "container=$displayName(${modelFile.length()}B)，" +
+                            "message=${t.message?.take(200) ?: "未知错误"}"
+                    )
                     // 可操作文案（Wave 33）：两段尝试都失败且错误消息命中 GPU 特征串时，
                     // 附加「驱动/OpenCL 缺失」的归因与下一步指引。纯字符串映射，不改行为。
                     // 门控（复审 P1-2）：只在真的做过 GPU 尝试时才拼 GPU 文案。
