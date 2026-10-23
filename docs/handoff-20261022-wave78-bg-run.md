@@ -2,6 +2,8 @@
 
 > 分支 `UI-change-1019`，`92f65d6..5fd319d` 共 11 提交，CI run 318/319/320 三连 success；**后续 `ee0df65` + `12bef26` 为 W78-12 跟进批（冻结感知生成超时），本地三闸门全绿但未推 CI（本环境无 GitHub 凭据，见 §七）**。
 > 本波设计权威 = `docs/w78-bg-run-design.md`（1090 行，r1–r12）；挂账权威 = `docs/15-backlog.md`。
+> ⚠️ **设计权威边界**：W78-12（冻结感知生成超时）**不在**该设计文档内 —— 它是本波收尾后的跟进批，
+> 设计记录见本文件 §七 + `docs/15-backlog.md` 的 W78-12（复审 34 P3-4）。
 
 ## 一、本波交付（按提交序）
 
@@ -20,7 +22,7 @@
 | `ee0df65` | **W78-12 跟进批①（断点续跑而非误掐）**：新增 `FreezeClock` 接口 + `MonotonicFreezeClock`、`ScreenStateMonitor`（灭屏累计，过近似冻结窗口）、`AgentRunner.freezeAwareTimeout`（看门狗 `scopeJob.cancel(GenerationTimeoutCancelledException)`，复用「超时→重建引擎+重试一次」链路）、`FreezeAwareTimeoutTest` 3 例、`AppContainer` 注入 `screenStateMonitor` 为 `freezeClock`；`@Test` baseline 764→767 |
 | `12bef26` | **W78-12 跟进批②（再测试 + 改进）**：`ScreenStateMonitor` 冷启灭屏态预置（`PowerManager.isInteractive==false` 时 `offAtNanos` 起算，防首段冻结被误算可运行）+ 注册升级 `ContextCompat.registerReceiver(..., RECEIVER_NOT_EXPORTED)`（API33+ 强制显式 flag） |
 
-**门禁基线**：arch-guard **46/46**；`@Test` **767** = `build.yml` baseline（W78-12 新增 3 例，764→767）；`supportsRecentsLock` **0 命中**（D1 删除干净）；`background/` 包 **974/1000**（W78-12 新增 `ScreenStateMonitor` 75 行）、服务 **212/300**、keeper **110**（余量 0，硬上限）；`AgentRunner.kt` **2815/2900**（#31 守卫余 85）。
+**门禁基线**：arch-guard **46/46**；`@Test` **767** = `build.yml` baseline（W78-12 新增 3 例，764→767）；`supportsRecentsLock` **0 命中**（D1 删除干净）；`background/` 包 **974/1000**（W78-12 新增 `ScreenStateMonitor` 75 行）、服务 **221/300**（W79 复核实测；原 212 是 C6 修复前快照，复审 34 P3-1）、keeper **110**（余量 0，硬上限）；`AgentRunner.kt` **2815/2900**（#31 守卫余 85）。
 
 ## 二、🔴 本波最重要的发现（下波必读）
 
@@ -60,7 +62,7 @@
 
 ## 四、遗留与开放（详见台账）
 
-- **W78-09**（开放，未证）：ColorOS 三开关「允许唤醒前台 / 自启动 / 关联启动」是否与冻结豁免构成组合条件。三开关均 OFF，**adb 点击无响应**（行容器与开关本体都试过）。需要真人机交互或 ROM 说明。
+- **W78-09**（**已关闭**）：ColorOS 三开关「允许唤醒前台 / 自启动 / 关联启动」是否与冻结豁免构成组合条件 —— 2026-10-22 晚实测四开关全开仍被 `freeze uid: 10310`（scene 含 `LcdOff`）⇒ **组合不构成豁免**，已并入 W78-08 上限判据（详见 §七 与 `docs/15` W78-09 closed-done；复审 34 P3-2 订正本节旧状态）。
 - **W78-05**：续期销账判据已按「间歇窗口」口径修订，仍待 ≥2min 长 run 场景。
 - **W78-01~04**：9 族 OEM 真机取证 / FLYME 加锁 / OriginOS 冻结层 / 小米 PowerKeeper 探针，均 parked 待设备。
 - **W78-06**：keeper JVM 单测（`RunWakeLockKeeper(null)` 可构造，四条含 scope 顺序坑）。

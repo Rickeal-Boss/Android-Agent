@@ -264,7 +264,7 @@ Android-Agent/
 
 | 工作流 | 触发 | 产物 |
 |---|---|---|
-| [`build.yml`](.github/workflows/build.yml) | push `main` / `UI` / `harness` / `harness-improve` / `improve` / PR → `main`·`UI`·`harness` / 手动 | debug APK（artifact，保留 30 天）；失败时上传 `**/build/reports` |
+| [`build.yml`](.github/workflows/build.yml) | push `main` / `UI` / `harness` / `harness-improve` / `improve` / `UI-change-1019` / `core-fix` / PR → `main`·`UI`·`harness` / 手动 | debug APK（artifact，保留 30 天）；失败时上传 `**/build/reports` |
 | [`release.yml`](.github/workflows/release.yml) | push `UI` / `harness` / `harness-improve` / `improve` / tag `v*` / 手动 | debug APK（保底）+ 可选签名 release APK / AAB + GitHub Release |
 
 > **分支口径**：`improve` / `harness-improve` 与 `harness` 同规格 —— `release.yml` 在三条分支上都出
