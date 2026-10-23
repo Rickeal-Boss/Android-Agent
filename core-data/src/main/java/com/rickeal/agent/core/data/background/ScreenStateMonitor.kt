@@ -42,8 +42,9 @@ internal class ScreenStateMonitor(context: Context) : FreezeClock {
                     Log.d(TAG, "screen OFF — freeze window started")
                 }
                 Intent.ACTION_SCREEN_ON -> {
-                    val delta = accumulator.onScreenOn()
-                    Log.d(TAG, "screen ON — froze for ${delta / 1_000_000}ms (accum=${accumulator.frozenNanos() / 1_000_000}ms)")
+                    // W80-05：total 由 onScreenOn 在同一把锁内带回，免去第二次 frozenNanos() 取锁。
+                    val (delta, total) = accumulator.onScreenOn()
+                    Log.d(TAG, "screen ON — froze for ${delta / 1_000_000}ms (accum=${total / 1_000_000}ms)")
                 }
             }
         }

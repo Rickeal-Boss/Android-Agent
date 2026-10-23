@@ -82,16 +82,19 @@ class FreezeAccumulator(private val nowNanos: () -> Long) {
 
     /**
      * 亮屏：把整段灭屏窗口累加进 [accumNanos] 并清窗口。
-     * @return 本次累加的纳秒（无在途窗口时 0），仅供日志取证。
+     * @return `(delta, total)` 对（W80-05）：`delta` 为本次累加的纳秒（无在途窗口时 0，
+     *   仅供日志取证）；`total` 为**含在途窗口语义**的进程级绝对累计 —— 与 [frozenNanos]
+     *   取自同一把锁内的同一状态，供调用方免去第二次取锁的额外往返。
      */
-    fun onScreenOn(): Long = synchronized(lock) {
+    fun onScreenOn(): Pair<Long, Long> = synchronized(lock) {
         val off = offAtNanos
         val delta = if (off >= 0) nowNanos() - off else 0L
         if (off >= 0) {
             accumNanos += delta
             offAtNanos = -1L
         }
-        delta
+        // 本锁内 offAt 已清零 ⇒ 含在途窗口的 total 恰为 accum（含刚累加的这段窗口）。
+        delta to accumNanos
     }
 
     /**

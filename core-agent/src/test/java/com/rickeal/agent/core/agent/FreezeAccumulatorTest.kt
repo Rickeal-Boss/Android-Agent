@@ -30,8 +30,12 @@ class FreezeAccumulatorTest {
         acc.onScreenOff()
         now.advanceMs(200)
         assertEquals(200_000_000L, acc.frozenNanos(), "灭屏期间 live 读应含在途窗口")
-        acc.onScreenOn()
+        // W80-05：onScreenOn 返回 (delta, total)，total 必须与同状态的 frozenNanos() 读数一致。
+        val (delta, total) = acc.onScreenOn()
+        assertEquals(200_000_000L, delta, "delta 为本次窗口的纳秒数")
+        assertEquals(200_000_000L, total, "total 为含在途窗口语义的绝对累计")
         assertEquals(200_000_000L, acc.frozenNanos(), "亮屏瞬间数值必须连续（不跳变、不丢段）")
+        assertEquals(total, acc.frozenNanos(), "total 与亮屏后的 frozenNanos() 读数必须一致")
 
         now.advanceMs(500)
         assertEquals(200_000_000L, acc.frozenNanos(), "亮屏后继续流逝不再累加")
@@ -49,9 +53,14 @@ class FreezeAccumulatorTest {
         assertEquals(100_000_000L, baseline)
 
         now.advanceMs(100)
-        acc.onScreenOn()
+        val (delta, total) = acc.onScreenOn()
+        // 窗口起点在最早那次 onScreenOff（t=1.0s），亮屏在 t=1.2s ⇒ 整段 delta = 200ms；
+        // 基线（t=1.1s 取）只覆盖前 100ms，增量语义由下面的 frozen-baseline 断言钉住。
+        assertEquals(200_000_000L, delta, "delta 为整段灭屏窗口的纳秒数")
+        assertEquals(200_000_000L, total, "total 为含在途窗口语义的绝对累计")
         // 增量恰 = 起点之后那段 100ms，**不含**起点前的 100ms。
         assertEquals(100_000_000L, acc.frozenNanos() - baseline)
+        assertEquals(acc.frozenNanos(), total, "total 与亮屏后的 frozenNanos() 读数必须一致")
     }
 
     @Test
