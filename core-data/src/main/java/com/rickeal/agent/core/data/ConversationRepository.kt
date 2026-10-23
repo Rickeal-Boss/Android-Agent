@@ -51,6 +51,16 @@ class ConversationRepository(
      */
     val directory: File = File(context.filesDir, "conversations")
     private val store = JsonFileStore(directory)
+
+    /**
+     * 会话全文读缓存（W80-03 Phase A，审查 P1/P2 修法后口径）。详见 [ConversationCache] KDoc。
+     *
+     * 一致性边界：**缓存由 [save] 唯一写穿**（落盘成功才回填）；[load] 只读缓存或
+     * 磁盘、**绝不回填**；瞬时读失败只拒写本次不熔断（不缓存任何「损坏」结论）。
+     * [delete] 锁内失效。**只做读缓存、不做写去抖**：save 全量重写路径保持原样。
+     */
+    private val cache = ConversationCache()
+
     private val _metas = MutableStateFlow<List<ConversationMeta>>(emptyList())
     val metas: StateFlow<List<ConversationMeta>> = _metas.asStateFlow()
 
@@ -70,26 +80,17 @@ class ConversationRepository(
         _metas.value = list.sortedByDescending { it.updatedAtMillis }
     }
 
-    suspend fun load(id: String): Conversation? =
-        store.read("$id.json", Conversation.serializer())
-
     /**
-     * 「读-改-写」入口共用的损坏熔断：文件**存在但解析失败**时返回 false，调用方拒写。
-     *
-     * Wave4 六路审查（E-P0-1）：此前 `appendMessage` 用 `load() ?: Conversation(id)` 把
-     * 「文件不存在（新会话）」与「文件存在但损坏」坍缩成同一种结果，后者的下一次写入会用
-     * 一条新消息的 `Conversation` **覆盖**整份损坏文件 —— 用户几个月的历史在下一次按发送键
-     * 时无声消失，界面一切正常、日志零记录。同仓库的 `ModelRepository` 早就用
-     * `exists()` 判别两种 null 并写下「parseFailed 时不写回一个字节」的不变式，
-     * 这里是同一范式的补课。
-     *
-     * 返回 true = 可以继续读改写；false = 已判定损坏，调用方直接放弃本次写入并提示。
+     * 读全文：缓存命中直接返回（W80-03 Phase A，不再走 [store] 磁盘读）；
+     * 未命中走磁盘读。**读盘结果一律不回填缓存**（审查 P1）：本方法是公开入口、
+     * 常在 [writeMutex] 锁外调用，与锁内 appendMessage 的 save 并发交错时回填会
+     * 把陈旧快照写进缓存，导致下一条消息基于旧全文落盘而无声丢失。缓存的唯一
+     * 写方是 [save] 写穿。返回 null 不区分「文件不存在」「损坏」「瞬时 IO 失败」，
+     * 由调用方按次处置（见 [appendMessage]）。
      */
-    private suspend fun writableOrCorrupted(id: String): Boolean {
-        if (!store.exists("$id.json")) return true   // 新会话：放心写
-        if (load(id) != null) return true            // 解析正常：放心写
-        AgentLogStore.error("会话文件解析失败（conversations/$id.json），已拒绝写入以保护原文件")
-        return false
+    suspend fun load(id: String): Conversation? {
+        cache.get(id)?.let { return it }
+        return store.read("$id.json", Conversation.serializer())
     }
 
     /**
@@ -106,13 +107,38 @@ class ConversationRepository(
             .sortedByDescending { it.updatedAtMillis }
         store.write("index.json", next, ListSerializer(ConversationMeta.serializer()))
         _metas.value = next
-        store.write("${conversation.id}.json", conversation, Conversation.serializer())
+        val fullTextWritten =
+            store.write("${conversation.id}.json", conversation, Conversation.serializer())
+        // W80-03 Phase A（审查 P1 修法）：这里是缓存的**唯一写方**——全文落盘成功
+        // 才写穿回填。load 一律不回填（锁外公开方法，回填会与锁内 save 交错出
+        // TOCTOU 丢消息竞态）；写失败（磁盘满等）时磁盘上仍是旧内容，更不能回填。
+        if (fullTextWritten) cache.put(conversation.id, conversation)
     }
 
+    /**
+     * 追加一条消息（锁内「读全文 → 改 → 写全文 + 写索引」）。
+     *
+     * 损坏熔断语义（Wave4 E-P0-1，审查 P2 修法后口径）：文件存在但读出的全文为
+     * null（真损坏）时**拒写本次**以保护原文件；`JsonFileStore.read` 吞异常返回
+     * null，无法区分「真损坏」与「瞬时 IO 失败」，所以这里**只拒写本次、不熔断**
+     * —— 与 HEAD 每次写前重读重判的行为一致，瞬时失败只损失一次写，下次写入会
+     * 重新探测。（不缓存损坏结论：把一次性失败缓存成永久拒写是语义回退。）
+     *
+     * 探测与读取合并（W80-03 审查修法）：稳态（save 写穿回填后）[load] 缓存命中，
+     * 全程一次 `exists` stat + **零次全量读**；缓存未命中时读盘一次 —— 均不劣于
+     * HEAD 的每条消息两次全量读。
+     */
     suspend fun appendMessage(conversationId: String, message: ChatMessage) {
         writeMutex.withLock {
-            if (!writableOrCorrupted(conversationId)) return@withLock
-            val current = load(conversationId) ?: Conversation(id = conversationId)
+            val current = if (store.exists("$conversationId.json")) {
+                load(conversationId) ?: run {
+                    AgentLogStore.error("会话文件解析失败（conversations/$conversationId.json），已拒绝写入以保护原文件")
+                    return@withLock
+                }
+            } else {
+                // 新会话：文件不存在即放心写，无需缓存任何负结论
+                Conversation(id = conversationId)
+            }
             save(
                 current.copy(
                     messages = current.messages + message,
@@ -125,6 +151,7 @@ class ConversationRepository(
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
         writeMutex.withLock {
             store.delete("$id.json")
+            cache.invalidate(id)   // W80-03 Phase A：缓存不得复活已删会话
             val next = _metas.value.filter { it.id != id }
             _metas.value = next
             store.write("index.json", next, ListSerializer(ConversationMeta.serializer()))
