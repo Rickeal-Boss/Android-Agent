@@ -379,13 +379,15 @@ fun ChatToolCard(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
     GlassCard(
         modifier = modifier.fillMaxWidth(),
         // 正文量：argumentsJson(maxLines=3) + output(maxLines=6) ≈ 最多 12 行。
         // 判据见 GlassMaterial 文件头 KDoc —— 走 THIN 而不是 REGULAR：
         // 本卡是 LazyColumn 的 item，模糊成本会 ×N，下限达标即止。
         material = GlassMaterial.THIN,
-        cornerRadius = 18.dp,
+        // W79：原为阶梯外字面量 18.dp，收敛回 radiusMd（16dp），避免同屏第三种曲率。
+        cornerRadius = tokens.radiusMd,
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
     ) {
         Column {

@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -88,16 +89,11 @@ internal class RunWakeLockKeeper(
     /**
      * 先取消续期、再释放锁 —— **顺序固定**：反过来续期协程可能在「已解锁」的窗口把锁抢回来
      * （[renew] 是无条件重申请的）。服务侧只调本方法，不要再单独 cancel job / scope。
-     *
-     * 🔴 **不 cancel [serviceScope] 的原因 = 同实例可复活**（复审 34 P3-5）：Service 被
-     * `stopForeground`/重启后在**同一实例**上再次 `onStartCommand` ⇒ `acquire()` 能补锁，
-     * 但 scope 一旦被 cancel，`startRenewal()` 里 `launch` 只会返回一个已取消的 Job
-     * （`renewJob != null` 判据也失效不了）⇒ 续期**静默失效**，锁在 390s 后自然到期而
-     * 无人补，退回「放下手机 6.5min 后 CPU 深睡」。scope 空转（无子 Job）无任何开销。
      */
     fun release() {
         renewJob?.cancel()
         renewJob = null
+        serviceScope.cancel()
         val lock = wakeLock ?: return
         AgentLogStore.info("WakeLock 释放（held=${lock.isHeld}）")
         runCatching { if (lock.isHeld) lock.release() }

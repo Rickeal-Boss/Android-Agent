@@ -8,7 +8,7 @@
 
 | 提交 | 内容 |
 |---|---|
-| C1 `fix(core)` | **P1 冻结时钟跨 run 污染修复**：`FreezeClock` 拆 `frozenNanos()`（绝对累计，含在途灭屏窗口）+ `runnableNanosSince(started, baseline)`；`freezeAwareTimeout` 起点同取基线；累加逻辑上提 `core-agent.FreezeAccumulator`（offAt/accum 同锁、重复 off 保留最早起点）；删单参入口。**keeper P3-5**：`release()` 不再 cancel `serviceScope`（同实例二次前台化可复活续期）。**CI**：`build.yml` 加 `core-fix` 触发分支 + `baseline 767→773` |
+| C1 `fix(core)` | **P1 冻结时钟跨 run 污染修复**：`FreezeClock` 拆 `frozenNanos()`（绝对累计，含在途灭屏窗口）+ `runnableNanosSince(started, baseline)`；`freezeAwareTimeout` 起点同取基线；累加逻辑上提 `core-agent.FreezeAccumulator`（offAt/accum 同锁、重复 off 保留最早起点）；删单参入口。**CI**：`build.yml` 加 `core-fix` 触发分支 + `baseline 767→773`。⚠️ keeper 的 P3-5「删 scope.cancel」**已回滚**（见 §三.4 / W79-08） |
 | C2 `feat(ui)` | 圆角收敛：`GlassTokens` 7/12/16/24/30（≈−15%）、`GlassDefaults.RadiusLg 28→24`、`GlassCard` 默认值由硬编码 `28.dp` 改引用 `GlassDefaults.RadiusLg`（30 余处未传参调用点的真正杠杆）、`LiquidShapes` extraSmall 7 / large 24；新增 `cardGap=14.dp`，11 处卡片↔卡片列表替换（**不动 `gapSm`**） |
 | C3 `feat(engine)` | **#1326 处置**：`LiteRtLmEngineLoader` 终态失败留档（attempt / backend / vision / audio / degraded / contextLength / container+size / message），只陈述事实、不做归因翻译；不升依赖、不改 `knownBroken` |
 | C4 `docs(w79)` | 设计文档 + 本交接 + `docs/15` W79-01~07 + 复审 34 P3-1~4 文档订正 + `docs/01-architecture.md` 令牌快照 + README/docs/02 分支清单 |
@@ -25,7 +25,7 @@
 | `:app:assembleDebug` / `:app:lintDebug` | 绿 / **0 新增**（baseline 3 errors + 1 hint 过滤） |
 | `arch-guard` | **46/46 RC=0**（主理人 + CI 席 + 审查席各自复跑） |
 | `@Test` 代码位 | **773** = `build.yml` baseline（严格口径，非推算） |
-| `background/` 包 | **977/1000**（余 **23**；keeper 114 / Monitor 74 / 服务 221 / 其余不变） |
+| `background/` 包 | **973/1000**（余 **27**；keeper 110 / Monitor 74 / 服务 221 / 其余不变） |
 | `FreezeClock.kt` / `AgentRunner.kt` / loader | **105** / **2823**（#31 ≤2900）/ **717**（#32 ≤900） |
 | 真机（OPPO PDRM00 / A13） | 冷启 pid 11692 存活，`logcat -b crash` 空、无 `Unable to create service`；设置页/模型页截图与改前逐像素 diff 确认圆角与卡片间距变化 |
 
@@ -34,7 +34,7 @@
 1. **P1 修法 = 复审 34 方向 1**：累计量是「绝对事实」、基线是「本次 run 的局部变量」；`frozenNanos()` **必须含在途灭屏窗口**（否则 off→on 跳变 ⇒ 过减 ⇒ 解冻瞬间误掐）；`frozenBaselineNanos` **禁止默认值**（默认值现取 ⇒ 冻结剔除静默失效）；`offAt/accum` 必须同锁（分读双计 ⇒ 过减 ⇒ 误掐）。
 2. **#1326**：上游证据确认 GPU 容器只有 artisan 段、`NOT_FOUND` 是「请求 section 大小为 0」的查表失败，不是 GPU 缺算子；本仓降级链本就会走到「纯文本 + GPU」（`MAX_LOAD_ATTEMPTS=4`）⇒ **不再加自动降级**，只补失败现场留档。Artisan 路由可达性仍未证（需真机 + 0.17.1/0.18.0 对照）。
 3. **UI**：圆角回 24 不是新审美 —— `docs/01-architecture.md` 早已写 `GlassCard` 默认 24dp（`47cd5b1` 才抬到 28）；本波是**回文档口径**。卡片间距用独立 `cardGap`，不改 `gapSm`（34 个消费点里 31 个是卡内 Spacer/padding）。
-4. **W78-06 显式破例一次**：本波改了 `RunWakeLockKeeper.release()` 的 scope 语义，但 P3-5 的「续期复活」行为需注入 WakeLock 抽象才能 JVM 观测，未补测试 —— 已在 `docs/15` W79-04 留痕，重启前提不变。
+4. **P3-5 修复被两次判死（本波最重要的「不修」决策）**：初版按复审 34 删 `serviceScope.cancel()`。审查席先判「空转」（`startRenewal()` 只在 `onCreate` 调，二次 `onStartCommand` 只补 `acquire()` ⇒ scope 活不活都没人重启续期）。**主判据 = 收益恒为零**：全仓没有任何调用点在 `release()` 之后调 `startRenewal()`，删 `scope.cancel()` 对行为零影响，唯一效果是把 `w78-bg-run-design.md:499` 已归档的规范修法变成死代码。**辅判据（可达性）**：`release()` 仅两处（catch 降级分支 / `onDestroy`）；`stopSelf(startId)` 在新 `startService` 已递增 startId 时不生效 ⇒ 同实例复用**可达但极窄**（还需控制器在宽限窗内发 `startService`）—— **不写「结构上不存在」**。**整体回滚到 110 行**，只登记 W79-08。教训：**修一个当前不可达的缺陷前，先证明收益不为零**；否则修的是注释里的想象。
 
 ## 四、遗留（详见 docs/15）
 

@@ -47,8 +47,9 @@ class FreezeAwareTimeoutTest {
 
     /**
      * 本轮内才发生的灭屏：以**首次 [frozenNanos] 调用**（= run 起点取基线那一刻）为锚，
-     * frozen = `max(0, 自锚流逝 − 100ms)` ⇒ 前 100ms 正常计时，之后 frozen 与墙钟同速增长
-     * ⇒ runnable = `min(自锚流逝, 100ms)`，饱和在 100ms（与构造→启动间隔无关，不受 CI 抖动影响）。
+     * frozen = `max(0, 自锚流逝 − 200ms)` ⇒ 前 200ms 正常计时，之后 frozen 与墙钟同速增长
+     * ⇒ runnable = `min(自锚流逝, 200ms)`，饱和在 200ms（与构造→启动间隔无关，不受 CI 抖动影响）。
+     * 饱和值取 200ms 而非 100ms：看门狗 tick = 250ms，留 ≥100ms 余量，避免慢 CI 上边界抖动。
      */
     private class MidRunFreezeFakeClock : FreezeClock {
         private var anchorNanos = -1L
@@ -56,7 +57,7 @@ class FreezeAwareTimeoutTest {
         override fun frozenNanos(): Long {
             val now = System.nanoTime()
             if (anchorNanos < 0) anchorNanos = now
-            return (now - anchorNanos - 100_000_000L).coerceAtLeast(0L)
+            return (now - anchorNanos - 200_000_000L).coerceAtLeast(0L)
         }
     }
 
@@ -90,10 +91,11 @@ class FreezeAwareTimeoutTest {
 
     @Test
     fun historicalFreezeDoesNotConsumeThisRunBudget(): Unit = runBlocking {
-        // 起点前已累计冻结 416s：基线同取 416s ⇒ 增量从 0 起算，本轮 150ms 预算完整。
+        // 起点前已累计冻结 416s：基线同取 416s ⇒ 增量从 0 起算，本轮 300ms 预算完整。
         // 旧实现（单参 runnableElapsedNanos 减全量 accum）此例不会超时 ⇒ 红转绿锚点。
+        // 预算取 300ms（> tick 250ms）⇒ 第 2 个 tick 必触发，不依赖第 1 个 tick 的余量。
         assertFailsWith<GenerationTimeoutCancelledException> {
-            freezeAwareTimeout(150, HistoricalFrozenFakeClock(416_000_000_000L)) {
+            freezeAwareTimeout(300, HistoricalFrozenFakeClock(416_000_000_000L)) {
                 delay(2000)
             }
         }
@@ -101,8 +103,8 @@ class FreezeAwareTimeoutTest {
 
     @Test
     fun midRunFreezeExtendsBudget(): Unit = runBlocking {
-        // 本轮内才开始灭屏：前 100ms 计入，其后冻结顺延 ⇒ runnable 饱和 ~100ms < 150ms ⇒ 正常返回。
-        val result = freezeAwareTimeout(150, MidRunFreezeFakeClock()) {
+        // 本轮内才开始灭屏：前 200ms 计入，其后冻结顺延 ⇒ runnable 饱和 200ms < 300ms ⇒ 正常返回。
+        val result = freezeAwareTimeout(300, MidRunFreezeFakeClock()) {
             delay(600)
             "survived"
         }
@@ -111,7 +113,7 @@ class FreezeAwareTimeoutTest {
 
     @Test
     fun midRunFreezeIsNotUnlimitedExemption(): Unit = runBlocking {
-        // 同 fake 但预算 80ms < 饱和值 100ms ⇒ 仍然超时（顺延不是无限豁免）。
+        // 同 fake 但预算 80ms < 饱和值 200ms ⇒ 仍然超时（顺延不是无限豁免）。
         assertFailsWith<GenerationTimeoutCancelledException> {
             freezeAwareTimeout(80, MidRunFreezeFakeClock()) {
                 delay(600)

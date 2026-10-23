@@ -4628,7 +4628,7 @@ fun GlassSettingRow(
 | Scaffold 顶栏（折叠） | THIN | — |
 | 聊天气泡（模型） | THIN | radiusLg + 一侧小圆角 |
 | 聊天气泡（用户） | REGULAR + accent tint | radiusLg |
-| 卡片 / 列表项 | REGULAR | radiusMd |
+| 卡片 / 列表项 | REGULAR | radiusLg（W79 起 24dp；此前文档误写 radiusMd） |
 | 底部输入栏 | THICK | radiusXl |
 | FAB / 悬浮按钮 | THICK | radiusFull |
 | Dialog | THICK | radiusXl |

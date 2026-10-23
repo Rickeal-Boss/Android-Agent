@@ -64,16 +64,16 @@ interface FreezeClock {
 **1.7 闸门预算**（「落地实测」列已按 W79 实况回填，非预计值）
 | 文件 | 现 → 落地实测 | 上限 |
 |---|---|---|
-| `core-agent/.../FreezeClock.kt` | 28 → **99**（+`frozenNanos`/`runnableNanosSince`/`FreezeAccumulator`；预算 68~75 估低，KDoc 占大头） | 无单文件闸门 |
+| `core-agent/.../FreezeClock.kt` | 28 → **105**（+`frozenNanos`/`runnableNanosSince`/`FreezeAccumulator`；预算 68~75 估低，KDoc + `onScreenOff` 幂等占大头） | 无单文件闸门 |
 | `core-data/.../ScreenStateMonitor.kt` | 75 → **74**（累加逻辑上提 −，`frozenNanos` 覆写 +KDoc 相抵 ⇒ 仅减 1 行，预算 62~66 估高） | 单文件 ≤300 ✅ |
-| `background/` 合计 | 974 → **977**（keeper KDoc +4 / Monitor −1，净 +3；原预算「净减 954~960」方向错）⇒ **余量仅 23 行** | ≤1000 ✅ |
+| `background/` 合计 | 974 → **973**（Monitor −1；keeper 回滚回 110 ⇒ P3-5 未修，见 W79-08）⇒ **余量 27 行** | ≤1000 ✅ |
 | `core-agent/.../AgentRunner.kt` | 2815 → **2823**（净 +8 = 判据重写 + KDoc + docs 指针 2 行）；在位判据 `grep -c "w79-core-fix-design"` = 1 | ≤2900（余 77）✅ |
-| `FreezeAwareTimeoutTest.kt` / 新建 `FreezeAccumulatorTest.kt` | 63 → **121** / 0 → **72** | — |
+| `FreezeAwareTimeoutTest.kt` / 新建 `FreezeAccumulatorTest.kt` | 63 → **123** / 0 → **72** | — |
 | `@Test` 基线 | **不变量：`decl == 守 #26 实测代码位实数`**（本波实测 773 = 767 + 6）；引用走 `baseline=` token，**勿钉死数值**（下波增删即漂） | 守卫 #26 双向同步 |
 
 **下波预算提示**（非本波结论，实测于 W79 收尾）：#25 家族当前最紧的不是 #31，而是 **#20 `ChatRunCoordinator.kt` 1253/1300（仅余 47 行）**——本波未碰它，但 W80 若在聊天侧加逻辑会先撞 #20。其余宽松：#31 2823/2900（余 77）、#32 717/900、#18 739/1600、#25 2009/2400。
 **证据边界（勿把 773 当「全量绿」）**：`773` 是**代码位**口径（守 #26 判据命令实跑）。CI 的 XML 汇总当前亦为 773，但属**增量拼接**——仅 `core-agent`（22 文件/234 例）为 10-23 新跑，`core-data` 为 10-22，其余 7 模块仍是 10-20 ⇒ **不可据此宣称「9 模块同刻全量绿」**；真权威 XML 数须等推送后 CI `unit-tests` job summary。
-**另：第 45 条守卫自身两个缺口**（本波不改，W80 治理批；改 `arch-guard.sh` 须同跑 selftest，不在审查前动）——① **扫描面非递归**：`wc -l "$D"/*.kt`（`arch-guard.sh:1176` 合计 / `:1182` 单文件循环）只数 `background/` 直接子文件 ⇒ 子包 `background/*/Foo.kt` 既不计合计也不进单文件检查（当前 0 子包 ⇒ 本波零风险；整包搬空会命中 fail-closed 判红，故**静默缺口仅限「部分文件进子包」**这一现实场景）。② **KDoc 推导数过期**：仍写「6 文件 899 行 / 余量 101」，实测 7 文件 977 行 / 余 23（KDoc 自身已声明「行数是移动值、勿写死进判据」⇒ 属文档时效，非判据错误，但下一个读的人会以为还有 101 行）。
+**另：第 45 条守卫自身两个缺口**（本波不改，W80 治理批；改 `arch-guard.sh` 须同跑 selftest，不在审查前动）——① **扫描面非递归**：`wc -l "$D"/*.kt`（`arch-guard.sh:1176` 合计 / `:1182` 单文件循环）只数 `background/` 直接子文件 ⇒ 子包 `background/*/Foo.kt` 既不计合计也不进单文件检查（当前 0 子包 ⇒ 本波零风险；整包搬空会命中 fail-closed 判红，故**静默缺口仅限「部分文件进子包」**这一现实场景）。② **KDoc 推导数过期**：仍写「6 文件 899 行 / 余量 101」，实测 7 文件 **973 行 / 余 27**（KDoc 自身已声明「行数是移动值、勿写死进判据」⇒ 属文档时效，非判据错误，但下一个读的人会以为还有 101 行）。
 
 ## 2. B 线：issue #1326（**不升依赖、不搬上游代码**）
 **2.1 源码核验**
