@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.LaunchedEffect
 import androidx.core.view.WindowCompat
 import com.rickeal.agent.ui.LiquidAgentApp
 
@@ -24,6 +25,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
+            // 冷启到首帧基线锚点：供 `adb shell am start -W` 与 logcat
+            // `ActivityTaskManager: Fully drawn` 读取；OEM 权限收紧时可能抛
+            // SecurityException，runCatching 吞掉不影响 UI。
+            LaunchedEffect(Unit) {
+                runCatching { reportFullyDrawn() }
+            }
             LiquidAgentApp()
         }
     }
