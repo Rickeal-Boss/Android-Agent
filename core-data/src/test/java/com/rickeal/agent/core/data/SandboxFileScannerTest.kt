@@ -126,6 +126,49 @@ class SandboxFileScannerTest {
         assertTrue(result.truncated)
     }
 
+    @Test
+    fun `装饰排序去装饰后 mtime 降序与名字 tiebreak 及 childCount 保持不变`() {
+        // W80-04 装饰-排序-去装饰重构的回归锚：stat 缓存后排序语义必须与旧实现
+        // （比较子内现 stat）逐条目等价 —— mtime 降序、同毫秒名字升序 tiebreak、
+        // 目录 childCount 正确、隐藏文件与原子写临时文件过滤口径不变。
+        val root = newTempDir("w80_decorated")
+        val base = System.currentTimeMillis()
+        // 乱序落盘的 mtime：落盘顺序 ≠ 期望输出顺序（旧实现的排序 selector 现读 stat，
+        // 新实现读缓存值 —— 两边都必须产出同一条链）。
+        File(root, "b_same.txt").apply { writeText("1"); setLastModified(base) }
+        File(root, "a_same.txt").apply { writeText("2"); setLastModified(base) }
+        File(root, "z_older.txt").apply { writeText("3"); setLastModified(base - 20_000) }
+        File(root, "m_mid.txt").apply { writeText("4"); setLastModified(base - 10_000) }
+        // 目录：childCount 由装饰阶段的 listFiles 一次性读出，去装饰后不得丢。
+        // （setLastModified 必须在写完子文件之后 —— 写子文件会刷新目录 mtime。）
+        val dir = File(root, "folder").apply { mkdirs() }
+        File(dir, "one.txt").writeText("x")
+        File(dir, "two.txt").writeText("y")
+        File(dir, "three.txt").writeText("z")
+        dir.setLastModified(base - 30_000)
+        // 过滤口径不变的对照项：隐藏文件 + 原子写临时名。
+        File(root, ".hidden").writeText("h")
+        File(root, "note.md.tmp_999888").writeText("tmp")
+
+        val result = SandboxFileScanner.scan(root)
+        assertEquals(
+            listOf("a_same.txt", "b_same.txt", "m_mid.txt", "z_older.txt", "folder"),
+            result.entries.map { it.name },
+            "mtime 降序 + 同毫秒名字升序 tiebreak 必须保持",
+        )
+        assertEquals(5, result.totalEntries, "过滤后的有效条目数口径不变")
+        assertFalse(result.truncated)
+
+        val folder = result.entries.first { it.name == "folder" }
+        assertTrue(folder.isDirectory)
+        assertEquals(3, folder.childCount, "去装饰后目录 childCount 不得丢失")
+        assertEquals(0L, folder.sizeBytes)
+        assertEquals("", folder.extension)
+
+        val sameA = result.entries.first { it.name == "a_same.txt" }
+        assertEquals(base, sameA.lastModifiedMillis, "展示条目的 lastModifiedMillis 必须来自装饰阶段缓存值")
+    }
+
     // ── resolveWithinSandbox（路径安全，Wave 36）──────────────────────────────
 
     @Test
@@ -174,10 +217,15 @@ class SandboxFileScannerTest {
 
         // 能力探测：环境不支持符号链接（Windows 无特权 / 文件系统不支持）时**跳过**
         // 该条断言而不是 fail（CI 是 Linux，但本机 / 某些挂载卷可能不支持）。
+        // ⚠️ 只查「不抛异常」不够：某些 Windows 环境（FS 过滤驱动 / 无符号链接特权的
+        // 兼容层）createSymbolicLink「成功」但落盘的并非真 reparse point
+        // （isSymbolicLink == false、canonical 不解析，W80-04 自测实测），必须再验证。
         val created = runCatching {
             Files.createSymbolicLink(escape.toPath(), outside.toPath())
             Files.createSymbolicLink(insideLink.toPath(), insideTarget.toPath())
-        }.isSuccess
+        }.isSuccess &&
+            Files.isSymbolicLink(escape.toPath()) &&
+            Files.isSymbolicLink(insideLink.toPath())
         if (!created) return
 
         // 指向沙箱外的链接：resolveWithinSandbox 必须拒绝。

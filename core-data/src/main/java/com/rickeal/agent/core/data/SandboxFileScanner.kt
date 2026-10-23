@@ -78,6 +78,20 @@ object SandboxFileScanner {
     const val DEFAULT_LIMIT: Int = 200
 
     /**
+     * 单条目的 stat 缓存（W80-04 装饰-排序-去装饰）：scan 中间态，每条目只在装饰
+     * 遍历里读一次文件系统，排序与展示全部读这里的缓存值。私有中间态，不出对象。
+     */
+    private data class DecoratedEntry(
+        val name: String,
+        val relativePath: String,
+        val lastModifiedMillis: Long,
+        val isDirectory: Boolean,
+        val sizeBytes: Long,
+        val extension: String,
+        val childCount: Int,
+    )
+
+    /**
      * 扫描 [root] 下 [dirPath] 指定的**这一层**条目（[dirPath] 为空串 = 根层）。
      *
      * [root] 不存在 / 不是目录、或 [dirPath] 未通过 [resolveWithinSandbox] 的路径安全
@@ -92,6 +106,10 @@ object SandboxFileScanner {
      * 检查（[resolveWithinSandbox]），把「指向沙箱外的符号链接目录」从 listing 剔除 ——
      * 目录是**下钻的导航向量**，放行会让用户一路点出沙箱。非目录条目不经此检查（「打开」
      * 动作由 FileProvider 路径表兜底）。
+     *
+     * W80-04：条目 stat 只在装饰阶段读一次（缓存进私有 [DecoratedEntry]），排序用缓存
+     * mtime、去装饰后不再二次 stat；目录逃逸剔除因判据只依赖条目自身，前移到排序前
+     * （剔除子集不改变余序，`totalEntries` 口径不变）。
      *
      * @param dirPath 相对 [root] 的当前目录路径（`/` 连接；空串 = 根层）。
      * @param limit **当前层**展示条目上限；超出部分只计入 [SandboxScanResult.totalEntries]。
@@ -110,24 +128,43 @@ object SandboxFileScanner {
                 val name = entry.name
                 !name.startsWith(".") && !isAtomicWriteTemp(name)
             }
-            .sortedWith(
-                compareByDescending<File> { it.lastModified() }
-                    .thenBy { it.name },
-            )
+            // W80-04 装饰：每个条目的 stat（mtime/length/isDirectory/childCount 的
+            // listFiles）只在**这一次遍历**里读、缓存进 [DecoratedEntry] —— 旧实现把
+            // `lastModified()` selector 留在比较子里，排序每次比较都重新 stat，
+            // 共 O(N log N) 次；现在降为 O(N) 次。
             .map { entry ->
-                SandboxFileInfo(
+                val isDir = entry.isDirectory
+                DecoratedEntry(
                     name = entry.name,
                     // 结构化拼接，字面 '/'：dirPath 为空时逐字节等于 entry.name（回归锚）。
                     relativePath = if (dirPath.isEmpty()) entry.name else "$dirPath/${entry.name}",
-                    sizeBytes = if (entry.isDirectory) 0L else entry.length(),
                     lastModifiedMillis = entry.lastModified(),
-                    isDirectory = entry.isDirectory,
-                    extension = if (entry.isDirectory) "" else entry.extension.lowercase(),
-                    childCount = if (entry.isDirectory) entry.listFiles()?.size ?: 0 else 0,
+                    isDirectory = isDir,
+                    sizeBytes = if (isDir) 0L else entry.length(),
+                    extension = if (isDir) "" else entry.extension.lowercase(),
+                    childCount = if (isDir) entry.listFiles()?.size ?: 0 else 0,
                 )
             }
             // 纵深防御：目录条目若 canonical 解析后逃逸出沙箱，剔除（异常按剔除处理）。
-            .filter { info -> !info.isDirectory || resolveWithinSandbox(root, info.relativePath) != null }
+            // 剔除判据只依赖条目自身、与排序无关 ⇒ 前移到排序前结果集等价（比较子
+            // 只用缓存 mtime + 名字，剔除一个子集不改变其余条目的相对序，W80-04）。
+            .filter { decorated -> !decorated.isDirectory || resolveWithinSandbox(root, decorated.relativePath) != null }
+            .sortedWith(
+                compareByDescending<DecoratedEntry> { it.lastModifiedMillis }
+                    .thenBy { it.name },
+            )
+            // 去装饰：从缓存值构造展示条目，不再二次 stat。
+            .map { decorated ->
+                SandboxFileInfo(
+                    name = decorated.name,
+                    relativePath = decorated.relativePath,
+                    sizeBytes = decorated.sizeBytes,
+                    lastModifiedMillis = decorated.lastModifiedMillis,
+                    isDirectory = decorated.isDirectory,
+                    extension = decorated.extension,
+                    childCount = decorated.childCount,
+                )
+            }
         val shown = if (limit > 0) all.take(limit) else all
         return SandboxScanResult(
             entries = shown,
