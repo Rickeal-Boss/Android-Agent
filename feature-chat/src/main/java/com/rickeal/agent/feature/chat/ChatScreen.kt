@@ -297,9 +297,11 @@ fun ChatScreen(
             // 宿主级状态信息区（自上而下）：工具授权 > 自愈提示 > 崩溃恢复 > 执行计划 > 错误。
             // 都是非模态卡片：run 不被弹窗打断，但「现在发生了什么 / 需要你做什么」永远可见。
             // 间距统一走 spacedBy —— 之前是每张卡后面手插一个 Spacer，增删卡片容易漏。
+            // W79：卡片↔卡片用 tokens.cardGap（14dp），**不用 gapSm** —— gapSm 的其余消费点
+            // 大多是卡内 Spacer/padding，改它会连带放大卡内行距。
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(tokens.gapSm),
+                verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
             ) {
 
             // ── 工具授权卡（人在回路；Octop tool_guard 的 UI 面）──────────────

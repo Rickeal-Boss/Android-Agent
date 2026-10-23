@@ -21,14 +21,18 @@ import androidx.compose.ui.unit.sp
  * （标准 M3 是 4/8/12/16/28，M3E 抬到 8/12/16/28/48）。
  * 大圆角 + 液态玻璃的折射边缘是绝配 —— 折射带在圆角处最明显。
  *
+ * W79 收敛：`extraSmall 8→7`、`large 28→24`（与 `GlassTokens.radiusXs/radiusLg` 同步，
+ * 否则同屏两种曲率）；`small 12` / `medium 16` 本就与自绘侧一致，`extraLarge 48` 全仓零
+ * 消费者，一律不动（压它纯属制造与 M3E 声明冲突）。
+ *
  * 这也是我们在 M3E 公开 API 仍为 internal 的情况下，
  * 自己实现 M3E 设计语言的一环（详见 [LiquidAgentTheme] 的 M3E 结论）。
  */
 val LiquidShapes = androidx.compose.material3.Shapes(
-    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(7.dp),
     small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
     medium = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-    large = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
+    large = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
     extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(48.dp),
 )
 

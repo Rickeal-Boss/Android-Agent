@@ -20,6 +20,7 @@ import com.rickeal.agent.core.design.GlassSlider
 import com.rickeal.agent.core.design.GlassSwitch
 import com.rickeal.agent.core.design.GlassTextField
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.data.DeviceCapability
 import com.rickeal.agent.core.model.InferenceBackend
 import com.rickeal.agent.core.model.InferenceConfig
@@ -61,13 +62,14 @@ fun ChatParamsContent(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
     // 纯端侧运行：只有本地引擎。NPU 后端不支持自定义采样（降级规则见架构 §5.2）。
     val samplingEnabled = config.backend != InferenceBackend.NPU
     val topKEnabled = samplingEnabled
 
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
     ) {
         GlassCard(contentPadding = PaddingValues(14.dp)) {
                 Column {

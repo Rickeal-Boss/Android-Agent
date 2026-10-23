@@ -48,6 +48,7 @@ import com.rickeal.agent.core.design.GlassEmptyState
 import com.rickeal.agent.core.design.GlassEmptyStateAction
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.Role
@@ -107,6 +108,7 @@ fun ChatMessageList(
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
 ) {
+    val tokens = LocalGlassTokens.current
     val streaming by streamingFlow.collectAsState()
     // 「用户是否贴着底部」必须用 derivedStateOf 包住：layoutInfo 每次滚动都会更新，
     // 直接在组合里读会让整个列表跟着每一帧滚动重组。
@@ -152,7 +154,7 @@ fun ChatMessageList(
         modifier = modifier.fillMaxSize(),
         state = listState,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
     ) {
         if (messages.isEmpty() && !streaming.isStreaming) {
             item(key = "empty") {

@@ -43,6 +43,7 @@ import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.data.viewModelFactory
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -72,6 +73,7 @@ fun MemoryScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
 
     var editing by remember { mutableStateOf<MemorySection?>(null) }
     var creating by remember { mutableStateOf(false) }
@@ -96,7 +98,7 @@ fun MemoryScreen(
                     // + 悬浮页签占位（2026-09-26），见 LocalBottomBarOverlay KDoc。
                     bottom = 12.dp + LocalBottomBarOverlay.current,
                 ),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
             ) {
                 item {
                     GlassButton(

@@ -102,7 +102,7 @@ fun StorageScreen(
                 // 悬浮页签占位（2026-09-26）：加在滚动内容**之内**，末尾条目能滚出
                 // 页签区；内容本体仍从玻璃页签底下穿过（见 LocalBottomBarOverlay KDoc）。
                 .padding(bottom = LocalBottomBarOverlay.current),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
         ) {
             // 总览：先把「一共占了多少」讲清楚，再列分桶。
             GlassCard(contentPadding = PaddingValues(14.dp)) {

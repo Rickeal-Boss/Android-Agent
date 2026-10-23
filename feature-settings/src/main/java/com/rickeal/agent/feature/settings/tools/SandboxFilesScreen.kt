@@ -51,6 +51,7 @@ import com.rickeal.agent.core.design.GlassTopBar
 import com.rickeal.agent.core.design.LiquidDialog
 import com.rickeal.agent.core.design.LocalBottomBarOverlay
 import com.rickeal.agent.core.design.LocalGlassColors
+import com.rickeal.agent.core.design.LocalGlassTokens
 import java.io.File
 
 /**
@@ -255,6 +256,7 @@ fun SandboxFilesContent(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalGlassColors.current
+    val tokens = LocalGlassTokens.current
     val context = LocalContext.current
     Column(
         modifier = modifier
@@ -264,7 +266,7 @@ fun SandboxFilesContent(
             .padding(horizontal = 14.dp, vertical = 12.dp)
             // 悬浮页签占位（同 StorageScreen）：加在滚动内容之内，末尾条目能滚出页签区。
             .padding(bottom = LocalBottomBarOverlay.current),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
     ) {
         // 面包屑（朴素版）：一行文本显示当前 root-relative 路径；根层不渲染。
         // 刻意不做可点分段（第一版避免引入新的可点组件 / 布局 API）—— 上溯走顶栏返回钮。

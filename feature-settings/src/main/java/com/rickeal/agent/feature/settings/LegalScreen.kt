@@ -106,7 +106,7 @@ fun LegalScreen(
                 // 悬浮页签占位（2026-09-26）：加在滚动内容**之内**，末尾条目能滚出
                 // 页签区；内容本体仍从玻璃页签底下穿过（见 LocalBottomBarOverlay KDoc）。
                 .padding(bottom = LocalBottomBarOverlay.current),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
         ) {
             Text(
                 text = "下面两份文件是彼此独立的：应用服务条款的授权主体是本应用作者，" +

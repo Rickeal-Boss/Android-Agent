@@ -164,8 +164,8 @@ fun ModelsScreen(
                 // + 悬浮页签占位（2026-09-26），见 LocalBottomBarOverlay KDoc。
                 bottom = 104.dp + LocalBottomBarOverlay.current,
             ),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
+            horizontalArrangement = Arrangement.spacedBy(tokens.cardGap),
         ) {
             // 搜索 + 分类 chip 行：整行占满，双列不影响它。只在有模型时出现 ——
             // 空库时搜索没有意义，避免在引导卡上方压一条没用的搜索框。

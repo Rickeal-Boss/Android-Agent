@@ -116,7 +116,7 @@ fun ToolsScreen(
                 // 悬浮页签占位（2026-09-26）：加在滚动内容**之内**，末尾条目能滚出
                 // 页签区；内容本体仍从玻璃页签底下穿过（见 LocalBottomBarOverlay KDoc）。
                 .padding(bottom = LocalBottomBarOverlay.current),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
         ) {
             // ── 沙箱工作区入口卡（Wave 33）：Agent 工具产出文件的可视入口 ─────────
             // 放在工具列表**之上**：它是「产出物」的查看入口，与下方「工具开关」
