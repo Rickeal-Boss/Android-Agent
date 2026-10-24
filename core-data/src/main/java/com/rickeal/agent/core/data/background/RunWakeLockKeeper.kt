@@ -35,6 +35,13 @@ import kotlinx.coroutines.launch
  * 诚实限定（2026-10-22 真机修订）：续期**不能对抗** OEM 冻结。ColorOS 灭屏约 10s 会冻结
  * 本进程（cgroup 级，见 docs/w78-bg-run-design.md R15），冻结期间协程不执行、锁也进不去；
  * 解冻后本循环立即补锁。故续期的正确定位是「冻结窗口外保持 + 解冻后补锁」。
+ *
+ * ## 复活路径与自愈指针（W81 审查 IMP-4 登记不修，仅成文）
+ * **取消后同实例复活路径当前不可达**（W81 回源核验）：控制器 `started` 在前台化失败后
+ * 仍为 true ⇒ 不会二次 `startService`；`stopSelf` 后下次 run 必得新实例。若将来出现复用
+ * 路径，自愈修法见 `docs/w78-bg-run-design.md` §2.4：`startRenewal()` 里判
+ * `!serviceScope.isActive` 则重建 scope，**重建必须排在 `renewJob != null` 短路之前**
+ * （顺序反了会静默不续期）；🔴 禁止在服务侧补调 `startRenewal()`（会变成两个启动点）。
  */
 internal class RunWakeLockKeeper(
     private val powerManager: PowerManager?,
