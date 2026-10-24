@@ -12,7 +12,7 @@
 | C2 `perf(ui)` | **W80-02 P1-render 四件套**：a) Compose 稳定性报告（DSL 产出，留存 `_ci-tools/_w80_compose_stability_report/`，`MessageRow(message)` unstable→stable 两态实证；CLI `-P` 在 Kotlin 2.3.0 静默失效——坑已留档）；b) `feature-chat/stability.conf`（只声明报告背书的全 val 类；conf 注释只能 `//` 不能 `#`）；c) 流式收集收窄（顶层 `map{isStreaming}.distinctUntilChanged()` 低频订阅；文本订阅下沉 streaming item；滚动跟随 `snapshotFlow→flow.map+collectLatest` 语义等价）；d) 行内 remember（key 全覆盖）。`collectAsState` 初值用 `remember(streamingFlow){ streamingFlow.value.isStreaming }`（防中途返回闪空态；裸读 `.value` 触发 lint，remember 包裹通过） |
 | C3 `perf(data)` | **W80-03 会话读缓存 Phase A**：新增 `ConversationCache`（纯 JVM LRU，accessOrder LinkedHashMap + @Synchronized，上限 8 可注入）；接线 load（命中短路）/ save（**唯一写方，落盘成功才写穿**）/ delete（锁内 invalidate）。**审查席 P1（load 未命中回填 TOCTOU ⇒ 陈旧快照丢消息）+ P2（JsonFileStore 吞 IO 异常被缓存成永久熔断）合并修法**：load 一律不回填 + parseFailed 二态删除 + appendMessage 探测/读取合并（`exists → load ?: 拒写本次`）⇒ 热路径 2 次全量读 → 稳态 0 次，损坏保护语义与 HEAD 等价 |
 | C4 `perf(data)` | **W80-04 沙箱装饰-排序-去装饰**：一次遍历缓存 stat 值（原 sortedWith selector O(N log N) 次 lastModified）+ 逃逸剔除前移（等价性：比较子与剔除正交、删子集不改余序、totalEntries 口径不变）⇒ stat 3N+2N·logN → O(N) |
-| C5 `fix(agent)` | **W80-05 onScreenOn 返回 (delta,total)**：消除亮屏日志第二次 `frozenNanos()` 取锁；FreezeClock 105→109；background/ 包 973→**974（余 26）** |
+| C5 `fix(agent)` | **W80-05 onScreenOn 返回 (delta,total)**：消除亮屏日志第二次 `frozenNanos()` 取锁；FreezeClock 105→**108**（W81 订正：交接/台账原记 109，实测 wc -l = 108，净 +3 与 numstat 一致；纯记账误差，无判据影响）；background/ 包 973→**974（余 26）** |
 | C6 `chore(ci)` | `build.yml` baseline 773→**784**（ConversationCacheTest 10 + SandboxFileScannerTest 1，代码位实测 784） |
 | C7 `docs(w80)` | 本交接 + `docs/15` W80-01~09 + README/docs/02 如需 |
 
