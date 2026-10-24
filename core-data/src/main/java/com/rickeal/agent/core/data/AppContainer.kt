@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.data
 
 import android.app.ActivityManager
+import android.content.pm.ApplicationInfo
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.content.Intent
@@ -45,6 +46,7 @@ import com.rickeal.agent.core.engine.ProcessEngineResilienceStore
 import com.rickeal.agent.core.engine.local.ModelHealthProbe
 import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.data.notify.GenerationNotifier
+import com.rickeal.agent.core.data.perf.FrameStatsCollector
 import com.rickeal.agent.core.data.perf.PerformanceMonitorManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -196,6 +198,20 @@ class AppContainer(
     // PerformanceMonitorManager 的 Context? 只是 JVM 单测的构造缝，生产路径不存在
     // 空 context 语义（可用内存读到 null 时恒 0，属安全降级）。
     val perfMonitorManager: PerformanceMonitorManager = PerformanceMonitorManager(context)
+
+    /**
+     * 帧统计采集器（W81，审查 P0-1 的 07a 档）：Choreographer.FrameCallback 零依赖实现
+     * （为什么不用 JankStats、为什么 gfxinfo 不可用、Choreographer 主线程纪律，见
+     * [FrameStatsCollector] 类 KDoc）。仅诊断页「帧统计」卡消费，手动开始/停止。
+     *
+     * 门控口径 = `ApplicationInfo.FLAG_DEBUGGABLE`（**不**用 BuildConfig.DEBUG ——
+     * core-data 没开 buildConfig feature，不为它改 gradle；debug 包恒 debuggable、
+     * release 包不可，语义等价且零 gradle 改动）。与 [thermalGovernor] 的
+     * batteryTempTenths 同源思路：诊断观测增强，release 零行为。
+     */
+    val frameStatsCollector: FrameStatsCollector = FrameStatsCollector(
+        isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+    )
 
     /**
      * 「生成速度通知」出口（Wave 9 需求 5）。默认 disabled：由设置页的开关
