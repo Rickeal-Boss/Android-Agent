@@ -84,6 +84,13 @@ fun GlassImageThumb(
 private const val THUMBNAIL_MAX_DIM = 320
 
 /**
+ * bounds 遍的最大预读字节数（W81 审查 F7）：`inJustDecodeBounds` 只读文件头，远小于
+ * 此限 ⇒ mark/reset 的回退容量足够。万一边界遍读超限，`reset()` 抛 IOException，
+ * 由 [decodeThumbnail] 外层 runCatching 兜底（显示占位图标）—— 可接受降级。
+ */
+private const val MARK_LIMIT_BYTES = 64 * 1024
+
+/**
  * 按「三态 URI」打开字节流：裸绝对路径 / file:// 走文件系统，其余交给 ContentResolver。
  * 所有分支都可能抛异常（路径失效 / Provider 报错），统一 runCatching 兜底返回 null。
  */
@@ -103,24 +110,32 @@ private fun openSource(context: android.content.Context, uri: String): java.io.I
  *
  * **必须在后台线程调用**：`content://` 可能是网盘 Provider，`openInputStream`
  * 会同步走网络（调用点 [GlassImageThumb] 已切到 Dispatchers.IO）。
+ *
+ * W81 审查 F7：**单流两遍**—— 旧实现调 [openSource] 两次（bounds 一遍 + 实解一遍），
+ * content:// 网盘 Provider 就是双 round-trip；现在开一次流，用 [java.io.BufferedInputStream]
+ * 包裹 + mark/reset 跑两遍 decodeStream。mark 限内的字节由缓冲区保留，bounds 遍只读
+ * 文件头（远小于 [MARK_LIMIT_BYTES]）；读超限时 reset 抛 IOException ⇒ 外层
+ * runCatching 兜底占位图标，是可接受降级。
  */
 private fun decodeThumbnail(context: android.content.Context, uri: String): ImageBitmap? = runCatching {
     if (uri.isBlank()) return null
-    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    openSource(context, uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
-    val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
-    // inJustDecodeBounds 失败（流不可读 / 非图片 / Provider 报错）时 outWidth/outHeight
-    // 会是 -1 或 0：不挡掉的话 maxOf(-1, -1) = -1 ⇒ 下面的 while 一次都不执行 ⇒
-    // sample 保持 1 ⇒ 整图解码，4000×3000 的照片就是 24~36MB ⇒ OOM。
-    if (maxDim <= 0) return null
-    var sample = 1
-    while (maxDim / sample > THUMBNAIL_MAX_DIM) sample *= 2
-    val options = android.graphics.BitmapFactory.Options().apply {
-        inSampleSize = sample.coerceAtLeast(1)
-        inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+    openSource(context, uri)?.use { raw ->
+        val stream = java.io.BufferedInputStream(raw, MARK_LIMIT_BYTES)
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        stream.mark(MARK_LIMIT_BYTES)
+        android.graphics.BitmapFactory.decodeStream(stream, null, bounds)
+        val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+        // inJustDecodeBounds 失败（流不可读 / 非图片 / Provider 报错）时 outWidth/outHeight
+        // 会是 -1 或 0：不挡掉的话 maxOf(-1, -1) = -1 ⇒ 下面的 while 一次都不执行 ⇒
+        // sample 保持 1 ⇒ 整图解码，4000×3000 的照片就是 24~36MB ⇒ OOM。
+        if (maxDim <= 0) return null
+        var sample = 1
+        while (maxDim / sample > THUMBNAIL_MAX_DIM) sample *= 2
+        val options = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample.coerceAtLeast(1)
+            inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+        }
+        stream.reset()
+        android.graphics.BitmapFactory.decodeStream(stream, null, options)?.asImageBitmap()
     }
-    val decoded = openSource(context, uri)?.use {
-        android.graphics.BitmapFactory.decodeStream(it, null, options)
-    }
-    decoded?.asImageBitmap()
 }.getOrNull()

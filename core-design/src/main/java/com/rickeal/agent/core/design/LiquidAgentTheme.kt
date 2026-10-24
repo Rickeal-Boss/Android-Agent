@@ -25,14 +25,21 @@ import androidx.compose.ui.unit.sp
  * 否则同屏两种曲率）；`small 12` / `medium 16` 本就与自绘侧一致，`extraLarge 48` 全仓零
  * 消费者，一律不动（压它纯属制造与 M3E 声明冲突）。
  *
+ * W81 审查 G-6：前四档从「又一份硬编码」改为**单源派生**自 `GlassDefaults.Tokens`
+ * （radiusXs/Sm/Md/Lg = 7/12/16/24，逐项同值、零行为变化）—— 把 W79「人肉三处同改」
+ * 固化成代码，改 token 即同步。`extraLarge 48.dp` 按 W79 决策保持独立字面量。
+ *
  * 这也是我们在 M3E 公开 API 仍为 internal 的情况下，
  * 自己实现 M3E 设计语言的一环（详见 [LiquidAgentTheme] 的 M3E 结论）。
  */
 val LiquidShapes = androidx.compose.material3.Shapes(
-    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(7.dp),
-    small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-    medium = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-    large = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+    // W81 审查 G-6：前四档派生自 GlassTokens（值逐项不变：7/12/16/24），圆角单源。
+    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(GlassDefaults.Tokens.radiusXs),
+    small = androidx.compose.foundation.shape.RoundedCornerShape(GlassDefaults.Tokens.radiusSm),
+    medium = androidx.compose.foundation.shape.RoundedCornerShape(GlassDefaults.Tokens.radiusMd),
+    large = androidx.compose.foundation.shape.RoundedCornerShape(GlassDefaults.Tokens.radiusLg),
+    // extraLarge 保持 48.dp 独立值（W79 决策留痕）：全仓零消费者，且它不是 token 的
+    // 重复而是 M3E 声明的档位值 —— 压它纯属制造与 M3E 的冲突，不并入圆角阶梯。
     extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(48.dp),
 )
 

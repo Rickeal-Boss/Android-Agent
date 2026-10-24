@@ -62,12 +62,12 @@ object GlassDefaults {
     val Tokens = GlassTokens()
 
     /**
-     * 大圆角（= `GlassTokens.radiusLg`）。
+     * 大圆角（= `GlassTokens.radiusLg`）—— **getter 派生，非独立字面量**（W81 审查 G-6）。
      *
-     * ⚠️ 与 `GlassTokens.radiusLg` 是**两个独立字面量**（历史原因），改一处必须同改另一处，
-     * 否则同一屏出现两种曲率。W79 同步 28 → 24（回到 `docs/01-architecture.md` 的
-     * `GlassCard` 默认 24dp 口径）。
+     * 历史：此前这里是独立的 `24.dp` 字面量，与 [GlassTokens.radiusLg] 构成「改一处
+     * 必须同改另一处」的人肉双源（W79 同步 28 → 24 就是这样两处手工对齐的）。现改为
+     * 派生：数值不变，但从此只有 radiusLg 一个事实源，同屏两种曲率的回归路径被消除。
      */
-    val RadiusLg = 24.dp
+    val RadiusLg: Dp get() = Tokens.radiusLg
     val ContentPadding = 16.dp
 }

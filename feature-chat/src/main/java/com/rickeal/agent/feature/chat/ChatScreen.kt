@@ -655,6 +655,14 @@ fun ChatScreen(
             }
         },
     ) { _ ->
+        // W81 审查 F5：三个回调 remember 一份、两个布局分支共用。它们都是捕获
+        // viewModel 的 lambda / 方法引用 —— ChatScreen 级重组（工具事件等低频路径）
+        // 时若在调用点现造，参数每次都是新实例 ⇒ MessageRow 的 skip 判参失效。
+        // key 取 viewModel 实例本身：进程内不变 ⇒ remember 值稳定。
+        val onToggleThinkingRemembered = remember(viewModel) { { viewModel.toggleThinking() } }
+        val onToggleMessageThinkingRemembered: (String) -> Unit =
+            remember(viewModel) { { id: String -> viewModel.toggleThinking(id) } }
+        val onToggleGroupRemembered: (String) -> Unit = remember(viewModel) { viewModel::toggleGroup }
         if (windowSize.useThreePane) {
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.weight(1f).fillMaxSize()) {
@@ -662,11 +670,11 @@ fun ChatScreen(
                         messages = state.messages,
                         streamingFlow = viewModel.streaming,
                         thinkingExpanded = state.thinkingExpanded,
-                        onToggleThinking = { viewModel.toggleThinking() },
+                        onToggleThinking = onToggleThinkingRemembered,
                         expandedThinkingIds = state.expandedThinkingIds,
-                        onToggleMessageThinking = { id -> viewModel.toggleThinking(id) },
+                        onToggleMessageThinking = onToggleMessageThinkingRemembered,
                         expandedGroupIds = state.expandedGroupIds,
-                        onToggleGroup = viewModel::toggleGroup,
+                        onToggleGroup = onToggleGroupRemembered,
                         toolTraces = state.toolTraces,
                         onOpenModels = onOpenModels,
                         listState = listState,
@@ -686,11 +694,11 @@ fun ChatScreen(
                 messages = state.messages,
                 streamingFlow = viewModel.streaming,
                 thinkingExpanded = state.thinkingExpanded,
-                onToggleThinking = viewModel::toggleThinking,
+                onToggleThinking = onToggleThinkingRemembered,
                 expandedThinkingIds = state.expandedThinkingIds,
-                onToggleMessageThinking = viewModel::toggleThinking,
+                onToggleMessageThinking = onToggleMessageThinkingRemembered,
                 expandedGroupIds = state.expandedGroupIds,
-                onToggleGroup = viewModel::toggleGroup,
+                onToggleGroup = onToggleGroupRemembered,
                 toolTraces = state.toolTraces,
                 onOpenModels = onOpenModels,
                 listState = listState,
