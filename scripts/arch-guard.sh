@@ -1241,6 +1241,147 @@ check "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓�
                    || echo "MEASURED 条目缺本仓取证锚点（W##）：$line"
                done'
 
+# ---------------------------------------------------------------------------
+# 47) feature-chat/stability.conf 承重墙（W80-02 流式重组优化 / W81 外部审查补守）
+#
+# 为什么需要这条：`feature-chat/stability.conf` 向 Compose 编译器声明 9 个
+#   core-model 类为 stable（W80-02 流式 ~8Hz flush 重组优化的承重墙 —— 没有它，
+#   含 List 字段的领域模型全被当 unstable，MessageRow 不可 skip、全列表陪跑重组）。
+#   它的失效形态**全部编译期不可见**：
+#     ① 将来有人给 `ChatMessage` 等类加 `var` 字段 ⇒ 编译器仍按 stable 优化 ⇒
+#        静默跳过本应发生的重组（消息 UI 不刷新这类极难定位的 bug），而编译 /
+#        lint / 784 个测试全绿；
+#     ② conf 条目指向已被改名/删除/挪走的类 ⇒ 编译器**静默忽略**该 stable 声明，
+#        优化无声降级，同样全绿；
+#     ③ conf 文件被误删 ⇒ 编译器静默回退全部类为 unstable，重回全列表陪跑。
+#   三种都只有静态守卫能拦 —— 本条把「conf 在、条目真、类全 val」钉成机械判据。
+#
+# 三个判据（缺一不可）：
+#   ① conf 文件存在（防误删后 DSL 静默降级）；提取不到任何 FQN 条目 ⇒ 红（禁 fail-open）；
+#   ② conf 列出的每个 FQN 都能在 core-model 找到**真实类声明**（防陈旧条目静默降级）：
+#      先按 FQN 路径逐级回退找 .kt（覆盖 `Attachment.Text` 这类嵌套类的「外层文件」形态），
+#      找不到再按简单类名全局搜 core-model；零命中 ⇒ 红，多处声明 ⇒ 红（条目歧义）；
+#   ③ 每个 conf 类**无 var 属性**（主构造参数里的 var 也算；单行类
+#      `class X(var a, val b)` 的内联主构造同样查）。
+#
+# ⚠️ 判据③必须钉**行首代码形态**且**先剥注释**（W77 实摔第 N 次：注释/KDoc 里的
+#   说明文字会被裸 grep 误判）：awk 先剥离块注释/行注释，再在**类声明缩进 +4**
+#   的行首锚点上匹配 `var`（修饰符前缀白名单：注解/可见性/lateinit 等）。
+#   +4 锚点的含义：主构造参数与类体属性都落在声明缩进 +4；而 fun 内的**局部 var**
+#   深一档（+8）天然不命中 —— 既漏不了属性 var，也不误杀「给类加一个带局部变量
+#   的函数」这类合法代码（绿面由 selftest case81b 钉住）。
+#   已知边界（如实申报）：本仓 Kotlin 恒 4 空格缩进（conf 类源文件实测无 tab）；
+#   次级构造 `constructor(var x)` 的行内 var 不在判据面（该形态本仓零使用）。
+# fail-closed：conf 缺失 / core-model 目录缺失 / 条目提取为空 / 类找不到 /
+#   类名歧义 / awk 自身失败 ⇒ 一律 echo + 判红（守卫面失效绝不静默放行）。
+# ---------------------------------------------------------------------------
+check "W80-02 stability.conf 承重墙：conf 类真实存在且全 val 无 var（禁 stable 声明与可变字段漂移）" \
+  bash -c 'C=feature-chat/stability.conf
+           M=core-model/src/main/java
+           if [ ! -f "$C" ]; then echo "::error::$C 不存在（第 47 条守卫面已失效：conf 被误删 ⇒ Compose 编译器把全部类静默降级为 unstable，W80-02 流式重组优化无声丢失，而编译/lint/测试全绿）"; exit 1; fi
+           if [ ! -d "$M" ]; then echo "::error::$M 不存在（第 47 条守卫面已失效）"; exit 1; fi
+           entries=$(sed -e "s/\r\$//" -e "s/^[[:space:]]*//" -e "s/[[:space:]]*\$//" -e "/^\$/d" -e "/^\/\//d" "$C" | cut -d" " -f1)
+           if [ -z "$entries" ]; then echo "::error::$C 提取不到任何 FQN 条目（conf 被清空 ⇒ 第 47 条守卫面已失效，禁 fail-open）"; exit 1; fi
+           printf "%s\n" "$entries" | while IFS= read -r fqn; do
+             simple="${fqn##*.}"
+             p="${fqn//.//}"
+             f=""
+             while :; do
+               if [ -f "$M/$p.kt" ]; then f="$M/$p.kt"; break; fi
+               case "$p" in */*) p="${p%/*}" ;; *) break ;; esac
+             done
+             if [ -z "$f" ]; then
+               f=$(grep -rlE "^[[:space:]]*([a-z]+ )*class $simple([[:space:]]|<|\(|\{|\$)" --include="*.kt" "$M")
+               case "$f" in
+                 "") echo "conf 条目 $fqn 在 core-model 找不到真实类（陈旧条目：类被改名/删除 ⇒ Compose 静默忽略该 stable 声明，流式重组优化无声降级）"; continue ;;
+               esac
+               if [ "$(printf "%s\n" "$f" | grep -c .)" -gt 1 ]; then
+                 echo "conf 条目 $fqn 的简单类名 $simple 在 core-model 有多处声明（$f）：条目歧义，请核对 FQN"; continue
+               fi
+             fi
+             grep -qE "^[[:space:]]*([a-z]+ )*class $simple([[:space:]]|<|\(|\{|\$)" "$f" || { echo "conf 条目 $fqn 在 $f 中无类声明（陈旧条目：嵌套类被挪走/改名 ⇒ Compose 静默忽略该 stable 声明）"; continue; }
+             viol=$(awk -v cls="$simple" "
+BEGIN { inblk = 0; started = 0; depth = 0; opened = 0 }
+{
+  raw = \$0
+  if (inblk) { p = index(raw, \"*/\"); if (p == 0) next; raw = substr(raw, p + 2); inblk = 0 }
+  while ((p = index(raw, \"/*\")) > 0) {
+    q = index(substr(raw, p + 2), \"*/\")
+    if (q > 0) raw = substr(raw, 1, p - 1) substr(raw, p + 2 + q + 1)
+    else { raw = substr(raw, 1, p - 1); inblk = 1; break }
+  }
+  sub(/\/\/.*/, \"\", raw)
+  if (!started) {
+    if (raw ~ (\"^[[:space:]]*([a-z]+ )*class \" cls)) {
+      tp = index(raw, \"class \" cls) + length(\"class \" cls)
+      nx = substr(raw, tp, 1)
+      if (nx == \" \" || nx == \"\t\" || nx == \"(\" || nx == \"<\" || nx == \"{\" || nx == \"\") {
+        started = 1
+        m = match(raw, /[^ ]/)
+        ind = (m > 0) ? m - 1 : 0
+        sp = \"\"
+        for (i = 0; i < ind + 4; i++) sp = sp \" \"
+        if (index(raw, \"class \" cls \"(\") > 0) {
+          op = index(raw, \"(\")
+          cp = 0
+          for (i = length(raw); i > op; i--) if (substr(raw, i, 1) == \")\") { cp = i; break }
+          if (cp > op) {
+            region = substr(raw, op + 1, cp - op - 1)
+            gsub(/,/, \"\n\", region)
+            nreg = split(region, params, \"\n\")
+            for (j = 1; j <= nreg; j++) {
+              if (params[j] ~ \"^[[:space:]]*(@[A-Za-z0-9_.]+ +)*([a-z]+ +)*var[[:space:]]\") print NR \": \" \$0
+            }
+          }
+        }
+      } else next
+    } else next
+  }
+  if (started) {
+    n = length(raw)
+    for (i = 1; i <= n; i++) {
+      c = substr(raw, i, 1)
+      if (c == \"{\") depth++
+      else if (c == \"}\") depth--
+    }
+    if (depth > 0) opened = 1
+    if (length(raw) > ind + 4 && substr(raw, 1, ind + 4) == sp) {
+      rest = substr(raw, ind + 5)
+      if (rest ~ \"^(@[A-Za-z0-9_.]+ +)*([a-z]+ +)*var[[:space:]]\") print NR \": \" \$0
+    }
+    if (opened && depth <= 0) exit
+  }
+}
+" "$f") || { echo "::error::$f 的 var 提取失败（awk 退出码非 0 ⇒ 第 47 条守卫面已失效，禁 fail-open）"; continue; }
+             if [ -n "$viol" ]; then
+               echo "stable 类 $fqn（$f）出现 var 属性：$viol（stable 声明与可变字段漂移 ⇒ Compose 仍按 stable 优化，静默跳过本应发生的重组）"
+             fi
+           done
+           exit 0'
+
+# 48) ConversationCache.kt 总行数上限（W80-03 / W81 外部审查补守）：#25 家族第 10 员
+#     （#18 ChatViewModel 1600 / #20 ChatRunCoordinator 1300 / #25 LiteRtLmEngine 2400 /
+#     #31 AgentRunner 2900 / #32 LiteRtLmEngineLoader 900 / #35 AgentRunnerToolSetup 400 /
+#     #36 ThinkingBudget 150 / #37 AgentRunnerLoopHelpers 400 / #38 ChatRunRecovery 400 /
+#     #48 ConversationCache 200）。
+#     ⚠️ **为何补（W81 外部审查「新承重结构无守卫」两项之一）** —— W80-03 落地的
+#     `ConversationCache`（会话全文读缓存，appendMessage 热路径的 O(1) 命中面）
+#     是新承重结构却零行数闸门：Phase A 现 76 行，Phase B（写穿/失效面继续长）
+#     没有任何机械面拦膨胀 ⇒ 重演「新文件无人守、日后长成下一个 god-file」的循环
+#     （家族前九次教训见 #35/#36/#37 注释）。故本波在结构落地当波补守，不再欠账。
+#     阈值推导：现 76 行（队友 W81 在改中一度 84 行）⇒ 200 ≈ 76 × 2.6，给 Phase B
+#     留足余量（缓存策略/统计面增长），同时远低于 god-file 量级（200 行以内仍是
+#     单职责可读规模）。
+#     ⚠️ 本条**只钉 ConversationCache.kt**；ConversationRepository.kt 另属既有评审面。
+#     ⚠️ **触顶不是改数字，是启动 ConversationCache 拆分评审**（与
+#     #18/#20/#25/#31/#32/#35/#36/#37/#38 同款「只许缩不许涨」精神）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "ConversationCache.kt 总行数 ≤ 200（core-data 行数表 #25 家族第 10 员，触顶 = 启动 ConversationCache 拆分评审，非改阈值）" \
+  bash -c 'f=core-data/src/main/java/com/rickeal/agent/core/data/ConversationCache.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 48 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 200 ] || echo "ConversationCache.kt 当前 $n 行，超 200 行上限（触顶 = 启动 ConversationCache 拆分评审，非改阈值）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

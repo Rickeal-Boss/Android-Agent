@@ -68,7 +68,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -126,7 +126,12 @@ affected_guards_for_file() {
     docs/15-backlog.md)                                                 echo "42" ;;
     docs/handoff-*)                                                     echo "42" ;;
     docs/12-litertlm-0171-anchors.md)                                   echo "41" ;;
-    core-model/*)                                                                  echo "3 15 26 40 41" ;;
+    # W81：stability.conf 承重墙（#47）与 ConversationCache 行数闸门（#48）的核对面。
+    # ⚠️ **具体行同样必须排在下面的 `core-model/*` 通配行之前**（bash `case` 先匹配先赢）：
+    #    stability.conf 与 ConversationCache.kt 都有专属判据，落到通配行会被降级少跑。
+    feature-chat/stability.conf)                                       echo "47" ;;
+    core-data/src/main/java/com/rickeal/agent/core/data/ConversationCache.kt) echo "48" ;;
+    core-model/*)                                                                  echo "3 15 26 40 41 47" ;;
     *)                                                                             echo FULL ;;
   esac
 }
@@ -840,6 +845,112 @@ MD
 |---|---|---|---|---|---|---|
 | 14 | `knownBrokenOn` / GPU 白名单的运行时时效 | W68 B3 定案（fixture） | 机器可读字段 = `ModelPreset.appliesToRuntime`（一条已知坏条目均 = `"0.17.1"`；现为第 1 处 `"0.17.1"` 字面量） | bump 后逐条复审 | — | ☐ |
 MD
+  # 第 47 条（W80-02 / W81，stability.conf 承重墙）为 fail-closed：conf 缺失 / 条目
+  # 提取为空 / 类找不到 ⇒ 红 ⇒ 骨架必须同时提供 ① 一份 9 条 FQN 的 stability.conf
+  # 与 ② conf 里每个类的**全 val 合法形态**源文件，否则干净树被误红（正例失守）。
+  # 形态要求（与真实文件逐字同构，改动前先读真实 conf 与 core-model 四文件）：
+  #   · conf：每行一条 FQN，`//` 注释头（守卫的条目提取必须能跳过注释行）；
+  #   · ChatMessage.kt：`data class ChatMessage(` 主构造全 val + 类体 val 属性；
+  #   · Attachment.kt：`sealed class Attachment {` + 4 个嵌套 data class（Text/Image/
+  #     Audio/File）—— conf 对嵌套类用「外层文件 + 简单类名」解析，骨架必须同构；
+  #   · Generation.kt 的 `data class TokenUsage(` 与 ToolSpec.kt 的 `data class
+  #     ToolCall(` / `data class ToolResult(`：类名与文件名不一致（ToolCall 在
+  #     ToolSpec.kt 里）⇒ 同时钉住守卫的「全局按简单类名回退搜索」解析路径。
+  cat > "$root/feature-chat/stability.conf" <<'CONF'
+// =============================================================================
+// feature-chat Compose 稳定性声明（scaffold 最小件；第 47 条守卫扫描面）
+// 真实 conf 的背景/依据见仓库 feature-chat/stability.conf；本件只保留 9 条 FQN。
+// =============================================================================
+com.rickeal.agent.core.model.ChatMessage
+com.rickeal.agent.core.model.Attachment
+com.rickeal.agent.core.model.Attachment.Text
+com.rickeal.agent.core.model.Attachment.Image
+com.rickeal.agent.core.model.Attachment.Audio
+com.rickeal.agent.core.model.Attachment.File
+com.rickeal.agent.core.model.ToolCall
+com.rickeal.agent.core.model.ToolResult
+com.rickeal.agent.core.model.TokenUsage
+CONF
+  cat > "$root/core-model/src/main/java/com/rickeal/agent/core/model/ChatMessage.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+data class ChatMessage(
+    val id: String = "fixture",
+    val role: String = "user",
+    val text: String = "",
+    val attachments: List<Attachment> = emptyList(),
+) {
+    val isEmpty: Boolean
+        get() = text.isBlank()
+}
+KT
+  cat > "$root/core-model/src/main/java/com/rickeal/agent/core/model/Attachment.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+sealed class Attachment {
+    abstract fun key(): String
+
+    data class Text(
+        val id: String = "fixture",
+        val text: String = "",
+    ) : Attachment() {
+        override fun key(): String = id
+    }
+
+    data class Image(
+        val id: String = "fixture",
+        val uri: String = "",
+    ) : Attachment() {
+        override fun key(): String = id
+    }
+
+    data class Audio(
+        val id: String = "fixture",
+        val uri: String = "",
+    ) : Attachment() {
+        override fun key(): String = id
+    }
+
+    data class File(
+        val id: String = "fixture",
+        val uri: String = "",
+    ) : Attachment() {
+        override fun key(): String = id
+    }
+}
+KT
+  cat > "$root/core-model/src/main/java/com/rickeal/agent/core/model/Generation.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+data class TokenUsage(
+    val promptTokens: Int = 0,
+    val completionTokens: Int = 0,
+    val totalTokens: Int = 0,
+)
+KT
+  cat > "$root/core-model/src/main/java/com/rickeal/agent/core/model/ToolSpec.kt" <<'KT'
+package com.rickeal.agent.core.model
+
+data class ToolCall(
+    val id: String = "fixture",
+    val name: String = "",
+)
+
+data class ToolResult(
+    val callId: String = "",
+    val ok: Boolean = true,
+)
+KT
+  # 第 48 条（W80-03 / W81，ConversationCache.kt ≤ 200）同为 fail-closed：文件缺失
+  # 即红 ⇒ 骨架必须提供它，否则干净树被误红（漏铺 ⇒ 全红）。给一个远低于 200 行的
+  # 最小文件（与 #36/#37/#38 同款铺点）。
+  cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/ConversationCache.kt" <<'KT'
+package com.rickeal.agent.core.data
+
+class ConversationCache {
+    fun get(id: String): String? = id
+}
+KT
 }
 
 run_guard() { ( cd "$1" && bash "$GUARD" 2>&1 ); }
@@ -4907,6 +5018,222 @@ if printf '%s\n' "$out" | grep -qF "枚举值与证据表键不一致"; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case80d] 守卫判红但输出不含不一致归因（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case 81 / 81b / 81c / 81d：W81 —— feature-chat/stability.conf 承重墙（#47）。
+#
+# 背景：W80-02 向 Compose 编译器声明 9 个 core-model 类为 stable（流式重组优化的
+# 承重墙）。失效形态**全部编译期不可见**：给 conf 类加 var 字段 ⇒ 编译器仍按
+# stable 优化 ⇒ 静默跳过本应发生的重组（消息 UI 不刷新这类极难定位的 bug）；
+# conf 条目指向已不存在的类 ⇒ 编译器静默忽略该声明，优化无声降级。两者都是
+# 「编译/lint/测试全绿」形态，只有这条静态守卫能拦。
+#
+# case81（红面·主判据）：把骨架 ChatMessage 主构造 `val text` 改成 `var text` ⇒
+#   必红。断言红来自真命中（输出含 var 行号+原文 + `出现 var 属性` 归因），不是
+#   守卫自身炸了（assert_red 已钉退出码 1 与 ::error::[守卫名]，这里再钉事实行）。
+# case81b（绿面·**比红面更重要**，W78-07 教训）：合法形态不得误红 —— 类体里的
+#   **局部 var**（fun 内，深一档缩进）、**KDoc 里的 var 字样**、**被注释掉的 var
+#   属性**三形态同注，断言退出 0。缺这条绿面，第 47 条会把「给 ChatMessage 加一个
+#   带局部变量的函数」判红 ⇒ 守卫公信力崩塌（假红比漏报更伤）。
+# case81c（红面·陈旧条目）：conf 追加一个不存在的 FQN ⇒ 必红（断言 `陈旧条目`
+#   事实行）—— 防「条目静默降级」：编译器忽略不存在的 stable 声明时不报错。
+# case81d（红面·fail-closed）：整个 conf 被删 ⇒ 必红（断言 conf 不存在事实行）——
+#   防「误删后 DSL 静默降级」：文件没了编译器只是少几个 stable 声明，不报错。
+# 夹具全部在 $TMP 骨架树内（每个 case 重新 scaffold、随 $TMP 删除 ⇒ 天然可回滚，
+# 全程不触碰真实工作树）；改过的文件走 cp 备份 → 改 → 跑 → cp 还原 → diff 复核
+# 逐字节一致（不 sed 就地改真文件的同款纪律，与 case80c/80d 一致）。
+# ---------------------------------------------------------------------------
+if guard_selected 47; then
+d="$TMP/case81-conf-class-var"
+scaffold "$d"
+CMF="$d/core-model/src/main/java/com/rickeal/agent/core/model/ChatMessage.kt"
+cp "$CMF" "$CMF.orig"
+sed -i 's/    val text: String = "",/    var text: String = "",/' "$CMF"
+out="$(run_guard "$d")"; rc=$?
+cp "$CMF.orig" "$CMF" || true
+if diff -q "$CMF.orig" "$CMF" >/dev/null 2>&1; then
+  echo "PASS [case81] 夹具已逐字节还原（cp 备份 + diff 复核一致，未 sed 就地改真文件）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case81] 夹具还原失败（diff 不一致）⇒ 后续 case 可能被污染"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case81 conf 类主构造出现 var (第 47 条)" "$rc" "$out" \
+  "W80-02 stability.conf 承重墙：conf 类真实存在且全 val 无 var（禁 stable 声明与可变字段漂移）"
+if printf '%s\n' "$out" | grep -qF "出现 var 属性"; then
+  echo "PASS [case81] 红来自真命中（输出含 出现 var 属性 归因行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case81] 守卫判红但输出不含 var 归因（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case81b-local-var-and-comment-green"
+scaffold "$d"
+CMF="$d/core-model/src/main/java/com/rickeal/agent/core/model/ChatMessage.kt"
+cp "$CMF" "$CMF.orig"
+cat > "$CMF" <<'KT'
+package com.rickeal.agent.core.model
+
+data class ChatMessage(
+    val id: String = "fixture",
+    val role: String = "user",
+    val text: String = "",
+    val attachments: List<Attachment> = emptyList(),
+) {
+    val isEmpty: Boolean
+        get() = text.isBlank()
+
+    /**
+     * 说明文字里提到 var 不得命中（W77 实摔教训：注释里的说明文字会被裸 grep 误判）。
+     * 例如历史上有人写 var text: String = "" 这种形态。
+     */
+    fun summary(): String {
+        var local = 0
+        local += 1
+        // var commented: String = ""
+        return "$local$text"
+    }
+}
+KT
+out="$(run_guard "$d")"; rc=$?
+cp "$CMF.orig" "$CMF" || true
+if diff -q "$CMF.orig" "$CMF" >/dev/null 2>&1; then
+  echo "PASS [case81b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case81b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case81b 局部 var + KDoc/注释 var 提及 (第 47 条绿面)] 退出 0（行首代码形态锚点不误杀局部变量与注释，未假红）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case81b] 合法形态被误判（第 47 条锚点把局部 var / 注释里的 var 字样当成了属性 var ⇒ 假红）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case81c-conf-stale-fqn"
+scaffold "$d"
+CF="$d/feature-chat/stability.conf"
+cp "$CF" "$CF.orig"
+printf '%s\n' 'com.rickeal.agent.core.model.NoSuchClass' >> "$CF"
+out="$(run_guard "$d")"; rc=$?
+cp "$CF.orig" "$CF" || true
+if diff -q "$CF.orig" "$CF" >/dev/null 2>&1; then
+  echo "PASS [case81c] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case81c] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case81c conf 陈旧 FQN 条目 (第 47 条)" "$rc" "$out" \
+  "W80-02 stability.conf 承重墙：conf 类真实存在且全 val 无 var（禁 stable 声明与可变字段漂移）"
+if printf '%s\n' "$out" | grep -qF "陈旧条目"; then
+  echo "PASS [case81c] 红来自真命中（输出含 陈旧条目 归因行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case81c] 守卫判红但输出不含陈旧条目归因（假红或归因丢失）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case81d-conf-missing"
+scaffold "$d"
+CF="$d/feature-chat/stability.conf"
+mv "$CF" "$CF.renamed"
+out="$(run_guard "$d")"; rc=$?
+mv "$CF.renamed" "$CF"
+assert_red "case81d conf 缺失必须 fail-closed (第 47 条)" "$rc" "$out" \
+  "W80-02 stability.conf 承重墙：conf 类真实存在且全 val 无 var（禁 stable 声明与可变字段漂移）"
+if printf '%s\n' "$out" | grep -qF "stability.conf 不存在"; then
+  echo "PASS [case81d] 红来自真命中（输出含 conf 不存在 fail-closed 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case81d] 守卫判红但输出不含 conf 不存在事实行（可能只是守卫自身炸了，非判据响）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+# ---------------------------------------------------------------------------
+# case 82 / 82b：W81 —— ConversationCache.kt 行数闸门（#48，#25 家族第 10 员）。
+#
+# 背景：W80-03 落地的 ConversationCache（会话全文读缓存）是新承重结构却零行数
+# 闸门（外部审查「新承重结构无守卫」两项之一）；Phase A 现 76 行、Phase B 还会长，
+# 无机械面拦膨胀即重演「新文件长成 god-file」循环。
+#
+# case82（红面）：覆写成 254 行（3 行类头 + 250 行 val + 1 行类尾）⇒ 必红。
+#   断言 `超 200 行上限` 事实行（守卫报红 ≠ 真命中，W77 教训）。
+# case82b（绿面）：覆写成 194 行（190 行 val）⇒ 必须不红。红绿成对：缺绿面，
+#   「上限 200」可能退化成「凡文件在就红」的僵尸判据（W78-07 教训：81b 比 81 重要）。
+#   阈值边界不逐字节钉（-le 200 的等号语义由 #45 家族同款 `wc -l` 比较式保证）。
+# 夹具均为整文件覆写 + cp 还原 + diff 复核（与 case81 家族同款纪律）。
+# ---------------------------------------------------------------------------
+if guard_selected 48; then
+d="$TMP/case82-conversationcache-oversize"
+scaffold "$d"
+CCF="$d/core-data/src/main/java/com/rickeal/agent/core/data/ConversationCache.kt"
+cp "$CCF" "$CCF.orig"
+{
+  echo 'package com.rickeal.agent.core.data'
+  echo ''
+  echo 'class ConversationCache {'
+  i=1
+  while [ "$i" -le 250 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$CCF"
+out="$(run_guard "$d")"; rc=$?
+cp "$CCF.orig" "$CCF" || true
+if diff -q "$CCF.orig" "$CCF" >/dev/null 2>&1; then
+  echo "PASS [case82] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case82] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case82 ConversationCache.kt 超行数上限 (第 48 条)" "$rc" "$out" \
+  "ConversationCache.kt 总行数 ≤ 200（core-data 行数表 #25 家族第 10 员，触顶 = 启动 ConversationCache 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 200 行上限"; then
+  echo "PASS [case82] 红来自真命中（输出含 超 200 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case82] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case82b-conversationcache-legal-size"
+scaffold "$d"
+CCF="$d/core-data/src/main/java/com/rickeal/agent/core/data/ConversationCache.kt"
+cp "$CCF" "$CCF.orig"
+{
+  echo 'package com.rickeal.agent.core.data'
+  echo ''
+  echo 'class ConversationCache {'
+  i=1
+  while [ "$i" -le 190 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$CCF"
+out="$(run_guard "$d")"; rc=$?
+cp "$CCF.orig" "$CCF" || true
+if diff -q "$CCF.orig" "$CCF" >/dev/null 2>&1; then
+  echo "PASS [case82b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case82b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case82b 194 行合法规模 (第 48 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case82b] 194 行（≤200）合法文件被误判（第 48 条上限判据退化成恒红僵尸规则）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi
