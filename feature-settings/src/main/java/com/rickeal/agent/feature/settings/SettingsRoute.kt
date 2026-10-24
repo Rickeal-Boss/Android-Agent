@@ -2,8 +2,12 @@ package com.rickeal.agent.feature.settings
 
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
@@ -94,6 +98,11 @@ fun NavGraphBuilder.settingsGraph(
         // 物理量观测（Wave 30 §2.2）：StateFlow 收集 + 窗口开关经引用计数交给
         // DiagnosticsScreen 的 DisposableEffect（进入 acquire / 离开 release）。
         val perfSamples by container.perfMonitorManager.samples.collectAsState()
+        // 帧统计（W81，审查 P0-1 的 07a 档）：仅 debug 构建有采集行为
+        // （FrameStatsCollector 内部按 FLAG_DEBUGGABLE 门控，release 恒 no-op）；
+        // 「采集中」状态归本路由持有，卡片按它切按钮文案。
+        val frameStats by container.frameStatsCollector.stats.collectAsState()
+        var frameStatsActive by remember { mutableStateOf(false) }
         // 模型自检（Wave 44 P0-1）：探针状态机归 DiagnosticsViewModel（本页此前无 VM，
         // 探针引入异步/可变状态后该姿态已不成立 —— 见 DiagnosticsScreen KDoc）。
         val diagnosticsViewModel: DiagnosticsViewModel = viewModel(
@@ -111,13 +120,32 @@ fun NavGraphBuilder.settingsGraph(
             perfHeader = "CLK_TCK：${container.perfMonitorManager.clkTckSourceLabel}" +
                 " · 样本 ${perfSamples.size}/${PerformanceMonitorManager.HISTORY_CAPACITY}（1s 间隔）",
             onPerfObservation = { active ->
-                if (active) container.perfMonitorManager.acquire("diagnostics")
+                // 页面窗口：clearSamples=false —— 不清空样本，「刚跑完开诊断页要看
+                // 这次数据」不被 0→1 的线程重建抹掉（W81 审查 P1-1；run 窗口的
+                // clearSamples=true 在 ChatRunCoordinator 的 acquire 点）。
+                if (active) container.perfMonitorManager.acquire("diagnostics", clearSamples = false)
                 else container.perfMonitorManager.release("diagnostics")
+            },
+            frameStats = frameStats,
+            frameStatsAvailable = container.frameStatsCollector.isDebuggable,
+            frameStatsActive = frameStatsActive,
+            onFrameStatsToggle = { active ->
+                frameStatsActive = active
+                if (active) container.frameStatsCollector.start()
+                else container.frameStatsCollector.stop()
             },
             probeState = probeState,
             onRunProbe = diagnosticsViewModel::onRunProbe,
             knownBrokenOn = knownBrokenOn,
         )
+        // 离开页面停帧统计采集（窗口纪律同 onPerfObservation 的 DisposableEffect）：
+        // 不停的话 Choreographer 回调会跟到诊断页之后白耗电。stop 幂等。
+        DisposableEffect(Unit) {
+            onDispose {
+                frameStatsActive = false
+                container.frameStatsCollector.stop()
+            }
+        }
     }
 
     // Wave4：工具页提升为一级页签（route 已改为顶层 "tools"），但 composable 仍注册

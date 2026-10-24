@@ -1,8 +1,12 @@
 package com.rickeal.agent.feature.settings
 
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
@@ -42,6 +46,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.rickeal.agent.core.data.perf.FrameStatsCollector
 import com.rickeal.agent.core.data.perf.PerfSample
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
@@ -86,6 +92,11 @@ import kotlinx.coroutines.withContext
  * 操作，因此**必须有 Toast 反馈**（成功与「剪贴板不可用」都要说）—— 没有反馈时用户无法
  * 区分「复制成功」与「点了没反应」，这正是本项目「失败可见化」铁律要避免的形态。
  *
+ * W81 观测面三项改进（外部审查实证）：① CPU-秒曲线改按**真实时间**定位 + 冻结缺口
+ * 断线（见 [CpuSecondsChart] KDoc 的 W78 取证）；② 「物理量」卡内新增**电池温度行**
+ * （与 ThermalGovernor 熔断判据同源展示 —— 用户被热保护拒了得知道为什么）；③ 新增
+ * **帧统计卡**（仅 debug 构建，Choreographer 零依赖采集，见 [FrameStatsCollector] KDoc）。
+ *
  * @param readPersistedErrors 读回落盘的 ERROR 记录（阻塞 IO，调用方保证在 IO 线程执行）
  * @param clearPersistedErrors 清空落盘记录
  * @param probeState 模型自检状态机（Wave 44，带默认值向后兼容：不传 = 不显示自检结论）
@@ -108,6 +119,18 @@ fun DiagnosticsScreen(
     perfHeader: String? = null,
     /** true = 进入页面（acquire）；false = 离开（release）。 */
     onPerfObservation: (Boolean) -> Unit = {},
+    // ── 帧统计（W81，审查 P0-1 的 07a 档）─────────────────────────────────
+    /**
+     * 帧统计快照（null = 未采集 / 已停止）。仅 [frameStatsAvailable] 为 true
+     * （debug 构建）时可能出现非 null —— release 包采集器恒零行为。
+     */
+    frameStats: FrameStatsCollector.FrameStats? = null,
+    /** true = debug 构建（采集器有行为）；false = release，帧统计卡整体不显示。 */
+    frameStatsAvailable: Boolean = false,
+    /** true = 正在采集。 */
+    frameStatsActive: Boolean = false,
+    /** 开关回调：true = 开始采集，false = 停止采集。 */
+    onFrameStatsToggle: (Boolean) -> Unit = {},
     // ── 模型自检（Wave 44 P0-1）─────────────────────────────────────
     probeState: ProbeUiState = ProbeUiState.Idle,
     onRunProbe: () -> Unit = {},
@@ -413,6 +436,50 @@ fun DiagnosticsScreen(
                             color = colors.onGlassSubtle,
                             modifier = Modifier.padding(top = 2.dp),
                         )
+                        // 电池温度（W81，审查 P1-3）：ThermalGovernor 用电池温度 ≥44.9℃
+                        // 做熔断主判据（W43），但此前诊断页零展示 ⇒ 用户被「拒新 run /
+                        // 轮间冷却」却不知情。口径与 AppContainer 给 ThermalGovernor 的
+                        // batteryTempTenths **同源**（同一个 ACTION_BATTERY_CHANGED
+                        // sticky broadcast 的 EXTRA_TEMPERATURE，十分之一℃）—— 不另起
+                        // 采集源、不 1Hz 轮询 registerReceiver(null, …)（每次一次
+                        // binder，审查明确警告）。
+                        var batteryTempTenths by remember {
+                            mutableIntStateOf(Int.MIN_VALUE)
+                        }
+                        DisposableEffect(Unit) {
+                            val receiver = object : BroadcastReceiver() {
+                                override fun onReceive(ctx: Context?, intent: Intent?) {
+                                    batteryTempTenths = intent?.getIntExtra(
+                                        BatteryManager.EXTRA_TEMPERATURE,
+                                        Int.MIN_VALUE,
+                                    ) ?: Int.MIN_VALUE
+                                }
+                            }
+                            val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+                            // 进程内接收，不被外部唤起；API 33+ 必须显式
+                            // RECEIVER_NOT_EXPORTED（ContextCompat 跨版本安全，
+                            // 与 ScreenStateMonitor 同款）。ACTION_BATTERY_CHANGED 是
+                            // 受保护的系统广播，NOT_EXPORTED 不影响系统侧投递。
+                            val sticky = ContextCompat.registerReceiver(
+                                context,
+                                receiver,
+                                filter,
+                                ContextCompat.RECEIVER_NOT_EXPORTED,
+                            )
+                            // registerReceiver 的返回值即当前 sticky intent —— 立即取
+                            // 初值，无需等下一次广播（温度变化很慢，粘性值就是现状），
+                            // 也免掉一次 registerReceiver(null, …) 的 binder 往返。
+                            if (sticky != null) receiver.onReceive(context, sticky)
+                            onDispose { context.unregisterReceiver(receiver) }
+                        }
+                        PerfRow(
+                            "电池温度",
+                            if (batteryTempTenths != Int.MIN_VALUE) {
+                                "%.1f℃（保护线 44.9℃）".format(batteryTempTenths / 10f)
+                            } else {
+                                "—"
+                            },
+                        )
                         val latestSample = perfSamples.lastOrNull()
                         if (latestSample == null) {
                             Text(
@@ -438,6 +505,64 @@ fun DiagnosticsScreen(
                             )
                             PerfRow("PSS", "${latestSample.pssKb / 1024} MB")
                             PerfRow("可用内存", "${latestSample.availMemBytes / (1024 * 1024)} MB")
+                        }
+                    }
+                }
+            }
+
+            /* ------------------------------------------ 帧统计（W81，审查 P0-1 的 07a 档） */
+            // 仅 debug 构建显示：采集器按 FLAG_DEBUGGABLE 门控，release 包恒零行为。
+            // 为什么帧级数据只剩这条路：W80-01 取证 PDRM00 dumpsys gfxinfo 帧统计恒 0
+            // （设备级不可用）；JankStats 底层就是 Choreographer.FrameCallback 封装，但引它
+            // 要动版本锁死纪律 —— 零依赖自采覆盖「滚动 / 生成期掉帧率」这个唯一消费场景
+            // （详见 FrameStatsCollector KDoc）。
+            if (frameStatsAvailable) {
+                GlassCard(contentPadding = PaddingValues(14.dp)) {
+                    Column {
+                        Text(
+                            text = "帧统计",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = colors.onGlass,
+                        )
+                        Text(
+                            text = "仅 debug 构建；滚动列表或生成时开启采集（约 2s 出结论）。" +
+                                "掉帧 = 帧间隔超过 " +
+                                "${FrameStatsCollector.JANK_THRESHOLD_NANOS / 1_000_000}ms。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onGlassSubtle,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = if (frameStatsActive) "采集中…" else "未采集",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = colors.onGlass,
+                                modifier = Modifier.weight(1f),
+                            )
+                            GlassButton(
+                                text = if (frameStatsActive) "停止采集" else "开始采集",
+                                onClick = { onFrameStatsToggle(!frameStatsActive) },
+                            )
+                        }
+                        if (frameStats == null) {
+                            Text(
+                                text = "暂无帧数据：开启采集后滚动列表或等待生成",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        } else {
+                            PerfRow("FPS", "%.0f".format(frameStats.fps))
+                            PerfRow("掉帧率", "%.1f%%".format(frameStats.jankyPercent))
+                            PerfRow(
+                                "窗口帧数",
+                                "${frameStats.frames}（其中掉帧 ${frameStats.jankyFrames}）",
+                            )
                         }
                     }
                 }
@@ -587,8 +712,15 @@ private fun PerfRow(label: String, value: String) {
 }
 
 /**
- * CPU-秒折线（端侧裁剪版曲线区）：横轴 = 样本序（1s/点，最多 180 点），纵轴 =
- * 进程累计 CPU 秒归一化到窗口最大值。曲线单调递增是健康形态，斜率即占用强度。
+ * CPU-秒折线（端侧裁剪版曲线区）：横轴 = **真实时间**（可见缓冲区内首末样本的
+ * atElapsedMillis 跨度映射），纵轴 = 进程累计 CPU 秒归一化到窗口最大值。曲线单调递增
+ * 是健康形态，斜率即占用强度。
+ *
+ * 为什么按时间定位而不是样本序号（W81，审查 P1-2）：W78 实测 ColorOS 灭屏 ~10s 冻结
+ * 进程、采样线程随停 —— 实测一次冻 416s ⇒ 时间戳存在数分钟缺口。按序号等距画图会把
+ * 冻结缺口抹平成连续线（曲线谎称「那段时间也在采样」）；按时间定位后，缺口显式断线
+ * （相邻样本间隔 > [GAP_THRESHOLD_MILLIS] 时 moveTo 而非 lineTo）—— 断线才是真相。
+ * 后台保活落地后冻结从边缘场景变日常，这条口径随之事关正确性。
  */
 @Composable
 private fun CpuSecondsChart(
@@ -599,16 +731,40 @@ private fun CpuSecondsChart(
     Canvas(modifier = modifier) {
         if (samples.size < 2) return@Canvas
         val maxCpu = samples.maxOf { it.cpuSeconds }.coerceAtLeast(1e-6)
-        val stepX = size.width / (samples.size - 1)
+        val firstAt = samples.first().atElapsedMillis
+        val lastAt = samples.last().atElapsedMillis
+        val span = lastAt - firstAt
+        // span <= 0（时间戳异常/全部同刻）时退回序号等距：至少画得出曲线 —— 观测面
+        // 绝不能因为除零崩 Composable。span > 0 时 x = 样本时刻在跨度内的真实占比。
+        val stepX = if (span > 0) size.width / span else size.width / (samples.size - 1)
         val path = Path()
+        var previousAt = 0L
         samples.forEachIndexed { index, sample ->
-            val x = index * stepX
+            val x = if (span > 0) {
+                (sample.atElapsedMillis - firstAt).toFloat() / span * size.width
+            } else {
+                index * stepX
+            }
             val y = size.height - ((sample.cpuSeconds / maxCpu) * size.height).toFloat()
-            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            // 缺口断线：与上一样本间隔超过阈值（2.5 个采样周期）⇒ 提笔。冻结 / 采样
+            // 线程停摆期间没有数据，连线就是伪造连续性（见 KDoc 的 W78 取证）。
+            if (index == 0 || sample.atElapsedMillis - previousAt > GAP_THRESHOLD_MILLIS) {
+                path.moveTo(x, y)
+            } else {
+                path.lineTo(x, y)
+            }
+            previousAt = sample.atElapsedMillis
         }
         drawPath(path, color = color, style = Stroke(width = 2.dp.toPx()))
     }
 }
+
+/**
+ * 曲线断线阈值（W81，审查 P1-2）：相邻样本间隔超过 2.5 个采样周期（采样间隔 1s，
+ * 见 `PerformanceMonitorManager.SAMPLE_INTERVAL_MILLIS`）即判定为缺口 —— 提笔断线，
+ * 不把冻结期（W78 实测单次 416s）画成连续曲线。
+ */
+private const val GAP_THRESHOLD_MILLIS = 2_500L
 
 /**
  * 自检结论行的配色意图（W71 B2）：纯函数侧只表达「用哪支颜色」，**不触碰**
