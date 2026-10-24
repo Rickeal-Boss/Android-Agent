@@ -50,6 +50,9 @@ class FreezeAwareTimeoutTest {
      * frozen = `max(0, 自锚流逝 − 200ms)` ⇒ 前 200ms 正常计时，之后 frozen 与墙钟同速增长
      * ⇒ runnable = `min(自锚流逝, 200ms)`，饱和在 200ms（与构造→启动间隔无关，不受 CI 抖动影响）。
      * 饱和值取 200ms 而非 100ms：看门狗 tick = 250ms，留 ≥100ms 余量，避免慢 CI 上边界抖动。
+     *
+     * 锚定假设（W81 审查 G-5 成文）：首个 `frozenNanos()` 调用即 `freezeAwareTimeout`
+     * 的基线快照点；若起点前新增读取，本 fake 语义漂移需同步调整。
      */
     private class MidRunFreezeFakeClock : FreezeClock {
         private var anchorNanos = -1L

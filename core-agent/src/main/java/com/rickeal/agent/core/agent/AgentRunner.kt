@@ -763,6 +763,8 @@ class AgentRunner(
                 request.history.lastOrNull { it.usage != null }?.usage,
                 // Wave 31 6d：子 run 继承父 run 的绝对硬截止（null = 自起算）。
                 hardDeadlineOverrideNanos = request.deadlineNanos,
+                // W81：冻结时钟注入（RunState 起点同刻取 frozenBaselineNanos）。
+                freezeClock = freezeClock,
             )
 
             // 通道判据漂移的留痕闸门（见下方「每轮校验」处）—— 每次 run **只报一次**：
@@ -1154,12 +1156,25 @@ class AgentRunner(
         // 取舍见 [RunState.pausedNanos]：只排除审批挂起，不排除模型生成 / 工具执行。
         // 表达式外提为文件级纯函数 [wallClockRemainingMillis]（Wave 53）—— 让「判据侧含
         // pausedNanos」这层接线可被 JVM 单测直接钉住（evidence 那条测不到判据表达式）。
+        //
+        // W81：冻结停表（G-1 收口）—— 再加回「本次 run 冻结累计」
+        // （state.frozenSinceRunStartNanos()）。生成超时自 W78-12 起已冻结感知，run 级墙钟
+        // 不补这半截 = 「解冻后下一个轮头 remaining ≤ 0 ⇒ HARD 熔断」：ColorOS 实测灭屏
+        // ~10s 冻结、一次冻 416s ⇒ 多轮工具调用 run 锁屏必死（单轮生成无第二个轮头，不可见）。
+        // 历史冻结由 RunState.frozenBaselineNanos（起点同刻取的基线）剔除，不进本轮预算。
+        //
+        // 读取顺序：nowNanos 先、frozenNanos 后 —— 若亮屏广播落在两次读之间，冻结量略过计
+        // ⇒ 截止被多延一点（安全方向）；反之中断 = 误掐 = 坏方向。
+        val nowNanos = System.nanoTime()
+        val frozenNanos = state.frozenSinceRunStartNanos()
         val remaining = wallClockRemainingMillis(
             hardDeadlineNanos = state.hardDeadlineNanos,
             pausedNanos = state.pausedNanos,
-            nowNanos = System.nanoTime(),
+            frozenNanos = frozenNanos,
+            nowNanos = nowNanos,
         )
-        // 有效执行时长（扣审批挂起）—— evidence 的「已运行」与日志文案都报这个数，与判据同源。
+        // 有效执行时长（扣审批挂起 + 冻结，W81）—— evidence 的「已运行」与日志文案都报这个数，
+        // 与判据同源。
         val effectiveElapsed = state.effectiveElapsedMillis()
         // 子 run（硬截止继承自父 run）：evidence 改报「自父 run 锚点起的总运行」——
         // 由继承来的绝对墙反推（硬预算 − 剩余），与判据同源，故「总运行 300 秒 ⇒
@@ -1318,6 +1333,13 @@ class AgentRunner(
          * 由 [AgentRequest.deadlineNanos] 透传（构造点 = executeBodyUnchecked）。
          */
         hardDeadlineOverrideNanos: Long? = null,
+        /**
+         * 冻结时钟（W81）：[frozenBaselineNanos] 的读取源与「本次 run 冻结累计」的活水源。
+         * 由 executeBodyUnchecked 构造时传入（AgentRunner 的构造注入，生产 =
+         * ScreenStateMonitor 背书的 accumulator，默认 MonotonicFreezeClock ⇒ 无冻结感知、
+         * 行为与 W81 前逐字节一致）。
+         */
+        private val freezeClock: FreezeClock = MonotonicFreezeClock,
     ) {
         var round = 0
         // ── 上下文版本与 token 记账（外部审查报告2 §2，B1 压缩语义失效的根治）──
@@ -1401,6 +1423,15 @@ class AgentRunner(
         // 墙钟锚点（Wave 30 §2.7）：nanoTime 是单调刻度，减法比较安全；
         // 禁止拿它与 Date 互转（非墙钟语义）。
         val startedElapsedNanos = System.nanoTime()
+        /**
+         * W81：run 起点**同刻**取的进程级冻结累计基线（与 [startedElapsedNanos] 同一构造时刻）。
+         *
+         * 为什么需要基线：[FreezeClock.frozenNanos] 是**进程级累计、永不清零**（含 run 起点之前
+         * 的历史灭屏）⇒ 判据只能用「本次 run 冻结增量」= `frozenNanos() − frozenBaselineNanos`。
+         * 与 [freezeAwareTimeout] 起点取 `frozenBaselineNanos` 是同一条纪律（W79）：灭屏 416s
+         * 后开跑，历史冻结不进本轮预算；只在 run 开始后被冻的时段才停表。
+         */
+        val frozenBaselineNanos: Long = freezeClock.frozenNanos()
         /** 硬截止绝对时刻：外部显式传入则采用，否则自起算 WALL_CLOCK_HARD_MILLIS。 */
         val hardDeadlineNanos: Long = hardDeadlineOverrideNanos
             ?: (startedElapsedNanos + WALL_CLOCK_HARD_MILLIS * 1_000_000L)
@@ -1428,20 +1459,37 @@ class AgentRunner(
          * 否则一次长授权对话框（W51 实测挂起 ~5min）就能让批准后的下一轮轮头**立即**
          * HARD 熔断（W51 有一个污染 run 正是此现象）。
          *
-         * 取舍（如实申报）：停表**只**排除审批挂起时长；模型生成与工具执行时长**照常
-         * 计入**（它们才是端侧预算真正要约束的对象）。累计用加法（多次审批累加），
-         * 由 `gateRoundHead` 的 remaining 与 evidence 口径共同消费。
+         * 取舍（如实申报）：停表**只**排除审批挂起时长与 OEM 冻结时长（W81 起，见
+         * [frozenSinceRunStartNanos]）；模型生成与工具执行时长**照常计入**（它们才是端侧
+         * 预算真正要约束的对象）。累计用加法（多次审批累加），由 `gateRoundHead` 的
+         * remaining 与 evidence 口径共同消费。
          */
         var pausedNanos: Long = 0L
 
         /**
-         * 有效执行时长（毫秒）：run 相对时长扣掉审批挂起（[pausedNanos]）。
-         * 墙钟 evidence 的「已运行」文案与诊断卡「耗时」报的都是这个数（有效执行时长，非墙钟）。
+         * **本次 run** 累计冻结（纳秒，W81）：`frozenNanos() − frozenBaselineNanos`。
+         *
+         * 与 [pausedNanos] 同族（「机器没干活」的时段）：ColorOS 灭屏 ~10s 触发 cgroup 级
+         * 进程冻结（W78-08 实测一次冻 416s），冻结期间线程全停、单调钟照走。若墙钟判据不剔
+         * 除这段，「生成不被掐（freezeAwareTimeout 已豁免）+ 解冻后下一个轮头 remaining ≤ 0
+         * ⇒ HARD 熔断」的半截修复会让**多轮工具调用 run 锁屏必死**（单轮对话生成完即结算
+         * 无第二个轮头，不可见 —— 这正是 W78-12 销账判据漏掉多轮场景的原因）。
+         */
+        fun frozenSinceRunStartNanos(): Long = freezeClock.frozenNanos() - frozenBaselineNanos
+
+        /**
+         * 有效执行时长（毫秒）：run 相对时长扣掉审批挂起（[pausedNanos]）与冻结
+         * （[frozenSinceRunStartNanos]，W81）。墙钟 evidence 的「已运行」文案与诊断卡「耗时」
+         * 报的都是这个数（有效执行时长，非墙钟）。
          *
          * 算术委托文件级纯函数 [effectiveElapsedMillis]（含「钳到 ≥0」），本处只喂入本 run 的
-         * 两个量 —— 这样停表算术可被 JVM 单测直接覆盖（见 [WallClockEvidenceTest]）。
+         * 三个量 —— 这样停表算术可被 JVM 单测直接覆盖（见 [WallClockEvidenceTest]）。
          */
-        fun effectiveElapsedMillis(): Long = effectiveElapsedMillis(elapsedMillis(), pausedNanos)
+        fun effectiveElapsedMillis(): Long = effectiveElapsedMillis(
+            elapsedMillis(),
+            pausedNanos,
+            frozenSinceRunStartNanos(),
+        )
     }
 
     /**
@@ -1981,14 +2029,24 @@ class AgentRunner(
             // 却按原墙判」而提前熔断。父 run 的 pausedNanos 在子 run 构造时是已发生审批
             // 的累计值；子 run 自己的审批挂起由子 run 自己的 pausedNanos 继续累加。
             //
+            // W81：父 run 的**冻结**同理只计一次（childDeadlineNanos 第三参）—— 子 run 的
+            // 冻结基线在子 run 起点取（= 当时的进程级 frozenNanos()），父 run 期间（子起点
+            // 之前）的冻结不在子自己的剔除区间，不显式加进子墙就会「父被冻 400s、子拿原墙」
+            // 提前熔断。
+            //
             // ⚠️ 可达性申报（Wave 53）：上句「子 run 自己的审批挂起由子 run 自己的
             // pausedNanos 继续累加」当前**不可达** —— 当前子 run 无审批通道
             //（`AskSubagentTool` 构造子 run 的 `AgentRequest` 时未传 `approvalHandler`），
             // 子 run 的审批闸门恒走 `handler == null` 的 fail-closed 分支（见本文件
             // `request.approvalHandler` 判空处），子 run 自己的 `pausedNanos` 恒为 0，
             // 此分支暂不可达。保留该表述是为**语义正确**（将来若给子 run 接审批通道，
-            // 这行即生效），**不是**断言当前存在该路径。
-            deadlineNanos = childDeadlineNanos(state.hardDeadlineNanos, state.pausedNanos),
+            // 这行即生效），**不是**断言当前存在该路径。（子 run 自己的冻结剔除则**可达**：
+            // frozenBaselineNanos 在每个 RunState 构造时都会取，子 run 天然有自己的基线。）
+            deadlineNanos = childDeadlineNanos(
+                state.hardDeadlineNanos,
+                state.pausedNanos,
+                state.frozenSinceRunStartNanos(),
+            ),
         )
         val result = withContext(SubagentRunContext(parentContext)) {
             executeWithGuard(call, tool, policy)

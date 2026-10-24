@@ -93,61 +93,87 @@ internal const val THINKING_BUDGET_REMINDER: String =
 /* --------------------------------------------- 墙钟停表算术纯函数族（W52/W53/W54） */
 
 /**
- * 有效执行时长（毫秒）= run 相对墙钟时长 − 审批挂起时长（Wave 52 B1 停表算术）。
+ * 有效执行时长（毫秒）= run 相对墙钟时长 − 审批挂起时长 − 冻结时长（Wave 52 B1 停表算术；
+ * W81 冻结豁免）。
  *
  * 抽成**文件级 `internal` 纯函数**（同 [wallClockSoftEvidence] 的口径）：停表算术必须能被
  * JVM 单测直接钉住 —— [WallClockEvidenceTest] 只断言 evidence 的**文案模板**（入参为字面量），
  * 覆盖不到「elapsed 与 paused 怎么合成」这一步；把算术外提才补得上这个观测面。
  *
+ * W81：`frozenNanos`（本次 run 累计冻结，见 [RunState 基线口径]）与 `pausedNanos` 同族 —
+ * 都是「机器没干活」的时段（审批等待 / OEM cgroup 冻结）。Wave 52 已为审批挂起立停表先例，
+ * 冻结在语义上同属「进程不执行」，口径不该厚此薄彼；且 `freezeAwareTimeout`（生成超时）自
+ * W78-12 起已剔除冻结，run 级墙钟再按裸钟计时会出现「生成不掐、解冻后轮头熔断」的半截修复
+ * （多轮工具调用场景：锁屏 6 分钟 + 3 轮工具 = 必死）。
+ *
  * @param elapsedMillis run 相对墙钟时长（[RunState.elapsedMillis]）。
- * @param pausedNanos 审批挂起累计（[RunState.pausedNanos]，纳秒）。
- * @return 有效执行时长（毫秒），**钳到 ≥ 0**。防御性钳制：审批挂起理论上 ≤ 墙钟（挂起发生在
- *   run 内），但纯函数不依赖该不变量 —— 越界输入一律返回 0 而非负值（负耗时会让上游
- *   「已运行 -N 秒」的文案与判据同时失真）。
+ * @param pausedNanos 审批挂起累计（纳秒）。
+ * @param frozenNanos **本次 run** 累计冻结（纳秒）= `frozenNanos() − frozenBaselineNanos`
+ *   （基线口径见 `AgentRunner.RunState` 的 `frozenBaselineNanos` 字段注释）；
+ *   历史冻结（起点之前）由基线剔除，不进本轮——与 [freezeAwareTimeout] 的基线纪律同款。
+ * @return 有效执行时长（毫秒），**钳到 ≥ 0**。防御性钳制：审批挂起/冻结理论上 ≤ 墙钟，但纯函数
+ *   不依赖该不变量——越界输入一律返回 0 而非负值（负耗时会让上游「已运行 -N 秒」的文案与判据
+ *   同时失真）。
  */
-internal fun effectiveElapsedMillis(elapsedMillis: Long, pausedNanos: Long): Long =
-    (elapsedMillis - pausedNanos / 1_000_000L).coerceAtLeast(0L)
+internal fun effectiveElapsedMillis(
+    elapsedMillis: Long,
+    pausedNanos: Long,
+    frozenNanos: Long,
+): Long =
+    (elapsedMillis - pausedNanos / 1_000_000L - frozenNanos / 1_000_000L).coerceAtLeast(0L)
 
 /**
- * 墙钟**判据**的剩余量（毫秒）= (硬截止 + 审批挂起累计 − now) / 1e6（Wave 52 B1 接线，Wave 53 外提）。
+ * 墙钟**判据**的剩余量（毫秒）= (硬截止 + 审批挂起累计 + 冻结累计 − now) / 1e6
+ * （Wave 52 B1 接线，Wave 53 外提，W81 冻结豁免）。
  *
  * 与 [effectiveElapsedMillis] 的**分工**（勿混）：[effectiveElapsedMillis] 是 evidence / 日志文案
- * 报的「已运行多久」（墙钟 − 挂起）；本函数是**判据侧**的「距硬截止还剩多少」。二者是同一停表
+ * 报的「已运行多久」（墙钟 − 挂起 − 冻结）；本函数是**判据侧**的「距硬截止还剩多少」。二者是同一停表
  * 算术的两种等价表达（`remaining ≈ 硬预算 − 有效时长`），但代码上是**两条独立表达式** ——
  * 这正是 Wave 53 要补的接线观测面：既有 [WallClockEvidenceTest] 只钉住 evidence 用的那一条，
  * 判据侧的 `+ pausedNanos` 一旦被误删，`remaining` 会退回纯墙钟口径（长授权后下一轮**立即** HARD
  * 熔断的 W51 现象复发），而 evidence 那条测试**照样绿**。故把判据表达式外提为纯函数直接钉住。
+ * **W81 的 `+ frozenNanos` 同理**：漏加则「解冻后下一个轮头 remaining ≤ 0 ⇒ HARD 熔断」
+ * （ColorOS 实测一次冻 416s ⇒ 锁屏解冻即被杀），而 evidence 侧测试同样测不到。
  *
  * @param hardDeadlineNanos 硬截止绝对时刻（[RunState.hardDeadlineNanos]，nanoTime 刻度）。
- * @param pausedNanos 审批挂起累计（[RunState.pausedNanos]）；加回硬截止 = 把审批等待从预算里剔除。
+ * @param pausedNanos 审批挂起累计；加回硬截止 = 把审批等待从预算里剔除。
+ * @param frozenNanos 本次 run 冻结累计；加回硬截止 = 把冻结时段从预算里剔除（W81）。
  * @param nowNanos 当前时刻（`System.nanoTime()`）；显式传入以便 JVM 单测用可控时间源。
  * @return 距硬截止的剩余毫秒（可能为负 ⇒ 已越界，上游按 `<= 0` 判 HARD 熔断）。
  */
 internal fun wallClockRemainingMillis(
     hardDeadlineNanos: Long,
     pausedNanos: Long,
+    frozenNanos: Long,
     nowNanos: Long,
-): Long = (hardDeadlineNanos + pausedNanos - nowNanos) / 1_000_000L
+): Long = (hardDeadlineNanos + pausedNanos + frozenNanos - nowNanos) / 1_000_000L
 
 /**
- * 子 run 继承的绝对硬截止（Wave 54 外提）：`子墙 = 父墙 + 父 paused`。
+ * 子 run 继承的绝对硬截止（Wave 54 外提；W81 加父冻结）：`子墙 = 父墙 + 父 paused + 父 frozen`。
  *
- * **父挂起只计一次**：子墙 = 父墙 + 父 paused；子自身 paused 另计（W52 交接已证不变量）。
- * 父 run 停表后，子 run 若仍拿未延长的绝对墙，就会「父 run 停过表、子 run 却按原墙判」而
- * 提前熔断（W51 现象）—— 故继承时同步加上父 run 的审批挂起累计（[RunState.pausedNanos]）。
+ * **父挂起/父冻结只计一次**：子墙 = 父墙 + 父 paused + 父 frozen；子自身 paused/frozen 另计
+ * （W52 交接已证不变量）。父 run 停表后，子 run 若仍拿未延长的绝对墙，就会「父 run 停过表、
+ * 子 run 却按原墙判」而提前熔断（W51 现象）——故继承时同步加上父 run 的审批挂起累计
+ * （[RunState.pausedNanos]）。**W81：父 run 的冻结同理**——子 run 的冻结基线在子 run 起点取
+ * （= 当时的进程级 `frozenNanos()`），父 run 期间（子起点之前）的冻结不在子自己的剔除区间里，
+ * 不显式加进子墙就会被「父被冻 400s、子拿原墙」提前熔断。
  *
  * 为什么外提为**文件级 `internal` 纯函数**（同 [wallClockRemainingMillis] 的口径）：本 spawn
  * 点算术此前**零测试覆盖** —— 外部报告曾声称「父审批停表不向子 run 传播」，回源码却证伪
  *（调用点本就是 `state.hardDeadlineNanos + state.pausedNanos`）。外提即把该算术变成可 JVM
  * 直测的观测面，堵「照报告乱改」的回归口（见 [WallClockEvidenceTest]）。
  *
- * @param parentDeadlineNanos 父 run 的绝对硬截止（[RunState.hardDeadlineNanos]，nanoTime 刻度）。
- * @param parentPausedNanos 父 run 的审批挂起累计（[RunState.pausedNanos]）；加回父墙 = 把父 run
- *   已发生的审批等待从子 run 的预算里剔除（**只计一次**，不重复累加）。
+ * @param parentDeadlineNanos 父 run 的绝对硬截止（nanoTime 刻度）。
+ * @param parentPausedNanos 父 run 的审批挂起累计；加回父墙 = 把父 run 已发生的审批等待从子 run
+ *   的预算里剔除（**只计一次**，不重复累加）。
+ * @param parentFrozenNanos 父 run 在子 run  spawn 时已累计的冻结（纳秒）；只计一次（W81）。
  * @return 子 run 继承的绝对硬截止（nanoTime 刻度）。
  */
-internal fun childDeadlineNanos(parentDeadlineNanos: Long, parentPausedNanos: Long): Long =
-    parentDeadlineNanos + parentPausedNanos
+internal fun childDeadlineNanos(
+    parentDeadlineNanos: Long,
+    parentPausedNanos: Long,
+    parentFrozenNanos: Long,
+): Long = parentDeadlineNanos + parentPausedNanos + parentFrozenNanos
 
 /* --------------------------------------- 轮内失败口径分流纯函数族（W62/W63/W64） */
 

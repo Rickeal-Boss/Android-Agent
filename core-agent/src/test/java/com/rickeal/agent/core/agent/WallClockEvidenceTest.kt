@@ -31,8 +31,16 @@ import kotlin.test.assertTrue
  * （父墙 + 父 paused，父挂起只计一次）此前零测试覆盖 —— 外部报告曾称「父停表不向子 run 传播」，
  * 回源码证伪（调用点本就是该加法），故外提为纯函数并在此钉住，堵「照报告乱改」的回归口。
  *
- * 纯 JVM：`wallClock*Evidence` / `effectiveElapsedMillis` / `wallClockRemainingMillis` 都是
- * 顶层纯函数（零 Android / 零引擎依赖）。
+ * W81 追加（G-1 收口）：**冻结停表**三态 —— `effectiveElapsedMillis` / `wallClockRemainingMillis`
+ * 加 `frozenNanos` 参（本次 run 冻结累计），`childDeadlineNanos` 加 `parentFrozenNanos` 参。
+ * 背景：`freezeAwareTimeout`（生成超时）自 W78-12 起已剔除冻结，但 run 级墙钟判据仍按裸
+ * `System.nanoTime()` ⇒ 解冻后下一个轮头 `remaining ≤ 0` ⇒ HARD 熔断（多轮工具调用 run
+ * 锁屏必死；单轮生成无第二个轮头故不可见）。这里钉三条：① 冻结量进 effective/remaining 算术；
+ * ② 历史冻结（起点前）由 RunState 基线剔除、不进本轮（与 freezeAwareTimeout 同款纪律）；
+ * ③ 父冻结向子墙传播只计一次。
+ *
+ * 纯 JVM：`wallClock*Evidence` / `effectiveElapsedMillis` / `wallClockRemainingMillis` /
+ * `childDeadlineNanos` 都是顶层纯函数（零 Android / 零引擎依赖）。
  */
 class WallClockEvidenceTest {
 
@@ -85,21 +93,44 @@ class WallClockEvidenceTest {
     @Test
     fun `有效执行时长 = 墙钟 − 审批挂起（B1 停表算术）`() {
         // paused = 0 ⇒ 与墙钟同值（无审批的 run 逐字等价，零回归）。
-        assertEquals(180_000L, effectiveElapsedMillis(elapsedMillis = 180_000L, pausedNanos = 0L))
+        assertEquals(180_000L, effectiveElapsedMillis(elapsedMillis = 180_000L, pausedNanos = 0L, frozenNanos = 0L))
         // 正常扣减：挂起 60 秒 ⇒ 有效 = 墙钟 − 60 秒。
         assertEquals(
             240_000L,
-            effectiveElapsedMillis(elapsedMillis = 300_000L, pausedNanos = 60_000L * 1_000_000L),
+            effectiveElapsedMillis(elapsedMillis = 300_000L, pausedNanos = 60_000L * 1_000_000L, frozenNanos = 0L),
         )
         // 亚毫秒挂起被整数截断（≤1ms 误差，不向上取整）。
-        assertEquals(1_000L, effectiveElapsedMillis(elapsedMillis = 1_000L, pausedNanos = 500_000L))
+        assertEquals(1_000L, effectiveElapsedMillis(elapsedMillis = 1_000L, pausedNanos = 500_000L, frozenNanos = 0L))
+    }
+
+    @Test
+    fun `有效执行时长 = 墙钟 − 审批挂起 − 冻结（W81 冻结停表）`() {
+        // 场景：墙钟 300s = 审批挂起 60s + 冻结 100s + 有效执行 140s。
+        assertEquals(
+            140_000L,
+            effectiveElapsedMillis(
+                elapsedMillis = 300_000L,
+                pausedNanos = 60_000L * 1_000_000L,
+                frozenNanos = 100_000L * 1_000_000L,
+            ),
+        )
+        // frozenNanos = 0 ⇒ 与 W81 前逐字等价（MonotonicFreezeClock 注入时零回归）。
+        assertEquals(
+            240_000L,
+            effectiveElapsedMillis(elapsedMillis = 300_000L, pausedNanos = 60_000L * 1_000_000L, frozenNanos = 0L),
+        )
+        // 亚毫秒冻结同样截断；冻结极大时钳到 0（与挂起同款防御）。
+        assertEquals(
+            0L,
+            effectiveElapsedMillis(elapsedMillis = 1_000L, pausedNanos = 0L, frozenNanos = 5_000L * 1_000_000L),
+        )
     }
 
     @Test
     fun `有效执行时长钳到 0 —— 挂起大于墙钟不得为负`() {
         // 越界输入（挂起 > 墙钟）钳到 0：负耗时会同时污染「已运行 -N 秒」文案与判据。
-        assertEquals(0L, effectiveElapsedMillis(elapsedMillis = 1_000L, pausedNanos = 5_000L * 1_000_000L))
-        assertEquals(0L, effectiveElapsedMillis(elapsedMillis = 0L, pausedNanos = 1L))
+        assertEquals(0L, effectiveElapsedMillis(elapsedMillis = 1_000L, pausedNanos = 5_000L * 1_000_000L, frozenNanos = 0L))
+        assertEquals(0L, effectiveElapsedMillis(elapsedMillis = 0L, pausedNanos = 1L, frozenNanos = 0L))
     }
 
     @Test
@@ -109,7 +140,7 @@ class WallClockEvidenceTest {
         val nowPastDeadline = 301_000L * 1_000_000L // now = T0 + 301s
 
         // ① 无审批挂起 ⇒ remaining ≤ 0 ⇒ 判据会 HARD 熔断（基线行为）。
-        val noPause = wallClockRemainingMillis(deadline, pausedNanos = 0L, nowNanos = nowPastDeadline)
+        val noPause = wallClockRemainingMillis(deadline, pausedNanos = 0L, frozenNanos = 0L, nowNanos = nowPastDeadline)
         assertEquals(-1_000L, noPause)
         assertTrue(noPause <= 0L, "无挂起时应越界（HARD 熔断）：$noPause")
 
@@ -118,12 +149,78 @@ class WallClockEvidenceTest {
         val withPause = wallClockRemainingMillis(
             deadline,
             pausedNanos = 60_000L * 1_000_000L,
+            frozenNanos = 0L,
             nowNanos = nowPastDeadline,
         )
         assertEquals(59_000L, withPause)
         assertTrue(withPause > 0L, "挂了 60s 审批后不得再判 HARD：$withPause")
         // 仍在 SOFT 区间（≤ 硬预算 − 软预算 = 300s − 180s = 120s）⇒ 留痕但不中断，与停表语义一致。
         assertTrue(withPause <= 300_000L - 180_000L, "应落入 SOFT 区间：$withPause")
+    }
+
+    @Test
+    fun `判据接线 —— remaining 必须含 frozenNanos（W81 冻结停表）`() {
+        // 场景：硬截止已过 1 秒，但其中 100s 是 OEM 冻结（灭屏 ~10s 触发、实测一次冻 416s）。
+        // 旧行为（无 frozen 项）：remaining ≤ 0 ⇒ 解冻后下一个轮头 HARD 熔断 = 多轮工具调用
+        // run 锁屏必死。W81：冻结加回硬截止，与审批挂起同族（「机器没干活」不停表）。
+        val deadline = 300_000L * 1_000_000L
+        val nowPastDeadline = 301_000L * 1_000_000L
+
+        // ① 无冻结 ⇒ 越界（HARD 熔断，基线行为不变）。
+        val noFreeze = wallClockRemainingMillis(deadline, pausedNanos = 0L, frozenNanos = 0L, nowNanos = nowPastDeadline)
+        assertTrue(noFreeze <= 0L, "无冻结时应越界：$noFreeze")
+
+        // ② 冻了 100s ⇒ remaining 加回 100s ⇒ 不熔断（`+ frozenNanos` 被误删则本断言立刻红）。
+        val withFreeze = wallClockRemainingMillis(
+            deadline,
+            pausedNanos = 0L,
+            frozenNanos = 100_000L * 1_000_000L,
+            nowNanos = nowPastDeadline,
+        )
+        assertEquals(99_000L, withFreeze)
+        assertTrue(withFreeze > 0L, "冻了 100s 后不得再判 HARD：$withFreeze")
+
+        // ③ 冻结 + 挂起并存：两项都加回（run 内既被长授权又遇锁屏冻结）。
+        val both = wallClockRemainingMillis(
+            deadline,
+            pausedNanos = 60_000L * 1_000_000L,
+            frozenNanos = 100_000L * 1_000_000L,
+            nowNanos = nowPastDeadline,
+        )
+        assertEquals(159_000L, both)
+    }
+
+    @Test
+    fun `历史冻结不占 run 预算 —— 基线口径（W81）`() {
+        // frozenNanos() 是进程级累计、含 run 起点之前的灭屏（W79：灭屏 416s 后开跑）。
+        // 判据只能用增量 = frozenNanos() − frozenBaselineNanos（起点同刻取，RunState 字段）。
+        // 本例钉「基线剔除」的算术形态：历史 416s 全部落在基线里 ⇒ 增量为 0 ⇒ remaining 不受影响。
+        val historyFrozen = 416_000L * 1_000_000L
+        val baseline = historyFrozen // 起点时进程已累计冻 416s
+        val nowFrozen = historyFrozen // 起点后再无新冻结
+        val frozenSinceRunStart = nowFrozen - baseline
+        assertEquals(0L, frozenSinceRunStart)
+
+        val deadline = 300_000L * 1_000_000L
+        val now = 10_000L * 1_000_000L // 起点后仅真实跑过 10s
+        val remaining = wallClockRemainingMillis(
+            deadline,
+            pausedNanos = 0L,
+            frozenNanos = frozenSinceRunStart,
+            nowNanos = now,
+        )
+        // 历史冻结若进预算（漏基线）remaining 会是 300 − 10 − 416 = 负 ⇒ 解冻即误掐（W79 红转绿锚同族）。
+        assertEquals(290_000L, remaining, "历史冻结不得占本轮预算")
+
+        // 对照：起点后又冻了 50s ⇒ 增量 50s ⇒ remaining 只少这 50s（顺延，不是误掐）。
+        // 墙钟 now 走到 60s（10s 真实 + 50s 冻结），frozenNanos = 50s ⇒ 有效执行 = 10s。
+        val remainingAfterNewFreeze = wallClockRemainingMillis(
+            deadline,
+            pausedNanos = 0L,
+            frozenNanos = 50_000L * 1_000_000L,
+            nowNanos = now + 50_000L * 1_000_000L,
+        )
+        assertEquals(290_000L, remainingAfterNewFreeze)
     }
 
     @Test
@@ -137,12 +234,32 @@ class WallClockEvidenceTest {
         val remaining = wallClockRemainingMillis(
             hardDeadlineNanos = hardBudgetNanos,
             pausedNanos = pausedNanos,
+            frozenNanos = 0L,
             nowNanos = elapsedMillis * 1_000_000L,
         )
-        val effective = effectiveElapsedMillis(elapsedMillis, pausedNanos)
+        val effective = effectiveElapsedMillis(elapsedMillis, pausedNanos, frozenNanos = 0L)
         assertEquals(170_000L, effective) // 200s 墙钟 − 30s 挂起 = 170s 有效执行
         assertEquals(130_000L, remaining) // 300s 硬预算 − 170s 有效 = 剩 130s
         assertEquals(300_000L - effective, remaining, "remaining 必须等于硬预算 − 有效执行时长")
+    }
+
+    @Test
+    fun `判据与 evidence 同源（含冻结）—— W81 冻结量同样两侧一致`() {
+        // 墙钟 200s = 审批挂起 30s + 冻结 50s + 有效执行 120s；冻结进两侧同一算术。
+        val hardBudgetNanos = 300_000L * 1_000_000L
+        val elapsedMillis = 200_000L
+        val pausedNanos = 30_000L * 1_000_000L
+        val frozenNanos = 50_000L * 1_000_000L
+        val remaining = wallClockRemainingMillis(
+            hardDeadlineNanos = hardBudgetNanos,
+            pausedNanos = pausedNanos,
+            frozenNanos = frozenNanos,
+            nowNanos = elapsedMillis * 1_000_000L,
+        )
+        val effective = effectiveElapsedMillis(elapsedMillis, pausedNanos, frozenNanos)
+        assertEquals(120_000L, effective)
+        assertEquals(180_000L, remaining)
+        assertEquals(300_000L - effective, remaining, "含冻结时 remaining 仍必须等于硬预算 − 有效执行时长")
     }
 
     @Test
@@ -152,15 +269,37 @@ class WallClockEvidenceTest {
         // 回源码证伪（调用点本就是 `父墙 + 父 paused`），故在此直接钉住。
         val d = 300_000L * 1_000_000L // 父硬截止（nanoTime 刻度，取 T0 = 0）
         val p = 60_000L * 1_000_000L // 父审批挂起 60s
-        val child = childDeadlineNanos(d, p)
-        // ① 父挂起 P ⇒ 子墙比父墙恰好晚 P（childDeadlineNanos(D, P) − D == P）。
+        val child = childDeadlineNanos(d, p, parentFrozenNanos = 0L)
+        // ① 父挂起 P ⇒ 子墙比父墙恰好晚 P（childDeadlineNanos(D, P, 0) − D == P）。
         assertEquals(p, child - d, "子墙必须比父墙晚恰好父挂起量 P")
         // ② 子 run remaining（子自身 paused=0）== 父 run remaining（含 P）⇒ 父挂起**只计一次**：
         //    若继承时漏加 P 或重复累加，两条 remaining 立刻分叉（漏加 ⇒ 子提前熔断的 W51 现象）。
         val now = 301_000L * 1_000_000L // 父墙已过 1s（纯墙钟口径下父/子均越界）
-        val childRemaining = wallClockRemainingMillis(child, pausedNanos = 0L, nowNanos = now)
-        val parentRemaining = wallClockRemainingMillis(d, pausedNanos = p, nowNanos = now)
+        val childRemaining = wallClockRemainingMillis(child, pausedNanos = 0L, frozenNanos = 0L, nowNanos = now)
+        val parentRemaining = wallClockRemainingMillis(d, pausedNanos = p, frozenNanos = 0L, nowNanos = now)
         assertEquals(parentRemaining, childRemaining, "子墙继承后，子(自身无挂起)与父(含 P)的 remaining 必须相等")
         assertEquals(59_000L, childRemaining, "父挂 60s ⇒ 越界 1s 被抵回，remaining = 59s")
+    }
+
+    @Test
+    fun `子墙继承 —— 父冻结只计一次（childDeadlineNanos，W81）`() {
+        // 父墙 D、父冻结 F：子墙 = 父墙 + 父 frozen。子 run 的冻结基线在子起点取
+        // （= 当时的进程级 frozenNanos()），父期间（子起点前）的冻结不在子自己的剔除区间
+        // ⇒ 不显式加进子墙就会「父被冻 100s、子拿原墙」提前熔断（与父 paused 同族同罪）。
+        val d = 300_000L * 1_000_000L
+        val f = 100_000L * 1_000_000L // 父 run 期间冻结 100s
+        val child = childDeadlineNanos(d, parentPausedNanos = 0L, parentFrozenNanos = f)
+        // ① 父冻结 F ⇒ 子墙比父墙恰好晚 F。
+        assertEquals(f, child - d, "子墙必须比父墙晚恰好父冻结量 F")
+        // ② 子 remaining（子自身 frozen=0，其基线已含父的冻结）== 父 remaining（含 F）
+        //    ⇒ 父冻结只计一次：漏加则子提前熔断；重复加则双重顺延（预算被放大）。
+        val now = 301_000L * 1_000_000L // 父墙已过 1s
+        val childRemaining = wallClockRemainingMillis(child, pausedNanos = 0L, frozenNanos = 0L, nowNanos = now)
+        val parentRemaining = wallClockRemainingMillis(d, pausedNanos = 0L, frozenNanos = f, nowNanos = now)
+        assertEquals(parentRemaining, childRemaining, "父冻结必须只计一次（子墙传播，子自身基线已含）")
+        assertEquals(99_000L, childRemaining)
+        // ③ 挂起 + 冻结同时继承：子墙比父墙晚 P + F（两项各自只计一次）。
+        val childBoth = childDeadlineNanos(d, parentPausedNanos = 60_000L * 1_000_000L, parentFrozenNanos = f)
+        assertEquals(160_000L * 1_000_000L, childBoth - d, "子墙 = 父墙 + 父 paused + 父 frozen")
     }
 }
