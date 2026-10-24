@@ -148,13 +148,23 @@ class ConversationRepository(
         }
     }
 
+    /**
+     * 删除会话（锁内「摘索引 → 重写索引 → 删全文文件」，W81 审查 G-4）。
+     *
+     * **文件删除必须排在最后**：`index.json` 重写失败（磁盘满等）时，若文件已先删，
+     * 磁盘会变成「全文已删、index 仍列出」—— 列表页出现点不开的死条目，用户既打不开
+     * 也删不掉（再删一次仍走同一条必败路径）。新顺序下中途失败最多留下**无索引的
+     * 孤儿文件**（不在任何列表里出现，可被下次 delete / 清理路径消化），不出现死条目。
+     */
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
         writeMutex.withLock {
-            store.delete("$id.json")
             cache.invalidate(id)   // W80-03 Phase A：缓存不得复活已删会话
             val next = _metas.value.filter { it.id != id }
             _metas.value = next
             store.write("index.json", next, ListSerializer(ConversationMeta.serializer()))
+            // W81 审查 G-4：文件删除挪到最后 —— 先摘索引再删文件，index 重写失败
+            // 最多留孤儿文件（无索引、不可见），不会出现「index 列着但全文已删」的死条目。
+            store.delete("$id.json")
         }
         // 清理钩子（W58 卫生位）**移到锁外**（W69 C3，审查 P2）：本波把它从休眠激活为
         // 「多步级联清理 + 递归删 journal/history 目录」，锁内做递归 I/O 会阻塞其他会话的

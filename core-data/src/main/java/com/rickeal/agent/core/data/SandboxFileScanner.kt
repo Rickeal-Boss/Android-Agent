@@ -142,7 +142,10 @@ object SandboxFileScanner {
                     isDirectory = isDir,
                     sizeBytes = if (isDir) 0L else entry.length(),
                     extension = if (isDir) "" else entry.extension.lowercase(),
-                    childCount = if (isDir) entry.listFiles()?.size ?: 0 else 0,
+                    // W81 审查：list() 只分配 String[]（文件名数组），比 listFiles() 的
+                    // File[] 轻（少 N 个 File 对象的分配与后续 GC）—— UI 只显示计数，
+                    // 不需要 File 实例。
+                    childCount = if (isDir) entry.list()?.size ?: 0 else 0,
                 )
             }
             // 纵深防御：目录条目若 canonical 解析后逃逸出沙箱，剔除（异常按剔除处理）。

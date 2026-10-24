@@ -30,6 +30,14 @@ import com.rickeal.agent.core.model.Conversation
  * 容量：LRU（按最近访问淘汰，`get` 也刷新访问序），默认上限 8 个会话，
  * 上限与初始容量可注入便于单测。全部方法线程安全（`synchronized` 内包
  * `LinkedHashMap(accessOrder = true)`）。
+ *
+ * ## 覆盖边界申报（W81 审查 P2-2，防误解，非缺陷）
+ * 本缓存覆盖的是**写路径**的热开销（[ConversationRepository.appendMessage] 的 2 次
+ * 全量读 → 稳态 0 次）；**纯读 / 冷会话仍走磁盘**（[ConversationRepository.load]
+ * 永不回填，防 TOCTOU 丢消息 —— 命中率不值这个价，见上文一致性边界）。
+ * 上限 8 是「会话列表 + 活跃会话」的经验值：重度用户连续切换 >8 个会话时，早先条目
+ * 被淘汰、回来重新全量读（成本回到无缓存，但不劣于）。**严禁**为提命中率给
+ * [ConversationRepository.load] 加「读回填」—— 那会把一致性边界整个拆掉。
  */
 class ConversationCache(
     /** 缓存会话数上限，超限淘汰最久未访问的条目。 */
