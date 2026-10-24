@@ -35,7 +35,8 @@ enum class ClkTckSource {
  *   ActivityManager.getProcessMemoryInfo）。5s 粒度（每 5 次采样取 1 次，两次之间沿用旧值
  *   —— Debug.getPss() 自身 ~ms 级 GC 触发开销，1s 一次太密，R8-3）。
  * @param availMemBytes 当前可用内存（ActivityManager.MemoryInfo.availMem —— 刻意不用
- *   advertisedMem，口径纪律与 AppContainer.availableMemoryBytes 同款）。
+ *   advertisedMem，口径纪律与 AppContainer.availableMemoryBytes 同款）。5s 粒度
+ *   （W81 审查 P2-1：getMemoryInfo 是跨进程 binder，与 PSS 同款降频，两次之间沿用旧值）。
  * @param atElapsedMillis 采样时刻（SystemClock.elapsedRealtime，开机单调钟，不受 NTP 影响）。
  */
 data class PerfSample(
@@ -59,13 +60,18 @@ data class PerfSample(
  *   绝不用已废弃的 `Thread.stop()`）。join 在后台 reaper 线程里做 —— [release] 常从
  *   UI 线程调用（诊断页 DisposableEffect），就地 join 有钉住主线程的风险（详见
  *   stopWorker 的注释）。
+ * - 窗口清空语义由 [acquire] 的 `clearSamples` 决定（W81 审查 P1-1）：run 窗口
+ *   （true）每次 acquire 都重置，页面窗口（false）不清空 —— 详见 [acquire] KDoc。
  * - 线程为 **daemon** + 命名 `perf-sampler`：进程退出不被拖延，泄漏判定可用
  *   `adb shell ps -T <pid>` 验证（真机验收项）。
  * - [reason] 落日志：谁拿了没放，事后可查（引用计数的经典病灶）。
  * - 归一化防御：release 过计数（<0）按 0 钳制并记 warn —— 多 release 不崩，但要留痕。
  * - 已知微小竞态（可接受，不加锁）：release 归零（旧线程 join 中未死）与 acquire 到 1
  *   同时发生时，两个采样线程会短暂共存，旧线程可能在 startWorker 清空之后再写一个
- *   样本进新窗口。影响上限是一个多写样本，不值得为此给整条路径加锁。
+ *   样本进新窗口。影响上限是一个多写样本，不值得为此给整条路径加锁。同款竞态对
+ *   clearSamples=true 的重置同样成立（W81）：页面开着时新 run 的 acquire 重置与
+ *   运行中采样线程交叠，重置后、下一帧采样前旧线程可能补写一个上一窗口的样本 ——
+ *   上限仍是一个样本，不加锁。
  *
  * 数据出口：[samples] StateFlow（环形 180 个 = 3 分钟 @1s，超限 removeAt(0) 移除最旧 —— 与
  * BLOCK_CYCLE_HISTORY 同款环形纪律）+ [latest]（GenerationNotifier 通知文案的低开销读点）。
@@ -121,6 +127,8 @@ class PerformanceMonitorManager(private val context: Context?) {
     private var lastAtElapsedMillis = 0L
     private var lastMachineJiffies: Long? = null
     private var lastPssKb = 0L
+    /** 上一次成功读取的可用内存（W81 P2-1：5s 粒度，两次采样之间沿用）。仅采样线程读写。 */
+    private var lastAvailMemBytes = 0L
     private var sampleCount = 0L
 
     /** /proc 失败是否已在**本窗口**内留过 warn（防 1s 一次刷日志）。仅采样线程读写。 */
@@ -135,12 +143,34 @@ class PerformanceMonitorManager(private val context: Context?) {
      */
     internal fun workerHandleForTest(): Thread? = worker
 
-    /** 进入观测窗口（幂等）。首 acquiring 启动 daemon 采样线程。 */
-    fun acquire(reason: String) {
+    /**
+     * 进入观测窗口（幂等）。首 acquiring 启动 daemon 采样线程。
+     *
+     * ## 窗口清空语义（W81，审查 P1-1）
+     *
+     * 旧实现无条件清空样本（在 [startWorker] 里），时序缺陷：run 结束 release → 用户开
+     * 诊断页 acquire → 0→1 → 再次清空 ⇒「刚跑完想看这次性能」看到几乎空的曲线，要等
+     * 3 分钟才填满。故清空责任移交给本参数：
+     *
+     * @param reason 窗口持有者标识（落日志：谁拿了没放，事后可查）。
+     * @param clearSamples true = **run 窗口**：清空旧样本 + 重置采样基线（见
+     *   [resetWindow]），且**每次** acquire 都生效（不只是 0→1）—— 页面开着时新 run
+     *   开始也必须是「这次的」新鲜窗口，否则用户看到的是上一个窗口的尾巴；
+     *   false = **页面窗口**：不清空，靠 180 环形自然淘汰 —— 「run 结束后开诊断页」
+     *   的数据不允许被 0→1 的线程重建抹掉。
+     *   签名**不加默认值**（本项目纪律：签名显式即契约）：新调用点必须显式表态，
+     *   防静默踩错窗口语义。
+     */
+    fun acquire(reason: String, clearSamples: Boolean) {
         val n = interests.incrementAndGet()
         if (n == 1) {
             AgentLogStore.info("性能采样窗口开启（$reason）：启动 perf-sampler 线程")
-            startWorker()
+            startWorker(clearSamples)
+        } else if (clearSamples) {
+            // 线程已在跑（页面窗口等其它观测者在先）：不重建线程，但窗口必须是「这次
+            // run 的」—— 与 startWorker 的 clear 路径同款重置（见 [resetWindow]）。
+            AgentLogStore.info("性能采样窗口重置（$reason）：沿用运行中的 perf-sampler 线程")
+            resetWindow()
         }
     }
 
@@ -159,15 +189,33 @@ class PerformanceMonitorManager(private val context: Context?) {
         }
     }
 
-    private fun startWorker() {
-        // 清空上一窗口的旧样本：观测窗口是「现在」，不是「上次的回放」。
+    /**
+     * 重置采样窗口：清空样本 + 采样基线归零（[startWorker] 与 [acquire] 的
+     * clearSamples 路径共用）。
+     *
+     * 基线必须与样本一起重置：lastCpuSeconds / lastAtElapsedMillis / lastMachineJiffies
+     * 是增量分母，旧窗口的尾巴会让新窗口第一个样本算出巨大的 Δ（cpuPercent 冲到 100 的
+     * 假象）；sampleCount 归零让 PSS 降频计数重新对齐（每 5 次采 1 次从新窗口头开始）；
+     * procWarned 归零让「本窗口首错留痕」对新窗口重新生效。
+     */
+    private fun resetWindow() {
         _samples.value = emptyList()
         lastCpuSeconds = 0.0
         lastAtElapsedMillis = 0L
         lastMachineJiffies = null
         lastPssKb = 0L
+        lastAvailMemBytes = 0L
         sampleCount = 0
         procWarned = false
+    }
+
+    /**
+     * 创建并启动采样线程。窗口清空完全由调用方的 [acquire] clearSamples 决定 ——
+     * 旧实现在本方法里无条件清空，会把「run 结束 → 开诊断页」时 0→1 重建前刚采完的
+     * 数据抹成空曲线（W81 审查 P1-1），故清空责任只保留 clearSamples=true 分支。
+     */
+    private fun startWorker(clearSamples: Boolean) {
+        if (clearSamples) resetWindow()
         val thread = Thread({ sampleLoop() }, "perf-sampler")
         thread.isDaemon = true
         // 先登记再 start：若线程瞬时就异常自清（catch 分支置 worker=null），
@@ -255,21 +303,25 @@ class PerformanceMonitorManager(private val context: Context?) {
             null
         }
 
-        // PSS 5s 粒度（R8-3）：每 PSS_EVERY_N 次采样取 1 次，两次之间沿用旧值。
+        // PSS 与可用内存 5s 粒度（R8-3 / W81 审查 P2-1）：Debug.getPss() 自身 ~ms 级 GC
+        // 触发开销、getMemoryInfo 是跨进程 binder —— 两者 1s 一次太密（旧实现两个口径
+        // 自相矛盾：PSS 降频、availMem 不降）。现同款每 PSS_EVERY_N 次采样取 1 次，
+        // 两次之间沿用旧值。
         if (sampleCount % PSS_EVERY_N == 0L) {
             lastPssKb = runCatching { Debug.getPss().toLong() }.getOrDefault(lastPssKb)
+            lastAvailMemBytes = runCatching {
+                // `context?` 的 null 分支**只**来自 JVM 单测构造（本模块无 Robolectric，
+                // 构造不出 Context）；生产路径恒非 null（AppContainer 注入）—— 可空是测试缝，
+                // 不是生产语义。null 时 am 为 null、可用内存记 0，其余采样照跑。
+                val am = context?.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                val info = ActivityManager.MemoryInfo()
+                am?.getMemoryInfo(info)
+                // availMem（当前可用），不用 advertisedMem（标称内存）—— 口径纪律同
+                // AppContainer.availableMemoryBytes 的既有注释。
+                info.availMem
+            }.getOrDefault(lastAvailMemBytes)
         }
-        val availMem = runCatching {
-            // `context?` 的 null 分支**只**来自 JVM 单测构造（本模块无 Robolectric，
-            // 构造不出 Context）；生产路径恒非 null（AppContainer 注入）—— 可空是测试缝，
-            // 不是生产语义。null 时 am 为 null、可用内存记 0，其余采样照跑。
-            val am = context?.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-            val info = ActivityManager.MemoryInfo()
-            am?.getMemoryInfo(info)
-            // availMem（当前可用），不用 advertisedMem（标称内存）—— 口径纪律同
-            // AppContainer.availableMemoryBytes 的既有注释。
-            info.availMem
-        }.getOrDefault(0L)
+        val availMem = lastAvailMemBytes
 
         val sample = PerfSample(
             cpuSeconds = cpuSeconds,

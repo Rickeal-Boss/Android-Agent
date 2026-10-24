@@ -8,7 +8,8 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * 采样线程生命周期的**确定性**不变量（Wave 30 §2.2，复审 7 号补）。
+ * 采样线程生命周期的**确定性**不变量（Wave 30 §2.2，复审 7 号补；W81 适配
+ * `acquire(reason, clearSamples)` 新签名）。
  *
  * 只断言「句柄」与「引用计数」，不碰时间：
  * - 不断言线程已退出 —— reaper 在后台 join，等线程死必然偶发失败；
@@ -17,13 +18,17 @@ import kotlin.test.assertTrue
  *
  * 构造传 `null` Context（测试缝，见类 KDoc）：本模块 JVM 单测无 Robolectric，
  * 构造不出 Context；可用内存恒 0 不影响本组断言（生命周期不读 Context）。
+ *
+ * ⚠️ 不写「清空行为」的 vacuous 单测：samples 是私有的、无可观测缝，断言
+ * clearSamples=true/false 的清空差异只能读到空/非空的时序竞争态（必然偶发失败）。
+ * 该语义的真机判据由主理人跑（run 后开诊断页曲线有数据，见交付报告申报）。
  */
 class PerfLifecycleTest {
 
     @Test
     fun `acquire 启动 daemon 命名线程`() {
         val manager = PerformanceMonitorManager(null)
-        manager.acquire("test")
+        manager.acquire("test", clearSamples = true)
         val thread = manager.workerHandleForTest()
         assertNotNull(thread, "acquire 后必须持有句柄")
         assertEquals("perf-sampler", thread.name)
@@ -34,7 +39,7 @@ class PerfLifecycleTest {
     @Test
     fun `release 归零后句柄同步置 null`() {
         val manager = PerformanceMonitorManager(null)
-        manager.acquire("test")
+        manager.acquire("test", clearSamples = true)
         assertNotNull(manager.workerHandleForTest())
         manager.release("test")
         // 句柄在 stopWorker 里就地摘除（join 走后台），所以这条断言零时序依赖。
@@ -44,9 +49,9 @@ class PerfLifecycleTest {
     @Test
     fun `acquire 幂等 —— 二次 acquire 不新建线程，两次 release 才归零`() {
         val manager = PerformanceMonitorManager(null)
-        manager.acquire("observer-a")
+        manager.acquire("observer-a", clearSamples = false)
         val first = manager.workerHandleForTest()
-        manager.acquire("observer-b")
+        manager.acquire("observer-b", clearSamples = false)
         assertSame(first, manager.workerHandleForTest(), "第二个观测者不得新建线程")
 
         manager.release("observer-a")
@@ -59,7 +64,7 @@ class PerfLifecycleTest {
     @Test
     fun `release 过计数 —— 钳回 0 且句柄不复活`() {
         val manager = PerformanceMonitorManager(null)
-        manager.acquire("test")
+        manager.acquire("test", clearSamples = true)
         manager.release("test")
         assertNull(manager.workerHandleForTest())
         // 多 release：计数归负按 0 钳制并记 warn，不抛、不复活线程。
@@ -70,10 +75,10 @@ class PerfLifecycleTest {
     @Test
     fun `新窗口重建线程 —— 归零后再 acquire 拿到新句柄`() {
         val manager = PerformanceMonitorManager(null)
-        manager.acquire("window-1")
+        manager.acquire("window-1", clearSamples = true)
         val first = manager.workerHandleForTest()
         manager.release("window-1")
-        manager.acquire("window-2")
+        manager.acquire("window-2", clearSamples = true)
         val second = manager.workerHandleForTest()
         assertNotNull(second)
         assertTrue(first !== second, "新窗口必须是新线程（旧线程已 interrupt 不可复用）")

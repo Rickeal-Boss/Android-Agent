@@ -896,7 +896,7 @@ internal class ChatRunCoordinator(
         // 公开入口的共享起点，故一处接线覆盖全部）。刻意不放 UI collect 时 —— 避免进会话
         // 就红、离开就忘的噪声。频控 = 每会话至多一次（activationWarningGate）。
         maybeAnnounceActivationWarning()
-        container.perfMonitorManager.acquire("chat-run:$cid")
+        container.perfMonitorManager.acquire("chat-run:$cid", clearSamples = true)  // W81 性能波：清上一 run 采样
         try {
             container.agentRunner.run(request).collect { event -> handleEvent(event, cid) }
         } finally {
