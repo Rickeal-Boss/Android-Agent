@@ -24,7 +24,7 @@
 | fulltest | **799 / 0 / 0**（9 模块 XML 汇总，与 baseline 799 精确吻合） |
 | `:app:assembleDebug` / `:app:lintDebug` | 绿 / 0 新增 |
 | arch-guard | **48/48**（#47/#48 新增；#26 @Test baseline 双向同步 799） |
-| selftest | **本地全量由用户取消**（取消前 173 PASS / 0 FAIL，无失败）；新增守卫六夹具（case81/81b/81c/81d/82/82b）已由 `--only 47,48` 实证 15 PASS / 0 FAIL；**全量覆盖由 CI 权威兜底**（build.yml:249 跑全量 selftest，push 后核） |
+| selftest | **本地全量由用户取消**（取消前 175 PASS / 0 FAIL，无失败）；新增守卫六夹具（case81/81b/81c/81d/82/82b）已由 `--only 47,48` 实证 15 PASS / 0 FAIL；**CI 全量实证**（run 40106633257，assemble-debug job 4m57s 内含全量 selftest ~183 用例全过，三 job 全 success） |
 | @Test 严格口径 | **799** = build.yml baseline |
 | 行数闸门 | background/ 974→**981/1000**（余 19）；AgentRunner 2823→**2881/2900**（余 19）；ChatRunCoordinator 1253（禁触未动）；ConversationCache 84（#48 上限 200）；DiagnosticsScreen ~1030（无单文件闸门） |
 | 真机（OPPO PDRM00 / A13） | ① 冷启 **664ms / Fully drawn +667ms**（锚生效）；② 流式端到端（USER→MODEL STOP、8 tok/s、journal+conversations 全文落盘）；③ **acquire 语义决定性证据**：hello run 后开诊断页「样本 23/180」（旧行为会清到 ~2）；④ 电池温度行「31.1℃（保护线 44.9℃）」；⑤ 帧统计采集器闭环 + **观测者效应实证并修复**（见三.1） |
