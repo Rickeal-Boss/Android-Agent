@@ -30,6 +30,11 @@ class LiquidAgentApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // W83-08：未捕获崩溃现场留痕（外审 P2-7：全仓原无 UncaughtExceptionHandler
+        // ⇒ 崩溃瞬间堆栈无采集点，ERROR 落盘只覆盖主动埋点）。装在 instance 赋值后：
+        // 留痕需要 containerOrNull() 兜底安装落盘 sink。同步写、链式转交原 handler，
+        // 细节见 CrashSceneLogger 类 KDoc。
+        CrashSceneLogger.install()
         // 「端侧生成速度」通知渠道（Wave 9 需求 5）。
         // **幂等**：渠道已存在时 createNotificationChannel 是 no-op，重复调用无害 ——
         // onCreate 每次进程冷启动都会跑，不能依赖「只建一次」。

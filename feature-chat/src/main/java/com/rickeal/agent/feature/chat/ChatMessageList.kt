@@ -233,6 +233,19 @@ fun ChatMessageList(
                             streaming.thinking.ifBlank { null },
                         )
                     }
+                    // W83-08 / W82-15 C 案：首字延迟的诚实披露。W82 真机取证：冷启
+                    // 首个 run 的 TTFT 主体是**模型加载**（round0 20.2s vs round1
+                    // 1.47s，prompt 后者更大 ⇒ ~19s 是加载不是 prefill），用户感知
+                    // = 「App 卡死 20 秒」。这一行只在「已开始生成但首个 token 未到」
+                    // （答案与思考都空）的窗口显示，把等待归因说清楚。完整产品裁决
+                    // （后台预热 A/B 案）挂 W82-15 parked，本行是零成本止血。
+                    if (streamAnswer.isEmpty() && streamThink.isNullOrBlank()) {
+                        Text(
+                            text = "正在生成回复（首次需加载模型，约 20 秒）…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onGlassSubtle,
+                        )
+                    }
                     GlassBubble(
                         text = streamAnswer,
                         isUser = false,
