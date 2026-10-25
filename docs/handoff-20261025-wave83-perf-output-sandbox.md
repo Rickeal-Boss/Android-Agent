@@ -36,7 +36,7 @@
 | arch-guard（真仓） | **56/56 OK**（#52 成功静默包装修正后） |
 | fulltest.sh | **830/0 BUILD SUCCESSFUL**（测试全绿；⚠️ rm test-results 在 Windows 偶发句柄锁 ⇒ 脚本按 W74-05 拒绝判绿，本地环境产物，CI 不受影响——详见 §七.8） |
 | assembleDebug / lintDebug | 双绿（lint 新增 Kotlin 后按纪律跑过） |
-| selftest 全量 | **未本地跑全量**（每 case 重跑 arch-guard.sh，spawn 开销 ×183 太贵；本地只跑 `--only 45,46,52,54,55,56,57` 冒烟——**全量归 CI**，用户明确指导） |
+| selftest 全量 | **本地未跑全量**（每 case 重跑 arch-guard.sh，spawn 开销 ×183 太贵；用户明确指导：本地只跑 `--only <新守卫号>` 验红绿面，全量归 CI）。本地冒烟 `--only 45,46,52,54,55,56,57` = **15 PASS / 2 FAIL**（两个 FAIL 都是 case80e，根因 = 本沙箱 safe-delete 包装拦掉 `rm -f`（mktemp 返回带 C: 盘符的 Windows 路径）⇒ 夹具没删成 ⇒ 守卫不红；**CI 全量实跑绿**见 §九，即该 case 在正常环境正确） |
 | 真机验收 | 见 §四 |
 
 ## 四、真机验收批（W83-07，设备 13309cc8 回连）——四态如实
@@ -82,6 +82,11 @@
 5. **W82-15 预热裁决**（产品裁决 A/B/C，C 案文案已落地止血）。
 6. UI 波 U1–U5 仍待用户裁决（挂账中）。
 
-## 九、CI 实跑记录（push 后回填）
+## 九、CI 实跑记录
 
-- 待回填：push `core-fix` → build.yml 三 job（build/lint/unit-tests）结论 + arch-guard 51→56 + selftest 全量（本地未跑，首次全量在 CI）+ fulltest 830/0 + baseline=830。
+- push：`0018748..a3f41e2 core-fix -> core-fix`（13 commits）。
+- **CI run 40202269171（push，head_sha=a3f41e2bf7322b13df1ba6cfbd730ee9b56293ca）三 job 全 success**：
+  - Unit tests（121195750792）：success —— 内含 Architecture guard（arch-guard.sh 真仓 56/56）+ **Architecture guard self-test（全量 selftest，含新增 case80e/86~90b；脚本有 FAIL 即 exit 1 ⇒ CI 绿 = 全量真绿）** + fulltest.sh 830/0（W83-06 接线后 CI 与本地同口径的首跑）。
+  - Lint (baseline gate)（121195750959）：success。
+  - Assemble Debug (JDK 21)（121195751086）：success。
+- **本地 vs CI 差异如实申报**：本地 `--only` 冒烟 case80e 两 FAIL 是**沙箱环境产物**（safe-delete 拦 `rm -f` 带盘符前缀的 mktemp 路径），非脚本缺陷；CI 全量绿为权威判据。教训：删夹具类 case 的本地可跑性受 agent 沙箱 rm 包装影响，判绿以 CI 为准。
