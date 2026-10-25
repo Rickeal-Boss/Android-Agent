@@ -5599,7 +5599,8 @@ fi
 
 # ---------------------------------------------------------------------------
 # case87 / 88 / 89 / 90（各带 b 绿面）：W83-05 四条行数闸门（外审 Z-1/P2-5 补闸）
-#   case87/87b：#53 ModelsViewModel.kt（1400 上限，#25 家族第 14 员）
+#   case87/87b：#57 ModelsViewModel.kt（1400 上限，#25 家族第 14 员；
+#     #53 是 selftest 元 case 专属号，守卫号避让，W71 P2-1 教训）
 #   case88/88b：#54 FileTools.kt（600 上限，#25 家族第 15 员）
 #   case89/89b：#55 PerformanceMonitorManager.kt（600 上限，#25 家族第 16 员）
 #   case90/90b：#56 FrameStatsSession.kt（100 上限，#25 家族第 17 员，拆分新文件当波补守）

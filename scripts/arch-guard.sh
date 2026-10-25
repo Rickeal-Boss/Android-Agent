@@ -1376,10 +1376,10 @@ BEGIN { inblk = 0; started = 0; depth = 0; opened = 0 }
 #     #31 AgentRunner 2900 / #32 LiteRtLmEngineLoader 900 / #35 AgentRunnerToolSetup 400 /
 #     #36 ThinkingBudget 150 / #37 AgentRunnerLoopHelpers 400 / #38 ChatRunRecovery 400 /
 #     #48 ConversationCache 200 / #49 FrameStatsCollector 250 / #50 DiagnosticsScreen 1150 /
-#     #51 AgentPromptComposer 400 —— 后三员 W82 新增；#53 ModelsViewModel 1400 /
-#     #54 FileTools 600 / #55 PerformanceMonitorManager 600 / #56 FrameStatsSession 100 /
+#     #51 AgentPromptComposer 400 —— 后三员 W82 新增；#54 FileTools 600 /
+#     #55 PerformanceMonitorManager 600 / #56 FrameStatsSession 100 /
 #     #57 ModelsViewModel 1400 —— 后四员 W83 新增（外审 Z-1/P2-5 老文件增长热点补闸
-#     + 拆分新文件当波补守），完整清单见 #49 注释）。
+#     + 拆分新文件当波补守；#52 是登记号对账守卫不属本家族），完整清单见 #49 注释）。
 #     ⚠️ 为何新守卫从 #57 起跳（跳过 52~56 里的 53）：53 是 selftest **元 case**
 #     （KNOWN_GUARDS↔arch-guard↔映射表↔case 四方一致性）的专属号（W71 P2-1 教训：
 #     case 号与守卫号撞车 ⇒ --only 时两个不同 case 互相混入、全量跑输出标签撞车）。

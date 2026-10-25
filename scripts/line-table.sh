@@ -44,12 +44,13 @@ case "${1:-}" in
   *)         echo "::error::未知参数：$1（可用：--check / --help）" >&2; exit 2 ;;
 esac
 
-# 行数守卫家族的**冻结下限**（W66 深审 D4 修补）：arch-guard.sh 里「总行数 ≤」家族当前 **13 员**
-# （#18/#20/#25/#31/#32/#35/#36/#37/#38/#48/#49/#50/#51/#53/#54/#55/#56；W82 新增 #49
+# 行数守卫家族的**冻结下限**（W66 深审 D4 修补）：arch-guard.sh 里「总行数 ≤」家族当前 **17 员**
+# （#18/#20/#25/#31/#32/#35/#36/#37/#38/#48/#49/#50/#51/#54/#55/#56/#57；W82 新增 #49
 # FrameStatsCollector 250 / #50 DiagnosticsScreen 1150 / #51 AgentPromptComposer 400，
-# 派生行 10 → 13，本值同步 9 → 13；W83 新增 #53 ModelsViewModel 1400 / #54 FileTools 600 /
+# 派生行 10 → 13，本值同步 9 → 13；W83 新增 #57 ModelsViewModel 1400 / #54 FileTools 600 /
 # #55 PerformanceMonitorManager 600 / #56 FrameStatsSession 100，派生行 13 → 17，
-# 本值同步 13 → 17）。
+# 本值同步 13 → 17。⚠️ ModelsViewModel 守卫取 #57 而非 #53：53 是 selftest 元 case
+# （四方一致性）专属号，W71 P2-1 教训——守卫号与 case 号撞车会互相混入）。
 # 为什么需要一个写死的下限：--check 旧判据只比
 # `n_rows == ${#guard_lines[@]}`，而两者**同源于同一 grep** ⇒ 整条守卫（注释头 + check 实现）
 # 被删除时两侧一起减一、仍恒等 ⇒ **永远绿**（fail-open）。下限把「家族被整族删 / 缩面」变成
