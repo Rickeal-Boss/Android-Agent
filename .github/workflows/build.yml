@@ -58,7 +58,12 @@ on:
       - '**/*.md'
       - '.github/ISSUE_TEMPLATE/**'
   pull_request:
-    branches: [main, UI, harness]
+    # W83-06：branches 由枚举 [main, UI, harness] 改为 ['**'] —— 旧口径漏掉
+    # harness-improve / improve / UI-change-1019 / core-fix 等现役开发分支
+    # （W76/W77 的 UI-change-1019 教训同型：分支不在列表 = 推送 0 run）。
+    # 枚举列表的维护成本（每新建分支漏一次）高于通配的一次性代价；
+    # paths-ignore 仍挡住纯文档 PR，不占 CI 配额。
+    branches: ['**']
     # 同 push：纯文档改动不触发（口径见上）。
     paths-ignore:
       - 'docs/**'
@@ -452,16 +457,25 @@ jobs:
           gradle --version
 
       - name: Run unit tests
-        # 【只用 setup-gradle 安装的 gradle，与 Build job 同款】不调 ./gradlew。
-        # `test` 是聚合 task：对所有模块生效，空集模块 NO-SOURCE 跳过；
-        # 不用 testDebugUnitTest —— 写死变体将来加纯 Kotlin 模块时会漏。
-        # --continue：某模块红了也把其余模块跑完，一轮看清全部红点。
+        # 【W83-06】改调 scripts/fulltest.sh —— 与本地同一口径（销沿袭滚动项
+        # 「fulltest.sh 接 CI 运行步」/ W74-05 残留面 / 外审 B P0-3）。
+        # 旧口径（裸 `gradle test --continue`）的三个缺口：
+        #   ① 没有 rm test-results + mtime 新鲜度断言 ⇒ UP-TO-DATE 时可能汇总
+        #      陈旧 XML 假绿（W74-05，本地侧已由 W82 补 mtime 断言销账，CI 侧
+        #      一直分叉不调脚本）；
+        #   ② 没有真实用例数汇总口径（只认 gradle 的「N tests completed」残缺口径）；
+        #   ③ fulltest.sh 的 --continue 纪律（禁 fail-fast 残缺口径）只落在本地。
+        # 脚本内部：优先 ./gradlew，但仓内 gradlew 的 git 模式是 100644（无可执行位，
+        # 实测 git ls-files -s）⇒ CI 上实际走 `command -v gradle` 回退，用的正是
+        # setup-gradle 安装的 gradle（同版本 9.7.1、同 GRADLE_USER_HOME 缓存）——
+        # 与旧口径同一启动器，只是外面包上了 rm/mtime/真实用例数/退出码纪律。
+        # 固定 `test --continue`，失败时透传 gradle 退出码 ⇒ job 结论与本地
+        # fulltest.sh 完全一致。
+        # GRADLE_OPTS 透传本 job 的 JVM 参数（脚本不认 GRADLE_JVM_ARGS 环境变量，
+        # 但 gradlew 启动器读 GRADLE_OPTS）。
         run: |
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
-            test --continue
+          export GRADLE_OPTS="-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}"
+          bash scripts/fulltest.sh
 
       # -------------------------------------------------------------------
       # 【Wave 50 可观测性 · 非门禁】汇总各模块真实用例数写 job summary。
@@ -521,7 +535,17 @@ jobs:
             #   ⚠️ 该数字是**代码冻结后**实测值：本波基线一度在 799→810→816→818 之间漂移（队友实时加例，
             #   末次 +2 为 ScanEscapeAudit 节流纯函数边界用例，审查席要求补齐同族覆盖后追加），
             #   故纪律 = 先冻结再取数，改完立刻跑 arch-guard #26 双向核对（滞后/超前都判红）。
-            baseline=818
+            # W83 质量波新增 9 例（**逐文件对账**）：core-agent tools/EscapeAuditTest 1→5
+            #   （不同 tool/reason 互不抑制 / 同键 30s 内只记一条且省略累计 / 省略计数按键独立 /
+            #   MAX_KEYS 淘汰最旧）；core-agent TextToolProtocolTest 31→34（前导尾随空格工具名
+            #   trim 后命中注册表 / 纯空白名 trim 后回归非协议形状 / 被拒名超三个只列前三个补「等」；
+            #   另有 4 例存量断言改 explained 形态 + 1 例改名，用例数不变）；core-data
+            #   SandboxFileScannerTest 16→18（不同路径 warn 互不抑制 / 同路径仍节流）。
+            #   ⇒ 由 818 上调 827（代码冻结后实测 827，无 @Ignore/参数化）。
+            # W83-08 崩溃 handler 再 +3 例（app CrashSceneLoggerTest：现场行含线程/异常/
+            #   堆栈前 10 帧与 cause 链 / 最近日志按 4 条分块 / 无历史时省略日志段）。
+            #   ⇒ 由 827 上调 830（代码冻结后实测 830，无 @Ignore/参数化）。
+            baseline=830
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then
