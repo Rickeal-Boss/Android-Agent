@@ -267,8 +267,9 @@ class SandboxFileScannerTest {
     }
 
     // ── 扫描日志节流窗口（W82）────────────────────────────────────────────────
-    // 只测纯函数 withinWindow：warn() 写的是 AgentLogStore 这个进程级单例，副作用跨
-    // 用例不可清理，断言它会把测试顺序变成隐式依赖（与 EscapeAuditTest 同口径）。
+    // withinWindow 只测纯函数；warn() 的分键行为（W83-04）经其时钟/输出缝验证
+    // （见下一节）—— 默认值即生产路径，单测传收集器，不碰 AgentLogStore 进程级
+    // 单例、不断言日志实现细节，用例间用不同消息（键）隔离，顺序不构成隐式依赖。
 
     @Test
     fun `扫描日志节流窗口内判定为真`() {
@@ -296,6 +297,48 @@ class SandboxFileScannerTest {
                 windowStartMillis = 0L,
             ),
         )
+    }
+
+    // ── 分键节流（W83-04）────────────────────────────────────────────────────
+    // warn 的双缝：nowMillis 固定时钟、sink 收集器（默认值即生产路径，不碰
+    // AgentLogStore）。键即消息（内含目录路径），用例间用不同消息隔离。
+
+    @Test
+    fun `不同目录路径的扫描告警互不抑制`() {
+        val t0 = 1_700_000_000_000L
+        val lines = mutableListOf<String>()
+        val warn = { message: String ->
+            SandboxFileScanner.ScanEscapeAudit.warn(message, nowMillis = t0) { lines.add(it) }
+        }
+        // 同一时刻两个不同路径：旧全局窗口下第二条会被吞成「已省略」。
+        warn("沙箱扫描：剔除逃逸目录 escape")
+        warn("沙箱扫描：剔除逃逸目录 other")
+        assertEquals(2, lines.size)
+        assertTrue(lines[0].contains("escape"))
+        assertTrue(lines[1].contains("other"))
+        assertFalse(lines[0].contains("已省略"))
+        assertFalse(lines[1].contains("已省略"))
+    }
+
+    @Test
+    fun `同一路径的扫描告警在 30s 窗口内仍只记一条`() {
+        val t0 = 1_700_000_000_000L
+        val lines = mutableListOf<String>()
+        val warn = { delta: Long ->
+            SandboxFileScanner.ScanEscapeAudit.warn(
+                "沙箱扫描：剔除逃逸目录 escape",
+                nowMillis = t0 + delta,
+            ) { lines.add(it) }
+        }
+        // 窗口内连记 3 次（t0 / +1s / 29_999ms）：只放行第一条，其余计省略。
+        warn(0L)
+        warn(1_000L)
+        warn(29_999L)
+        assertEquals(1, lines.size)
+        // 恰好 30s：窗口结束，重新记，并带上被省略的 2 次。
+        warn(30_000L)
+        assertEquals(2, lines.size)
+        assertTrue(lines[1].contains("另有 2 次已省略"), lines[1])
     }
 
     // ── 逐层下钻（Wave 36）────────────────────────────────────────────────────

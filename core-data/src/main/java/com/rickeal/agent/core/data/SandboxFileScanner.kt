@@ -3,6 +3,7 @@ package com.rickeal.agent.core.data
 import androidx.compose.runtime.Immutable
 import com.rickeal.agent.core.model.AgentLogStore
 import java.io.File
+import java.util.LinkedHashMap
 
 /**
  * 沙箱工作区的一个条目（[SandboxFileScanner] 的产出，Wave 33；Wave 36 起支持下钻）。
@@ -207,21 +208,34 @@ object SandboxFileScanner {
      * 提成 public）不划算，且两处的级别与语义不同（那边是安全事件 ERROR 落盘，
      * 这边是浏览面 WARN 只进内存环）。
      *
-     * 30s 窗口内只记第一次；窗口后的第一条带上「上次记日志后另有 N 次已省略」。
+     * **每键独立 30s 窗口**（W83-04，原为全局单键）：键默认取消息本身 —— 两类 warn
+     * 的消息都以内置的目录路径收尾，路径不同 ⇒ 消息不同 ⇒ 键不同，天然实现「每路径
+     * 一个窗口」。旧全局窗口会把 30s 内**不同路径**的剔除告警互相吞掉，事后答不出
+     * 「浏览时剔过哪些目录」；同路径同类告警仍共享窗口（目录可能每秒重扫，防刷环
+     * 的本意不变）。浏览面路径多、且 WARN 只进 200 条内存环，键容量 [MAX_KEYS]
+     * 比安全事件面（core-agent 的 64）小。
      *
      * `internal` 只为让 JVM 单测钉住 [withinWindow] 的 30s 边界（与
-     * `EscapeAudit.withinWindow` 同口径）；`warn` 本身**不给单测断言** —— object 级
-     * 状态会造成用例顺序依赖，断它等于把测试绑到实现细节上。
+     * `EscapeAudit.withinWindow` 同口径）；分键行为经 [warn] 的**时钟与输出缝**
+     * （默认值即生产路径）单测，不碰进程级单例 [AgentLogStore]。
      */
     internal object ScanEscapeAudit {
 
         private const val WINDOW_MILLIS = 30_000L
 
-        /** 上次记日志的时刻。`0` = 从未记过 ⇒ 首次必然放行。 */
-        private var windowStartMillis = 0L
+        /**
+         * 节流键数的防御上限（比 core-agent `EscapeAudit` 的 64 小）：浏览面路径多、
+         * 且 WARN 只进内存环，宁可少留痕也不能让它有半点挤占 200 条环的余地。
+         * 超限淘汰最旧插入项（[LinkedHashMap] 插入序首项）—— 只让那一个键丢状态
+         * 重来，不整体重置（整体重置会一次性放开所有键的窗口，把防刷环的闸门冲掉）。
+         */
+        private const val MAX_KEYS = 16
 
-        /** 当前窗口内被省略的条数。 */
-        private var suppressed = 0
+        /** 每键上次记日志的时刻。缺键 = 从未记过 ⇒ 首次必然放行。 */
+        private val lastLogged: MutableMap<String, Long> = LinkedHashMap()
+
+        /** 每键本窗口内被省略的条数（按键独立计数，互不传染）。 */
+        private val suppressed: MutableMap<String, Int> = LinkedHashMap()
 
         /** 扫描可能在 IO 线程、诊断页在主线程读 ⇒ 状态上锁。 */
         private val lock = Any()
@@ -230,20 +244,43 @@ object SandboxFileScanner {
         fun withinWindow(nowMillis: Long, windowStartMillis: Long): Boolean =
             nowMillis - windowStartMillis < WINDOW_MILLIS
 
-        fun warn(message: String) {
-            val now = System.currentTimeMillis()
+        /**
+         * 记一条扫描告警（调用形态不变：`warn(message)`）。
+         *
+         * [key] 默认取消息本身（消息内含目录路径 ⇒ 路径即键，不同路径互不抑制）；
+         * [nowMillis] / [sink] 是**测试缝**（默认值即生产路径：系统时钟 + 写
+         * [AgentLogStore]），单测传固定时钟与收集器即可观察分键节流行为，不碰
+         * 进程级单例。
+         */
+        fun warn(
+            message: String,
+            key: String = message,
+            nowMillis: Long = System.currentTimeMillis(),
+            sink: (String) -> Unit = { msg -> AgentLogStore.warn(msg) },
+        ) {
             val omitted: Int
             synchronized(lock) {
-                if (withinWindow(now, windowStartMillis)) {
-                    suppressed++
+                val last = lastLogged[key]
+                if (last != null && withinWindow(nowMillis, last)) {
+                    suppressed[key] = (suppressed[key] ?: 0) + 1
                     return
                 }
-                omitted = suppressed
-                suppressed = 0
-                windowStartMillis = now
+                omitted = suppressed.remove(key) ?: 0
+                lastLogged[key] = nowMillis
+                evictOldestIfNeeded()
             }
             val tail = if (omitted > 0) "（上次记日志后另有 $omitted 次已省略）" else ""
-            AgentLogStore.warn(message + tail)
+            sink(message + tail)
+        }
+
+        /** 键数超 [MAX_KEYS] 时淘汰最旧插入项（取舍见 [MAX_KEYS]）。调用方须已持 [lock]。 */
+        private fun evictOldestIfNeeded() {
+            while (lastLogged.size > MAX_KEYS) {
+                // accessOrder=false：首项即最旧插入的键（put 更新已存在的键不换位）。
+                val oldest = lastLogged.keys.firstOrNull() ?: break
+                lastLogged.remove(oldest)
+                suppressed.remove(oldest)
+            }
         }
     }
 

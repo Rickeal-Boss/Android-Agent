@@ -11,6 +11,7 @@ import com.rickeal.agent.core.model.ToolResult
 import com.rickeal.agent.core.model.ToolSpec
 import com.rickeal.agent.core.model.truncateSafe
 import java.io.File
+import java.util.LinkedHashMap
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
@@ -85,7 +86,16 @@ abstract class SandboxedFileTool(protected val context: ToolContext) : Tool {
  * `AgentLogFileStore` 同步落盘 —— 越界尝试是杀进程后仍要能查的安全事件。
  *
  * 必须节流：小模型被拒后常原地重试同一路径，不节流时一次循环就能把环形缓冲刷满、
- * 挤掉真正的崩溃现场。30s 窗口内只记第一次；窗口后的第一条带上「另有 N 次已省略」。
+ * 挤掉真正的崩溃现场。
+ *
+ * **按 `toolName|reason` 分键的 30s 窗口**（W83-04）：旧实现是全局单一窗口，30s 内
+ * 无论什么工具、什么原因只记第一条 —— 防刷环的设计对，但取证价值损失一半：模型
+ * 30s 内试 100 个不同路径、或换着工具试，日志只剩第一条 ⇒「试过什么路径」完全
+ * 丢失，而这正是补这条日志的初衷（事后答不出模型试过什么路径）。分键后每个
+ * 「工具 × 原因」组合各一个 30s 窗口：同组合原地重试仍只记第一条（防刷环的本意
+ * 不变），不同组合互不吞。键空间有界（工具名即注册的文件工具名，reason 为固定的
+ * 几类拒绝原因），仍加防御上限 [MAX_KEYS]。
+ *
  * 只记被拒路径原文（截断 200 字符），**绝不记文件内容**。
  */
 internal object EscapeAudit {
@@ -93,26 +103,55 @@ internal object EscapeAudit {
     private const val WINDOW_MILLIS = 30_000L
     private const val PATH_PREVIEW_CHARS = 200
 
-    /** 上次记日志的时刻。`0` = 从未记过 ⇒ 首次必然放行（now − 0 远大于窗口）。 */
-    private var windowStartMillis = 0L
-    private var suppressed = 0                              // 本窗口内被省略的条数
+    /**
+     * 节流键数的防御上限。正常键数 = 工具名数 × reason 种类数（当前 3 × 5 = 15），
+     * 远小于 64；超过说明出现了未预期的键形态（如未来新增工具或新的原因分类）。
+     *
+     * 超限时**淘汰最旧插入的一项**（[LinkedHashMap] 默认插入序的首项）而不是整体
+     * 重置：整体重置会一次性放开**所有**键的窗口 —— 键洪泛（循环构造 64+ 个不同
+     * 键）下每轮重置都能放行全部键的日志，恰是节流要防的刷环；淘汰最旧项只让
+     * **那一个**键丢状态重来，其余键的窗口不受影响。且被淘汰的是插入最久的键，
+     * 其 30s 窗口大概率本就已过期，代价至多一条日志。
+     */
+    private const val MAX_KEYS = 64
+
+    /** 每键上次记日志的时刻。缺键 = 从未记过 ⇒ 首次必然放行。 */
+    private val lastLogged: MutableMap<String, Long> = LinkedHashMap()
+
+    /** 每键本窗口内被省略的条数（按键独立计数，互不传染）。 */
+    private val suppressed: MutableMap<String, Int> = LinkedHashMap()
+
     private val lock = Any()                                // 工具在 Default/IO 跑，诊断页在 UI 读
 
     /** 窗口判定（纯函数，单测钉住 30s 边界）。 */
     fun withinWindow(nowMillis: Long, windowStartMillis: Long): Boolean =
         nowMillis - windowStartMillis < WINDOW_MILLIS
 
-    fun record(toolName: String, rawPath: String, reason: String) {
-        val now = System.currentTimeMillis()
+    /**
+     * 记一条逃逸审计（由文件工具基类的 `reject()` 调用，调用形态不变）。
+     *
+     * [nowMillis] / [sink] 是**测试缝**（默认值即生产路径：系统时钟 + 写
+     * [AgentLogStore]）：JVM 单测传固定时钟与收集器，即可观察「哪条放行、省略数
+     * 是多少」而不碰、不断言进程级单例 [AgentLogStore]。
+     */
+    fun record(
+        toolName: String,
+        rawPath: String,
+        reason: String,
+        nowMillis: Long = System.currentTimeMillis(),
+        sink: (String) -> Unit = { message -> AgentLogStore.error(message) },
+    ) {
+        val key = "$toolName|$reason"
         val omitted: Int
         synchronized(lock) {
-            if (withinWindow(now, windowStartMillis)) {
-                suppressed++
+            val last = lastLogged[key]
+            if (last != null && withinWindow(nowMillis, last)) {
+                suppressed[key] = (suppressed[key] ?: 0) + 1
                 return
             }
-            omitted = suppressed
-            suppressed = 0
-            windowStartMillis = now
+            omitted = suppressed.remove(key) ?: 0
+            lastLogged[key] = nowMillis
+            evictOldestIfNeeded()
         }
         // 路径预览：换行压成空格（日志一行一条），超长按代理对安全截断。
         val flat = rawPath.replace('\n', ' ').replace('\r', ' ')
@@ -122,7 +161,17 @@ internal object EscapeAudit {
             flat
         }
         val tail = if (omitted > 0) "（上次记日志后另有 $omitted 次已省略）" else ""
-        AgentLogStore.error("沙箱逃逸被拒：工具=$toolName 原因=$reason 路径=$path$tail")
+        sink("沙箱逃逸被拒：工具=$toolName 原因=$reason 路径=$path$tail")
+    }
+
+    /** 键数超 [MAX_KEYS] 时淘汰最旧插入项（取舍见 [MAX_KEYS]）。调用方须已持 [lock]。 */
+    private fun evictOldestIfNeeded() {
+        while (lastLogged.size > MAX_KEYS) {
+            // accessOrder=false：首项即最旧插入的键（put 更新已存在的键不换位）。
+            val oldest = lastLogged.keys.firstOrNull() ?: break
+            lastLogged.remove(oldest)
+            suppressed.remove(oldest)
+        }
     }
 }
 
