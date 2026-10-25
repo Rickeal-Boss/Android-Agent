@@ -243,7 +243,7 @@ fun ChatMessageList(
                         Text(
                             text = "正在生成回复（首次需加载模型，约 20 秒）…",
                             style = MaterialTheme.typography.labelSmall,
-                            color = colors.onGlassSubtle,
+                            color = LocalGlassColors.current.onGlassSubtle,
                         )
                     }
                     GlassBubble(
