@@ -26,6 +26,7 @@ import com.rickeal.agent.core.model.ModelSamplingProfiles
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.SamplingParams
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -445,16 +446,38 @@ class ChatViewModel(
     }
 
     /**
-     * 只改内存里的配置（拖动滑块时高频调用，不落盘）。
-     * 与 `onParamCommit()` 配对使用，避免每帧写一次 DataStore。
+     * 只改内存里的配置（拖动滑块 / 输入系统提示词时高频调用，不落盘）。
+     *
+     * ⚠️ 预览值**必须与某个 commit 边界配对**才会落盘：滑条的
+     * `onValueChangeFinished`、系统提示词的失焦、抽屉 dismiss、VM onCleared
+     * （三边界 flush 设计见 ChatParamsPanel 系统提示词卡片注释）。没有任何边界
+     * 触发的预览 = 进程一死即丢失的静默数据丢失（W82-13 的成因）。
      */
     fun onParamPreview(transform: (InferenceConfig) -> InferenceConfig) {
         _uiState.update { it.copy(config = transform(it.config).coerce()) }
     }
 
+    /**
+     * 预览的 commit 边界之一：把内存里的配置快照落盘。
+     *
+     * 调用点：滑条松手（`onValueChangeFinished`）、系统提示词失焦、抽屉 dismiss
+     * —— 均走 [viewModelScope]。[onCleared] 的最后一次 flush 走进程级 scope
+     * （viewModelScope 彼时已取消），见 [commitParams]。
+     */
     fun onParamCommit() {
+        commitParams(viewModelScope)
+    }
+
+    /**
+     * 落盘当前内存配置快照（[onParamCommit] 与 [onCleared] 的 flush 共用同一实现）。
+     *
+     * @param scope 落盘所用 scope。UI 事件路径传 [viewModelScope]；[onCleared] 必须传
+     *   [AppContainer.processScope] —— viewModelScope 在 onCleared 之后已取消，从它
+     *   launch 的协程不会执行（W77 落库同款纪律，见 ChatRunCoordinator 构造参数 KDoc）。
+     */
+    private fun commitParams(scope: CoroutineScope) {
         val next = _uiState.value.config
-        viewModelScope.launch { container.settingsRepository.updateInferenceConfig { next } }
+        scope.launch { container.settingsRepository.updateInferenceConfig { next } }
     }
 
     fun toggleThinking() {
@@ -535,6 +558,11 @@ class ChatViewModel(
     fun onStop() = run.onStop()
 
     override fun onCleared() {
+        // W83-02 边界③：VM 销毁前把内存里未落盘的参数预览值（典型：系统提示词
+        // 改完还没失焦 / 没关抽屉就离开对话页）落盘。⚠️ 必须走 processScope：
+        // viewModelScope 在 onCleared 之后已取消，从它 launch 的协程不会执行
+        // （W77 落库同款纪律，见 ChatRunCoordinator 构造参数 KDoc）。
+        commitParams(container.processScope)
         // W77：这里原先只 `run.cancel()` —— 裸取消走不到任何终态收口，
         // 半截回答**既不显示也不落库，界面与日志零报错**（报告 B §六 的真发现）。
         // 端侧生成慢，切一次会话/按一次返回的代价是几十秒算力白烧，必须收尾。

@@ -11,8 +11,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.dp
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassSegmented
@@ -63,6 +68,10 @@ fun ChatParamsContent(
 ) {
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
+    // W83-02：系统提示词「失焦提交」边界的状态位。onFocusChanged 在首次组合时也会
+    // 以 hasFocus=false 触发一次，用「此前聚焦过」过滤掉空转（与 SettingsScreen
+    // 失焦 flush 同款范式，见该文件系统提示词卡片）。
+    var systemInstructionFocused by remember { mutableStateOf(false) }
     // 纯端侧运行：只有本地引擎。NPU 后端不支持自定义采样（降级规则见架构 §5.2）。
     val samplingEnabled = config.backend != InferenceBackend.NPU
     val topKEnabled = samplingEnabled
@@ -228,6 +237,12 @@ fun ChatParamsContent(
 
         GlassCard(contentPadding = PaddingValues(14.dp)) {
             Column {
+                // W83-02：系统提示词的三边界 flush 设计（W82-13 修复）——
+                //   ① 失焦提交（下方 GlassTextField 的 onFocusChanged）；
+                //   ② 抽屉 dismiss 提交（ChatScreen 的 ChatParamsSheet onDismiss）；
+                //   ③ VM onCleared 提交（ChatViewModel.onCleared，走进程级 scope）。
+                // 输入框逐键只走 onParamPreview（纯内存）；三个边界缺一，用户改的
+                // 提示词就会在「没拖过任一滑条」的路径上静默丢失（杀进程必丢）。
                 SectionTitle("系统提示词")
                 GlassTextField(
                     value = config.systemInstruction,
@@ -236,7 +251,20 @@ fun ChatParamsContent(
                     maxLines = 5,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 6.dp),
+                        .padding(top = 6.dp)
+                        // 边界①：失焦即提交（点空白 / 收起键盘 / 点别的控件）。
+                        // 只在 true→false 的跃迁上提交：组合首次挂载也会发一次
+                        // hasFocus=false，那里提交纯属空转。
+                        //
+                        // ⚠️ 用 hasFocus（本节点**或其子**有焦点）而不是 isFocused
+                        // （本节点自身）：modifier 挂在 GlassTextField 外层 Box 上，
+                        // 真正的焦点目标在它内部的 BasicTextField 上（与
+                        // SettingsScreen 失焦 flush 同款处置）。
+                        .onFocusChanged { focusState ->
+                            val nowFocused = focusState.hasFocus
+                            if (systemInstructionFocused && !nowFocused) onParamCommit()
+                            systemInstructionFocused = nowFocused
+                        },
                 )
             }
         }

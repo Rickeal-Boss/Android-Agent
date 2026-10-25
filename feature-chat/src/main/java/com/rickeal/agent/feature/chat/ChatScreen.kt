@@ -709,7 +709,14 @@ fun ChatScreen(
     if (!windowSize.useThreePane) {
         ChatParamsSheet(
             visible = paramsOpen,
-            onDismiss = { paramsOpen = false },
+            onDismiss = {
+                // W83-02 边界②：关闭抽屉前先把内存里的参数预览值落盘。点关闭键 /
+                // 点 scrim 时输入框往往还挂着焦点（边界①失焦提交未必触发过），
+                // 不补这一条，系统提示词会随面板消失而静默丢失。onParamCommit
+                // 读的是当前内存配置，与已落盘值相同时也只是一次幂等写。
+                viewModel.onParamCommit()
+                paramsOpen = false
+            },
             config = state.config,
             onParamPreview = viewModel::onParamPreview,
             onParamCommit = viewModel::onParamCommit,
