@@ -129,3 +129,17 @@ private const val ABSOLUTE_PATH_MESSAGE =
 - KDoc 已补维护纪律：「文案内不得出现 "/sdcard" 字面子串」——防下一个人再把斜杠形态加回来；
 - 这仍属 W82-06 已申报的提示词面变化范围内（ToolResult 回灌文本，不进系统提示词、不改 echoCorpus 指纹），
   真机验证项不变（同题复跑 3 次看被拒后是否改用相对路径）。
+
+## CI 结论（主理人收尾回填）
+
+**run 40156012651**（`883303a`，Build workflow，三 job 全 success，2026-10-25 10:51–10:55）：
+
+| Job | 结论 | 关键实证 |
+|---|---|---|
+| Assemble Debug (JDK 21) | ✅ | 步骤「Architecture guard」= **51 OK + 架构守卫全部通过**；步骤「Architecture guard self-test」= **PASS=238 FAIL=0**（全量，含元 case53 四方一致性 / case75 归一同源 ⇒ #49/#50/#51 的映射表↔KNOWN_GUARDS↔scaffold↔case 一致性**已由 CI 全量验证**——本地 `--only` 覆盖不到的那一半） |
+| Unit tests | ✅ | `gradle test --continue`（CI 不调 fulltest.sh 默认模式，见 W74-05/B-1 登记的已知分叉）；本地 fulltest 已另行实证 9 模块 tests=818 failures=0 |
+| Lint (baseline gate) | ✅ | SdCardPath 修复后 0 新增（baseline 4 条只缩不涨） |
+
+**本地闸门**（主理人收尾实跑）：assembleDebug ✅ / lintDebug ✅（首跑 SdCardPath 红已修）/ fulltest ✅ 9 模块 818 例 0 失败（mtime 断言未误红）/ arch-guard ✅ 51-51 / line-table ✅ 13+1 / selftest `--only 49,50,51` ✅ 15 PASS。
+
+**仍未完成**：真机验收批（设备 13309cc8 掉线，`adb devices` 空）——防抖四步 / 逃逸留痕 / 下载取消 / 帧统计会话聚合四项全部申报未走，挂 W83 或补设备窗口。
