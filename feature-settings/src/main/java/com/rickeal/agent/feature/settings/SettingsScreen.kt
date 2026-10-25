@@ -32,11 +32,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -65,6 +71,16 @@ import com.rickeal.agent.core.model.PersonaPreset
 import com.rickeal.agent.core.model.ToolDisclosureMode
 import com.rickeal.agent.core.model.ThinkingMode
 import java.util.Locale
+import kotlinx.coroutines.delay
+
+/**
+ * 系统提示词草稿的提交防抖窗口（W82-04）。
+ *
+ * 400ms 是「人还在打字」与「已经打完」的经验分界：比它短会让连续输入仍然逐键落盘，
+ * 比它长会让用户感觉「停手了还没保存」。真正的兜底不靠这个数字，而靠失焦 / 离开页面
+ * 两个 flush 边界（见 [SettingsScreen] 里的系统提示词块）。
+ */
+private const val SYSTEM_INSTRUCTION_COMMIT_DEBOUNCE_MS = 400L
 
 @Composable
 fun SettingsScreen(
@@ -464,9 +480,59 @@ fun SettingsScreen(
                         color = colors.onGlassMuted,
                         modifier = Modifier.padding(top = 12.dp),
                     )
+                    /* ───────────── 系统提示词的局部草稿态（W82-04 写放大治理）─────────────
+                     * 缺陷：此前 TextField 的 onValueChange 直连 `viewModel.onConfigChange`，
+                     * 而那条路径每次都 `DataStore.edit` **整份 InferenceConfig**
+                     * （decode + encode + 磁盘事务）⇒ 打 200 个字 = 200 次完整序列化 +
+                     * 200 次事务写（低端机输入掉跟手性 + 无谓闪存写入）。
+                     *
+                     * 修法：TextField 只绑**纯内存草稿**，静默 [SYSTEM_INSTRUCTION_COMMIT_DEBOUNCE_MS]
+                     * 后才提交一次；失焦 / 组合销毁两个边界各自 flush，保证不丢刚输入的字。
+                     *
+                     * 草稿刻意留在 UI 层、**不进 VM**：它是「输入中的临时态」，不是应用状态。
+                     * 搬进 VM 只会多一份与 `SettingsUiState.config` 并行的第二状态源。
+                     */
+                    var instructionFocused by remember { mutableStateOf(false) }
+                    var instructionDraft by remember { mutableStateOf(state.config.systemInstruction) }
+                    // 「用户手改过草稿」—— 只用来回答一个问题：外部改写来了要不要采纳。
+                    // 不用 `draft != config` 代替它：首次组合时 config 还是默认空串，DataStore
+                    // 的真值随后才到，那一刻若拿「不相等」当脏判据，就会把真值当成外部改写
+                    // 挡掉（用户已聚焦时尤其致命：输入框空着、失焦一提交就把已存的提示词抹了）。
+                    var instructionDirty by remember { mutableStateOf(false) }
+                    // 同步可调用（不挂起）：提交 = 改内存 + launch 落盘。草稿与已落盘值相同时
+                    // 由 VM 侧短路，故两个 flush 边界可以**无条件**调它而不产生空写。
+                    val commitInstruction = {
+                        viewModel.onSystemInstructionCommit(instructionDraft)
+                        // 提交后草稿即已落盘值（内存态同步生效），脏标记归零。
+                        instructionDirty = false
+                    }
+
+                    // 外部改写同步（首次加载 / 人格 chip）。⚠️ 用户手改过且**正在输入**时
+                    // 不重置 —— 有意取舍：宁可让他把这句话打完，也不在打字途中换掉文本。
+                    // 当前屏幕内唯一的外部改写点（人格 chip）已在自己的 onClick 里同步草稿
+                    // 并清脏标记，所以这条取舍不会把 chip 的结果吞掉；失焦后自然收敛。
+                    LaunchedEffect(state.config.systemInstruction) {
+                        if (!instructionDirty || !instructionFocused) {
+                            instructionDraft = state.config.systemInstruction
+                            instructionDirty = false
+                        }
+                    }
+                    // 防抖：key 变化会取消上一个 delay，连续按键天然合并成一次提交。
+                    LaunchedEffect(instructionDraft) {
+                        if (instructionDraft == state.config.systemInstruction) return@LaunchedEffect
+                        delay(SYSTEM_INSTRUCTION_COMMIT_DEBOUNCE_MS)
+                        commitInstruction()
+                    }
+                    // 边界②：组合销毁（导航离开 / 切页签 / 退出）。提交走
+                    // `AppContainer.processScope`，故即便 VM 此刻已被 clear（viewModelScope
+                    // 已取消）也不会丢最后一次输入 —— 见 onSystemInstructionCommit 的 KDoc。
+                    DisposableEffect(Unit) { onDispose { commitInstruction() } }
+
                     // 人格档位 chip（W70 B2，W69-07 重启件）：点选即把预设 prompt 逐字
                     // 写入 systemInstruction（既有落盘路径，零第二状态源）；选中态 =
                     // PersonaPreset.matches(当前文本)，手改/留空即「自定义」（无高亮）。
+                    // W82：选中态改判**草稿**而不是已落盘值 —— 否则手打第一个字之后高亮
+                    // 还要多亮 400ms（防抖窗口），看起来像「点了没生效」。
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier
@@ -476,8 +542,13 @@ fun SettingsScreen(
                         PersonaPreset.entries.forEach { persona ->
                             GlassChip(
                                 text = persona.label,
-                                selected = PersonaPreset.matches(state.config.systemInstruction) == persona,
+                                selected = PersonaPreset.matches(instructionDraft) == persona,
                                 onClick = {
+                                    // 一次性写入（点一下就定），直接落盘，不走草稿防抖。
+                                    // 必须**同步草稿并清脏标记**：否则上面「输入中不重置草稿」
+                                    // 的取舍会把这次外部改写吞掉（草稿仍是用户手打的那句）。
+                                    instructionDraft = persona.prompt
+                                    instructionDirty = false
                                     viewModel.onConfigChange {
                                         it.copy(systemInstruction = persona.prompt)
                                     }
@@ -494,15 +565,29 @@ fun SettingsScreen(
                         modifier = Modifier.padding(top = 4.dp),
                     )
                     GlassTextField(
-                        value = state.config.systemInstruction,
-                        onValueChange = { v ->
-                            viewModel.onConfigChange { it.copy(systemInstruction = v) }
+                        value = instructionDraft,
+                        // 逐键只改草稿（纯内存，零落盘）；落盘由上面 400ms 防抖 + 两个 flush 边界负责。
+                        onValueChange = {
+                            instructionDraft = it
+                            instructionDirty = true
                         },
                         placeholder = "留空则使用模型默认行为",
                         maxLines = 5,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 6.dp),
+                            .padding(top = 6.dp)
+                            // 边界①：失焦即提交（点空白 / 收起键盘 / 点别的控件）。
+                            // 只在 true→false 的跃迁上提交：组合首次挂载也会发一次
+                            // hasFocus=false，那里提交纯属空转（VM 侧相等即短路）。
+                            //
+                            // ⚠️ 用 `hasFocus`（本节点**或其子**有焦点）而不是 `isFocused`
+                            // （本节点自身）：这个 modifier 挂在 GlassTextField 外层 Box 上，
+                            // 真正的焦点目标在它内部的 BasicTextField 上。
+                            .onFocusChanged { focusState ->
+                                val nowFocused = focusState.hasFocus
+                                if (instructionFocused && !nowFocused) commitInstruction()
+                                instructionFocused = nowFocused
+                            },
                     )
                 }
             }

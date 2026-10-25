@@ -1363,7 +1363,8 @@ BEGIN { inblk = 0; started = 0; depth = 0; opened = 0 }
 #     （#18 ChatViewModel 1600 / #20 ChatRunCoordinator 1300 / #25 LiteRtLmEngine 2400 /
 #     #31 AgentRunner 2900 / #32 LiteRtLmEngineLoader 900 / #35 AgentRunnerToolSetup 400 /
 #     #36 ThinkingBudget 150 / #37 AgentRunnerLoopHelpers 400 / #38 ChatRunRecovery 400 /
-#     #48 ConversationCache 200）。
+#     #48 ConversationCache 200 / #49 FrameStatsCollector 250 / #50 DiagnosticsScreen 1150 /
+#     #51 AgentPromptComposer 400 —— 后三员 W82 新增，完整清单见 #49 注释）。
 #     ⚠️ **为何补（W81 外部审查「新承重结构无守卫」两项之一）** —— W80-03 落地的
 #     `ConversationCache`（会话全文读缓存，appendMessage 热路径的 O(1) 命中面）
 #     是新承重结构却零行数闸门：Phase A 现 76 行，Phase B（写穿/失效面继续长）
@@ -1381,6 +1382,60 @@ check "ConversationCache.kt 总行数 ≤ 200（core-data 行数表 #25 家族�
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 48 条守卫面已失效）"; exit 1; fi
            n=$(wc -l < "$f")
            [ "$n" -le 200 ] || echo "ConversationCache.kt 当前 $n 行，超 200 行上限（触顶 = 启动 ConversationCache 拆分评审，非改阈值）"'
+
+# 49) FrameStatsCollector.kt 总行数上限（W82 帧统计聚合面）：#25 家族第 11 员
+#     （#18 1600 / #20 1300 / #25 2400 / #31 2900 / #32 900 / #35 400 /
+#     #36 150 / #37 400 / #38 400 / #48 200 / #49 250 / #50 1150 / #51 400）。
+#     ⚠️ 阈值推导（W82 冻结时实测 199 行）：本波已含会话级聚合增量（总帧数 / 总 janky /
+#     峰值 janky%），按「现值 × 1.25」取 250（余 51）。**刻意不取 200** —— 199 距 200 只剩
+#     1 行，等于「建好即触顶」，会把后续功能迭代逼成结构手术；**也不取 400** —— 那是
+#     「拆分产物档」（#35/#37/#38/#51），性能采集器与拆分产物混档会让阈值语义失效。
+#     ⚠️ 触顶不是改数字，是启动 FrameStatsCollector 拆分评审（采集口径与聚合口径分离）。
+#     ⚠️ 本条只钉 FrameStatsCollector.kt；PerformanceMonitorManager.kt 另属既有评审面。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写 ——
+#     `scripts/line-table.sh:60` 的提取正则无行首锚点，注释里出现该连写会被当成
+#     第 12 条守卫，其下一行没有 `f=` ⇒ `::error::守卫解析失败`（W82 实测踩过）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "FrameStatsCollector.kt 总行数 ≤ 250（core-data 行数表 #25 家族第 11 员，触顶 = 启动 FrameStatsCollector 拆分评审，非改阈值）" \
+  bash -c 'f=core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsCollector.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 49 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 250 ] || echo "FrameStatsCollector.kt 当前 $n 行，超 250 行上限（触顶 = 启动 FrameStatsCollector 拆分评审，非改阈值）"'
+
+# 50) DiagnosticsScreen.kt 总行数上限（W82 诊断页单源化面）：#25 家族第 12 员
+#     （家族清单见 #49 注释）。
+#     ⚠️ 阈值推导（W82 冻结时实测 1085 行）：全仓最大 UI 文件，且是 W80/W81/W82 三波
+#     连续改动热点 ⇒ 按「现值 × 1.06」取 1150（余 65）。**刻意不取 1100** —— 1085 距 1100
+#     只剩 15 行，下一波任何一次微改都会触顶，阈值会退化成「每次都红」的噪声源。
+#     ⚠️ 触顶不是改数字，是启动 DiagnosticsScreen 拆分评审（探针分区 / 卡片渲染 / 免责
+#     文案三段分离，与 W71/W72 的诊断页呈现契约解耦）。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "DiagnosticsScreen.kt 总行数 ≤ 1150（feature-settings 行数表 #25 家族第 12 员，触顶 = 启动 DiagnosticsScreen 拆分评审，非改阈值）" \
+  bash -c 'f=feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsScreen.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 50 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 1150 ] || echo "DiagnosticsScreen.kt 当前 $n 行，超 1150 行上限（触顶 = 启动 DiagnosticsScreen 拆分评审，非改阈值）"'
+
+# 51) AgentPromptComposer.kt 总行数上限（W82 拆分第一刀）：#25 家族第 13 员
+#     （家族清单见 #49 注释）。
+#     ⚠️ 为何补（本仓第四次「拆分新文件裸奔」）：W82 把系统提示词文案常量族 5 个 +
+#     buildSystemSections / buildSystemInstruction 两个纯函数整段自 AgentRunner.kt 搬出，
+#     新建本文件却**当波零行数闸门** —— 与 #35（AgentRunnerToolSetup）/ #37
+#     （AgentRunnerLoopHelpers）/ #48（ConversationCache）同型，第四次。故当波补守，不再欠账。
+#     ⚠️ 阈值推导（W82 冻结时实测 202 行）：按「拆分产物档」取 400（≈ 2×，与 #35/#37/#38
+#     同档）。该文件的增长方式是「加提示词段落」而非「加逻辑」，2× 余量足够；
+#     但**不给到 800** —— 那等于没守。
+#     ⚠️ 触顶不是改数字，是启动 AgentPromptComposer 拆分评审（文案常量族与组装函数分离）。
+#     ⚠️ 本文件与 #31（AgentRunner.kt 2900）**互不替代**：拆分后两者各有独立闸门，
+#     不得以「总量变小了」为由撤掉任一条。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "AgentPromptComposer.kt 总行数 ≤ 400（core-agent 行数表 #25 家族第 13 员，触顶 = 启动 AgentPromptComposer 拆分评审，非改阈值）" \
+  bash -c 'f=core-agent/src/main/java/com/rickeal/agent/core/agent/AgentPromptComposer.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 51 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 400 ] || echo "AgentPromptComposer.kt 当前 $n 行，超 400 行上限（触顶 = 启动 AgentPromptComposer 拆分评审，非改阈值）"'
 
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then

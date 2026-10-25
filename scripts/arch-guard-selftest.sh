@@ -68,7 +68,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -131,6 +131,11 @@ affected_guards_for_file() {
     #    stability.conf 与 ConversationCache.kt 都有专属判据，落到通配行会被降级少跑。
     feature-chat/stability.conf)                                       echo "47" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/ConversationCache.kt) echo "48" ;;
+    # W82：三条行数闸门（#49 FrameStatsCollector / #50 DiagnosticsScreen / #51 AgentPromptComposer）。
+    # ⚠️ 纪律（case53 只做单向校验 ⇒ 漏登记不判红、--affected 静默漏跑）：新增行数守卫必须同步本表。
+    core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsCollector.kt) echo "49" ;;
+    feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsScreen.kt) echo "50" ;;
+    core-agent/src/main/java/com/rickeal/agent/core/agent/AgentPromptComposer.kt) echo "51" ;;
     core-model/*)                                                                  echo "3 15 26 40 41 47" ;;
     *)                                                                             echo FULL ;;
   esac
@@ -949,6 +954,32 @@ package com.rickeal.agent.core.data
 
 class ConversationCache {
     fun get(id: String): String? = id
+}
+KT
+  # 第 49/50/51 条（W82，三条行数闸门）同为 fail-closed：文件缺失即红 ⇒ 骨架必须
+  # **逐个铺出**，漏铺任何一个都会让干净树正例与全部绿面 case 一起误红（W81 前的
+  # 老坑，见 #36/#37/#38/#48 同款铺点）。三份都给「远低于阈值」的最小文件。
+  mkdir -p "$root/core-data/src/main/java/com/rickeal/agent/core/data/perf"
+  cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsCollector.kt" <<'KT'
+package com.rickeal.agent.core.data.perf
+
+class FrameStatsCollector {
+    fun reset() = Unit
+}
+KT
+  mkdir -p "$root/feature-settings/src/main/java/com/rickeal/agent/feature/settings"
+  cat > "$root/feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsScreen.kt" <<'KT'
+package com.rickeal.agent.feature.settings
+
+class DiagnosticsScreen {
+    fun render() = Unit
+}
+KT
+  cat > "$root/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentPromptComposer.kt" <<'KT'
+package com.rickeal.agent.core.agent
+
+class AgentPromptComposer {
+    fun compose() = Unit
 }
 KT
 }
@@ -5234,6 +5265,214 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case82b] 194 行（≤200）合法文件被误判（第 48 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case 83 / 84 / 85（各带 b 绿面）：W82 —— 三条行数闸门
+#   case83/83b：#49 FrameStatsCollector.kt（250 行上限，#25 家族第 11 员）
+#   case84/84b：#50 DiagnosticsScreen.kt（1150 行上限，#25 家族第 12 员）
+#   case85/85b：#51 AgentPromptComposer.kt（400 行上限，#25 家族第 13 员）
+#
+# 为什么这一批要三条一起补：W82 新增 / 显著增长三个文件，其中 AgentPromptComposer.kt
+#   是「拆分新文件当场裸奔」的第四次重现（前三次 = #35/#37/#48），FrameStatsCollector
+#   与 DiagnosticsScreen 是持续增长热点。三份夹具都走「红面 + 绿面」成对：
+#   缺绿面，「上限」判据可能退化成「凡文件在就红」的僵尸规则（W78-07 教训：81b 比 81 重要）。
+#
+# 红面数值刻意取「阈值 + 50」而非「阈值 + 1」：+1 的边界同时受 `wc -l` 语义与末尾
+#   换行影响（本仓 #45 家族用 `-le` 比较式，等号语义已由 #48 家族同款保证），
+#   +50 只证「真超了会红」，不证边界 —— 边界语义交由绿面（阈值 − 10）覆盖。
+# 夹具均为整文件覆写 + cp 还原 + diff 复核（与 case81/82 家族同款纪律）。
+# ---------------------------------------------------------------------------
+if guard_selected 49; then
+d="$TMP/case83-framestats-oversize"
+scaffold "$d"
+FSC="$d/core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsCollector.kt"
+cp "$FSC" "$FSC.orig"
+{
+  echo 'package com.rickeal.agent.core.data.perf'
+  echo ''
+  echo 'class FrameStatsCollector {'
+  i=1
+  while [ "$i" -le 300 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$FSC"
+out="$(run_guard "$d")"; rc=$?
+cp "$FSC.orig" "$FSC" || true
+if diff -q "$FSC.orig" "$FSC" >/dev/null 2>&1; then
+  echo "PASS [case83] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case83] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case83 FrameStatsCollector.kt 超行数上限 (第 49 条)" "$rc" "$out" \
+  "FrameStatsCollector.kt 总行数 ≤ 250（core-data 行数表 #25 家族第 11 员，触顶 = 启动 FrameStatsCollector 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 250 行上限"; then
+  echo "PASS [case83] 红来自真命中（输出含 超 250 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case83] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case83b-framestats-legal-size"
+scaffold "$d"
+FSC="$d/core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsCollector.kt"
+cp "$FSC" "$FSC.orig"
+{
+  echo 'package com.rickeal.agent.core.data.perf'
+  echo ''
+  echo 'class FrameStatsCollector {'
+  i=1
+  while [ "$i" -le 240 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$FSC"
+out="$(run_guard "$d")"; rc=$?
+cp "$FSC.orig" "$FSC" || true
+if diff -q "$FSC.orig" "$FSC" >/dev/null 2>&1; then
+  echo "PASS [case83b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case83b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case83b 244 行合法规模 (第 49 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case83b] 244 行（未超 250）合法文件被误判（第 49 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+if guard_selected 50; then
+d="$TMP/case84-diagnosticsscreen-oversize"
+scaffold "$d"
+DSC="$d/feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsScreen.kt"
+cp "$DSC" "$DSC.orig"
+{
+  echo 'package com.rickeal.agent.feature.settings'
+  echo ''
+  echo 'class DiagnosticsScreen {'
+  i=1
+  while [ "$i" -le 1200 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$DSC"
+out="$(run_guard "$d")"; rc=$?
+cp "$DSC.orig" "$DSC" || true
+if diff -q "$DSC.orig" "$DSC" >/dev/null 2>&1; then
+  echo "PASS [case84] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case84] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case84 DiagnosticsScreen.kt 超行数上限 (第 50 条)" "$rc" "$out" \
+  "DiagnosticsScreen.kt 总行数 ≤ 1150（feature-settings 行数表 #25 家族第 12 员，触顶 = 启动 DiagnosticsScreen 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 1150 行上限"; then
+  echo "PASS [case84] 红来自真命中（输出含 超 1150 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case84] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case84b-diagnosticsscreen-legal-size"
+scaffold "$d"
+DSC="$d/feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsScreen.kt"
+cp "$DSC" "$DSC.orig"
+{
+  echo 'package com.rickeal.agent.feature.settings'
+  echo ''
+  echo 'class DiagnosticsScreen {'
+  i=1
+  while [ "$i" -le 1100 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$DSC"
+out="$(run_guard "$d")"; rc=$?
+cp "$DSC.orig" "$DSC" || true
+if diff -q "$DSC.orig" "$DSC" >/dev/null 2>&1; then
+  echo "PASS [case84b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case84b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case84b 1104 行合法规模 (第 50 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case84b] 1104 行（未超 1150）合法文件被误判（第 50 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+if guard_selected 51; then
+d="$TMP/case85-promptcomposer-oversize"
+scaffold "$d"
+APC="$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentPromptComposer.kt"
+cp "$APC" "$APC.orig"
+{
+  echo 'package com.rickeal.agent.core.agent'
+  echo ''
+  echo 'class AgentPromptComposer {'
+  i=1
+  while [ "$i" -le 450 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$APC"
+out="$(run_guard "$d")"; rc=$?
+cp "$APC.orig" "$APC" || true
+if diff -q "$APC.orig" "$APC" >/dev/null 2>&1; then
+  echo "PASS [case85] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case85] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case85 AgentPromptComposer.kt 超行数上限 (第 51 条)" "$rc" "$out" \
+  "AgentPromptComposer.kt 总行数 ≤ 400（core-agent 行数表 #25 家族第 13 员，触顶 = 启动 AgentPromptComposer 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 400 行上限"; then
+  echo "PASS [case85] 红来自真命中（输出含 超 400 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case85] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case85b-promptcomposer-legal-size"
+scaffold "$d"
+APC="$d/core-agent/src/main/java/com/rickeal/agent/core/agent/AgentPromptComposer.kt"
+cp "$APC" "$APC.orig"
+{
+  echo 'package com.rickeal.agent.core.agent'
+  echo ''
+  echo 'class AgentPromptComposer {'
+  i=1
+  while [ "$i" -le 380 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$APC"
+out="$(run_guard "$d")"; rc=$?
+cp "$APC.orig" "$APC" || true
+if diff -q "$APC.orig" "$APC" >/dev/null 2>&1; then
+  echo "PASS [case85b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case85b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case85b 384 行合法规模 (第 51 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case85b] 384 行（未超 400）合法文件被误判（第 51 条上限判据退化成恒红僵尸规则）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

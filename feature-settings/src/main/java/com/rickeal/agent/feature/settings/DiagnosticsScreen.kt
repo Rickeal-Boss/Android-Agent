@@ -32,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.rickeal.agent.core.data.perf.FrameStatsCollector
 import com.rickeal.agent.core.data.perf.PerfSample
+import com.rickeal.agent.core.data.thermal.ThermalGovernor
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassEmptyState
@@ -97,6 +99,10 @@ import kotlinx.coroutines.withContext
  * （与 ThermalGovernor 熔断判据同源展示 —— 用户被热保护拒了得知道为什么）；③ 新增
  * **帧统计卡**（仅 debug 构建，Choreographer 零依赖采集，见 [FrameStatsCollector] KDoc）。
  *
+ * W82 帧统计两处修正：① 卡内并列「2s 滑窗」与「整次会话累计」—— 窗口装不下「导航到对话页
+ * + 操作 + 返回」这种跨页链路（见 [FrameStatsCollector.FrameStatsSession]）；② 订阅下沉到
+ * [FrameStatsCard]，4Hz 发布只重组那张卡，不再拖整页（W81 真机实证：每帧发布压到 ~5fps）。
+ *
  * @param readPersistedErrors 读回落盘的 ERROR 记录（阻塞 IO，调用方保证在 IO 线程执行）
  * @param clearPersistedErrors 清空落盘记录
  * @param probeState 模型自检状态机（Wave 44，带默认值向后兼容：不传 = 不显示自检结论）
@@ -119,18 +125,16 @@ fun DiagnosticsScreen(
     perfHeader: String? = null,
     /** true = 进入页面（acquire）；false = 离开（release）。 */
     onPerfObservation: (Boolean) -> Unit = {},
-    // ── 帧统计（W81，审查 P0-1 的 07a 档）─────────────────────────────────
+    // ── 帧统计（W81，审查 P0-1 的 07a 档；W82 订阅下沉到卡片）───────────────────
     /**
-     * 帧统计快照（null = 未采集 / 已停止）。仅 [frameStatsAvailable] 为 true
-     * （debug 构建）时可能出现非 null —— release 包采集器恒零行为。
+     * 帧统计采集器（应用级单例）。**订阅发生在 [FrameStatsCard] 内部**，本函数不 collect：
+     * 采集器按 4Hz 发布快照，若在此处 collectAsState，本页（1000+ 行）每次发布都会全量重组
+     * —— W81 的节流只降了频率、没收窄重组范围（W82 修正）。
+     *
+     * null = 宿主未接线（不显示帧统计卡）；release 包 [FrameStatsCollector.isDebuggable]
+     * 恒 false ⇒ 同样不显示（采集器在 release 恒零行为）。
      */
-    frameStats: FrameStatsCollector.FrameStats? = null,
-    /** true = debug 构建（采集器有行为）；false = release，帧统计卡整体不显示。 */
-    frameStatsAvailable: Boolean = false,
-    /** true = 正在采集。 */
-    frameStatsActive: Boolean = false,
-    /** 开关回调：true = 开始采集，false = 停止采集。 */
-    onFrameStatsToggle: (Boolean) -> Unit = {},
+    frameStatsCollector: FrameStatsCollector? = null,
     // ── 模型自检（Wave 44 P0-1）─────────────────────────────────────
     probeState: ProbeUiState = ProbeUiState.Idle,
     onRunProbe: () -> Unit = {},
@@ -475,7 +479,11 @@ fun DiagnosticsScreen(
                         PerfRow(
                             "电池温度",
                             if (batteryTempTenths != Int.MIN_VALUE) {
-                                "%.1f℃（保护线 44.9℃）".format(batteryTempTenths / 10f)
+                                // 保护线引用 ThermalGovernor 的常量（W82 单源化）：此前这里
+                                // 硬编码 "44.9"，熔断线一调就与真实判据脱钩 —— 而这一行的
+                                // 全部价值就是让用户看懂「为什么被拒」，报错数字必须同源。
+                                "%.1f℃（保护线 ${ThermalGovernor.BATTERY_FUSE_CELSIUS}℃）"
+                                    .format(batteryTempTenths / 10f)
                             } else {
                                 "—"
                             },
@@ -515,57 +523,10 @@ fun DiagnosticsScreen(
             // 为什么帧级数据只剩这条路：W80-01 取证 PDRM00 dumpsys gfxinfo 帧统计恒 0
             // （设备级不可用）；JankStats 底层就是 Choreographer.FrameCallback 封装，但引它
             // 要动版本锁死纪律 —— 零依赖自采覆盖「滚动 / 生成期掉帧率」这个唯一消费场景
-            // （详见 FrameStatsCollector KDoc）。
-            if (frameStatsAvailable) {
-                GlassCard(contentPadding = PaddingValues(14.dp)) {
-                    Column {
-                        Text(
-                            text = "帧统计",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = colors.onGlass,
-                        )
-                        Text(
-                            text = "仅 debug 构建；滚动列表或生成时开启采集（约 2s 出结论）。" +
-                                "掉帧 = 帧间隔超过 " +
-                                "${FrameStatsCollector.JANK_THRESHOLD_NANOS / 1_000_000}ms。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.onGlassSubtle,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = if (frameStatsActive) "采集中…" else "未采集",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = colors.onGlass,
-                                modifier = Modifier.weight(1f),
-                            )
-                            GlassButton(
-                                text = if (frameStatsActive) "停止采集" else "开始采集",
-                                onClick = { onFrameStatsToggle(!frameStatsActive) },
-                            )
-                        }
-                        if (frameStats == null) {
-                            Text(
-                                text = "暂无帧数据：开启采集后滚动列表或等待生成",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = colors.onGlassSubtle,
-                                modifier = Modifier.padding(top = 6.dp),
-                            )
-                        } else {
-                            PerfRow("FPS", "%.0f".format(frameStats.fps))
-                            PerfRow("掉帧率", "%.1f%%".format(frameStats.jankyPercent))
-                            PerfRow(
-                                "窗口帧数",
-                                "${frameStats.frames}（其中掉帧 ${frameStats.jankyFrames}）",
-                            )
-                        }
-                    }
-                }
+            // （详见 FrameStatsCollector KDoc）。W82：订阅与渲染整体搬进 FrameStatsCard，
+            // 本函数不再持有任何帧统计数据（4Hz 发布只重组卡片）。
+            if (frameStatsCollector != null && frameStatsCollector.isDebuggable) {
+                FrameStatsCard(collector = frameStatsCollector)
             }
 
             /* ------------------------------------------ 上次崩溃前的记录（磁盘） */
@@ -708,6 +669,92 @@ private fun PerfRow(label: String, value: String) {
             fontFamily = FontFamily.Monospace,
             color = colors.onGlass,
         )
+    }
+}
+
+/**
+ * 帧统计卡（W81 引入；W82 改为**自订阅** + 并列会话累计）。
+ *
+ * 为什么订阅点在这里而不在 [DiagnosticsScreen]：订阅点就是重组边界。采集器按 4Hz 发布快照，
+ * 此前 `stats` 在路由级 collect 再当参数传下来 ⇒ 每次发布都让本页 1000+ 行整体重组（W81
+ * 真机实证：每帧发布把本页压到 ~5fps；节流到 4Hz 只是把「每帧」降成「每 250ms」，重组范围
+ * 一点没收窄）。订阅搬进卡片后，同一个 4Hz 只重组这一张卡 —— 节流与收窄是两道互补的闸。
+ *
+ * 为什么并列两套数：窗口（最近 2s）答「现在」，会话（自采集开始累计）答「这一整段」。要测的
+ * 跨页链路（导航到对话页 + 操作 + 返回）比窗口长，只看窗口永远只剩返回动画那 2s。
+ *
+ * 采集器生命周期归 [FrameStatsCollector]（debug 构建进程启动即开始、跨页持续），本卡只做
+ * 开关与重置 —— 页面进出不再 start/stop，否则「跨页测量」在离开本页那一刻就断了。
+ */
+@Composable
+private fun FrameStatsCard(collector: FrameStatsCollector, modifier: Modifier = Modifier) {
+    val colors = LocalGlassColors.current
+    val stats by collector.stats.collectAsState()
+    val session by collector.session.collectAsState()
+    val active by collector.active.collectAsState()
+    // 委托属性不能智能转换（自定义 getter）⇒ 先落成局部快照再判空。
+    val window = stats
+    val total = session
+    GlassCard(modifier = modifier, contentPadding = PaddingValues(14.dp)) {
+        Column {
+            Text(
+                text = "帧统计",
+                style = MaterialTheme.typography.titleSmall,
+                color = colors.onGlass,
+            )
+            Text(
+                text = "仅 debug 构建；采集自进程启动即开始、跨页持续。掉帧 = 帧间隔超过 " +
+                    "${FrameStatsCollector.JANK_THRESHOLD_NANOS / 1_000_000}ms。",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onGlassSubtle,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (active) "采集中…" else "未采集",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.onGlass,
+                    modifier = Modifier.weight(1f),
+                )
+                GlassButton(
+                    text = if (active) "停止采集" else "开始采集",
+                    onClick = { if (active) collector.stop() else collector.start() },
+                )
+            }
+            /* ── 窗口（最近 2s）：答「现在」 ───────────────────────────── */
+            if (window == null) {
+                Text(
+                    text = "暂无窗口数据：滚动列表或等待生成（约 2s 出结论）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onGlassSubtle,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            } else {
+                PerfRow("FPS（最近 2s）", "%.0f".format(window.fps))
+                PerfRow("掉帧率（最近 2s）", "%.1f%%".format(window.jankyPercent))
+                PerfRow("窗口帧数", "${window.frames}（其中掉帧 ${window.jankyFrames}）")
+            }
+            /* ── 会话累计：答「这一整段」（跨页也连续） ─────────────────── */
+            if (total != null) {
+                PerfRow("会话帧数", "${total.totalFrames}（其中掉帧 ${total.totalJankyFrames}）")
+                PerfRow("会话掉帧率", "%.1f%%".format(total.jankyPercent))
+                PerfRow("会话时长", "%.1f s".format(total.sessionNanos / 1_000_000_000f))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    // 重置只清会话、不动窗口：窗口答「现在」，清掉它等于把即时读数也抹了。
+                    GlassButton(text = "重置会话", onClick = collector::resetSession)
+                }
+            }
+        }
     }
 }
 

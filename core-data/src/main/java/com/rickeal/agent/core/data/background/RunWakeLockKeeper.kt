@@ -52,14 +52,26 @@ internal class RunWakeLockKeeper(
 ) {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var renewJob: Job? = null
-    private var wakeLock: PowerManager.WakeLock? = null
 
-    private var wakeLockHeldSince: Long = 0L   // 持有期起点（elapsedRealtime），用于 maxHoldMillis 上限
+    // 三个字段跨线程（W82）：主线程 onCreate/onStartCommand/onDestroy 与续期协程（Default）
+    // 双向读写 ⇒ @Volatile。注解与声明同行是为了省行（background/ 包有 1000 行上限）。
+    @Volatile private var renewJob: Job? = null
+    @Volatile private var wakeLock: PowerManager.WakeLock? = null
+    @Volatile private var wakeLockHeldSince: Long = 0L   // 持有期起点（elapsedRealtime），用于 maxHoldMillis 上限
+
+    // 「已释放」终态（W82 P1）：cancel 异步、在途 [renew] 非挂起 ⇒ 顺序挡不住复活，挡住它的是本标志。
+    @Volatile private var released = false
 
     val isHeld: Boolean get() = wakeLock?.isHeld == true   // powerManager 为 null 时恒 false
 
-    /** 幂等补锁：onCreate 与 onStartCommand 都会调（双保险）。 */
+    /**
+     * 幂等补锁：onCreate 与 onStartCommand 都会调（双保险）。
+     * ⚠️ **刻意不查 [released]**（W82 申报，别当 bug 改掉）：`released = true` 后调本方法仍会
+     * 建锁，而 [renew] 已永久早退 ⇒ 只能等 [timeoutMillis] 超时自释。不加闸门是因为
+     * `AgentForegroundService` 降级路径 `release(); stopSelf()` 后同实例 onStartCommand 仍会
+     * 幂等 acquire ⇒ 加闸门会把「有锁等超时」变成「静默无锁」，后者更难查。将来真出现
+     * 「release 后复用」路径（W79-08 证当前不可达）时，在复用点复位 `released`。
+     */
     fun acquire() {
         if (isHeld) return
         val manager = powerManager ?: run {
@@ -94,10 +106,11 @@ internal class RunWakeLockKeeper(
     }
 
     /**
-     * 先取消续期、再释放锁 —— **顺序固定**：反过来续期协程可能在「已解锁」的窗口把锁抢回来
-     * （[renew] 是无条件重申请的）。服务侧只调本方法，不要再单独 cancel job / scope。
+     * 先置 [released]、再取消续期、最后释放锁。顺序仍然重要，但**真正的保证**是 released 标志：
+     * `cancel()` 异步、[renew] 非挂起 ⇒ 在途 renew 仍可能在 release 之后抢回锁（W82 P1）。
      */
     fun release() {
+        released = true
         renewJob?.cancel()
         renewJob = null
         serviceScope.cancel()
@@ -108,7 +121,9 @@ internal class RunWakeLockKeeper(
     }
 
     private fun renew(heldMillis: Long) {
-        val lock = wakeLock ?: return acquire()
+        if (released) return   // 终态：绝不再 acquire（否则锁复活、无人释放，只能等超时）
+        // 旧 `?: return acquire()` 会在 release 与在途 renew 交叠时凭空造新锁 ⇒ 改静默返回。
+        val lock = wakeLock ?: return
         // 非引用计数锁：AOSP 对 !mRefCounted 分支即使 mHeld==true 也重新申请并重置超时。
         runCatching { lock.acquire(timeoutMillis) }
             .onFailure { AgentLogStore.warn("WakeLock 续期失败（${it.javaClass.simpleName}）") }

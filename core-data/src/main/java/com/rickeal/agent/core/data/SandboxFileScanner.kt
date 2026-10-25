@@ -1,6 +1,7 @@
 package com.rickeal.agent.core.data
 
 import androidx.compose.runtime.Immutable
+import com.rickeal.agent.core.model.AgentLogStore
 import java.io.File
 
 /**
@@ -50,8 +51,8 @@ data class SandboxScanResult(
 /**
  * 沙箱工作区文件扫描器（Wave 33「沙箱文件可视」的数据面）。
  *
- * 纯 `java.io.File` 的 JVM 逻辑（不触任何 Android 类），沙箱根目录由调用方传入
- * （生产路径是 [AppContainer.sandboxDir]），因此可以直接 JVM 单测
+ * 纯 `java.io.File` + `core-model` 的 [AgentLogStore]（两者都不触任何 Android 类），
+ * 沙箱根目录由调用方传入（生产路径是 [AppContainer.sandboxDir]），因此可以直接 JVM 单测
  * （见 SandboxFileScannerTest）。
  *
  * 扫描口径（**每次只扫一层，逐层下钻**，Wave 36）：
@@ -116,8 +117,13 @@ object SandboxFileScanner {
      */
     fun scan(root: File, dirPath: String = "", limit: Int = DEFAULT_LIMIT): SandboxScanResult {
         // fail-closed：路径不安全（逃逸 / 非法段 / 解析异常）一律按空结果处理。
+        // W82：这条路径此前**完全静默** —— 「目录真的是空的」与「路径被安全校验拦掉」
+        // 在 UI 上长得一模一样，用户无从归因。留一条 warn（不落盘，诊断页内存可见）。
         val dir = resolveWithinSandbox(root, dirPath)
-            ?: return SandboxScanResult(entries = emptyList(), totalEntries = 0, truncated = false)
+        if (dir == null) {
+            ScanEscapeAudit.warn("沙箱扫描：目录未通过沙箱校验（逃逸或非法段），按空结果处理 dirPath=$dirPath")
+            return SandboxScanResult(entries = emptyList(), totalEntries = 0, truncated = false)
+        }
         val children = if (dir.isDirectory) dir.listFiles() else null
         if (children == null) {
             // listFiles() 对不存在 / 无权限的目录返回 null —— 统一按空结果处理。
@@ -151,7 +157,8 @@ object SandboxFileScanner {
             // 纵深防御：目录条目若 canonical 解析后逃逸出沙箱，剔除（异常按剔除处理）。
             // 剔除判据只依赖条目自身、与排序无关 ⇒ 前移到排序前结果集等价（比较子
             // 只用缓存 mtime + 名字，剔除一个子集不改变其余条目的相对序，W80-04）。
-            .filter { decorated -> !decorated.isDirectory || resolveWithinSandbox(root, decorated.relativePath) != null }
+            // W82：剔除时 warn 留痕（此前静默丢条目，用户只看到「某个目录凭空消失」）。
+            .filter { decorated -> isEntryInsideSandbox(root, decorated) }
             .sortedWith(
                 compareByDescending<DecoratedEntry> { it.lastModifiedMillis }
                     .thenBy { it.name },
@@ -174,6 +181,70 @@ object SandboxFileScanner {
             totalEntries = all.size,
             truncated = all.size > shown.size,
         )
+    }
+
+    /**
+     * 条目是否留在 listing 里（W82 可观测化）。
+     *
+     * 非目录恒放行 —— 「打开」动作由 FileProvider 路径表兜底；目录是**下钻的导航向量**，
+     * canonical 解析后落在沙箱外就必须剔除（否则用户能一路点出沙箱）。
+     *
+     * 剔除**不再静默**：warn 一次（含 relativePath）。目录可能每秒重扫，故走
+     * [ScanEscapeAudit] 的 30s 节流 —— 否则一次浏览就能把 200 条内存环刷满。
+     */
+    private fun isEntryInsideSandbox(root: File, decorated: DecoratedEntry): Boolean {
+        if (!decorated.isDirectory) return true
+        if (resolveWithinSandbox(root, decorated.relativePath) != null) return true
+        ScanEscapeAudit.warn("沙箱扫描：剔除逃逸目录 ${decorated.relativePath}")
+        return false
+    }
+
+    /**
+     * 扫描期剔除日志的节流器（W82）。
+     *
+     * 与 core-agent `FileTools.kt` 的 `EscapeAudit` 同形态、**独立一份**：两者分属
+     * core-agent / core-data，为十来行窗口逻辑造一个跨模块公共件（还要把 `internal`
+     * 提成 public）不划算，且两处的级别与语义不同（那边是安全事件 ERROR 落盘，
+     * 这边是浏览面 WARN 只进内存环）。
+     *
+     * 30s 窗口内只记第一次；窗口后的第一条带上「上次记日志后另有 N 次已省略」。
+     *
+     * `internal` 只为让 JVM 单测钉住 [withinWindow] 的 30s 边界（与
+     * `EscapeAudit.withinWindow` 同口径）；`warn` 本身**不给单测断言** —— object 级
+     * 状态会造成用例顺序依赖，断它等于把测试绑到实现细节上。
+     */
+    internal object ScanEscapeAudit {
+
+        private const val WINDOW_MILLIS = 30_000L
+
+        /** 上次记日志的时刻。`0` = 从未记过 ⇒ 首次必然放行。 */
+        private var windowStartMillis = 0L
+
+        /** 当前窗口内被省略的条数。 */
+        private var suppressed = 0
+
+        /** 扫描可能在 IO 线程、诊断页在主线程读 ⇒ 状态上锁。 */
+        private val lock = Any()
+
+        /** 窗口判定（纯函数，左闭右开：恰好 30s 视为窗口已结束）。 */
+        fun withinWindow(nowMillis: Long, windowStartMillis: Long): Boolean =
+            nowMillis - windowStartMillis < WINDOW_MILLIS
+
+        fun warn(message: String) {
+            val now = System.currentTimeMillis()
+            val omitted: Int
+            synchronized(lock) {
+                if (withinWindow(now, windowStartMillis)) {
+                    suppressed++
+                    return
+                }
+                omitted = suppressed
+                suppressed = 0
+                windowStartMillis = now
+            }
+            val tail = if (omitted > 0) "（上次记日志后另有 $omitted 次已省略）" else ""
+            AgentLogStore.warn(message + tail)
+        }
     }
 
     /**

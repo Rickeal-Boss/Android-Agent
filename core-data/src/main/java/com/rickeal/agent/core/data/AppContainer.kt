@@ -202,7 +202,12 @@ class AppContainer(
     /**
      * 帧统计采集器（W81，审查 P0-1 的 07a 档）：Choreographer.FrameCallback 零依赖实现
      * （为什么不用 JankStats、为什么 gfxinfo 不可用、Choreographer 主线程纪律，见
-     * [FrameStatsCollector] 类 KDoc）。仅诊断页「帧统计」卡消费，手动开始/停止。
+     * [FrameStatsCollector] 类 KDoc）。仅诊断页「帧统计」卡消费。
+     *
+     * W82 起 debug 构建**进程启动即采集**（`also { it.start() }`）：帧统计要测的正是「导航
+     * 到对话页 + 操作 + 返回」这种跨页链路，而采集器是应用级单例 —— 若等用户先到诊断页点
+     * 「开始」，那段被测量的操作早就发生完了。release 无副作用：`isDebuggable=false` 时
+     * [FrameStatsCollector.start] 第一行就 return（恒零行为，无线程/回调/发布）。
      *
      * 门控口径 = `ApplicationInfo.FLAG_DEBUGGABLE`（**不**用 BuildConfig.DEBUG ——
      * core-data 没开 buildConfig feature，不为它改 gradle；debug 包恒 debuggable、
@@ -211,7 +216,7 @@ class AppContainer(
      */
     val frameStatsCollector: FrameStatsCollector = FrameStatsCollector(
         isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0,
-    )
+    ).also { it.start() }
 
     /**
      * 「生成速度通知」出口（Wave 9 需求 5）。默认 disabled：由设置页的开关

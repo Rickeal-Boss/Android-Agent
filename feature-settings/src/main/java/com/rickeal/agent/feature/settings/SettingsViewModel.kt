@@ -151,6 +151,35 @@ class SettingsViewModel(
         viewModelScope.launch { container.settingsRepository.updateInferenceConfig { next } }
     }
 
+    /**
+     * 提交**系统提示词草稿**（W82-04 写放大治理）。
+     *
+     * 与 [onConfigChange] 的唯一区别是落盘用的 scope：这里走 [AppContainer.processScope]
+     * （进程级、不可取消）。原因：调用点之一是 `SettingsScreen` 的
+     * `DisposableEffect.onDispose` —— 那一刻 VM 可能已被 `onCleared()` 清掉、
+     * `viewModelScope` 已经取消，`launch` 会被立刻取消 ⇒ 用户最后几个字只改了内存、
+     * 磁盘零写入（W77 §4 记录的「假修复陷阱」，同一处置，不新造机制）。
+     *
+     * **幂等短路**：草稿与当前值相同时直接返回。UI 侧在失焦 / 销毁两个边界上会
+     * 无条件调本方法（它读不到 VM 里的最新值，也不该读），空转由这里吸收 ——
+     * 既避免无谓写盘，也让「防抖已提交 + flush 又来一次」不会变成两次事务。
+     *
+     * ⚠️ **落盘闭包只改本键**：不要传整份 `next`。`updateInferenceConfig` 在
+     * `DataStore.edit` 内**先 decode 磁盘现值再 transform**，传整份快照等于用「调用时」
+     * 的旧值覆盖其他键 —— 打字这 400ms 内若 `ModelsViewModel` 切了 backend，那次更新
+     * 会被静默抹掉。内存侧仍即时生效，磁盘真值由仓库 flow 回灌校准（与全仓「落盘失败
+     * 不回滚 UI」同款）。`coerce()` 在仓库侧已调，闭包里不必重复。
+     */
+    fun onSystemInstructionCommit(text: String) {
+        val current = _uiState.value.config
+        if (text == current.systemInstruction) return
+        _uiState.update { it.copy(config = current.copy(systemInstruction = text).coerce()) }
+        container.processScope.launch {
+            // 只改本键：其余键以磁盘现值为准（消除「整份覆盖丢更新」）。
+            container.settingsRepository.updateInferenceConfig { it.copy(systemInstruction = text) }
+        }
+    }
+
     fun onThemeChange(theme: ThemeState) {
         _uiState.update { it.copy(theme = theme) }
         viewModelScope.launch { container.settingsRepository.setThemeState(theme) }
@@ -269,5 +298,23 @@ class SettingsViewModel(
 
     fun onDismissMessage() {
         _uiState.update { it.copy(message = null, error = null) }
+    }
+
+    /**
+     * **本 VM 没有「未提交草稿」需要兜底**（W82-04，写明是为了防止后来者误解）。
+     *
+     * 系统提示词的草稿不在 VM 里，而在 `SettingsScreen` 的组合局部态：提交由那里的
+     * `DisposableEffect.onDispose`（离开页面 / 切页签）+ `onFocusChanged`（失焦）保证。
+     * 刻意**不**把草稿搬进 VM —— 它是「输入中的临时态」而非应用状态，搬进来会多一份
+     * 与 [SettingsUiState.config] 并行的第二状态源，还得让 VM 的生命周期去 flush 一个
+     * UI 层的概念。
+     *
+     * ⚠️ 关键点：`onDispose` 可能发生在 `onCleared()` **之后**（导航返回时组合销毁与
+     * ViewModelStore 清理的先后不由我们决定），所以提交走 [AppContainer.processScope]
+     * 而不是 `viewModelScope` —— 后者此刻已取消，`launch` 会立刻被丢弃、最后一次输入
+     * 静默丢失（见 [onSystemInstructionCommit]）。因此这里不需要任何兜底动作。
+     */
+    override fun onCleared() {
+        super.onCleared()
     }
 }

@@ -3,6 +3,7 @@ package com.rickeal.agent.core.agent.tools
 import com.rickeal.agent.core.agent.AgentPolicy
 import com.rickeal.agent.core.agent.Tool
 import com.rickeal.agent.core.agent.ToolContext
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ToolEffect
 import com.rickeal.agent.core.model.ToolParameter
 import com.rickeal.agent.core.model.ToolParamType
@@ -27,31 +28,102 @@ abstract class SandboxedFileTool(protected val context: ToolContext) : Tool {
     companion object {
         /** 路径长度护栏：超长路径基本不是正常诉求，直接拒。 */
         private const val MAX_PATH_CHARS = 512
+
+        /**
+         * 拒绝绝对路径时**回给模型**的提示（W82-04）：旧文案只有「请使用相对沙箱根目录的
+         * 路径」一句，而证据（`docs/w82-output-quality-evidence.md` §四）显示小模型被拒后
+         * 把这句话**当成最终答案**回给用户 —— 补示例与禁止形态，给它「下一步照抄」的落点。
+         * ⚠️ 这是**给模型看的提示词面**（经 `ToolResult.errorMessage` 回灌），改动须申报。
+         * ⚠️ 文案内**不得出现 "/sdcard" 字面子串**：lint `SdCardPath` 会把它当硬编码路径判红
+         * （W82 实测），故外部存储以「sdcard 等外部存储根」的概念形态出现，不带斜杠形态。
+         */
+        private const val ABSOLUTE_PATH_MESSAGE =
+            "拒绝绝对路径：沙箱路径必须相对于沙箱根目录，例如 \"note.txt\" 或 \"docs/a.md\"；" +
+                "不要使用 \"/Users/...\"、\"/home/...\" 或 sdcard 等外部存储根路径。"
     }
 
     protected fun resolveSafe(relativePath: String): File {
         val trimmed = relativePath.trim()
-        if (trimmed.isEmpty()) throw SecurityException("路径为空")
+        if (trimmed.isEmpty()) reject(relativePath, "空路径", "路径为空")
         if (trimmed.length > MAX_PATH_CHARS) {
-            throw SecurityException("路径过长（超过 $MAX_PATH_CHARS 字符）")
+            reject(relativePath, "路径过长", "路径过长（超过 $MAX_PATH_CHARS 字符）")
         }
         // 拒绝绝对路径：本沙箱 API 的语义就是「相对沙箱根」。File(base, "/abs") 在
         // JVM 语义下会直接得到 /abs（绝对 child 覆盖 base），虽然后面的 canonical
         // 前缀比对也能拦住，但在语义层先拒掉更清晰，也给错误信息留出指导空间。
-        if (trimmed.startsWith("/")) {
-            throw SecurityException("拒绝绝对路径：请使用相对沙箱根目录的路径")
-        }
+        if (trimmed.startsWith("/")) reject(relativePath, "绝对路径", ABSOLUTE_PATH_MESSAGE)
         val base = context.sandboxDir.canonicalFile
         val target = File(base, trimmed).canonicalFile
         val basePath = base.path
         if (target.path != basePath && !target.path.startsWith(basePath + File.separator)) {
-            throw SecurityException("拒绝访问沙箱之外的路径：$trimmed")
+            // 原因分类（W82）：段里有 `..` ⇒ 上溯逃逸；否则是 canonical 解析后才越界
+            // 的符号链接 / 非法落点 —— 两者对排查的意义不同，日志里要分开。
+            val reason = if (trimmed.split('/').any { it == ".." }) "含 .." else "符号链接逃逸"
+            reject(relativePath, reason, "拒绝访问沙箱之外的路径：$trimmed")
         }
         return target
     }
 
+    /**
+     * 拒绝路径：**先记审计再抛**（W82-04）。此前逃逸被拒完全静默 —— 只抛一个
+     * `SecurityException`，诊断页一无所有，事后答不出「模型试过什么路径、试了几次」。
+     * 只记被拒路径原文（不含文件内容），见 [EscapeAudit]。
+     */
+    private fun reject(rawPath: String, reason: String, message: String): Nothing {
+        EscapeAudit.record(spec.name, rawPath, reason)
+        throw SecurityException(message)
+    }
+
     protected fun param(name: String, description: String, required: Boolean = true): ToolParameter =
         ToolParameter(name, ToolParamType.STRING, description, required)
+}
+
+/**
+ * 沙箱逃逸审计（W82-04）：把「路径被拒」这件**安全事件**落进诊断日志。
+ *
+ * 用 `error` 而不是 `warn`：`AgentLogStore` 是 200 条内存环，**只有 ERROR 级**会被
+ * `AgentLogFileStore` 同步落盘 —— 越界尝试是杀进程后仍要能查的安全事件。
+ *
+ * 必须节流：小模型被拒后常原地重试同一路径，不节流时一次循环就能把环形缓冲刷满、
+ * 挤掉真正的崩溃现场。30s 窗口内只记第一次；窗口后的第一条带上「另有 N 次已省略」。
+ * 只记被拒路径原文（截断 200 字符），**绝不记文件内容**。
+ */
+internal object EscapeAudit {
+
+    private const val WINDOW_MILLIS = 30_000L
+    private const val PATH_PREVIEW_CHARS = 200
+
+    /** 上次记日志的时刻。`0` = 从未记过 ⇒ 首次必然放行（now − 0 远大于窗口）。 */
+    private var windowStartMillis = 0L
+    private var suppressed = 0                              // 本窗口内被省略的条数
+    private val lock = Any()                                // 工具在 Default/IO 跑，诊断页在 UI 读
+
+    /** 窗口判定（纯函数，单测钉住 30s 边界）。 */
+    fun withinWindow(nowMillis: Long, windowStartMillis: Long): Boolean =
+        nowMillis - windowStartMillis < WINDOW_MILLIS
+
+    fun record(toolName: String, rawPath: String, reason: String) {
+        val now = System.currentTimeMillis()
+        val omitted: Int
+        synchronized(lock) {
+            if (withinWindow(now, windowStartMillis)) {
+                suppressed++
+                return
+            }
+            omitted = suppressed
+            suppressed = 0
+            windowStartMillis = now
+        }
+        // 路径预览：换行压成空格（日志一行一条），超长按代理对安全截断。
+        val flat = rawPath.replace('\n', ' ').replace('\r', ' ')
+        val path = if (flat.length > PATH_PREVIEW_CHARS) {
+            flat.truncateSafe(PATH_PREVIEW_CHARS) + "…"
+        } else {
+            flat
+        }
+        val tail = if (omitted > 0) "（上次记日志后另有 $omitted 次已省略）" else ""
+        AgentLogStore.error("沙箱逃逸被拒：工具=$toolName 原因=$reason 路径=$path$tail")
+    }
 }
 
 /**

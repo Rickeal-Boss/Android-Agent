@@ -239,6 +239,65 @@ class SandboxFileScannerTest {
         assertTrue(names.contains("inside"), "指向沙箱内的符号链接目录应保留：$names")
     }
 
+    @Test
+    fun `逃逸目录在计数与限流之前剔除且不占展示名额`() {
+        // W82-04 的行为锚：剔除发生在 `.take(limit)` **之前**，所以逃逸目录既不计入
+        // totalEntries、也不吃掉一个展示名额。若日后有人把 filter 挪到 take 之后，
+        // 「有个目录消失了、列表还少了一条」这种退化只有这条用例能钉住。
+        val root = newTempDir("escape_slot")
+        val outside = newTempDir("escape_slot_outside")
+        File(outside, "secret.txt").writeText("secret")
+        val escape = File(root, "escape")
+        // 能力探测口径与上一条 symlink 用例一致：环境不支持符号链接时跳过（Windows
+        // 无特权 / 某些文件系统）而不是 fail —— CI 是 Linux，本机可能不支持。
+        val created = runCatching {
+            Files.createSymbolicLink(escape.toPath(), outside.toPath())
+        }.isSuccess && Files.isSymbolicLink(escape.toPath())
+        if (!created) return
+
+        val base = System.currentTimeMillis()
+        File(root, "a.txt").apply { writeText("a"); setLastModified(base) }
+        File(root, "b.txt").apply { writeText("b"); setLastModified(base - 5_000) }
+
+        // limit=2 恰好等于「两个合法文件」的数量。
+        val result = SandboxFileScanner.scan(root, limit = 2)
+        assertEquals(setOf("a.txt", "b.txt"), result.entries.map { it.name }.toSet())
+        assertEquals(2, result.totalEntries, "逃逸目录不得计入 totalEntries")
+        assertFalse(result.truncated, "逃逸目录不得占用展示名额")
+    }
+
+    // ── 扫描日志节流窗口（W82）────────────────────────────────────────────────
+    // 只测纯函数 withinWindow：warn() 写的是 AgentLogStore 这个进程级单例，副作用跨
+    // 用例不可清理，断言它会把测试顺序变成隐式依赖（与 EscapeAuditTest 同口径）。
+
+    @Test
+    fun `扫描日志节流窗口内判定为真`() {
+        // windowStart=0 表示「从未记过」；窗口起点之后 1ms / 29_999ms 都还在窗口内。
+        assertTrue(SandboxFileScanner.ScanEscapeAudit.withinWindow(nowMillis = 1L, windowStartMillis = 0L))
+        assertTrue(SandboxFileScanner.ScanEscapeAudit.withinWindow(nowMillis = 29_999L, windowStartMillis = 0L))
+        val base = 1_700_000_000_000L
+        assertTrue(
+            SandboxFileScanner.ScanEscapeAudit.withinWindow(nowMillis = base + 19_999L, windowStartMillis = base),
+        )
+    }
+
+    @Test
+    fun `扫描日志节流窗口在恰好 30s 处结束`() {
+        // 左闭右开：恰好 30_000ms 视为窗口已结束，必须重新记（否则节流永不释放）。
+        assertFalse(SandboxFileScanner.ScanEscapeAudit.withinWindow(nowMillis = 30_000L, windowStartMillis = 0L))
+        val base = 1_700_000_000_000L
+        assertFalse(
+            SandboxFileScanner.ScanEscapeAudit.withinWindow(nowMillis = base + 30_000L, windowStartMillis = base),
+        )
+        // 真实时钟量级下「从未记过」⇒ 差值远大于窗口 ⇒ 首次必然放行。
+        assertFalse(
+            SandboxFileScanner.ScanEscapeAudit.withinWindow(
+                nowMillis = 1_700_000_000_000L,
+                windowStartMillis = 0L,
+            ),
+        )
+    }
+
     // ── 逐层下钻（Wave 36）────────────────────────────────────────────────────
 
     @Test

@@ -511,7 +511,17 @@ jobs:
             # W79 冻结时钟跨 run 污染修复 + 冻结窗口累计单测 6 例（core-agent FreezeAwareTimeoutTest 3→6：新增跨 run 历史冻结不计本 run 预算 / run 中途冻结顺延预算 / 中途冻结非无限豁免；新建 FreezeAccumulatorTest 3：灭屏窗口精确累计一次 / 基线落在灭屏窗口内排除更早片段 / 持续灭屏时冻结值严格递增）由 767 上调 773（代码位实测 773，无 @Ignore/参数化）。
             # W80 性能波新增 11 例（core-data ConversationCacheTest 10：put/get 命中回读 / miss 返 null / 超限淘汰最旧 / get 刷新访问序保活 / 同 id 覆盖不挤他人 / invalidate 删除条目 / invalidate 未知 id 无操作 / clear 全清 / 非正上限拒绝 / 上限 1 极端可用；core-data SandboxFileScannerTest 1：装饰排序去装饰后 mtime 降序与名字 tiebreak 及 childCount 保持不变）由 773 上调 784（代码位实测 784，无 @Ignore/参数化）。
             # W81 性能波新增 15 例（core-agent WallClockEvidenceTest 9→14：有效执行时长含冻结扣减 / remaining 必须含 frozenNanos / 历史冻结不占 run 预算基线口径 / 判据与 evidence 同源含冻结 / 子墙继承父冻结只计一次 等 5 例；新建 core-data RunWakeLockKeeperTest 3：null PowerManager 下 acquire 不崩且 isHeld 恒 false / startRenewal 幂等早退 / release 幂等；新建 core-data FrameStatsCollectorTest 7：空表 null / 单帧 / 全快帧 60fps / 混合掉帧 / 阈值边界恰等不算 / fps 与 jankyPercent 的 0 防御）由 784 上调 799（代码位实测 799，无 @Ignore/参数化）。
-            baseline=799
+            # W82 质量与性能波新增 19 例（**逐文件对账**，合计与总数逐例相等）：新建 core-agent
+            #   AgentPromptComposerGoldenTest 4（提示词组装黄金用例）+ tools/EscapeAuditTest 1（转义审计）；
+            #   新建 core-data ModelDownloaderMissingTaskTest 3（下载竞态）+ perf/FrameStatsSessionTest 5
+            #   （帧统计会话聚合）+ perf/PerfConcurrencyTest 2（并发竞态）；存量扩例 5
+            #   （SandboxFileScannerTest 13→16：逃逸剔除 1 + 扫描节流边界 2；RunWakeLockKeeperTest 3→4）；
+            #   FrameStatsCollectorTest 7→7 未增减。
+            #   ⇒ 由 799 上调 818（代码位实测 818，无 @Ignore/参数化）。
+            #   ⚠️ 该数字是**代码冻结后**实测值：本波基线一度在 799→810→816→818 之间漂移（队友实时加例，
+            #   末次 +2 为 ScanEscapeAudit 节流纯函数边界用例，审查席要求补齐同族覆盖后追加），
+            #   故纪律 = 先冻结再取数，改完立刻跑 arch-guard #26 双向核对（滞后/超前都判红）。
+            baseline=818
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

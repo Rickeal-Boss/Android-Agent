@@ -19,6 +19,7 @@ import com.rickeal.agent.core.model.ModelGpuSupport
 import com.rickeal.agent.core.model.ModelPreset
 import com.rickeal.agent.core.model.ModelPresets
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -249,6 +250,25 @@ class ModelsViewModel(
 
     private var activeDownloadId: Long? = null
 
+    /**
+     * 进度轮询协程的句柄（W82 P0 取消竞态修复）。
+     *
+     * 为什么必须持句柄：轮询是 `while (true)`，只清 [activeDownloadId] 与 UI 文案表达不了
+     * 「取消」—— [onCancelDownload] 过去只做 `cancel(id)` + 清字段，**旧轮询协程继续活着**，
+     * 下一个 tick 仍会去查那个已被删除的 DownloadManager 任务。而
+     * [ModelDownloader.progress] 的旧语义把「任务已不存在」读成 `STATUS_SUCCESSFUL`，
+     * 僵尸协程于是走进成功分支，把下载目录里**上一次留下的同名旧文件**登记成模型并设为
+     * 当前模型（`allowPromote = false` 只挡 `.part` 转正，挡不住 `dir/<name>` 与 `-N` 兜底）。
+     *
+     * 光有 `cancel()` 还不够：它是**异步**的，且「取消 A → 立刻开始 B」时 A 的协程可能已经
+     * 越过挂起点。所以循环首行还有一道**局部 id 比对**守卫（见 [onDownloadFromUrl]）：
+     * 句柄负责「尽快停」，局部 id 守卫负责「就算没停也不许写」。两者是纵深，不是重复。
+     *
+     * 只在主线程读写（[onDownloadFromUrl] / [onCancelDownload] / `invokeOnCompletion` 回调
+     * 都在 viewModelScope 的 Main 上），故不需要 `@Volatile`。
+     */
+    private var downloadPollJob: Job? = null
+
     /** 用户已在「移动数据下载」确认框里点过继续（一次性，用完即清） */
     private var meteredConfirmed: Boolean = false
 
@@ -360,6 +380,14 @@ class ModelsViewModel(
     /**
      * 从 URL 下载模型：交给系统 DownloadManager（支持断点续传与后台下载），
      * 完成后**就地登记**（直接把下载落盘的那个文件登记为模型，不再复制进内部目录）。
+     *
+     * ## 轮询协程的归属（W82 P0）
+     *
+     * 整个流程（闸门检查 + 入队 + 轮询）只跑在**一个**协程里，句柄记在 [downloadPollJob]；
+     * 也就是说本方法**拥有**这条协程，[onCancelDownload] 与下一次调用负责收回它 ——
+     * 下一次调用还要**回收被取代那次下载的 `.part`**（孤儿文件，见函数内的 supersededName）。
+     * 循环首行还有局部 id 守卫（`activeDownloadId != downloadId` 即退出），它兜的是
+     * `cancel()` 的异步性 —— 只靠句柄会留下「cancel 请求已发出、协程还没跑到挂起点」的窗口。
      */
     fun onDownloadFromUrl(url: String) {
         val trimmed = url.trim()
@@ -375,10 +403,32 @@ class ModelsViewModel(
             _uiState.update { it.copy(error = "请填写 https:// 开头的模型直链", message = null) }
             return
         }
-        viewModelScope.launch {
+        // 取代上一次的轮询（对已完成的 job 是 no-op）。UI 正常情况下不允许并发下载，
+        // 但这里不能依赖 UI：两个轮询协程同时活着会互相覆盖进度，且各自都可能判定终态。
+        // 顺带覆盖「连点两次下载」—— 前一次会在挂起点（流量探测 / enqueue）被取消，
+        // 不会重复入队两个 DownloadManager 任务。
+        //
+        // ⚠️ 旧名字必须**在 cancel 之前**抓：cancel 之后 UI 可能已经被清空。
+        // 为什么必须在这里补清理：被取代的旧协程会经循环首行的 L2 局部 id 守卫静默
+        // `return@launch`，而 discardPartFiles 只在 [onCancelDownload] 与 FAILED 分支调用
+        // ⇒ 旧下载的 `.part` 会变成没人回收的孤儿（GB 级）。这里补的是「换了名字」那条路径。
+        // 本次下载的落盘名（纯字符串运算，提前算出来：下面判「是不是同名重下」要用）
+        val fileName = trimmed.substringBefore('?').substringAfterLast('/').ifBlank { "model.litertlm" }
+        val supersededName = _uiState.value.downloadName
+        val hadActivePoll = downloadPollJob != null
+        downloadPollJob?.cancel()
+        downloadPollJob = null
+        // ⚠️ 必须同时清 activeDownloadId：否则旧协程的 L2 守卫（局部 id == 字段）仍然成立，
+        // 只能靠 cancel() 的异步性兜住「已取消却还能再写一帧 UI」的窗口。清掉之后 L2 才接管。
+        activeDownloadId = null
+        // 同名重下**不在这里删**：新任务 enqueue 自己会 deletePartFiles（含 forget confirmedNames），
+        // 而这条 discard 与「DM 开始写新的 .part」是并发的，删晚一步就会删掉正在写入的文件。
+        if (hadActivePoll && !supersededName.isNullOrBlank() && supersededName != fileName) {
+            viewModelScope.launch { container.modelDownloader.discardPartFiles(supersededName) }
+        }
+        val job = viewModelScope.launch {
             // 每次下载尝试都从「没有任何确认」开始，避免上一次的 block 残留在界面上
             _uiState.update { it.copy(storageGateBlock = null) }
-            val fileName = trimmed.substringBefore('?').substringAfterLast('/').ifBlank { "model.litertlm" }
 
             // Gemma 授权闸门：**放在所有「代价类」闸门之前**。
             // 流量/存储问的是「这次下载要花多少」，授权问的是「你凭什么能用这个模型」——
@@ -475,6 +525,11 @@ class ModelsViewModel(
             var lastSampleMillis = startedAtMillis
             var smoothedRate = 0.0
             while (true) {
+                // 僵尸守卫（W82 P0）：比对的是**进入循环时捕获的局部** downloadId，而不是
+                // [activeDownloadId] 字段 —— 否则「取消 A 后立刻开始 B」时，A 的协程会读到
+                // B 的 id 判定「还在下载」，继续把 A 的进度写进 B 的界面。局部值不会变，
+                // 所以这里一旦不等就说明本次轮询已被取代，直接退出。
+                if (activeDownloadId != downloadId) return@launch
                 val elapsed = System.currentTimeMillis() - startedAtMillis
                 delay(if (elapsed < DOWNLOAD_FAST_POLL_WINDOW_MILLIS) 200L else 1000L)
                 val progress = container.modelDownloader.progress(downloadId)
@@ -592,6 +647,11 @@ class ModelsViewModel(
                 }
             }
         }
+        // 登记句柄必须在 launch 之后：viewModelScope 跑在 `Main.immediate`，上面那些
+        // 「闸门提前 return」的路径会在本行之前就把协程跑完 —— 所以顺序只能是
+        // 「先赋值、再挂完成回调」，回调里用**身份比对**摘句柄，避免把新一次下载的句柄抹掉。
+        downloadPollJob = job
+        job.invokeOnCompletion { if (downloadPollJob === job) downloadPollJob = null }
     }
 
     /** 用户在「正在使用移动数据」对话框里点了「仍然下载」。 */
@@ -650,8 +710,27 @@ class ModelsViewModel(
         _uiState.update { it.copy(family = family).refiltered() }
     }
 
+    /**
+     * 用户取消下载。
+     *
+     * ## 顺序（W82 P0，别调换）
+     *
+     * 1. 先 `downloadPollJob?.cancel()`：让轮询协程在最近的挂起点（`delay`）退出，
+     *    不再去查那个马上要被删掉的 DownloadManager 任务；
+     * 2. 再清 [activeDownloadId]：这是循环首行局部 id 守卫的判据，清掉之后即便协程
+     *    还没跑到挂起点，也进不了成功分支（纵深第二层）；
+     * 3. 最后才发 `cancel(id)` + `discardPartFiles`：删除是终态动作，必须排在「没人再
+     *    观察这个任务」之后 —— 反过来做，被唤醒的轮询会先读到「任务已不存在」。
+     *
+     * 旧实现只做 2、3 两步，于是僵尸协程在下一个 tick 读到旧语义的「任务已不存在 =
+     * `STATUS_SUCCESSFUL`」，把上一次留下的同名旧文件登记并激活 —— 用户点的是「取消」，
+     * 收到的却是「下载完成，已设为当前模型」。
+     */
     fun onCancelDownload() {
         val id = activeDownloadId ?: return
+        downloadPollJob?.cancel()
+        downloadPollJob = null
+        activeDownloadId = null
         // cancel / discardPartFiles 都是 suspend（内部有磁盘 IO），必须进协程。
         // discardPartFiles 只在这里调：此刻下载已进入终态，磁盘上的 .part 不会再有人继续写。
         val name = _uiState.value.downloadName
@@ -659,7 +738,6 @@ class ModelsViewModel(
             container.modelDownloader.cancel(id)
             if (!name.isNullOrBlank()) container.modelDownloader.discardPartFiles(name)
         }
-        activeDownloadId = null
         _uiState.update {
             it.copy(
                 downloadName = null,

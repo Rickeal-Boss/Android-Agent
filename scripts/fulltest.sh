@@ -57,6 +57,10 @@ done
 # ---- 跑测试（仅默认模式）----
 # ① rm 失败目录收集（Wave 52）：仅默认模式填充（rm 段在其中）；汇总段据此前置 ::warning::。
 rm_failed=()
+# ④ 本轮启动时刻（W82 / 台账 W74-05 判据②）：默认模式在 rm 之前取 epoch，供末尾
+#    「最早 TEST-*.xml mtime 是否早于启动时刻」断言使用。--summary-only 不跑测试 ⇒ 恒 0
+#    且不参与断言（该分支在断言之前就 exit 0，见 :180-182 的 #23 契约）。
+RUN_START_EPOCH=0
 if [ "$SUMMARY_ONLY" -eq 0 ]; then
   # 解析 Gradle 启动器（仓库 wrapper 优先，其次 PATH 上的 gradle）
   if [ -x ./gradlew ]; then
@@ -68,6 +72,7 @@ if [ "$SUMMARY_ONLY" -eq 0 ]; then
     exit 2
   fi
 
+  RUN_START_EPOCH="$(date +%s)"   # W82：本轮启动时刻（必须在下方 rm 循环之前取）
   echo "[fulltest] launcher=$GRADLE_CMD  task=$TASK  （固定带 --continue，禁用 fail-fast 残缺口径）"
 
   # 清掉上一轮的测试结果，避免旧 TEST-*.xml 污染本轮汇总。
@@ -103,6 +108,8 @@ fmt_ts() {
 
 summarize_tests() {
   g_total=0; g_failures=0; g_errors=0; g_skipped=0; g_files=0
+  # ④ 本轮最早 XML mtime（W82）：由 summarize_tests 回传给末尾断言（函数内是 local）。
+  g_mtime_min=""
   local -A M_TOTAL=() M_FAIL=() M_ERR=()
   local -a MTIMES=()
   local xml head_tag t f e s mod m nmod mt
@@ -128,12 +135,16 @@ summarize_tests() {
   done < <(find . -path ./.git -prune -o -type f -name 'TEST-*.xml' -print 2>/dev/null)
 
   echo "-------------------------------------------------------------------"
-  # ① rm 失败可见化（Wave 52，**仅默认模式**）：删除失败 + gradle 失败 ⇒ 汇总可能来自
-  #    陈旧 XML。--summary-only 分支绝不打印（它本就不跑 rm、不改退出码 —— 见 #23 契约）。
+  # ① rm 失败可见化 + 判红（Wave 52 仅 warning；W82 补 exit 1，销 W74-05 判据②的一半）：
+  #    删除失败 + gradle 成功 ⇒ 汇总可能混入陈旧 XML。mtime 断言（见下方③）是主判据，
+  #    这里再加一道 rm_failed 非空即红 —— 纵深防御：Windows 文件锁下 rm 失败但 gradle
+  #    恰好覆盖写成功时 mtime 是新的，此时仍须判红让人工核对（宁假红不假绿）。
+  #    --summary-only 分支绝不打印（它本就不跑 rm、不改退出码 —— 见 #23 契约）。
   if [ "$SUMMARY_ONLY" -eq 0 ] && [ "${#rm_failed[@]}" -gt 0 ]; then
     echo "[fulltest] ⚠️ 以下 test-results 目录未能清除（文件锁/只读/权限？）："
     printf '[fulltest]   - %s\n' "${rm_failed[@]}"
-    echo "::warning::有 ${#rm_failed[@]} 个 test-results 目录未能清除 —— 若 gradle 也失败，下方汇总可能来自**残留的陈旧 XML**（非本轮结果，请人工核对 mtime）"
+    echo "::error::有 ${#rm_failed[@]} 个 test-results 目录未能清除 —— 本轮汇总口径不可信（W74-05：rm 未清干净时陈旧 XML 可能混入），禁止判绿"
+    exit 1
   fi
   if [ "$g_files" -eq 0 ]; then
     echo "[fulltest] 未找到任何 TEST-*.xml —— 用例数无法汇总。"
@@ -160,6 +171,7 @@ summarize_tests() {
       local mt_min mt_max
       mt_min="$(printf '%s\n' "${MTIMES[@]}" | sort -n | head -1)"
       mt_max="$(printf '%s\n' "${MTIMES[@]}" | sort -n | tail -1)"
+      g_mtime_min="$mt_min"
       echo "[fulltest]   TEST-*.xml mtime 范围：最早 $(fmt_ts "$mt_min")  最晚 $(fmt_ts "$mt_max")"
     fi
     # ③ 默认模式下模块数 != 9 ⇒ 前置 ::warning::（Wave 52，**不改退出码** —— 与 #23 契约、
@@ -191,6 +203,20 @@ if [ "$g_failures" -gt 0 ] || [ "$g_errors" -gt 0 ]; then
 fi
 if [ "$g_files" -eq 0 ]; then
   echo "[fulltest] 失败：gradle 成功但没有任何 TEST-*.xml（task '$TASK' 可能不含测试，或结果目录被改）"
+  exit 1
+fi
+# ④ 陈旧 XML 断言（W82 / 台账 W74-05 判据②）：汇总里**最早**的 TEST-*.xml 若早于本轮
+#    启动时刻，说明这批结果不是本轮产物 —— 唯一成因是 :81-83 的 rm 没清干净（Windows
+#    文件锁 / 只读 / 权限）而 gradle 又没重跑（输出目录还在 ⇒ 可能判 UP-TO-DATE）。
+#    此前该情形只打 ::warning:: 然后照常 exit 0「全部用例绿」（W82 实测复现：陈旧 2020
+#    年的 XML + rm 失败 + gradle rc=0 ⇒ tests=7 failures=0 判绿）—— 这是本脚本**唯一**
+#    真实 fail-open 面，故此处必须判红而不是再打一条 warning。
+#    ⚠️ 只在本轮真跑过测试时有意义：--summary-only 已在上方 exit 0，到不了这里。
+#    ⚠️ 严格小于（不取容差）：XML 由 gradle 在启动之后写盘，同秒写盘 = 相等 ⇒ 绿（已实测）；
+#    若将来遇到 2s 粒度文件系统（FAT/exFAT）误红，再引入容差而不是放宽成「忽略」。
+if [ -n "${g_mtime_min:-}" ] && [ "$g_mtime_min" -lt "$RUN_START_EPOCH" ]; then
+  echo "[fulltest] 失败：最早 TEST-*.xml mtime（$(fmt_ts "$g_mtime_min")）早于本轮启动时刻（$(fmt_ts "$RUN_START_EPOCH")）—— 汇总含非本轮产物（rm 未清干净 / gradle 未重跑）"
+  echo "::error::TEST-*.xml 最早 mtime 早于本轮启动时刻 ⇒ 汇总口径混入陈旧结果，禁止判绿"
   exit 1
 fi
 echo "[fulltest] 通过：全部用例绿（tests=$g_total failures=0 errors=0）。"

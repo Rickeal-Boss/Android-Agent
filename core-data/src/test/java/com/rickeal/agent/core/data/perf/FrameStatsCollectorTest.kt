@@ -8,9 +8,10 @@ import kotlin.test.assertTrue
 /**
  * [FrameStatsCollector.computeFrameStats] 纯函数行为锁定（W81，审查 P0-1 的 07a 档）。
  *
- * 只测纯函数（不触 Android、不起 Choreographer —— 采集器实例行为依赖真机 vsync，
- * 无 JVM 单测缝）：帧间隔表 → frames / jankyFrames / windowNanos 的口径与
- * [FrameStatsCollector.FrameStats] 派生属性（fps / jankyPercent）的防御形态。
+ * 只测纯函数（不触 Android、不起 Choreographer —— 帧到达由设备决定，JVM 上无从复现）：
+ * 帧间隔表 → frames / jankyFrames / windowNanos 的口径与 [FrameStatsCollector.FrameStats]
+ * 派生属性（fps / jankyPercent）的防御形态。实例级会话语义（start / stop / 累计）走 W82
+ * 新增的构造缝，见 `FrameStatsSessionTest`。
  */
 class FrameStatsCollectorTest {
 

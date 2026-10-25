@@ -38,6 +38,32 @@ data class DownloadProgress(
 )
 
 /**
+ * 「DownloadManager 里查不到这条任务」时的进度判定 —— **文件级纯函数，供 JVM 单测钉住**。
+ *
+ * ## 为什么单独抽出来
+ * 本模块的 JVM 单测没有 Robolectric（`core-data/build.gradle.kts` 只声明 junit + kotlin-test），
+ * 构造不出 `DownloadManager`，[ModelDownloader.progress] 整条路径在单测里不可达。而
+ * 「空 cursor 不能算成功」正是 W82 修的 P0 缺陷的最后一环，必须能被钉住 —— 所以判定单独
+ * 成函数，只用 `DownloadManager.STATUS_FAILED` 这个**编译期常量**（取值在编译期内联，
+ * 不引入对 Android 运行时的调用）。
+ *
+ * ## 语义（旧语义是缺陷，别改回去）
+ * 任务消失是**终态**，但不是成功：用户取消、系统清理 DownloadManager 数据库、任务被别的
+ * 清理器删掉，全都会走到这里。旧实现返回 `STATUS_SUCCESSFUL / percent = 100`（理由是
+ * 「避免上层死等」），后果是上层轮询走进成功分支，把**上一次下载残留的同名文件**登记成
+ * 模型并设为当前模型 —— 用户点的是「取消」，看到的是「下载完成，已设为当前模型」。
+ *
+ * `fromCursor = false` 是第二层保险：`.part` 转正闸门只认 cursor 的真实成功行
+ * （见 [ModelDownloader.downloadedPath] 的调用不变式），这一支永远过不去。
+ */
+internal fun missingTaskProgress(): DownloadProgress = DownloadProgress(
+    status = DownloadManager.STATUS_FAILED,
+    percent = 0,
+    reason = "任务已不存在",
+    fromCursor = false,
+)
+
+/**
  * 模型下载器：基于系统 DownloadManager，因此可以享受系统级断点续传、通知栏进度与后台下载，
  * 且不引入任何第三方依赖（OkHttp 只用于引擎侧的网络请求，不适合 GB 级文件）。
  *
@@ -89,7 +115,25 @@ class ModelDownloader(private val context: Context) {
         runCatching { dm.enqueue(request) }.getOrNull()
     }
 
-    /** 查询进度。任务不存在时按「已完成」处理，避免上层死等。 */
+    /**
+     * 查询进度。
+     *
+     * ## 「任务已不存在」是终态，但不是成功（W82 P0 订正，旧语义是缺陷）
+     *
+     * 旧实现把它当「已完成」返回（`STATUS_SUCCESSFUL` / `percent = 100`），理由是「避免上层
+     * 死等」。但 cursor 为空**只**说明 DownloadManager 里没有这条任务了：用户取消（[cancel]）、
+     * 系统清理 DM 数据库、任务被第三方清理器删掉，都会走到这里。把它读成「成功」会让上层
+     * （`ModelsViewModel` 的进度轮询）走进成功分支，把**上一次下载残留的同名文件**登记成模型
+     * 并设为当前模型 —— 用户点「取消」，收到的却是「下载完成，已设为当前模型」。
+     *
+     * 现语义见 [missingTaskProgress]：`STATUS_FAILED` + `reason = "任务已不存在"`。
+     * 它仍然是**终态**（上层据此结束轮询、不必死等），只是不再冒充成功。
+     *
+     * 附注：旧语义对「DM 记录被删、但文件其实下完了」这条恢复路径也没有任何帮助 ——
+     * 那时磁盘上还是 `<name>.part`（转正由 [downloadedPath] 负责），`allowPromote = false`
+     * 过不了闸门，最终只会得到一句「下载完成，但登记失败」。新语义给的「任务已不存在」
+     * 更诚实，且不丢任何能救回来的场景。
+     */
     suspend fun progress(downloadId: Long): DownloadProgress = withContext(Dispatchers.IO) {
         val dm = manager ?: return@withContext DownloadProgress(
             status = DownloadManager.STATUS_FAILED,
@@ -106,7 +150,9 @@ class ModelDownloader(private val context: Context) {
         // 非局部 return 就非法了，必须改成带标签的 return@withContext。
         return@withContext try {
             if (!cursor.moveToFirst()) {
-                DownloadProgress(DownloadManager.STATUS_SUCCESSFUL, 100, reason = "任务已不存在")
+                // 空 cursor ⇒ 任务已不存在：终态，但**绝不是成功**（理由见本函数 KDoc 与
+                // [missingTaskProgress]）。判定抽成纯函数是为了让 JVM 单测能钉住它。
+                missingTaskProgress()
             } else {
                 val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
                 if (status == DownloadManager.STATUS_SUCCESSFUL) {

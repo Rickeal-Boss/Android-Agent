@@ -10,6 +10,7 @@ import com.rickeal.agent.core.model.AgentLogStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.roundToLong
@@ -72,8 +73,13 @@ data class PerfSample(
  *   clearSamples=true 的重置同样成立（W81）：页面开着时新 run 的 acquire 重置与
  *   运行中采样线程交叠，重置后、下一帧采样前旧线程可能补写一个上一窗口的样本 ——
  *   上限仍是一个样本，不加锁。
+ *   **W82 订正**：这一档之外原本还有一档**更坏的**形态 —— 写入侧是「读 value → 改 →
+ *   写回」的非原子 RMW，与 [resetWindow] 的清空交错时会把整段清空前快照写回（窗口
+ *   「复活」，不只是多一个样本）。该形态已由 [appendSample] 的 CAS 循环消除；残留的
+ *   只有本段描述的「一个样本」档，故本条「不加锁」的结论不变。
  *
- * 数据出口：[samples] StateFlow（环形 180 个 = 3 分钟 @1s，超限 removeAt(0) 移除最旧 —— 与
+ * 数据出口：[samples] StateFlow（环形 180 个 = 3 分钟 @1s，超限裁掉最旧的 —— [appendSample]
+ * 用 `takeLast(HISTORY_CAPACITY)` 保持与旧 `removeAt(0)` 循环同一环形语义，与
  * BLOCK_CYCLE_HISTORY 同款环形纪律）+ [latest]（GenerationNotifier 通知文案的低开销读点）。
  *
  * @param context 仅用于取 [ActivityManager.MemoryInfo]。可空是**测试缝**：JVM 单测无
@@ -122,16 +128,49 @@ class PerformanceMonitorManager(private val context: Context?) {
     /** 最新样本（GenerationNotifier 文案读点；无观测窗口时为 null，调用方零开销）。 */
     val latest: PerfSample? get() = _samples.value.lastOrNull()
 
-    /** 上一次成功采样的进程 CPU 秒 / 时刻（增量分母）。非 volatile：仅采样线程读写。 */
+    /**
+     * 上一次成功采样的进程 CPU 秒 / 时刻（增量分母）。
+     *
+     * ⚠️ **跨线程，不是「仅采样线程读写」**（W82 订正，旧申报失真）：run 窗口的
+     * `acquire(reason, clearSamples = true)` 在**调用方线程**（`ChatRunCoordinator` 的
+     * 主线程，见该文件 release/acquire 配对点）直接走 [resetWindow] 把这 7 个字段清零，
+     * 而 `perf-sampler` 线程同时在 [takeSample] 里读写同一组字段 —— 缺 `@Volatile`
+     * 时清空可能对采样线程不可见（新窗口第一个样本用旧窗口的基线算出巨大 Δ，
+     * cpuPercent 冲 100 的假象）。
+     *
+     * 为什么选 `@Volatile` 而不是把 [resetWindow] 投递到采样线程执行：
+     * 投递要新增队列 + 「重置完成」的同步等待（否则 acquire 返回后采样仍可能用旧基线），
+     * 而收益只是省掉「一个样本的残留」这种已申报可接受的偏差（见类 KDoc 末段）。
+     * 7 个字段的可见性用 volatile 就够，不引入锁、不改变 acquire 的同步语义。
+     */
+    @Volatile
     private var lastCpuSeconds = 0.0
+
+    @Volatile
     private var lastAtElapsedMillis = 0L
+
+    @Volatile
     private var lastMachineJiffies: Long? = null
+
+    @Volatile
     private var lastPssKb = 0L
-    /** 上一次成功读取的可用内存（W81 P2-1：5s 粒度，两次采样之间沿用）。仅采样线程读写。 */
+
+    /** 上一次成功读取的可用内存（W81 P2-1：5s 粒度，两次采样之间沿用）。跨线程，见上。 */
+    @Volatile
     private var lastAvailMemBytes = 0L
+
+    /**
+     * 采样计数（PSS 降频相位用）。
+     *
+     * `++` 仍是「读-改-写」、**非原子**：与 [resetWindow] 的归零交错时可能少计 1 次 ⇒ PSS
+     * 采样点偏 1 个 tick。不构成错数 —— 它不是对外指标，只决定 5s 节流的相位，故不加锁
+     * （与类 KDoc「上限一个样本」同款取舍）。
+     */
+    @Volatile
     private var sampleCount = 0L
 
-    /** /proc 失败是否已在**本窗口**内留过 warn（防 1s 一次刷日志）。仅采样线程读写。 */
+    /** /proc 失败是否已在**本窗口**内留过 warn（防 1s 一次刷日志）。跨线程，见上。 */
+    @Volatile
     private var procWarned = false
 
     /**
@@ -197,6 +236,17 @@ class PerformanceMonitorManager(private val context: Context?) {
      * 是增量分母，旧窗口的尾巴会让新窗口第一个样本算出巨大的 Δ（cpuPercent 冲到 100 的
      * 假象）；sampleCount 归零让 PSS 降频计数重新对齐（每 5 次采 1 次从新窗口头开始）；
      * procWarned 归零让「本窗口首错留痕」对新窗口重新生效。
+     *
+     * ## 线程语义（W82）
+     *
+     * 本方法**在调用方线程执行**（`acquire(clearSamples = true)` 且计数 > 1 时由
+     * `ChatRunCoordinator` 的主线程直接调），而 `perf-sampler` 线程同时在写这些字段 ⇒
+     * 字段全部 `@Volatile`（见字段声明处的注释）。
+     *
+     * 样本清空用**单次赋值**而不是「读 value → 改 → 写回」：后者的清空可能被采样线程
+     * 用旧快照整体回写（「清空被复活」）。写入侧已改为 [_samples] 的 CAS 循环
+     * （见 [appendSample]），与这里的赋值交错时最多丢掉/补回**一个**样本 —— 这正是
+     * 类 KDoc 已申报可接受的偏差，不再有「整段旧窗口复活」这一档。
      */
     private fun resetWindow() {
         _samples.value = emptyList()
@@ -334,11 +384,31 @@ class PerformanceMonitorManager(private val context: Context?) {
         lastAtElapsedMillis = at
         lastMachineJiffies = machineJiffies
         sampleCount++
+        appendSample(sample)
+    }
 
-        val next = _samples.value.toMutableList()
-        next.add(sample)
-        while (next.size > HISTORY_CAPACITY) next.removeAt(0)
-        _samples.value = next
+    /**
+     * 把样本并入环形窗口（生产写入点只有 [takeSample] 一处，单测入口见 [appendSampleForTest]）。
+     *
+     * 必须用 `MutableStateFlow.update`（CAS 重试循环）而不是
+     * 「`_samples.value.toMutableList()` → add → 赋值」：后者是**非原子 RMW**，与
+     * [resetWindow] 的 `_samples.value = emptyList()` 交错时，采样线程会把「清空前读到的
+     * 旧快照」整体写回 —— 已清空的窗口被旧样本复活（W82 竞态）。CAS 失败时会拿新值重算，
+     * 最坏情况只多/少**一个**样本。
+     */
+    private fun appendSample(sample: PerfSample) {
+        _samples.update { old -> (old + sample).takeLast(HISTORY_CAPACITY) }
+    }
+
+    /**
+     * 追加一个样本 —— **仅供 JVM 单测**（`PerfConcurrencyTest` 的并发 hammer），生产代码禁止依赖。
+     *
+     * 为什么要这个口：[takeSample] 读 `/proc/self/stat`，而 JVM 单测跑在没有 /proc 的机器上
+     * （Windows 开发机 / Linux CI 都能跑，但前者必空），一进去就早退、一个样本都写不进来，
+     * 并发用例会变成 vacuous。本口与生产走**同一行** [appendSample]，所以竞态覆盖不打折。
+     */
+    internal fun appendSampleForTest(sample: PerfSample) {
+        appendSample(sample)
     }
 
     /**

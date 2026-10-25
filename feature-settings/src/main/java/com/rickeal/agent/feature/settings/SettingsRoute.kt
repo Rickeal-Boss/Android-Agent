@@ -2,12 +2,8 @@ package com.rickeal.agent.feature.settings
 
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
@@ -98,11 +94,13 @@ fun NavGraphBuilder.settingsGraph(
         // 物理量观测（Wave 30 §2.2）：StateFlow 收集 + 窗口开关经引用计数交给
         // DiagnosticsScreen 的 DisposableEffect（进入 acquire / 离开 release）。
         val perfSamples by container.perfMonitorManager.samples.collectAsState()
-        // 帧统计（W81，审查 P0-1 的 07a 档）：仅 debug 构建有采集行为
-        // （FrameStatsCollector 内部按 FLAG_DEBUGGABLE 门控，release 恒 no-op）；
-        // 「采集中」状态归本路由持有，卡片按它切按钮文案。
-        val frameStats by container.frameStatsCollector.stats.collectAsState()
-        var frameStatsActive by remember { mutableStateOf(false) }
+        // 帧统计（W81，审查 P0-1 的 07a 档；W82 改法）：
+        // ① **不在这里 collectAsState** —— 采集器 4Hz 发布，路由级订阅会让 1000+ 行的诊断页
+        //    每次发布整体重组；订阅下沉到 DiagnosticsScreen 的 FrameStatsCard 内部。
+        // ② **不在这里 start/stop** —— 采集器是应用级单例，debug 构建由 AppContainer 在进程
+        //    启动时 start()，生命周期 = 进程（要测的正是「导航到对话页 + 操作 + 返回」这种
+        //    跨页链路）。页面进出若 stop，跨页测量在离开本页那一刻就断了，等于回到 W81 的
+        //    「只能在自己的页面上看数字」。
         // 模型自检（Wave 44 P0-1）：探针状态机归 DiagnosticsViewModel（本页此前无 VM，
         // 探针引入异步/可变状态后该姿态已不成立 —— 见 DiagnosticsScreen KDoc）。
         val diagnosticsViewModel: DiagnosticsViewModel = viewModel(
@@ -126,26 +124,12 @@ fun NavGraphBuilder.settingsGraph(
                 if (active) container.perfMonitorManager.acquire("diagnostics", clearSamples = false)
                 else container.perfMonitorManager.release("diagnostics")
             },
-            frameStats = frameStats,
-            frameStatsAvailable = container.frameStatsCollector.isDebuggable,
-            frameStatsActive = frameStatsActive,
-            onFrameStatsToggle = { active ->
-                frameStatsActive = active
-                if (active) container.frameStatsCollector.start()
-                else container.frameStatsCollector.stop()
-            },
+            // 只传实例：开关 / 重置 / 订阅全部发生在卡片内部（见上面的 ①②）。
+            frameStatsCollector = container.frameStatsCollector,
             probeState = probeState,
             onRunProbe = diagnosticsViewModel::onRunProbe,
             knownBrokenOn = knownBrokenOn,
         )
-        // 离开页面停帧统计采集（窗口纪律同 onPerfObservation 的 DisposableEffect）：
-        // 不停的话 Choreographer 回调会跟到诊断页之后白耗电。stop 幂等。
-        DisposableEffect(Unit) {
-            onDispose {
-                frameStatsActive = false
-                container.frameStatsCollector.stop()
-            }
-        }
     }
 
     // Wave4：工具页提升为一级页签（route 已改为顶层 "tools"），但 composable 仍注册

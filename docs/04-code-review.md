@@ -712,14 +712,25 @@ fun release(kind: EngineKind) { engines.remove(kind)?.let { runCatching { it.clo
 
 ### P2-6 下载轮询是 `while(true)` 无上限、无取消句柄
 
-**位置**：`ModelsViewModel.kt:120-152`；`:156-161`（`onCancelDownload` 只 `manager.remove(id)`，不取消轮询协程）。
+> **W82 订正（2026-10-25，本条的 2/3 已销账）**：本条原描述的三项事实中两项已被 W82-03 修复，仅「无上限」半条仍成立。
+> 现行位置：`ModelsViewModel.kt:527`（`while (true)`）、`:729`（`onCancelDownload`，首行即 `downloadPollJob?.cancel()`）、
+> `ModelDownloader.kt:59`（`internal fun missingTaskProgress()`）。
+> - ❌ 已失效：「无取消句柄」——现持 `downloadPollJob` 句柄（`:270`）+ 循环首行局部 id 守卫（`:532`）；
+> - ❌ 已失效：「`progress()` 因任务已不存在返回 `STATUS_SUCCESSFUL` ⇒ 弹『下载完成，导入失败』」——
+>   现返回 `STATUS_FAILED` + `reason="任务已不存在"`（`fromCursor=false` 过不了 `.part` 转正闸门），
+>   且正常取消根本走不到该分支（句柄 cancel + id 守卫双挡）；
+> - ✅ 仍成立：「无最大轮次/墙钟上限」——DM 任务停 PAUSED 不动时仍 1s 一次 `_uiState.update` 直到 VM 被清，
+>   已登记 **W82-14**（建议修法 = 连续 N 次 `bytesDownloaded` 无增长判 STALLED，而非单纯轮次上限——
+>   后者会误杀 4GB 慢速下载）。
 
-**为什么是问题**：下载暂停/卡住时，这个协程会每秒 `_uiState.update` 一次、永远跑下去
+**位置（W82 前原文，留档）**：`ModelsViewModel.kt:120-152`；`:156-161`（`onCancelDownload` 只 `manager.remove(id)`，不取消轮询协程）。
+
+**为什么是问题（W82 前原文，留档）**：下载暂停/卡住时，这个协程会每秒 `_uiState.update` 一次、永远跑下去
 （直到 ViewModel 被清）。`onCancelDownload` 之后轮询仍在跑，
 下一轮 `progress()` 因任务已不存在返回 `STATUS_SUCCESSFUL`，
 于是弹「下载完成，导入失败」—— 误导用户。
 
-**修法**：保存 `Job` 句柄并在 `onCancelDownload` 里 cancel；加最大轮次/超时；
+**修法（W82 前原文，留档）**：保存 `Job` 句柄并在 `onCancelDownload` 里 cancel；加最大轮次/超时；
 `progress()` 对「任务不存在」应返回一个可区分的状态而不是 `STATUS_SUCCESSFUL`。
 
 ---
