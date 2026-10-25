@@ -7,7 +7,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * [FrameStatsCollector.FrameStatsSession] 会话累计行为锁定（W82）。
+ * [FrameStatsSession] 会话累计行为锁定（W82）。
  *
  * 怎么做到 JVM 可测：采集器有两个**构造缝**（`postToMain` / `elapsedMillis` 参数，默认值即
  * 生产路径）。这里传空投递 + 假时钟 ⇒ start / stop 只翻转状态，不起真 Choreographer；帧入账
@@ -86,7 +86,7 @@ class FrameStatsSessionTest {
 
     @Test
     fun `totalFrames 为 0 时会话掉帧率与 fps 防御为 0`() {
-        val empty = FrameStatsCollector.FrameStatsSession(
+        val empty = FrameStatsSession(
             totalFrames = 0L,
             totalJankyFrames = 0L,
             sessionNanos = 0L,
@@ -100,7 +100,7 @@ class FrameStatsSessionTest {
     @Test
     fun `会话 fps 按帧覆盖时长折算`() {
         // 240 帧 / 4s = 60fps；24 掉帧 ⇒ 10%。不设上限：帧数用 Long，翻倍后口径不变。
-        val s = FrameStatsCollector.FrameStatsSession(
+        val s = FrameStatsSession(
             totalFrames = 240L,
             totalJankyFrames = 24L,
             sessionNanos = 4_000_000_000L,

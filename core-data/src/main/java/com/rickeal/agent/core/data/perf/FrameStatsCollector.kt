@@ -40,6 +40,13 @@ import kotlinx.coroutines.flow.asStateFlow
  * 不 repost 采集就停在一帧）。但**采集态与会话累计的翻转是同步的**（不投递）⇒
  * [start] / [stop] / [resetSession] **必须主线程调用**（申报见 [_active] / [sessionAcc]）。
  *
+ * ## 会话聚合段已外提（W83-05）
+ *
+ * 守卫 #49 给本文件划了 250 行上限，搬迁前 249 行（余 1）⇒ 加任何一行即触顶（触顶 =
+ * 启动拆分评审，非改阈值）。会话聚合面（[FrameStatsSession] 数据类、newFrameStatsSession /
+ * accumulateFrameStatsSession 两个纯函数、JANK_THRESHOLD_NANOS 阈值）整段搬至同包
+ * `FrameStatsSession.kt`：本文件只留采集接线与 2s 窗口，行为零变化（纯搬移）。
+ *
  * 数据出口：[stats] 窗口快照 + [session] 会话累计，两者**同一次 post** 发布、限 4Hz
  * （250ms）—— 防观测者效应（W81 真机取证：每帧发布把诊断页自己拖到 ~5fps，见 [onFrameDelta]）。
  * @param postToMain 主线程投递。**构造缝**：默认值即生产路径（真 Handler）；JVM 单测传
@@ -59,28 +66,6 @@ class FrameStatsCollector(
 
         /** 掉帧率百分比（frames <= 0 时返回 0，不出 NaN）。 */
         val jankyPercent: Float get() = if (frames > 0) jankyFrames * 100f / frames else 0f
-    }
-
-    /**
-     * 整次采集会话的累计统计（W82）。与 [FrameStats] 并列：窗口答「现在」，会话答「这一整段」。
-     *
-     * @param totalFrames 会话内帧数（= 帧间隔样本数，Long 计数不设上限）。
-     * @param totalJankyFrames 会话内掉帧数（帧间隔 > [JANK_THRESHOLD_NANOS]）。
-     * @param sessionNanos 会话**帧覆盖**时长（Σ 帧间隔）。刻意不取墙钟差：冻结 / 灭屏期间
-     *   根本没有帧，取墙钟差会让 FPS 假性暴跌（W78 实测 ColorOS 单次冻结 416s）。
-     * @param startedAtElapsedMillis 会话起点（elapsedRealtime 毫秒，仅展示口径用）。
-     */
-    data class FrameStatsSession(
-        val totalFrames: Long,
-        val totalJankyFrames: Long,
-        val sessionNanos: Long,
-        val startedAtElapsedMillis: Long,
-    ) {
-        /** 会话平均 FPS（sessionNanos <= 0 返回 0，不出 NaN/Inf）。 */
-        val fps: Float get() = if (sessionNanos > 0) totalFrames * 1_000_000_000f / sessionNanos else 0f
-
-        /** 会话掉帧率百分比（totalFrames <= 0 时返回 0，不出 NaN）。 */
-        val jankyPercent: Float get() = if (totalFrames > 0) totalJankyFrames * 100f / totalFrames else 0f
     }
 
     private val _stats = MutableStateFlow<FrameStats?>(null)
@@ -108,7 +93,7 @@ class FrameStatsCollector(
 
     /** 会话累计器（主线程独占，无锁）。与 [deltas] 同生命周期：start 重置、stop 不动。
      * 每帧 `copy()` 一次小对象（≈48B/帧，ART 年轻代无感）—— 已知取舍，非漏掉的优化。 */
-    private var sessionAcc: FrameStatsSession = newSession(0L)
+    private var sessionAcc: FrameStatsSession = newFrameStatsSession(0L)
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -136,7 +121,7 @@ class FrameStatsCollector(
         deltas.addLast(deltaNanos)
         while (deltas.size > WINDOW_FRAMES) deltas.removeFirst()
         // 会话累计每帧都加（纯加法、无锁、不设上限），但发布同样限 4Hz。
-        sessionAcc = accumulateSession(sessionAcc, deltaNanos)
+        sessionAcc = accumulateFrameStatsSession(sessionAcc, deltaNanos)
         if (nowNanos - lastPublishNanos >= PUBLISH_INTERVAL_NANOS) {
             lastPublishNanos = nowNanos
             _stats.value = computeFrameStats(deltas.toList())
@@ -155,7 +140,7 @@ class FrameStatsCollector(
         _active.value = true
         _stats.value = null
         // 会话随窗口一起重置（新一次采集 = 新会话）。同步做、不等 posted 块：按钮点下就要立刻看到「0 帧」。
-        sessionAcc = newSession(elapsedMillis())
+        sessionAcc = newFrameStatsSession(elapsedMillis())
         _session.value = sessionAcc
         postToMain {
             if (!_active.value) return@postToMain
@@ -189,17 +174,11 @@ class FrameStatsCollector(
      */
     fun resetSession() {
         if (!isDebuggable) return
-        sessionAcc = newSession(elapsedMillis())
+        sessionAcc = newFrameStatsSession(elapsedMillis())
         _session.value = sessionAcc
     }
 
     companion object {
-        /**
-         * 掉帧阈值（纳秒）：20ms = 60fps 单帧预算 16.7ms + 余量。**恰等于** 20ms 不算
-         * 掉帧（判据是严格大于）—— 边界钉在 [computeFrameStats] 单测里。
-         */
-        const val JANK_THRESHOLD_NANOS = 20_000_000L
-
         /** 滑动窗口帧数：120 帧 ≈ 2s @60fps。 */
         private const val WINDOW_FRAMES = 120
 
@@ -225,25 +204,5 @@ class FrameStatsCollector(
                 windowNanos = deltas.sum(),
             )
         }
-
-        /**
-         * 新会话（全 0，起点 = [nowElapsedMillis]）。**纯函数**，JVM 可测。
-         * `internal` 而非 `private`：本机无 kotlinc、仓库禁跑 gradle ⇒ 无法实证 private
-         * companion 成员能否被属性初始化器访问；有编译环境后可收紧。
-         */
-        internal fun newSession(nowElapsedMillis: Long): FrameStatsSession =
-            FrameStatsSession(0L, 0L, 0L, nowElapsedMillis)
-
-        /**
-         * 会话累计一步（**纯函数**）：帧数 +1、超阈则掉帧 +1、时长加该帧间隔（判据同上）。
-         * `internal` 而非 `private` 的理由见 [newSession]。
-         */
-        internal fun accumulateSession(prev: FrameStatsSession, deltaNanos: Long): FrameStatsSession =
-            prev.copy(
-                totalFrames = prev.totalFrames + 1,
-                totalJankyFrames = prev.totalJankyFrames +
-                    if (deltaNanos > JANK_THRESHOLD_NANOS) 1 else 0,
-                sessionNanos = prev.sessionNanos + deltaNanos,
-            )
     }
 }

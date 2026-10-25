@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.rickeal.agent.core.data.perf.FrameStatsCollector
+import com.rickeal.agent.core.data.perf.JANK_THRESHOLD_NANOS
 import com.rickeal.agent.core.data.perf.PerfSample
 import com.rickeal.agent.core.data.thermal.ThermalGovernor
 import com.rickeal.agent.core.design.GlassButton
@@ -100,7 +101,7 @@ import kotlinx.coroutines.withContext
  * **帧统计卡**（仅 debug 构建，Choreographer 零依赖采集，见 [FrameStatsCollector] KDoc）。
  *
  * W82 帧统计两处修正：① 卡内并列「2s 滑窗」与「整次会话累计」—— 窗口装不下「导航到对话页
- * + 操作 + 返回」这种跨页链路（见 [FrameStatsCollector.FrameStatsSession]）；② 订阅下沉到
+ * + 操作 + 返回」这种跨页链路（见 [FrameStatsSession]）；② 订阅下沉到
  * [FrameStatsCard]，4Hz 发布只重组那张卡，不再拖整页（W81 真机实证：每帧发布压到 ~5fps）。
  *
  * @param readPersistedErrors 读回落盘的 ERROR 记录（阻塞 IO，调用方保证在 IO 线程执行）
@@ -704,7 +705,7 @@ private fun FrameStatsCard(collector: FrameStatsCollector, modifier: Modifier = 
             )
             Text(
                 text = "仅 debug 构建；采集自进程启动即开始、跨页持续。掉帧 = 帧间隔超过 " +
-                    "${FrameStatsCollector.JANK_THRESHOLD_NANOS / 1_000_000}ms。",
+                    "${JANK_THRESHOLD_NANOS / 1_000_000}ms。",
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.onGlassSubtle,
                 modifier = Modifier.padding(top = 2.dp),
@@ -743,7 +744,9 @@ private fun FrameStatsCard(collector: FrameStatsCollector, modifier: Modifier = 
             if (total != null) {
                 PerfRow("会话帧数", "${total.totalFrames}（其中掉帧 ${total.totalJankyFrames}）")
                 PerfRow("会话掉帧率", "%.1f%%".format(total.jankyPercent))
-                PerfRow("会话时长", "%.1f s".format(total.sessionNanos / 1_000_000_000f))
+                // 会话时长 = Σ 帧间隔（帧覆盖口径，刻意不取墙钟差）：后台 / 冻结期间无帧，
+                // 墙钟差会让 FPS 假性暴跌（W78 实测单次冻结 416s）⇒ 数字会远小于实际经过时间。
+                PerfRow("会话帧覆盖时长", "%.1f s".format(total.sessionNanos / 1_000_000_000f))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
