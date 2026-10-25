@@ -333,7 +333,9 @@ class TextToolProtocolTest {
         assertTrue(result is ProtocolResult.FinalAnswer, "数组内全部未注册 ⇒ 整段降级，实得 $result")
         val answer = (result as ProtocolResult.FinalAnswer).text
         assertTrue(answer.startsWith(text), "原文必须保留在说明行之前")
-        assertTrue(answer.contains("`aaa`、`bbb`、`ccc`等"), "只列前三个并补「等」，实得 $answer")
-        assertTrue(!answer.contains("ddd"), "第四个名不进说明行，实得 $answer")
+        // 只断**说明行**（最后一个换行之后）：原文保留 ⇒ 第四名当然在原文里。
+        val explanation = answer.substringAfterLast("\n")
+        assertTrue(explanation.contains("`aaa`、`bbb`、`ccc`等"), "只列前三个并补「等」，实得 $explanation")
+        assertTrue(!explanation.contains("ddd"), "第四个名不进说明行，实得 $explanation")
     }
 }

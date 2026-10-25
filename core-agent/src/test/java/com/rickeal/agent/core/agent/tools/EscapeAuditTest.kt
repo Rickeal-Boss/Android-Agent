@@ -44,8 +44,8 @@ class EscapeAuditTest {
         val t0 = 1_700_000_000_000L
         val lines = mutableListOf<String>()
         // 同一时刻连记两个不同组合：旧全局窗口下第二条会被吞成「已省略」。
-        EscapeAudit.record("file_read", "空路径", "", nowMillis = t0) { lines.add(it) }
-        EscapeAudit.record("file_list", "绝对路径", "/etc", nowMillis = t0) { lines.add(it) }
+        EscapeAudit.record("file_read", "(empty)", "空路径", nowMillis = t0) { lines.add(it) }
+        EscapeAudit.record("file_list", "/etc", "绝对路径", nowMillis = t0) { lines.add(it) }
         assertEquals(2, lines.size)
         assertTrue(lines[0].contains("工具=file_read"))
         assertTrue(lines[0].contains("原因=空路径"))
@@ -62,13 +62,13 @@ class EscapeAuditTest {
         val lines = mutableListOf<String>()
         // 窗口内连记 3 次（t0 / +1s / +2s）：只放行第一条，其余计省略。
         listOf(0L, 1_000L, 2_000L).forEach { delta ->
-            EscapeAudit.record("file_write", "路径过长", "docs/" + "a".repeat(300), nowMillis = t0 + delta) {
+            EscapeAudit.record("file_write", "docs/" + "a".repeat(300), "路径过长", nowMillis = t0 + delta) {
                 lines.add(it)
             }
         }
         assertEquals(1, lines.size)
         // 恰好 30s：窗口结束，重新记，并带上本窗口被省略的 2 次。
-        EscapeAudit.record("file_write", "路径过长", "docs/" + "a".repeat(300), nowMillis = t0 + 30_000L) {
+        EscapeAudit.record("file_write", "docs/" + "a".repeat(300), "路径过长", nowMillis = t0 + 30_000L) {
             lines.add(it)
         }
         assertEquals(2, lines.size)
@@ -80,17 +80,17 @@ class EscapeAuditTest {
         val t0 = 1_700_000_000_000L
         val lines = mutableListOf<String>()
         // 两个键各自首记。
-        EscapeAudit.record("file_read", "符号链接逃逸", "link", nowMillis = t0) { lines.add(it) }
-        EscapeAudit.record("file_list", "含 ..", "../etc", nowMillis = t0) { lines.add(it) }
+        EscapeAudit.record("file_read", "link", "符号链接逃逸", nowMillis = t0) { lines.add(it) }
+        EscapeAudit.record("file_list", "../etc", "含 ..", nowMillis = t0) { lines.add(it) }
         // A 键窗口内再被拒 2 次；B 键 1 次 —— 两边都只计数不记日志。
         repeat(2) {
-            EscapeAudit.record("file_read", "符号链接逃逸", "link", nowMillis = t0 + 1_000L) { lines.add(it) }
+            EscapeAudit.record("file_read", "link", "符号链接逃逸", nowMillis = t0 + 1_000L) { lines.add(it) }
         }
-        EscapeAudit.record("file_list", "含 ..", "../etc", nowMillis = t0 + 1_000L) { lines.add(it) }
+        EscapeAudit.record("file_list", "../etc", "含 ..", nowMillis = t0 + 1_000L) { lines.add(it) }
         assertEquals(2, lines.size, "窗口内两个键各只记了首条")
         // 窗口后各自重记：省略数互不传染（A=2、B=1）。
-        EscapeAudit.record("file_read", "符号链接逃逸", "link", nowMillis = t0 + 30_000L) { lines.add(it) }
-        EscapeAudit.record("file_list", "含 ..", "../etc", nowMillis = t0 + 30_000L) { lines.add(it) }
+        EscapeAudit.record("file_read", "link", "符号链接逃逸", nowMillis = t0 + 30_000L) { lines.add(it) }
+        EscapeAudit.record("file_list", "../etc", "含 ..", nowMillis = t0 + 30_000L) { lines.add(it) }
         assertEquals(4, lines.size)
         assertTrue(lines[2].contains("另有 2 次已省略"), lines[2])
         assertTrue(lines[3].contains("另有 1 次已省略"), lines[3])
@@ -103,16 +103,16 @@ class EscapeAuditTest {
         // 用编号 reason 构造互异键（正常键数 = 工具数 × reason 种类数 ≈ 15），
         // 连续插 64 个后再插第 65 个 ⇒ 越过 MAX_KEYS=64，淘汰最旧的 k0。
         repeat(64) { i ->
-            EscapeAudit.record("file_read", "k$i", "p$i", nowMillis = t0) { lines.add(it) }
+            EscapeAudit.record("file_read", "p$i", "k$i", nowMillis = t0) { lines.add(it) }
         }
         assertEquals(64, lines.size)
-        EscapeAudit.record("file_read", "k64", "p64", nowMillis = t0) { lines.add(it) }
+        EscapeAudit.record("file_read", "p64", "k64", nowMillis = t0) { lines.add(it) }
         assertEquals(65, lines.size)
         // 未被淘汰的 k1：同一时刻再记仍被抑制（淘汰不影响其余键的防刷环）。
-        EscapeAudit.record("file_read", "k1", "p1", nowMillis = t0) { lines.add(it) }
+        EscapeAudit.record("file_read", "p1", "k1", nowMillis = t0) { lines.add(it) }
         assertEquals(65, lines.size)
         // 已被淘汰的 k0：状态丢失，同一时刻重新放行（计数一并丢 ⇒ 无省略尾）。
-        EscapeAudit.record("file_read", "k0", "p0", nowMillis = t0) { lines.add(it) }
+        EscapeAudit.record("file_read", "p0", "k0", nowMillis = t0) { lines.add(it) }
         assertEquals(66, lines.size)
         assertFalse(lines.last().contains("已省略"), lines.last())
     }

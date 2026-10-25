@@ -324,9 +324,12 @@ class SandboxFileScannerTest {
     fun `同一路径的扫描告警在 30s 窗口内仍只记一条`() {
         val t0 = 1_700_000_000_000L
         val lines = mutableListOf<String>()
+        // 消息（= 节流键）必须与「不同目录路径互不抑制」用例的 escape 不同：
+        // 两用例同用 t0，object 级状态跨用例共享 ⇒ 同消息会让本用例首记被吞
+        // （lines.size == 0 ⇒ 假红）。这是分键节流的测试隔离纪律。
         val warn = { delta: Long ->
             SandboxFileScanner.ScanEscapeAudit.warn(
-                "沙箱扫描：剔除逃逸目录 escape",
+                "沙箱扫描：剔除逃逸目录 dup",
                 nowMillis = t0 + delta,
             ) { lines.add(it) }
         }

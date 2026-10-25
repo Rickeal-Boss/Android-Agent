@@ -91,7 +91,16 @@ internal object CrashSceneLogger {
         throwable.printStackTrace(PrintWriter(sw))
         val frames = sw.toString().lineSequence().take(STACK_FRAME_LIMIT + 1).joinToString("\n")
         val lines = ArrayList<String>()
-        lines.add("未捕获崩溃：线程=$threadName 异常=${throwable.javaClass.name}：${throwable.message}")
+        // cause 链进**头行**（不靠堆栈行）：printStackTrace 的 "Caused by:" 落在
+        // 前 10 帧之外（JUnit/生产调用栈都比 10 帧深）⇒ 堆栈行里断不到它。头行带
+        // 链对归因也更快（异常类 + 根因一眼看完）。take(3) 防病态环链。
+        val causeChain = generateSequence(throwable.cause) { it.cause }
+            .take(3)
+            .joinToString(" <- ") { "${it.javaClass.name}: ${it.message}" }
+        lines.add(
+            "未捕获崩溃：线程=$threadName 异常=${throwable.javaClass.name}：${throwable.message}" +
+                if (causeChain.isNotEmpty()) "（cause 链：$causeChain）" else "",
+        )
         lines.add("崩溃堆栈（前 $STACK_FRAME_LIMIT 帧）：$frames")
         if (recent.isNotEmpty()) {
             recent.chunked(RECENT_LOGS_PER_LINE).forEach { chunk ->

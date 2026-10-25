@@ -26,9 +26,10 @@ class CrashSceneLoggerTest {
         assertTrue(lines[0].contains("boom"), lines[0])
         assertTrue(lines[1].startsWith("崩溃堆栈（前 10 帧）："), lines[1])
         assertTrue(lines[1].contains("CrashSceneLoggerTest"), "堆栈应含本测试帧：${lines[1]}")
+        // cause 链在**头行**（堆栈行的 "Caused by:" 超出前 10 帧预算，不可断）：
         assertTrue(
-            lines[1].contains("Caused by: java.lang.IllegalStateException: root-cause"),
-            "printStackTrace 的 cause 链应在堆栈行里：${lines[1]}",
+            lines[0].contains("（cause 链：java.lang.IllegalStateException: root-cause）"),
+            "头行应带 cause 链：${lines[0]}",
         )
     }
 

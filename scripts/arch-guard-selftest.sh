@@ -479,10 +479,10 @@ import com.rickeal.agent.core.data.background.OemBackgroundPolicy.OemFamily
 internal object OemBackgroundData {
 
     val EVIDENCE: Map<OemFamily, Pair<OemEvidence, String>> = mapOf(
-        OemFamily.COLOR_OS to (OemEvidence.MEASURED to "W77-04 fixture"),
-        OemFamily.HYPER_OS to (OemEvidence.OFFICIAL to "fixture"),
-        OemFamily.NUBIA to (OemEvidence.OFFICIAL to "fixture"),
-        OemFamily.AOSP to (OemEvidence.OFFICIAL to "fixture"),
+        OemFamily.COLOR_OS to (OemEvidence.MEASURED to "W77-04 灭屏 A/B 实测（fixture）"),
+        OemFamily.HYPER_OS to (OemEvidence.OFFICIAL to "小米开发者文档（fixture）"),
+        OemFamily.NUBIA to (OemEvidence.OFFICIAL to "红魔官方协议页（fixture）"),
+        OemFamily.AOSP to (OemEvidence.OFFICIAL to "Android 官方（fixture）"),
     )
 }
 KT
