@@ -68,7 +68,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 54 55 56 57"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -139,7 +139,7 @@ affected_guards_for_file() {
     feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsScreen.kt) echo "50" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentPromptComposer.kt) echo "51" ;;
     # W83-05：老文件增长热点补闸（外审 Z-1/P2-5）+ 拆分新文件当波补守（#56）。
-    feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsViewModel.kt) echo "53" ;;
+    feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsViewModel.kt) echo "57" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileTools.kt) echo "54" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/perf/PerformanceMonitorManager.kt) echo "55" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsSession.kt) echo "56" ;;
@@ -5607,7 +5607,7 @@ fi
 #   边界等号语义由 #48 家族同款 -le 比较式保证；绿面证判据非僵尸）。
 # 夹具均为整文件覆写 + cp 还原 + diff 复核（与 case81/82/83 家族同款纪律）。
 # ---------------------------------------------------------------------------
-if guard_selected 53; then
+if guard_selected 57; then
 d="$TMP/case87-modelsvm-oversize"
 scaffold "$d"
 MVF="$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsViewModel.kt"
@@ -5629,7 +5629,7 @@ else
   echo "FAIL [case87] 夹具还原失败（diff 不一致）"
   FAIL=$((FAIL + 1))
 fi
-assert_red "case87 ModelsViewModel.kt 超行数上限 (第 53 条)" "$rc" "$out" \
+assert_red "case87 ModelsViewModel.kt 超行数上限 (第 57 条)" "$rc" "$out" \
   "ModelsViewModel.kt 总行数 ≤ 1400（feature-models 行数表 #25 家族第 14 员，触顶 = 启动 ModelsViewModel 拆分评审，非改阈值）"
 if printf '%s\n' "$out" | grep -qF "超 1400 行上限"; then
   echo "PASS [case87] 红来自真命中（输出含 超 1400 行上限 事实行）"
@@ -5662,10 +5662,10 @@ else
   FAIL=$((FAIL + 1))
 fi
 if [ "$rc" -eq 0 ]; then
-  echo "PASS [case87b 1390 行合法规模 (第 53 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  echo "PASS [case87b 1390 行合法规模 (第 57 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
   PASS=$((PASS + 1))
 else
-  echo "FAIL [case87b] 1390 行（≤1400）合法文件被误判（第 53 条上限判据退化成恒红僵尸规则）"
+  echo "FAIL [case87b] 1390 行（≤1400）合法文件被误判（第 57 条上限判据退化成恒红僵尸规则）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

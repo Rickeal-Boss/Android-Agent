@@ -1377,9 +1377,13 @@ BEGIN { inblk = 0; started = 0; depth = 0; opened = 0 }
 #     #36 ThinkingBudget 150 / #37 AgentRunnerLoopHelpers 400 / #38 ChatRunRecovery 400 /
 #     #48 ConversationCache 200 / #49 FrameStatsCollector 250 / #50 DiagnosticsScreen 1150 /
 #     #51 AgentPromptComposer 400 —— 后三员 W82 新增；#53 ModelsViewModel 1400 /
-#     #54 FileTools 600 / #55 PerformanceMonitorManager 600 / #56 FrameStatsSession 100
-#     —— 后四员 W83 新增（外审 Z-1/P2-5 老文件增长热点补闸 + 拆分新文件当波补守），
-#     完整清单见 #49 注释）。
+#     #54 FileTools 600 / #55 PerformanceMonitorManager 600 / #56 FrameStatsSession 100 /
+#     #57 ModelsViewModel 1400 —— 后四员 W83 新增（外审 Z-1/P2-5 老文件增长热点补闸
+#     + 拆分新文件当波补守），完整清单见 #49 注释）。
+#     ⚠️ 为何新守卫从 #57 起跳（跳过 52~56 里的 53）：53 是 selftest **元 case**
+#     （KNOWN_GUARDS↔arch-guard↔映射表↔case 四方一致性）的专属号（W71 P2-1 教训：
+#     case 号与守卫号撞车 ⇒ --only 时两个不同 case 互相混入、全量跑输出标签撞车）。
+#     本条取 57 避开；52/54/55/56 无元 case 占用，按序使用。
 #     ⚠️ **为何补（W81 外部审查「新承重结构无守卫」两项之一）** —— W80-03 落地的
 #     `ConversationCache`（会话全文读缓存，appendMessage 热路径的 O(1) 命中面）
 #     是新承重结构却零行数闸门：Phase A 现 76 行，Phase B（写穿/失效面继续长）
@@ -1472,8 +1476,10 @@ check "登记申报号必须在 docs/15-backlog.md 主台账有行（W83-01 防�
            # 失败时原样吐出（蒸发：<文件>:<行号> 申报 <号> 但台账无此号）。
            [ "$rc" -eq 0 ] || printf "%s\n" "$out"'
 
-# 53) ModelsViewModel.kt 总行数上限（W83-05，外审 Z-1/P2-5 补闸）：#25 家族第 14 员
+# 57) ModelsViewModel.kt 总行数上限（W83-05，外审 Z-1/P2-5 补闸）：#25 家族第 14 员
 #     （家族清单见 #48 注释）。
+#     ⚠️ 编号说明：取 #57 而非 #53 —— 53 是 selftest 元 case 专属号（撞车后果见
+#     #48 注释末段）；本波其余新守卫按 52/54/55/56 顺序使用。
 #     ⚠️ 为何补（外审 Z-1「纪律只覆盖同族一部分」第八次）：W82 波本文件 +78 → 1314 行，
 #     已是全 feature 层最大文件、**超过有守卫的 ChatRunCoordinator 阈值 1300** 却零闸门
 #     —— 守卫的触发条件一直是「这个文件被注意到过」而不是「这个文件在变大」。
@@ -1485,7 +1491,7 @@ check "登记申报号必须在 docs/15-backlog.md 主台账有行（W83-01 防�
 #     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
 check "ModelsViewModel.kt 总行数 ≤ 1400（feature-models 行数表 #25 家族第 14 员，触顶 = 启动 ModelsViewModel 拆分评审，非改阈值）" \
   bash -c 'f=feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsViewModel.kt
-           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 53 条守卫面已失效）"; exit 1; fi
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 57 条守卫面已失效）"; exit 1; fi
            n=$(wc -l < "$f")
            [ "$n" -le 1400 ] || echo "ModelsViewModel.kt 当前 $n 行，超 1400 行上限（触顶 = 启动 ModelsViewModel 拆分评审，非改阈值）"'
 

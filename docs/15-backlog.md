@@ -131,7 +131,7 @@
 | W83-02 | **ChatParamsPanel 系统提示词落盘**（W82-13 修复：三边界 flush——失焦/抽屉 dismiss/VM onCleared） | active | **销账判据**：真机判据 = 对话页改提示词→返回→杀进程重进→文本在；无 JVM 单测（全仓无 kotlinx-coroutines-test，加依赖触版本锁死） | W83 |
 | W83-03 | **LQ-1/LQ-2 输出侧收口**（TextToolProtocol 工具名 trim 归一 + 拒绝可读说明行 + `AgentLogStore.warn` 留痕；**不动 AgentPromptComposer 字节**） | active | **销账判据**：输出侧三处落地 + 提示词面零变化（golden hash 不变）；LQ-2（thinking 泄漏）调研后实施或转挂账 | W83 |
 | W83-04 | **EscapeAudit 按 toolName+reason 分键节流**（恢复路径多样性取证：现 30s 全局键会把不同工具/原因的逃逸互相吞掉） | active | **销账判据**：分键节流落地 + `EscapeAuditTest` 补例 + 真机留痕可辨路径 | W83 |
-| W83-05 | **background/ 拆分**（GUIDES 移 core/data/oem/）+ #45 递归化 + 老文件守卫 #53 ModelsViewModel ≤1400 / #54 FileTools ≤600 / #55 PerformanceMonitorManager ≤600 + #49 阈值 250→400 | active | **销账判据**：拆分落地（background/ 余量恢复）+ 守卫 #45/#53/#54/#55 落地 + selftest case 配齐 | W83 |
+| W83-05 | **background/ 拆分**（GUIDES 移 core/data/oem/）+ #45 递归化 + 老文件守卫 #57 ModelsViewModel ≤1400 / #54 FileTools ≤600 / #55 PerformanceMonitorManager ≤600 + 新文件守卫 #56 FrameStatsSession ≤100（#53 跳过：selftest 元 case 专属号，W71 P2-1 教训）；#49 FrameStatsCollector 阈值不动（250），会话聚合段外提后 249→208（余 1→42） | active | **销账判据**：拆分落地（background/ 余量恢复）+ 守卫 #45/#53/#54/#55 落地 + selftest case 配齐 | W83 |
 | W83-06 | **fulltest 接 CI 运行步 + PR 门禁 branches ['**']**（沿袭滚动项落地：fulltest.sh 现只在本地跑，CI 分叉不调脚本） | active | **销账判据**：CI 配置接线 + PR 门禁生效 + 一次 CI 实跑记录 | W83 |
 | W83-07 | **真机验收批**（设备 13309cc8 已回连：逃逸留痕/ChatParamsPanel 落盘/防抖四步/帧统计会话聚合） | active | **销账判据**：四项真机验收逐项走完并如实记录；未走项申报不得写 ✅ | W83 |
 | W83-08 | **崩溃 handler（UncaughtExceptionHandler）+ TTFT 文案披露 C 案 + 会话时长 UI 说明** | active | **销账判据**：handler 落地（崩溃留痕落盘）+ C 案文案「正在加载模型…」披露 + 会话时长说明 UI | W83 |
