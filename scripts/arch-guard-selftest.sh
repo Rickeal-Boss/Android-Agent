@@ -68,7 +68,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -120,12 +120,14 @@ affected_guards_for_file() {
     #    OemBackgroundPolicy.kt 同时受 #45（它在包内）与 #46（它是数据面载体）约束，
     #    放在通配行之后就会被降级成只跑 #45 ⇒ #46 的 case 静默少跑。
     core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt) echo "45 46" ;;
+    # W83-05：#46 改双文件扫描后，证据表载体（oem/OemBackgroundData.kt）也是 #46 的面。
+    core-data/src/main/java/com/rickeal/agent/core/data/oem/OemBackgroundData.kt) echo "46" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/background/RunForegroundPolicy.kt) echo "43 45" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/background/*)              echo "45" ;;
     .github/workflows/build.yml)                                                   echo "22 23 26" ;;
-    docs/15-backlog.md)                                                 echo "42" ;;
-    docs/handoff-*)                                                     echo "42" ;;
-    docs/12-litertlm-0171-anchors.md)                                   echo "41" ;;
+    docs/15-backlog.md)                                                 echo "42 52" ;;
+    docs/handoff-*)                                                     echo "42 52" ;;
+    docs/12-litertlm-0171-anchors.md)                                   echo "41 52" ;;
     # W81：stability.conf 承重墙（#47）与 ConversationCache 行数闸门（#48）的核对面。
     # ⚠️ **具体行同样必须排在下面的 `core-model/*` 通配行之前**（bash `case` 先匹配先赢）：
     #    stability.conf 与 ConversationCache.kt 都有专属判据，落到通配行会被降级少跑。
@@ -136,6 +138,11 @@ affected_guards_for_file() {
     core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsCollector.kt) echo "49" ;;
     feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsScreen.kt) echo "50" ;;
     core-agent/src/main/java/com/rickeal/agent/core/agent/AgentPromptComposer.kt) echo "51" ;;
+    # W83-05：老文件增长热点补闸（外审 Z-1/P2-5）+ 拆分新文件当波补守（#56）。
+    feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsViewModel.kt) echo "53" ;;
+    core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileTools.kt) echo "54" ;;
+    core-data/src/main/java/com/rickeal/agent/core/data/perf/PerformanceMonitorManager.kt) echo "55" ;;
+    core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsSession.kt) echo "56" ;;
     core-model/*)                                                                  echo "3 15 26 40 41 47" ;;
     *)                                                                             echo FULL ;;
   esac
@@ -440,6 +447,9 @@ KT
   #   · 证据行 `OemFamily.X to (OemEvidence.Y to "…")` 行首形态，一行一族；
   #   · NUBIA 一族必须留着：case80 靠**删掉它这一行**行使「枚举↔表不一致」判据。
   #   · ⚠️ 本夹具里**不许写** KDoc 示例行（会污染提取，见 arch-guard #46 注释）。
+  # W83-05：#46 改双文件扫描 ⇒ 夹具随之拆分：枚举留在 OemBackgroundPolicy.kt（F1），
+  #   证据表移到兄弟目录 oem/OemBackgroundData.kt（F2）—— 与真仓同构。两份夹具的
+  #   行首形态（8 空格枚举值 / OemFamily.X to (OemEvidence.Y to "）必须逐字保留。
   cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt" <<'KT'
 package com.rickeal.agent.core.data.background
 
@@ -457,12 +467,22 @@ internal object OemBackgroundPolicy {
         OFFICIAL,
         COMMUNITY,
     }
+}
+KT
+  mkdir -p "$root/core-data/src/main/java/com/rickeal/agent/core/data/oem"
+  cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/oem/OemBackgroundData.kt" <<'KT'
+package com.rickeal.agent.core.data.oem
 
-    private val EVIDENCE: Map<OemFamily, Pair<OemEvidence, String>> = mapOf(
-        OemFamily.COLOR_OS to (OemEvidence.MEASURED to "W77-04 灭屏 A/B 实测（fixture）"),
-        OemFamily.HYPER_OS to (OemEvidence.OFFICIAL to "小米开发者文档（fixture）"),
-        OemFamily.NUBIA to (OemEvidence.OFFICIAL to "红魔官方协议页（fixture）"),
-        OemFamily.AOSP to (OemEvidence.OFFICIAL to "Android 官方（fixture）"),
+import com.rickeal.agent.core.data.background.OemBackgroundPolicy.OemEvidence
+import com.rickeal.agent.core.data.background.OemBackgroundPolicy.OemFamily
+
+internal object OemBackgroundData {
+
+    val EVIDENCE: Map<OemFamily, Pair<OemEvidence, String>> = mapOf(
+        OemFamily.COLOR_OS to (OemEvidence.MEASURED to "W77-04 fixture"),
+        OemFamily.HYPER_OS to (OemEvidence.OFFICIAL to "fixture"),
+        OemFamily.NUBIA to (OemEvidence.OFFICIAL to "fixture"),
+        OemFamily.AOSP to (OemEvidence.OFFICIAL to "fixture"),
     )
 }
 KT
@@ -531,6 +551,11 @@ if [ "$SUMMARY_ONLY" -eq 1 ]; then
 fi
 exit 0
 SH
+  # 第 52 条（W83-01，登记号 ↔ 台账对账）：守卫调用 scripts/check-backlog-refs.sh
+  # ⇒ 骨架必须提供它。**用 cp 复制真脚本**（不是内联最小替身）：本 case 家族要行使的
+  # 正是真脚本的扫描逻辑（申报正则 + 台账行断言），替身只会测到「文件在」这一层。
+  # 真脚本缺失 ⇒ cp 失败 ⇒ 全部 case 红（正确：守卫面失效不许静默放行）。
+  cp "$(dirname "$GUARD")/check-backlog-refs.sh" "$root/scripts/check-backlog-refs.sh"
   # 第 29 条（W58，litertlm 版本钉死 0.17.1）要求 gradle/libs.versions.toml 存在且
   # 行首锚 `litertlm = "0.17.1"` 可提取 ⇒ 骨架必须提供**最小 toml**（只含一个版本行；
   # 不含任何禁依赖关键词 —— 不触发第 4 条的版本目录扫描面）。
@@ -981,6 +1006,37 @@ package com.rickeal.agent.core.agent
 class AgentPromptComposer {
     fun compose() = Unit
 }
+KT
+  # 第 53/54/55/56 条（W83-05，四条行数闸门）同为 fail-closed：文件缺失即红 ⇒ 骨架
+  # 必须逐个铺出（漏铺任何一个都会让干净树正例与全部绿面 case 一起误红）。四份都给
+  # 「远低于阈值」的最小文件；均不含 `XxxViewModel(` 主构造形态（防误触第 17 条）。
+  mkdir -p "$root/feature-models/src/main/java/com/rickeal/agent/feature/models"
+  cat > "$root/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsViewModel.kt" <<'KT'
+package com.rickeal.agent.feature.models
+
+class ModelsViewModel {
+    fun noop() = Unit
+}
+KT
+  mkdir -p "$root/core-agent/src/main/java/com/rickeal/agent/core/agent/tools"
+  cat > "$root/core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileTools.kt" <<'KT'
+package com.rickeal.agent.core.agent.tools
+
+class FileTools {
+    fun noop() = Unit
+}
+KT
+  cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/perf/PerformanceMonitorManager.kt" <<'KT'
+package com.rickeal.agent.core.data.perf
+
+class PerformanceMonitorManager {
+    fun noop() = Unit
+}
+KT
+  cat > "$root/core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsSession.kt" <<'KT'
+package com.rickeal.agent.core.data.perf
+
+data class FrameStatsSession(val totalFrames: Long)
 KT
 }
 
@@ -4962,7 +5018,7 @@ if guard_selected 46; then
 d="$TMP/case80-oem-evidence-missing-row"
 scaffold "$d"
 sed -i '/OemFamily\.NUBIA to (OemEvidence\.OFFICIAL/d' \
-  "$d/core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt"
+  "$d/core-data/src/main/java/com/rickeal/agent/core/data/oem/OemBackgroundData.kt"
 out="$(run_guard "$d")"; rc=$?
 assert_red "case80 证据表缺 NUBIA 行（枚举↔表不一致）(第 46 条)" "$rc" "$out" \
   "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓取证锚点"
@@ -4978,7 +5034,7 @@ fi
 d="$TMP/case80b-measured-without-anchor"
 scaffold "$d"
 sed -i 's/OemFamily\.AOSP to (OemEvidence\.OFFICIAL to "Android 官方（fixture）")/OemFamily.AOSP to (OemEvidence.MEASURED to "Android 官方（无波次锚点）")/' \
-  "$d/core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt"
+  "$d/core-data/src/main/java/com/rickeal/agent/core/data/oem/OemBackgroundData.kt"
 out="$(run_guard "$d")"; rc=$?
 assert_red "case80b MEASURED 缺 W## 锚点 (第 46 条)" "$rc" "$out" \
   "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓取证锚点"
@@ -5473,6 +5529,335 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case85b] 384 行（未超 400）合法文件被误判（第 51 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case80e（#46 双文件化的 fail-closed 面）：证据表载体（oem/OemBackgroundData.kt）
+#   被删 ⇒ 必须判红且带「证据表载体缺失」事实行。W83-05 把 #46 从单文件改双文件后，
+#   F2 缺失是新出现的失效形态（表被挪走 / 文件被删 ⇒ 旧口径会因 rows 提取为空而红，
+#   新口径先查载体存在性，归因更精确）。
+# ---------------------------------------------------------------------------
+if guard_selected 46; then
+d="$TMP/case80e-evidence-carrier-missing"
+scaffold "$d"
+rm -f "$d/core-data/src/main/java/com/rickeal/agent/core/data/oem/OemBackgroundData.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case80e 证据表载体缺失必须 fail-closed (第 46 条)" "$rc" "$out" \
+  "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓取证锚点"
+if printf '%s\n' "$out" | grep -qF "证据表载体缺失"; then
+  echo "PASS [case80e] 红来自真命中（输出含 证据表载体缺失 fail-closed 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case80e] 守卫判红但输出不含载体缺失事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case86 / case86b（第 52 条，W83-01 登记号 ↔ 台账对账）：红绿成对。
+#   红面：交接文档追加一条「登记 W99-99」（台账无此号）⇒ 必须判红且输出含
+#     「蒸发：」事实行（check-backlog-refs.sh 的归因形态）。
+#   绿面：追加「登记 W68-01」（骨架台账内 ID）⇒ 必须退出 0（未把「有申报」当红，
+#     判据非恒红僵尸）。两面都追加进 scaffold 的 ledger-era 交接夹具 —— #42 对
+#     W68-01 放行（在台账内）、对 W99-99 也会红（顺带证明两条守卫各司其职）。
+# 注：本 case 家族行使的是**真脚本**（scaffold 用 cp 复制，见 scaffold() 内注释），
+#     不是内联替身 —— 申报正则与台账行断言逻辑本身都在被测面内。
+# ---------------------------------------------------------------------------
+if guard_selected 52; then
+d="$TMP/case86-backlog-claim-evaporated"
+scaffold "$d"
+printf '\n登记 W99-99（fixture 假申报：台账无此号 ⇒ 必须判红）\n' >> "$d/docs/handoff-20261016-wave69-closeout.md"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case86 申报号不在台账必须判红 (第 52 条)" "$rc" "$out" \
+  "登记申报号必须在 docs/15-backlog.md 主台账有行（W83-01 防申报蒸发，W71 G1 同型第七次）"
+if printf '%s\n' "$out" | grep -qF "蒸发："; then
+  echo "PASS [case86] 红来自真命中（输出含 蒸发： 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case86] 守卫判红但输出不含蒸发行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case86b-backlog-claim-registered"
+scaffold "$d"
+printf '\n登记 W68-01（fixture 合法申报：台账内 ID ⇒ 必须不红）\n' >> "$d/docs/handoff-20261016-wave69-closeout.md"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case86b 合法申报放行 (第 52 条绿面)] 退出 0（未把「有申报」当红，对账判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case86b] 台账内 ID 的合法申报被误判（第 52 条判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case87 / 88 / 89 / 90（各带 b 绿面）：W83-05 四条行数闸门（外审 Z-1/P2-5 补闸）
+#   case87/87b：#53 ModelsViewModel.kt（1400 上限，#25 家族第 14 员）
+#   case88/88b：#54 FileTools.kt（600 上限，#25 家族第 15 员）
+#   case89/89b：#55 PerformanceMonitorManager.kt（600 上限，#25 家族第 16 员）
+#   case90/90b：#56 FrameStatsSession.kt（100 上限，#25 家族第 17 员，拆分新文件当波补守）
+# 红面数值取「阈值 + 50」、绿面取「阈值 − 10」（口径同 case83 家族：+50 只证真超会红，
+#   边界等号语义由 #48 家族同款 -le 比较式保证；绿面证判据非僵尸）。
+# 夹具均为整文件覆写 + cp 还原 + diff 复核（与 case81/82/83 家族同款纪律）。
+# ---------------------------------------------------------------------------
+if guard_selected 53; then
+d="$TMP/case87-modelsvm-oversize"
+scaffold "$d"
+MVF="$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsViewModel.kt"
+cp "$MVF" "$MVF.orig"
+{
+  echo 'package com.rickeal.agent.feature.models'
+  echo ''
+  echo 'class ModelsViewModel {'
+  i=1
+  while [ "$i" -le 1450 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$MVF"
+out="$(run_guard "$d")"; rc=$?
+cp "$MVF.orig" "$MVF" || true
+if diff -q "$MVF.orig" "$MVF" >/dev/null 2>&1; then
+  echo "PASS [case87] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case87] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case87 ModelsViewModel.kt 超行数上限 (第 53 条)" "$rc" "$out" \
+  "ModelsViewModel.kt 总行数 ≤ 1400（feature-models 行数表 #25 家族第 14 员，触顶 = 启动 ModelsViewModel 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 1400 行上限"; then
+  echo "PASS [case87] 红来自真命中（输出含 超 1400 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case87] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case87b-modelsvm-legal-size"
+scaffold "$d"
+MVF="$d/feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsViewModel.kt"
+cp "$MVF" "$MVF.orig"
+{
+  echo 'package com.rickeal.agent.feature.models'
+  echo ''
+  echo 'class ModelsViewModel {'
+  i=1
+  while [ "$i" -le 1390 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$MVF"
+out="$(run_guard "$d")"; rc=$?
+cp "$MVF.orig" "$MVF" || true
+if diff -q "$MVF.orig" "$MVF" >/dev/null 2>&1; then
+  echo "PASS [case87b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case87b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case87b 1390 行合法规模 (第 53 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case87b] 1390 行（≤1400）合法文件被误判（第 53 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+if guard_selected 54; then
+d="$TMP/case88-filetools-oversize"
+scaffold "$d"
+FTF="$d/core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileTools.kt"
+cp "$FTF" "$FTF.orig"
+{
+  echo 'package com.rickeal.agent.core.agent.tools'
+  echo ''
+  echo 'class FileTools {'
+  i=1
+  while [ "$i" -le 650 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$FTF"
+out="$(run_guard "$d")"; rc=$?
+cp "$FTF.orig" "$FTF" || true
+if diff -q "$FTF.orig" "$FTF" >/dev/null 2>&1; then
+  echo "PASS [case88] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case88] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case88 FileTools.kt 超行数上限 (第 54 条)" "$rc" "$out" \
+  "FileTools.kt 总行数 ≤ 600（core-agent 行数表 #25 家族第 15 员，触顶 = 启动 FileTools 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 600 行上限"; then
+  echo "PASS [case88] 红来自真命中（输出含 超 600 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case88] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case88b-filetools-legal-size"
+scaffold "$d"
+FTF="$d/core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileTools.kt"
+cp "$FTF" "$FTF.orig"
+{
+  echo 'package com.rickeal.agent.core.agent.tools'
+  echo ''
+  echo 'class FileTools {'
+  i=1
+  while [ "$i" -le 590 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$FTF"
+out="$(run_guard "$d")"; rc=$?
+cp "$FTF.orig" "$FTF" || true
+if diff -q "$FTF.orig" "$FTF" >/dev/null 2>&1; then
+  echo "PASS [case88b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case88b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case88b 590 行合法规模 (第 54 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case88b] 590 行（≤600）合法文件被误判（第 54 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+if guard_selected 55; then
+d="$TMP/case89-perfmon-oversize"
+scaffold "$d"
+PMF="$d/core-data/src/main/java/com/rickeal/agent/core/data/perf/PerformanceMonitorManager.kt"
+cp "$PMF" "$PMF.orig"
+{
+  echo 'package com.rickeal.agent.core.data.perf'
+  echo ''
+  echo 'class PerformanceMonitorManager {'
+  i=1
+  while [ "$i" -le 650 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$PMF"
+out="$(run_guard "$d")"; rc=$?
+cp "$PMF.orig" "$PMF" || true
+if diff -q "$PMF.orig" "$PMF" >/dev/null 2>&1; then
+  echo "PASS [case89] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case89] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case89 PerformanceMonitorManager.kt 超行数上限 (第 55 条)" "$rc" "$out" \
+  "PerformanceMonitorManager.kt 总行数 ≤ 600（core-data 行数表 #25 家族第 16 员，触顶 = 启动 PerformanceMonitorManager 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 600 行上限"; then
+  echo "PASS [case89] 红来自真命中（输出含 超 600 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case89] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case89b-perfmon-legal-size"
+scaffold "$d"
+PMF="$d/core-data/src/main/java/com/rickeal/agent/core/data/perf/PerformanceMonitorManager.kt"
+cp "$PMF" "$PMF.orig"
+{
+  echo 'package com.rickeal.agent.core.data.perf'
+  echo ''
+  echo 'class PerformanceMonitorManager {'
+  i=1
+  while [ "$i" -le 590 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$PMF"
+out="$(run_guard "$d")"; rc=$?
+cp "$PMF.orig" "$PMF" || true
+if diff -q "$PMF.orig" "$PMF" >/dev/null 2>&1; then
+  echo "PASS [case89b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case89b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case89b 590 行合法规模 (第 55 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case89b] 590 行（≤600）合法文件被误判（第 55 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+if guard_selected 56; then
+d="$TMP/case90-framestatssession-oversize"
+scaffold "$d"
+FSF="$d/core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsSession.kt"
+cp "$FSF" "$FSF.orig"
+{
+  echo 'package com.rickeal.agent.core.data.perf'
+  echo ''
+  echo 'data class FrameStatsSession {'
+  i=1
+  while [ "$i" -le 150 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$FSF"
+out="$(run_guard "$d")"; rc=$?
+cp "$FSF.orig" "$FSF" || true
+if diff -q "$FSF.orig" "$FSF" >/dev/null 2>&1; then
+  echo "PASS [case90] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case90] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case90 FrameStatsSession.kt 超行数上限 (第 56 条)" "$rc" "$out" \
+  "FrameStatsSession.kt 总行数 ≤ 100（core-data 行数表 #25 家族第 17 员，触顶 = 启动 FrameStatsSession 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 100 行上限"; then
+  echo "PASS [case90] 红来自真命中（输出含 超 100 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case90] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case90b-framestatssession-legal-size"
+scaffold "$d"
+FSF="$d/core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsSession.kt"
+cp "$FSF" "$FSF.orig"
+{
+  echo 'package com.rickeal.agent.core.data.perf'
+  echo ''
+  echo 'data class FrameStatsSession {'
+  i=1
+  while [ "$i" -le 90 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$FSF"
+out="$(run_guard "$d")"; rc=$?
+cp "$FSF.orig" "$FSF" || true
+if diff -q "$FSF.orig" "$FSF" >/dev/null 2>&1; then
+  echo "PASS [case90b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case90b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case90b 90 行合法规模 (第 56 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case90b] 90 行（≤100）合法文件被误判（第 56 条上限判据退化成恒红僵尸规则）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

@@ -1159,13 +1159,16 @@ check "W77 保活控制器装配单点 + VM 销毁走 onStop 收尾（禁裸 can
 # 为什么是包级：#35（「新文件当波补守卫」）管的是单文件，#25 家族管的是几个已知
 #   god-file —— 两者都看不见「包里悄悄多出第 6、第 7 个文件」。W78 正是该包的膨胀波
 #   （+2 文件、+2 文件改写）⇒ 只有跨文件规模面能提前报警。
-# 阈值推导（W78 落地实测，**行数是移动值、勿写死进判据**）：现役 6 文件 899 行 /
-#   最大文件 `AgentForegroundService.kt` 221 行（C6 把 WakeLock 抽成
-#   `RunWakeLockKeeper.kt` 116 行后，服务从 298 降到 221）⇒ 1000 = 合计 ×1.11、
-#   300 = 最大文件 ×1.36。合计面余量 101 行 ≈ 一个新文件类头的量级 ⇒ 下一个新文件
-#   进场前先看这条；单文件面余量 79 行。
-#   ⚠️ 触顶的正确处置是**启动 background 拆分评审**，不是把阈值改大 ——
-#   调阈值等于把守卫变成「记录当前值」的装饰。
+# 阈值推导（W78 落地实测，**行数是移动值、勿写死进判据**）：W78 落地时 6 文件 899 行 /
+#   最大文件 `AgentForegroundService.kt` 221 行 ⇒ 1000 = 合计 ×1.11、300 = 最大文件 ×1.36。
+#   **W83-05 现状（实测）**：GUIDES/EVIDENCE 数据表移出到兄弟目录 `core/data/oem/` 后
+#   7 文件 953 行（`OemBackgroundPolicy.kt` 204→161），余量从 4 恢复到 47。阈值不动 ——
+#   调阈值等于把守卫变成「记录当前值」的装饰；触顶的正确处置是**启动 background
+#   拆分评审**。
+#   ⚠️ W83-05 起扫描面**递归化**（复审 36 P2-1 第四波提及）：旧口径 `"$D"/*.kt` 只扫
+#   一层，`background/子包/Foo.kt` 是静默盲区（把文件挪进子包即可绕开闸门）⇒ 改
+#   `find` 递归，单文件面同步覆盖子包。但**拆分时的正解仍是移出包到兄弟目录**
+#   （`core/data/oem/`，W79-07 裁定）；递归化只堵「造子包绕闸」这条侧门。
 #
 # fail-closed 三条（「0 命中 ≠ 通过」）：目录缺失 / 提取为空 / 计数非数字 ⇒ 一律红。
 #   缺了这三条，目录被改名或 wc 输出形态变化都会让本条**静默变绿**。
@@ -1173,13 +1176,15 @@ check "W77 保活控制器装配单点 + VM 销毁走 onStop 收尾（禁裸 can
 check "W78 background 包行数上限（合计 ≤1000 / 单文件 ≤300；触顶 = 启动 background 拆分评审，非改阈值）" \
   bash -c 'D=core-data/src/main/java/com/rickeal/agent/core/data/background
            if [ ! -d "$D" ]; then echo "::error::$D 不存在（第 45 条守卫面已失效）"; exit 0; fi
-           n=$(wc -l "$D"/*.kt 2>/dev/null | tail -1 | awk "{print \$1}")
+           mapfile -t kt_files < <(find "$D" -name "*.kt" -type f | sort)
+           if [ "${#kt_files[@]}" -eq 0 ]; then echo "::error::$D 未扫到 .kt（合计 0 行 ⇒ 禁 fail-open）"; exit 0; fi
+           n=$(wc -l "${kt_files[@]}" 2>/dev/null | tail -1 | awk "{print \$1}")
            case "${n:-}" in
              ""|*[!0-9]*) echo "::error::$D 行数提取失败（n=${n:-空}：提取为空或非数字 ⇒ 禁 fail-open）"; exit 0 ;;
            esac
            [ "$n" -gt 0 ] || { echo "::error::$D 未扫到 .kt（合计 0 行 ⇒ 禁 fail-open）"; exit 0; }
            [ "$n" -le 1000 ] || echo "background/ 合计 $n 行，超 1000 行上限（触顶 = 启动 background 拆分评审，非改阈值）"
-           for f in "$D"/*.kt; do
+           for f in "${kt_files[@]}"; do
              m=$(wc -l < "$f" 2>/dev/null | tr -d " ")
              case "${m:-}" in
                ""|*[!0-9]*) echo "::error::$f 行数提取失败（m=${m:-空} ⇒ 禁 fail-open）"; continue ;;
@@ -1207,6 +1212,11 @@ check "W78 background 包行数上限（合计 ≤1000 / 单文件 ≤300；触�
 #   （如 `OemFamily.XXX to (OemEvidence.OFFICIAL to "…")`）—— 写了会被当成真实数据行
 #   参与提取，污染「枚举 ↔ 表」一致性判定（假红或假绿两种方向都可能）。
 #   同理 `GUIDES` 表用的是 `to Guide(` 形态，与本条正则不交叉（两表互不污染）。
+#   W83-05 起两表随 GUIDES 一并移至兄弟目录 `core/data/oem/OemBackgroundData.kt`
+#   （W79-07：#45 包级闸门余 4 行硬触发，数据表是唯一可移面）⇒ 本条改**双文件扫描**：
+#   枚举提取锚在 `OemBackgroundPolicy.kt`（F1），证据行提取锚在
+#   `OemBackgroundData.kt`（F2）—— 两个载体**双双 fail-closed**（缺任一即判红），
+#   行首形态逐字节保留（正则原样可提，selftest case80 家族已随双文件契约调整）。
 #
 # 四个判据（缺一不可）：① 枚举值集合 == 表键集合（双向：缺档与孤儿都红）；
 #   ② 档位只允许 MEASURED/OFFICIAL/COMMUNITY；③ MEASURED 条目必须含 `W##` 波次锚点；
@@ -1222,12 +1232,14 @@ check "W78 background 包行数上限（合计 ≤1000 / 单文件 ≤300；触�
 #   （+4 嵌套缩进 ⇒ 提取到错值）双向钉住。
 # ---------------------------------------------------------------------------
 check "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓取证锚点" \
-  bash -c 'F=core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt
-           if [ ! -f "$F" ]; then echo "::error::$F 不存在（第 46 条守卫面已失效）"; exit 0; fi
-           fams=$(awk "/enum class OemFamily \{/,/^    \}/" "$F" \
+  bash -c 'F1=core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt
+           F2=core-data/src/main/java/com/rickeal/agent/core/data/oem/OemBackgroundData.kt
+           if [ ! -f "$F1" ]; then echo "::error::$F1 不存在（第 46 条守卫面已失效：枚举载体缺失）"; exit 0; fi
+           if [ ! -f "$F2" ]; then echo "::error::$F2 不存在（第 46 条守卫面已失效：证据表载体缺失，W83-05 起 GUIDES/EVIDENCE 表在兄弟目录 core/data/oem/）"; exit 0; fi
+           fams=$(awk "/enum class OemFamily \{/,/^    \}/" "$F1" \
                   | grep -oE "^[[:space:]]{8}[A-Z][A-Z0-9_]*" | tr -d " " | sort -u)
            if [ -z "$fams" ]; then echo "::error::未能提取 OemFamily 枚举值（第 46 条守卫面失效，禁 fail-open）：提取锚 = 精确 8 空格缩进，枚举体缩进漂移（移出 object / 嵌套 / 重排）即返回空，空 = 不再比对 = 判据假绿"; exit 0; fi
-           rows=$(grep -oE "^[[:space:]]*OemFamily\.[A-Z][A-Z0-9_]* to \(OemEvidence\.[A-Z]+ to \"" "$F" \
+           rows=$(grep -oE "^[[:space:]]*OemFamily\.[A-Z][A-Z0-9_]* to \(OemEvidence\.[A-Z]+ to \"" "$F2" \
                   | sed -E "s/.*OemFamily\.([A-Z0-9_]+) to \(OemEvidence\.([A-Z]+) to \"/\1 \2/")
            if [ -z "$rows" ]; then echo "::error::未能提取证据表行（第 46 条守卫面失效，禁 fail-open）：提取锚 = 行首 OemFamily.X to (OemEvidence.Y to \"，表被删 / 行形态漂移即返回空"; exit 0; fi
            keys=$(printf "%s\n" "$rows" | awk "{print \$1}" | sed "/^$/d" | sort -u)
@@ -1235,7 +1247,7 @@ check "W78 OEM 引导全 schema：每族一档证据 + MEASURED 必须带本仓�
            [ "$fams" = "$keys" ] || echo "OemFamily 枚举值与证据表键不一致（缺档或孤儿）：枚举=[$(echo $fams)] 表=[$(echo $keys)]"
            bad=$(printf "%s\n" "$rows" | awk "\$2!=\"MEASURED\" && \$2!=\"OFFICIAL\" && \$2!=\"COMMUNITY\" && NF>0 {print}")
            [ -z "$bad" ] || echo "证据档位取值非法（只允许 MEASURED/OFFICIAL/COMMUNITY）：$bad"
-           grep -oE "^[[:space:]]*OemFamily\.[A-Z][A-Z0-9_]* to \(OemEvidence\.MEASURED to \"[^\"]*\"" "$F" \
+           grep -oE "^[[:space:]]*OemFamily\.[A-Z][A-Z0-9_]* to \(OemEvidence\.MEASURED to \"[^\"]*\"" "$F2" \
              | while IFS= read -r line; do
                  printf "%s" "$line" | grep -qE "W[0-9][0-9]" \
                    || echo "MEASURED 条目缺本仓取证锚点（W##）：$line"
@@ -1364,7 +1376,10 @@ BEGIN { inblk = 0; started = 0; depth = 0; opened = 0 }
 #     #31 AgentRunner 2900 / #32 LiteRtLmEngineLoader 900 / #35 AgentRunnerToolSetup 400 /
 #     #36 ThinkingBudget 150 / #37 AgentRunnerLoopHelpers 400 / #38 ChatRunRecovery 400 /
 #     #48 ConversationCache 200 / #49 FrameStatsCollector 250 / #50 DiagnosticsScreen 1150 /
-#     #51 AgentPromptComposer 400 —— 后三员 W82 新增，完整清单见 #49 注释）。
+#     #51 AgentPromptComposer 400 —— 后三员 W82 新增；#53 ModelsViewModel 1400 /
+#     #54 FileTools 600 / #55 PerformanceMonitorManager 600 / #56 FrameStatsSession 100
+#     —— 后四员 W83 新增（外审 Z-1/P2-5 老文件增长热点补闸 + 拆分新文件当波补守），
+#     完整清单见 #49 注释）。
 #     ⚠️ **为何补（W81 外部审查「新承重结构无守卫」两项之一）** —— W80-03 落地的
 #     `ConversationCache`（会话全文读缓存，appendMessage 热路径的 O(1) 命中面）
 #     是新承重结构却零行数闸门：Phase A 现 76 行，Phase B（写穿/失效面继续长）
@@ -1436,6 +1451,88 @@ check "AgentPromptComposer.kt 总行数 ≤ 400（core-agent 行数表 #25 家�
            if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 51 条守卫面已失效）"; exit 1; fi
            n=$(wc -l < "$f")
            [ "$n" -le 400 ] || echo "AgentPromptComposer.kt 当前 $n 行，超 400 行上限（触顶 = 启动 AgentPromptComposer 拆分评审，非改阈值）"'
+
+# 52) 登记申报号 ↔ 台账机械对账（W83-01，外审 P0-1 的机制解）：防「申报挂账但未入台账」
+#
+# 为什么需要这条：`docs/*.md` 里写「登记 Wxx-yy / 挂账 Wxx-yy」而 `15-backlog.md`
+#   主台账没有这一行 = **申报蒸发**（W71 G1 事故同型：数据回填蒸发十波无人提及，
+#   本形态第七次）。arch-guard #42 是单向守卫（ledger-era 交接 delta ID ⊆ 台账），
+#   检不出「凭空新申报」；本补反向面：任何申报形态的号必须在台账有行。
+# 判据本体在 `scripts/check-backlog-refs.sh`（W83-01 落地，扫描 docs/*.md 申报
+#   形态正则 + 断言台账行，缺失即输出「蒸发：<文件>:<行号> 申报 <号> 但台账无此号」）。
+#   脚本不存在 ⇒ 守卫面失效判红（禁 fail-open：没有脚本 = 对面消失 = 静默放行）。
+# ⚠️ 本条的已知边界（如实申报）：判据是「号在台账有行」，不校验语义首词一致
+#   （申报 W83-02 的条目实际写的是别的主题仍算过）—— 语义一致是评审面，机械面只保
+#   「不蒸发」这一条。
+check "登记申报号必须在 docs/15-backlog.md 主台账有行（W83-01 防申报蒸发，W71 G1 同型第七次）" \
+  bash -c 'f=scripts/check-backlog-refs.sh
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（第 52 条守卫面已失效 ⇒ 申报蒸发失去机械对面）"; exit 1; fi
+           out="$(bash "$f" 2>&1)"; rc=$?
+           # 成功时脚本自带 OK 汇总行 ⇒ 必须吞掉（check() 把任何非空输出当违反）；
+           # 失败时原样吐出（蒸发：<文件>:<行号> 申报 <号> 但台账无此号）。
+           [ "$rc" -eq 0 ] || printf "%s\n" "$out"'
+
+# 53) ModelsViewModel.kt 总行数上限（W83-05，外审 Z-1/P2-5 补闸）：#25 家族第 14 员
+#     （家族清单见 #48 注释）。
+#     ⚠️ 为何补（外审 Z-1「纪律只覆盖同族一部分」第八次）：W82 波本文件 +78 → 1314 行，
+#     已是全 feature 层最大文件、**超过有守卫的 ChatRunCoordinator 阈值 1300** 却零闸门
+#     —— 守卫的触发条件一直是「这个文件被注意到过」而不是「这个文件在变大」。
+#     ⚠️ 阈值推导（W83 冻结时实测 1314 行）：按「现值 + ~6%」取 1400（余 86）——
+#     与 #18（1600）/ #20（1300）同档，不贴现值（贴现值 = 下一波第一件事就是调阈值，
+#     FrameStatsCollector #49 的 250 贴身阈值刚制造过一次被动）。
+#     ⚠️ 触顶不是改数字，是启动 ModelsViewModel 拆分评审（下载/导入/轮询三态分离）。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "ModelsViewModel.kt 总行数 ≤ 1400（feature-models 行数表 #25 家族第 14 员，触顶 = 启动 ModelsViewModel 拆分评审，非改阈值）" \
+  bash -c 'f=feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsViewModel.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 53 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 1400 ] || echo "ModelsViewModel.kt 当前 $n 行，超 1400 行上限（触顶 = 启动 ModelsViewModel 拆分评审，非改阈值）"'
+
+# 54) FileTools.kt 总行数上限（W83-05，外审 Z-1/P2-5 补闸）：#25 家族第 15 员
+#     （家族清单见 #48 注释）。
+#     ⚠️ 为何补（同 #53）：W82 波 +72 → 512 行（EscapeAudit 逃逸审计落地），
+#     W83-04 又因分键节流再涨 —— 持续增长热点，此前不在行数表内。
+#     ⚠️ 阈值推导（W83 冻结时实测 ~527 行）：按「现值 + ~14%」取 600（余 ~73）。
+#     ⚠️ 触顶不是改数字，是启动 FileTools 拆分评审（工具基类 / 审计 / 各工具实现分离）。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "FileTools.kt 总行数 ≤ 600（core-agent 行数表 #25 家族第 15 员，触顶 = 启动 FileTools 拆分评审，非改阈值）" \
+  bash -c 'f=core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileTools.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 54 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 600 ] || echo "FileTools.kt 当前 $n 行，超 600 行上限（触顶 = 启动 FileTools 拆分评审，非改阈值）"'
+
+# 55) PerformanceMonitorManager.kt 总行数上限（W83-05，外审 Z-1/P2-5 补闸）：#25 家族
+#     第 16 员（家族清单见 #48 注释）。
+#     ⚠️ 为何补（同 #53）：W82 波 +70 → 479 行（@Volatile + CAS 竞态修复），持续增长
+#     热点，此前不在行数表内。
+#     ⚠️ 阈值推导（W83 冻结时实测 479 行）：按「现值 + ~25%」取 600（余 121）——
+#     该文件增长方式是「加采样维度」，比 UI 文件慢，给略宽余量。
+#     ⚠️ 触顶不是改数字，是启动 PerformanceMonitorManager 拆分评审（采样/通知/降频分离）。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "PerformanceMonitorManager.kt 总行数 ≤ 600（core-data 行数表 #25 家族第 16 员，触顶 = 启动 PerformanceMonitorManager 拆分评审，非改阈值）" \
+  bash -c 'f=core-data/src/main/java/com/rickeal/agent/core/data/perf/PerformanceMonitorManager.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 55 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 600 ] || echo "PerformanceMonitorManager.kt 当前 $n 行，超 600 行上限（触顶 = 启动 PerformanceMonitorManager 拆分评审，非改阈值）"'
+
+# 56) FrameStatsSession.kt 总行数上限（W83-05 拆分新文件当波补守）：#25 家族第 17 员
+#     （家族清单见 #48 注释）。
+#     ⚠️ 为何补（「新文件当波补守卫」纪律第八次实践，前七次见 #35/#37/#48/#51 注释）：
+#     W83-05 把会话聚合段自 FrameStatsCollector.kt 外提（#49 余 1 行硬触发），
+#     新文件 70 行当波补守，不再欠账。
+#     ⚠️ 阈值推导（W83 冻结时实测 70 行）：按「现值 + ~43%」取 100 —— 该文件是纯数据
+#     类 + 两个纯函数，增长面只有「加统计维度」；到 100 行说明该再拆。
+#     ⚠️ 触顶不是改数字，是启动 FrameStatsSession 拆分评审。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+check "FrameStatsSession.kt 总行数 ≤ 100（core-data 行数表 #25 家族第 17 员，触顶 = 启动 FrameStatsSession 拆分评审，非改阈值）" \
+  bash -c 'f=core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsSession.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 56 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 100 ] || echo "FrameStatsSession.kt 当前 $n 行，超 100 行上限（触顶 = 启动 FrameStatsSession 拆分评审，非改阈值）"'
 
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
