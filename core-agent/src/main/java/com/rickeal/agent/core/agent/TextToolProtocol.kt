@@ -1,5 +1,6 @@
 package com.rickeal.agent.core.agent
 
+import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ToolCall
 import com.rickeal.agent.core.model.newId
 import kotlinx.serialization.json.Json
@@ -24,6 +25,11 @@ sealed interface ProtocolResult {
      * 有工具调用的「形状」，但不可执行（工具名未注册 / 参数明显不合法）。
      * 必须按最终答案提交并结束本轮 —— 绝不能重试解析，否则就是死循环。
      * 携带的是**原文**而不是剥离后的文本：用户可能就是要这段 JSON 作为答案。
+     *
+     * W83-03（LQ-1）：真机 186 会话里 11 例「发一句话回一堆 JSON、无任何解释」后，
+     * [TextToolProtocol.parse] 在原文之后追加一行可读说明（被拒工具名 + 不可用原因），
+     * 但**仍不 strip 原文** —— 「用户可能就是要这段 JSON」的合法场景不被破坏，
+     * 说明行自身也写明「以上为模型原始输出」。
      */
     data class FinalAnswer(val text: String) : ProtocolResult
 
@@ -63,7 +69,10 @@ object TextToolProtocol {
      *
      * @param registeredToolNames 当前**真正可执行**的工具名集合。只有名字落在集合里的调用才会
      *   被判定为 [ProtocolResult.Calls]；名字不认识的调用一律降级成 [ProtocolResult.FinalAnswer]，
-     *   由上层当作最终答案收尾（宁可少执行一次工具，也不能进死循环）。
+     *   由上层当作最终答案收尾（宁可少执行一次工具，也不能进死循环）。名字先做 `trim()` 归一
+     *   再判注册（W83-03：真机实证 `" clipboard"` 前导空格误拒本仓真实工具）。
+     *   rejected 降级时 [ProtocolResult.FinalAnswer.text] = 原文 + 一行可读说明（见
+     *   [rejectedFinalAnswer]），并落 `AgentLogStore.warn` 留痕。
      */
     fun parse(text: String, registeredToolNames: Set<String>): ProtocolResult {
         if (text.isBlank()) return ProtocolResult.NoProtocol
@@ -72,18 +81,18 @@ object TextToolProtocol {
         val blocks = extractBlocks(text)
         if (blocks.isNotEmpty()) {
             val calls = ArrayList<ToolCall>()
-            var rejected = false
+            val rejectedNames = ArrayList<String>()
             for (block in blocks) {
                 val element = tryParseJson(block) ?: continue
                 when (val outcome = classify(element, registeredToolNames)) {
                     is BlockOutcome.Accepted -> calls.addAll(outcome.calls)
-                    is BlockOutcome.Rejected -> rejected = true
+                    is BlockOutcome.Rejected -> rejectedNames.addAll(outcome.names)
                     is BlockOutcome.NotShape -> Unit
                 }
             }
             // 只要出现一个「形状对但不可执行」的块，整段就按最终答案处理：
             // 部分执行 + 部分忽略会让模型下一轮重复输出同样的块，仍然会绕圈。
-            if (rejected) return ProtocolResult.FinalAnswer(text)
+            if (rejectedNames.isNotEmpty()) return rejectedFinalAnswer(text, rejectedNames)
             if (calls.isNotEmpty()) return ProtocolResult.Calls(calls)
         }
 
@@ -92,9 +101,33 @@ object TextToolProtocol {
         val element = tryParseJson(bare) ?: return ProtocolResult.NoProtocol
         return when (val outcome = classify(element, registeredToolNames)) {
             is BlockOutcome.Accepted -> ProtocolResult.Calls(outcome.calls)
-            is BlockOutcome.Rejected -> ProtocolResult.FinalAnswer(text)
+            is BlockOutcome.Rejected -> rejectedFinalAnswer(text, outcome.names)
             is BlockOutcome.NotShape -> ProtocolResult.NoProtocol
         }
+    }
+
+    /**
+     * W83-03（LQ-1）：rejected 降级为最终答案时的**可读化收口**。
+     *
+     * 裁决不变：仍判 [ProtocolResult.FinalAnswer]、仍携带原文、仍永不重试解析。
+     * 只在原文之后追加一行说明（被拒工具名 + 不可用原因）—— 真机实证用户看到
+     * 「发一句话回一堆 JSON」时完全不知道模型是想调工具，把静默降级变成可解释的收尾。
+     * **不 strip**：用户可能真的要这段 JSON，说明行自带「以上为模型原始输出」兜底。
+     *
+     * 多个被拒名去重后只列前 3 个（截断补「等」）：说明行不能比原文还长。
+     *
+     * warn 留痕与 [com.rickeal.agent.core.agent.tools.FileTools] 沙箱逃逸审计同族：
+     * 降级是静默决策，不留痕事后无法归因。分级取 `warn` 而非 `error` —— 协议降级不是
+     * 安全事件，`error` 才会被 AgentLogFileStore 落盘（杀进程可查），`warn` 只进 200 条
+     * 内存环；一次 parse 至多一条，不存在 FileTools 那样的高频刷环风险，故不节流。
+     */
+    private fun rejectedFinalAnswer(text: String, rejectedNames: List<String>): ProtocolResult.FinalAnswer {
+        val names = rejectedNames.distinct()
+        if (names.isEmpty()) return ProtocolResult.FinalAnswer(text)
+        AgentLogStore.warn("工具协议降级：工具=${names.joinToString(",")} 原因=未注册或参数非法")
+        val shown = names.take(3).joinToString("、") { "`$it`" } + if (names.size > 3) "等" else ""
+        val explanation = "（模型尝试调用工具 $shown，但该工具当前不可用或调用格式不正确；以上为模型原始输出。）"
+        return ProtocolResult.FinalAnswer(text + "\n" + explanation)
     }
 
     /**
@@ -167,18 +200,18 @@ object TextToolProtocol {
             else -> emptyList()
         }
         val calls = ArrayList<ToolCall>()
-        var rejected = false
+        val rejectedNames = ArrayList<String>()
         for (obj in objects) {
             val name = toolNameOf(obj) ?: continue      // 没有工具名字段 → 这个对象不是协议形状
             val argumentsJson = normalizeArguments(argumentsOf(obj))
             // 参数解析不出来 → 形状对但不能执行，标记 rejected（→ 最终答案）
             if (argumentsJson == null) {
-                rejected = true
+                rejectedNames.add(name)
                 continue
             }
             // 工具名未注册 → 同上，绝不当作可执行的调用
             if (name !in registeredToolNames) {
-                rejected = true
+                rejectedNames.add(name)
                 continue
             }
             calls.add(
@@ -186,7 +219,7 @@ object TextToolProtocol {
             )
         }
         return when {
-            rejected -> BlockOutcome.Rejected
+            rejectedNames.isNotEmpty() -> BlockOutcome.Rejected(rejectedNames)
             calls.isNotEmpty() -> BlockOutcome.Accepted(calls)
             else -> BlockOutcome.NotShape
         }
@@ -197,7 +230,13 @@ object TextToolProtocol {
         val primitive = raw as? JsonPrimitive ?: return null
         // 工具名必须是字符串：`"name": 123` 之类一律不算协议形状
         if (!primitive.isString) return null
-        return primitive.content.takeIf { it.isNotBlank() }
+        // W83-03（LQ-1）工具名形态归一：trim 后再判空白与注册表。真机实证
+        // `" clipboard"`（前导空格）就是本仓真实工具名（SystemTools.kt:17），
+        // 未 trim 时判「未注册」⇒ 整段降级 FinalAnswer ⇒ 原文 JSON 上屏。
+        // 注册表工具名均为无空格标识符（calculator / current_time / clipboard /
+        // file_read / file_write / memory_* / plan_* 等，已全量核对），trim 安全。
+        // trim 后的值同时用于 ToolCall.name（执行侧拿到的就是干净名）。
+        return primitive.content.trim().takeIf { it.isNotBlank() }
     }
 
     private fun argumentsOf(obj: JsonObject): JsonElement? =
@@ -225,10 +264,10 @@ object TextToolProtocol {
         else -> null
     }
 
-    /** [classify] 的内部三态，不对本文件之外暴露。 */
+    /** [classify] 的内部三态，不对本文件之外暴露。Rejected 携带被拒工具名（W83-03 可读化用）。 */
     private sealed interface BlockOutcome {
         data class Accepted(val calls: List<ToolCall>) : BlockOutcome
-        object Rejected : BlockOutcome
+        data class Rejected(val names: List<String>) : BlockOutcome
         object NotShape : BlockOutcome
     }
 }

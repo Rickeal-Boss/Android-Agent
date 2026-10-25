@@ -10,12 +10,20 @@ import kotlin.test.assertTrue
  * 锁住的核心契约是「宁可少执行一次工具，也不能进死循环」：
  * - 三态判定：可执行 [ProtocolResult.Calls] / 形状对但不可执行 → [ProtocolResult.FinalAnswer]（永不重试）
  *   / 无协议形状 → [ProtocolResult.NoProtocol]；
- * - 名字不在白名单 = rejected = FinalAnswer，且携带**原文**（用户可能就是要这段 JSON）；
+ * - 名字不在白名单 = rejected = FinalAnswer，且**原文保留**（用户可能就是要这段 JSON）——
+ *   W83-03 起原文之后追加一行可读说明（被拒工具名 + 不可用原因），但不 strip 原文；
+ * - 工具名先 trim 再判注册（W83-03：`" clipboard"` 前导空格不能误拒本仓真实工具）；
  * - rejected 优先于 accepted：混合块整段按最终答案处理，绝不部分执行。
  */
 class TextToolProtocolTest {
 
     private val registered = setOf("calc", "time")
+
+    /** W83-03：rejected 降级时原文之后追加的说明行（与 TextToolProtocol.rejectedFinalAnswer 同格式）。 */
+    private fun explained(text: String, vararg names: String): String =
+        text + "\n" + "（模型尝试调用工具 " +
+            names.joinToString("、") { "`$it`" } +
+            "，但该工具当前不可用或调用格式不正确；以上为模型原始输出。）"
 
     // ── NoProtocol：没有协议形状 ─────────────────────────────────────────────
 
@@ -170,39 +178,50 @@ class TextToolProtocolTest {
         // 与「多块混合」同一纪律：数组里有一个未知工具 → 整段按最终答案，
         // 绝不执行数组里另一个已知工具（否则下一轮模型原样重复输出，仍然绕圈）。
         val text = "```json\n[{\"tool\": \"calc\"}, {\"tool\": \"ghost\"}]```"
-        assertEquals(ProtocolResult.FinalAnswer(text), TextToolProtocol.parse(text, registered))
+        assertEquals(
+            ProtocolResult.FinalAnswer(explained(text, "ghost")),
+            TextToolProtocol.parse(text, registered),
+        )
     }
 
     // ── FinalAnswer：形状对但不可执行（永不重试） ────────────────────────────
 
     @Test
-    fun `工具名不在白名单时降级为 FinalAnswer 且携带原文`() {
+    fun `工具名不在白名单时降级为 FinalAnswer 且原文保留`() {
         // {"name": "张三"} 是文档里的经典误伤案例：天然带 name 字段，形状像调用
         // 但「张三」不是注册工具 → 必须按最终答案收尾，绝不能重试解析。
         val text = "{\"name\": \"张三\"}"
         val result = TextToolProtocol.parse(text, registered)
-        assertEquals(ProtocolResult.FinalAnswer(text), result)
+        // W83-03：原文保留（不 strip），之后追加一行可读说明。
+        assertEquals(ProtocolResult.FinalAnswer(explained(text, "张三")), result)
+        assertTrue(result is ProtocolResult.FinalAnswer && result.text.startsWith(text))
     }
 
     @Test
     fun `围栏内未知工具名降级为 FinalAnswer`() {
         val text = "```json\n{\"tool\": \"ghost\", \"arguments\": {\"a\": 1}}```"
         val result = TextToolProtocol.parse(text, registered)
-        // 携带的是原文而不是剥离后的文本
-        assertEquals(ProtocolResult.FinalAnswer(text), result)
+        // 原文保留（不剥离），被拒工具名进说明行
+        assertEquals(ProtocolResult.FinalAnswer(explained(text, "ghost")), result)
     }
 
     @Test
     fun `参数字符串不是合法 JSON 时降级为 FinalAnswer`() {
         val text = "```json\n{\"tool\": \"calc\", \"arguments\": \"不是JSON\"}```"
-        assertEquals(ProtocolResult.FinalAnswer(text), TextToolProtocol.parse(text, registered))
+        assertEquals(
+            ProtocolResult.FinalAnswer(explained(text, "calc")),
+            TextToolProtocol.parse(text, registered),
+        )
     }
 
     @Test
     fun `rejected 优先于 accepted 整段按最终答案处理`() {
         // 一个合法块 + 一个未知工具块：绝不部分执行，否则模型下一轮重复输出同样的块。
         val text = "```json\n{\"tool\": \"calc\"}```\n中间文本\n```json\n{\"tool\": \"ghost\"}```"
-        assertEquals(ProtocolResult.FinalAnswer(text), TextToolProtocol.parse(text, registered))
+        assertEquals(
+            ProtocolResult.FinalAnswer(explained(text, "ghost")),
+            TextToolProtocol.parse(text, registered),
+        )
     }
 
     // ── 畸形输入 ─────────────────────────────────────────────────────────────
@@ -281,6 +300,40 @@ class TextToolProtocolTest {
     fun `同一文本对 registered 为空集时永不产生 Calls`() {
         // 白名单为空 = 没有任何工具可执行，任何形状都只能降级为最终答案。
         val text = "```json\n{\"tool\": \"calc\"}```"
-        assertEquals(ProtocolResult.FinalAnswer(text), TextToolProtocol.parse(text, emptySet()))
+        // W83-03：降级路径同样追加可读说明行（原文仍在说明行之前）。
+        assertEquals(ProtocolResult.FinalAnswer(explained(text, "calc")), TextToolProtocol.parse(text, emptySet()))
+    }
+
+    // ── W83-03：工具名形态归一（trim）与说明行截断 ───────────────────────────
+
+    @Test
+    fun `前导或尾随空格工具名 trim 后命中注册表`() {
+        // 真机实证 `" clipboard"`（前导空格）就是本仓真实工具名，未 trim 时判「未注册」
+        // ⇒ 整段降级 FinalAnswer ⇒ 原文 JSON 上屏（LQ-1 泄漏案例之一）。
+        val text = "```json\n{\"tool\": \" clipboard\", \"arguments\": {\"text\": \"hi\"}}```"
+        val result = TextToolProtocol.parse(text, registered + "clipboard")
+        assertTrue(result is ProtocolResult.Calls, "trim 后应命中注册表，实得 $result")
+        val call = (result as ProtocolResult.Calls).calls.single()
+        assertEquals("clipboard", call.name, "ToolCall.name 必须是 trim 后的干净名")
+    }
+
+    @Test
+    fun `纯空白工具名 trim 后仍不算协议形状`() {
+        // trim 后为空的名称回归「非协议形状」：不能因 trim 把纯空白名误放行成 Calls。
+        val text = "```json\n{\"tool\": \"   \", \"arguments\": {}}```"
+        assertEquals(ProtocolResult.NoProtocol, TextToolProtocol.parse(text, registered))
+    }
+
+    @Test
+    fun `被拒工具名超过三个时说明行只列前三个并补等`() {
+        val names = listOf("aaa", "bbb", "ccc", "ddd")
+        val objs = names.joinToString(", ") { "{\"tool\": \"$it\"}" }
+        val text = "```json\n[$objs]```"
+        val result = TextToolProtocol.parse(text, registered)
+        assertTrue(result is ProtocolResult.FinalAnswer, "数组内全部未注册 ⇒ 整段降级，实得 $result")
+        val answer = (result as ProtocolResult.FinalAnswer).text
+        assertTrue(answer.startsWith(text), "原文必须保留在说明行之前")
+        assertTrue(answer.contains("`aaa`、`bbb`、`ccc`等"), "只列前三个并补「等」，实得 $answer")
+        assertTrue(!answer.contains("ddd"), "第四个名不进说明行，实得 $answer")
     }
 }
