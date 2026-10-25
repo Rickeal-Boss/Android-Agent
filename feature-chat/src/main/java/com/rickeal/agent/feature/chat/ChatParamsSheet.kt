@@ -1,5 +1,6 @@
 package com.rickeal.agent.feature.chat
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -78,6 +79,15 @@ fun ChatParamsSheet(
     val imeInsets = WindowInsets.ime
     val imeVisible by remember(imeInsets, density) {
         derivedStateOf { imeInsets.getBottom(density) > 0 }
+    }
+    // W83-07 真机补测抓到的残余侧门：本 sheet 是自绘 AnimatedVisibility（刻意不用
+    // material3 ModalBottomSheet，见类 KDoc），硬件 BACK 键**不经过 onDismiss** ——
+    // scrim 点击与关闭键都走 onDismiss（内含 W83-02 的 commit 边界②），唯独 BACK
+    // 直接穿透到页面 ⇒ 用户按 BACK 关抽屉时，系统提示词等预览值不落盘（W82-13
+    // 「改完即丢」的丢失面留了半扇门）。补 BackHandler：可见时拦截 BACK 并走
+    // 同一条 onDismiss 路径（commit + 关抽屉），与 scrim/关闭键行为一致。
+    if (visible) {
+        BackHandler { onDismiss() }
     }
     AnimatedVisibility(
         visible = visible,
