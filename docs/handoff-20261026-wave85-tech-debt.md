@@ -104,13 +104,29 @@
 
 ## 四、闸门结果（本地）
 
-⚠️ **留空待主理人填**。本波未跑 gradle（并行构建冲突）：`:app:compileDebugKotlin` / `fulltest.sh` /
-`lintDebug` / `arch-guard.sh` / `line-table.sh --check` 等结果由主理人最后统一跑并回填。
+> **W86 回填（2026-10-26）**：本波未跑 gradle（并行构建冲突），结果由主理人接管后统一实跑并回填。
+
+| 闸门 | 结果 |
+|---|---|
+| `:app:compileDebugKotlin` | BUILD SUCCESSFUL（全 9 模块） |
+| `scripts/fulltest.sh` | **862 / 0 / 0**（852 → 862，新增 10 例：journal 尾读 4 + feature-chat 3 + feature-models 3） |
+| `scripts/arch-guard.sh` | **57 / 57 OK**（EXIT=0） |
+| `:app:lintDebug` | BUILD SUCCESSFUL，**0 新增**（baseline 吸收） |
+| `@Test` 基线 | 852 → **862**（`build.yml` baseline 已同步，守卫 #26 双向核对通过） |
 
 ## 五、真机验收（OPPO PDRM00 `13309cc8` / Android 13）
 
-⚠️ **留空待主理人 / 验收席填**。本波无新增真机判据需求项（纯 scripts + docs 治理）；W84-15 务实版的真机面
-（下载篡改 1 字节必拒）由对应批在真机链路验证。
+> **W86 回填**：本波无新增真机判据需求项（纯 scripts + docs 治理）。W84-15 务实版的真机面
+> （下载篡改 1 字节必拒）**在本波无法验证** —— 当时 14 条预设锚点全空 ⇒ 校验分支永不进入
+> （外审第二轮 B-2 的「全链路 vacuous」判据）。该项已随 **W86-02 锚点回填（13/14）** 通电，
+> 并列入 **W86-07 设备窗口批** 待真机取证。
+
+## 五之二、CI 实跑（W86 回填）
+
+- **run `40331796224`（push，head `6b01caf`）三 job 全 success**：Unit tests 2m19s / Lint (baseline gate) 3m36s / Assemble Debug (JDK 21) 3m33s。
+- 独立查证方式：`GET /repos/Rickeal-Boss/Android-Agent/commits/6b01caf/check-runs` → 3/3 success。
+- ⚠️ 沿革说明：本波断了一次惯例（W81/W82/W83/W84 每波都有「CI 实证回填」commit 或章节）——
+  外审第四轮 F3 点名此事，本节即补账。
 
 ## 六、外审条目处置台账
 
