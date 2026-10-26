@@ -12,6 +12,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
+import java.io.RandomAccessFile
 
 /**
  * 一次 Agent run 的追加式日志（JSONL）—— 移植自 ZCode dynamic-workflow 的 Journal：
@@ -118,6 +119,36 @@ class AgentRunJournal private constructor(
                 }.getOrNull()
             }
         }.getOrDefault(emptyList())
+    }
+
+    /** 尾读窗口结果（W84-17）：[fullCoverage]=true 可直接用 [lines] 判定；否则回退 [readLines]；[truncated] 仅诊断。 */
+    private data class TailWindow(val lines: List<JournalLine>, val fullCoverage: Boolean, val truncated: Boolean)
+
+    /** 尾读优化（W84-17）：从文件尾部读 ≤[maxBytes] 字节 / ≤[maxLines] 行窗口解析 JSONL，替代
+     * [readLines] 全文读；半行丢弃不抛异常，读取失败回退空窗口（视作空文件跳过）。 */
+    private fun readTailWindow(maxBytes: Long = 64 * 1024, maxLines: Int = 200): TailWindow {
+        val size = file.length()
+        val start = (size - maxBytes).coerceAtLeast(0L)
+        val bytes = runCatching {
+            RandomAccessFile(file, "r").use { raf ->
+                raf.seek(start)
+                val buf = ByteArray((raf.length() - start).toInt())
+                raf.readFully(buf)
+                buf
+            }
+        }.getOrNull() ?: return TailWindow(emptyList(), true, false)
+        // 窗口起点不在行首 ⇒ 首行是被切断的半行（尾读只可能切在窗口开端），丢弃
+        val truncated = start > 0L && bytes.firstOrNull() != '\n'.toByte()
+        val rawLines = String(bytes, Charsets.UTF_8).split('\n')
+        val body = if (truncated) rawLines.drop(1) else rawLines
+        val parsed = body.mapNotNull { r ->
+            val line = r.trimEnd('\r')
+            if (line.isBlank()) return@mapNotNull null
+            runCatching { AgentJson.Default.decodeFromString(JournalLine.serializer(), line) }.getOrNull()
+        }
+        val capped = if (parsed.size > maxLines) parsed.takeLast(maxLines) else parsed
+        val fullCoverage = start == 0L && capped.size == parsed.size
+        return TailWindow(capped, fullCoverage, truncated)
     }
 
     /**
@@ -251,9 +282,17 @@ class AgentRunJournal private constructor(
                 if (file.name.endsWith(".dismissed.jsonl") || file.name.endsWith(".jsonl.dismissed")) continue
                 val runId = file.name.removeSuffix(".jsonl")
                 val journal = open(runDir, runId)
-                val lines = journal.readLines()
+                // W84-17 尾读优化：窗口覆盖全文件则直接判定；否则回退全文读（原逻辑）+ 诊断 WARN，判据语义不变。
+                val tail = journal.readTailWindow()
+                // 末行 settled ⇒ 已正常结束（settled 是终态，尾读即可判定，无需回退）
+                if (tail.lines.lastOrNull()?.kind == KIND_SETTLED) continue
+                val lines = if (tail.fullCoverage) tail.lines else run {
+                    com.rickeal.agent.core.model.AgentLogStore.warn(
+                        "journal 尾读超窗口，回退全文读：${file.name}（size>window 或 截断半行）"
+                    )
+                    journal.readLines()
+                }
                 if (lines.isEmpty()) continue
-                if (lines.last().kind == KIND_SETTLED) continue
                 val messageCount = lines.count { it.kind == KIND_MESSAGE }
                 if (messageCount == 0) continue
                 val candidate = UnsettledRun(runId, messageCount, lines.last().atMillis, journal)

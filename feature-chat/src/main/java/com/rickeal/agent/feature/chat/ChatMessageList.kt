@@ -521,7 +521,7 @@ fun ChatToolCard(
  * 「首次需加载模型」的措辞与事实相符；任一不成立就退回中性气泡（不写归因），
  * 不再在工具轮次开头闪一条不实的加载提示。
  */
-private fun isFirstRoundWithoutToolOutput(
+internal fun isFirstRoundWithoutToolOutput(
     messages: List<ChatMessage>,
     toolTraces: List<ToolTrace>,
 ): Boolean {

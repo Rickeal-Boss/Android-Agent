@@ -227,6 +227,13 @@ data class ModelPreset(
      */
     val memBasis: String,
     val note: String,
+    /**
+     * 下载完整性校验锚点（W84-15 务实版）：落盘后计算的 sha256 与本条比对，**非空才校验**
+     * （离线未回填即跳过，避免误拒）。独立拒绝通道（不匹配 ⇒ 拒 `.part` 转正 + 诊断页 ERROR
+     * 留痕，不污染 size 闸门）；体积偏差仅 WARN。离线锚点回填（逐文件实测摘要）与 DB 持久化
+     * 留待下波。
+     */
+    val sha256: String? = null,
     /** GPU 放行/禁用的依据与警示（模型卡展示）。空串 = 无特别说明。 */
     val backendBasis: String = "",
     /**

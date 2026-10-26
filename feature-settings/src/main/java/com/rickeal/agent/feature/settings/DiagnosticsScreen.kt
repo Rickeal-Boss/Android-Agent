@@ -626,40 +626,6 @@ fun DiagnosticsScreen(
     }
 }
 
-@Composable
-private fun LogRow(log: AgentLog) {
-    val colors = LocalGlassColors.current
-    GlassCard(contentPadding = PaddingValues(12.dp)) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = log.level.name,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = levelColor(log.level),
-                )
-                Text(
-                    text = formatLogTime(log.atMillis),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.onGlassSubtle,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
-            Text(
-                text = log.message,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                color = colors.onGlass,
-                // W84-07②：正文封顶 6 行 + 溢出省略。单条已被截到 400 字符，但一行
-                // 400 字符在窄屏上是几百行的排版量，且这类超长日志往往整批出现（崩溃
-                // 现场 / 引擎报错）—— 不封顶既掉帧、又把后面的日志全顶出屏幕。
-                maxLines = LOG_MESSAGE_MAX_LINES,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-    }
-}
-
 /** 能力行：左侧名称 + 右侧「支持/不支持」结论，配色沿用本页日志级别的既有口径。 */
 @Composable
 private fun CapabilityRow(
@@ -1077,34 +1043,15 @@ private fun probeToneColor(tone: ProbeTone): Color {
     }
 }
 
-@Composable
-private fun levelColor(level: AgentLogLevel): Color {
-    val colors = LocalGlassColors.current
-    return when (level) {
-        AgentLogLevel.INFO -> colors.onGlassMuted
-        AgentLogLevel.WARN -> colors.warning
-        AgentLogLevel.ERROR -> colors.danger
-    }
-}
-
 /** 一次最多取多少条：与环形缓冲容量一致，读全量即可。 */
 private val MAX_SHOWN: Int = AgentLogStore.DEFAULT_CAPACITY
-
-/**
- * 单条日志正文的最大展示行数（W84-07②）。
- *
- * 取 6 而不是 1~2：本页定位是崩溃现场取证，堆栈头行 + 前几帧、引擎报错的关键一行都在
- * 前 6 行内。配合 [TextOverflow.Ellipsis] 让「被截断」在画面上可见 —— 完整原文仍可经
- * 「复制全部」原样取出（[diagnosticsPlainText] 走 log.message 全量，不经本行）。
- */
-private const val LOG_MESSAGE_MAX_LINES = 6
 
 private val FILTER_LABELS: List<String> = listOf("全部", "INFO", "WARN", "ERROR")
 
 /** 只在主线程（Compose）使用，故不做并发保护。 */
 private val LOG_TIME_FORMAT = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
 
-private fun formatLogTime(atMillis: Long): String = LOG_TIME_FORMAT.format(Date(atMillis))
+internal fun formatLogTime(atMillis: Long): String = LOG_TIME_FORMAT.format(Date(atMillis))
 
 /** 一行日志的纯文本形态：「时间  级别  消息」。 */
 private fun formatLogLine(log: AgentLog): String =

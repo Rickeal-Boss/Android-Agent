@@ -589,7 +589,12 @@ class ModelsViewModel(
                     DownloadManager.STATUS_SUCCESSFUL -> {
                         // 就地登记：直接用下载目录里那个文件的绝对路径登记，**不再复制**。
                         // 2~4GB 的模型因此省掉一次完整拷贝（I/O、耗时、以及复制瞬间的 2 倍峰值占用）。
-                        val descriptor = registerDownloaded(progress.localUri, fileName, progress.fromCursor)
+                        val descriptor = registerDownloaded(
+                            progress.localUri,
+                            fileName,
+                            progress.fromCursor,
+                            expectedSha256 = preset?.sha256,
+                        )
                         activeDownloadId = null
                         // 体积体检只产出一句提示，**不产出判决**：DM 说下完了就照常登记、照常设为当前模型。
                         // 判据与「为什么不能删」见 sizeHint 的注释（旧实现在这里形成过下载死循环）。
@@ -793,16 +798,23 @@ class ModelsViewModel(
      * 清掉陈旧条目）与 `allowPromote` 默认值 `false`（fail-safe）。所以本参数在当前实现下是
      * 第三层，但它才是**唯一语义精确**的那一层——别删，也别改成位置参数，以免将来形参顺序
      * 变动时静默错位。
+     *
+     * [expectedSha256] 为 W84-15 的完整性锚点透传：非空才在 [ModelDownloader] 侧校验 .part 的
+     * SHA-256；不匹配即拒绝转正（独立通道，不影响 [allowPromote] 判定与 size 闸门）。为 null
+     * （无预设 / 离线未回填）时跳过校验，避免误拒。
      */
     private suspend fun registerDownloaded(
         localUri: String?,
         fileName: String,
         allowPromote: Boolean,
+        // W84-15：透传完整性锚点。为 null（无预设 / 离线未回填）时跳过校验。
+        expectedSha256: String? = null,
     ): ModelDescriptor? {
         val path = container.modelDownloader.downloadedPath(
             localUri,
             fileName,
             allowPromote = allowPromote,
+            expectedSha256 = expectedSha256,
         )
         if (path != null) return container.modelRepository.importFromPath(path)
         val raw = localUri ?: return null
@@ -1129,7 +1141,7 @@ class ModelsViewModel(
             //  · 生成中删在用模型 ⇒ 引擎持有的权重被移走，native 层异常（runCatching 抓不住）。
             // 判据与 [loadModel] / [onUnload] 同源（[isEngineBusy] 覆盖 run 全生命周期），
             // 口径一致才不会出现「加载被拦、删除却放行」的不对称。
-            if (_uiState.value.loadingModelId != null || isEngineBusy()) {
+            if (isDeleteBlockedByBusy(_uiState.value.loadingModelId, isEngineBusy())) {
                 _uiState.update { it.copy(message = BUSY_DELETE_MESSAGE) }
                 return@launch
             }
@@ -1359,3 +1371,11 @@ internal fun estimateRequiredRamBytes(
     val raw = ((weights * factor + overhead) * tail).toLong()
     return maxOf(raw, MIN_REQUIRED_RAM_BYTES)
 }
+
+/**
+ * 删除忙闸门判据（W84-21 / W84-P2-12）：加载中（`loadingModelId != null`）或引擎忙时禁止删除，
+ * 避免动到正在加载 / 正在生成的文件与引擎实例（native 层不可恢复）。抽成纯函数以便 JVM 直测，
+ * 与 [onDelete] 内联逻辑逐字节一致。
+ */
+internal fun isDeleteBlockedByBusy(loadingModelId: String?, engineBusy: Boolean): Boolean =
+    loadingModelId != null || engineBusy

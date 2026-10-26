@@ -4,9 +4,13 @@ import android.app.DownloadManager
 import android.content.Context
 import android.os.Environment
 import androidx.core.net.toUri
+import com.rickeal.agent.core.model.AgentLogStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.File
+import java.io.FileInputStream
+import java.security.MessageDigest
 
 /**
  * 下载中的临时后缀。
@@ -235,6 +239,9 @@ class ModelDownloader(private val context: Context) {
         // 曾经默认 true（由本函数自己判断），但那让任何不传参的调用方都暴露在
         // 「陈旧成功记录 → 半截 .part 被转正」这条路径上；真正的证据只能来自调用方。
         allowPromote: Boolean = false,
+        // W84-15 务实版：下载完整性锚点。**非空才校验**（离线未回填即跳过，避免误拒）；
+        // 不匹配 ⇒ 拒绝 .part 转正并在诊断页留 ERROR（独立通道，不污染 size 闸门）。
+        expectedSha256: String? = null,
     ): String? = withContext(Dispatchers.IO) {
         // 本函数要做多次磁盘探测（isFile / listFiles / rename），属阻塞 IO：
         // 上层是在协程里调用的，但默认可能是主线程，所以这里必须显式切到 IO。
@@ -258,7 +265,7 @@ class ModelDownloader(private val context: Context) {
         // 用户一点加载就在 native 层崩溃（表现为闪退）。
         // （预期大小比对在这里救不了：那一分支的 totalBytes 恒为 0，上层校验会静默放行。）
         val promoted = if (allowPromote && isConfirmedComplete(name, localUri)) {
-            promotePartFile(dir, name)
+            promotePartFile(dir, name, expectedSha256)
         } else {
             null
         }
@@ -296,8 +303,13 @@ class ModelDownloader(private val context: Context) {
      *
      * 只在状态已是 STATUS_SUCCESSFUL 之后才被调用（即 [downloadedPath] 的调用点），
      * 所以此刻 .part 里的内容是完整的——这正是下载期间不让它用真名的原因。
+     *
+     * W84-15 务实版完整性校验：若调用方传入非空 [expectedSha256]，转正**前**对 .part 流式算
+     * SHA-256 并比对（大小写不敏感）。不匹配 ⇒ **拒绝转正**（保留 .part，不被登记成坏模型）+
+     * 在诊断页留 ERROR；但**不动** [isConfirmedComplete] 的判定、也不碰 size 闸门——它是
+     * 一条独立拒绝通道。锚点为空（离线未回填）时跳过，避免误拒。
      */
-    private fun promotePartFile(dir: File, name: String): String? {
+    private fun promotePartFile(dir: File, name: String, expectedSha256: String?): String? {
         val part = File(dir, name + PART_SUFFIX)
         val source = if (part.isFile) {
             part
@@ -312,7 +324,40 @@ class ModelDownloader(private val context: Context) {
                 ?.maxByOrNull { it.lastModified() }
                 ?: return null
         }
+        // W84-15：完整性锚点非空才校验。比对失败即拒绝转正（返回 null），.part 原样留在磁盘，
+        // 不会被后续 exact / -N 兜底当成真名文件（两者都排除 .part）。
+        if (!expectedSha256.isNullOrBlank() && !verifySha256(source, expectedSha256)) {
+            AgentLogStore.error(
+                "模型下载完整性校验失败：.part 的 SHA-256 与预设锚点不符，" +
+                    "已拒绝转正（不登记为模型）。文件保留在下载目录：${source.absolutePath}",
+            )
+            return null
+        }
         return renameToUnique(source, dir, name)
+    }
+
+    /**
+     * W84-15 流式 SHA-256：边读边摘要，避免把整个模型文件（2~4GB）载入内存。
+     * 返回小写十六进制串；任何 IO / 算法异常都归约为 null（交给调用方决定是否放行）。
+     */
+    private fun sha256Hex(file: File): String? = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { fis ->
+            BufferedInputStream(fis, 8 * 1024).use { bis ->
+                val buf = ByteArray(8 * 1024)
+                var read: Int
+                while (bis.read(buf).also { read = it } != -1) {
+                    digest.update(buf, 0, read)
+                }
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    }.getOrNull()
+
+    /** 比对：大小写不敏感。实际摘要算不出（null）直接判 false（调用方已先过滤非空，此处双保险）。 */
+    private fun verifySha256(file: File, expected: String): Boolean {
+        val actual = sha256Hex(file) ?: return false
+        return actual.equals(expected.trim(), ignoreCase = true)
     }
 
     /** rename 到一个不冲突的目标名（"name.ext" 被占用就依次试 "name-1.ext"…）。 */

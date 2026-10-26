@@ -217,19 +217,23 @@ internal fun shouldDropStaleDisposal(token: Long, current: Long): Boolean = toke
  * 扩展到**每次生成入口**，把双流交错窗口从整个生成期收窄到「建会话期」（见下方
  * 「覆盖窗口」——它**不是**严格意义的硬约束）。
  *
- * ### ⚠️ 覆盖窗口（如实申报，W84 审查 P2-1）
+ * ### ⚠️ 入口竞态窗口（W84 审查 P2-1；W84-19 已闭环）
  *
- * 本闸门是 **check-then-act**：读 `activeGenerations` 在 flow 首行，写
+ * 原闸门是 **check-then-act**：读 `activeGenerations` 在 flow 首行，写
  * `incrementAndGet()` 在其后（中间夹 `loader.ensureConversationWithDegrade`，suspend）。
- * `engineDispatcher` 是 `limitedParallelism(1)`，只保证不**并行**执行，不保证不**交错**
- * ⇒ 两条流可以都读到 0 再都放行，窗口宽度 = 建会话耗时。真实触发面很窄
- * （探针 + 聊天同时起步，且探针只查建议性 `isBusy`、而 A 尚未自增 ⇒ `isBusy` 也为 false）。
+ * `engineDispatcher` 是 `limitedParallelism(1)`，**只串行化 decoder 侧的真正解码执行**，
+ * 不保证入口判定的原子性 ⇒ 两条流可以都读到 0 再都放行，窗口宽度 = 建会话耗时。
+ * 真实触发面很窄（探针 + 聊天同时起步，且探针只查建议性 `isBusy`、而 A 尚未自增
+ * ⇒ `isBusy` 也为 false）。
  *
- * **不宣称「硬闸门」**：它把窗口从「整个生成期」缩到「建会话期」，是巨大改善但不是
- * 零窗口。彻底修法 = 独立的 `AtomicBoolean` 占位 CAS（从闸门到自增之间包 try/finally
- * 释放），**不能复用 `activeGenerations`**（下方不变量 1：建会话必须先于自增，否则
- * 重建闸门自等自死锁）。该修法登记为 W84-19（本波不做：改动面在生成主路径，
- * 收尾波不引入新风险）。
+ * **W84-19 闭环（入口判定原子化）**：入口判定已交由独立的 `singleFlightGate`
+ * （`AtomicBoolean` 占位 CAS）原子化——`generateStream` 首行 `compareAndSet(false, true)`
+ * 抢门，失败即 busy 拒绝（走与下方 W84-02 完全一致的日志 + `EngineException` 分支），
+ * 成功则持有门直到 flow 体**最外层** `try/finally` 释放（`set(false)`），**不能复用
+ * `activeGenerations`**（下方不变量 1：建会话必须先于自增，否则重建闸门自等自死锁）。
+ * 这样一来「是否已有在途生成」的进入判定成为原子操作，check-then-act 窗口在**入口处**
+ * 关闭；`activeGenerations` 仍是会话态在途计数（被 `isBusy` / `waitForGenerationsToFinish`
+ * 读取），`concurrentGenerationRejection` 稳态拒斥账本与 `limitedParallelism(1)` 均不变。
  *
  * 语义选择（方案① fail-fast）：并发的第二条流**立刻失败**，不排队。排队会让
  * 「另一条流」的等待时长不可控（4B 单轮可达数十秒），且会把用户可见的取消/超时
@@ -325,6 +329,24 @@ class LiteRtLmEngine(
 
     /** 在途生成数量。卸载/关闭引擎前必须等它归零，否则会从脚底下抽掉 native 对象。 */
     private val activeGenerations = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * 单飞门（W84-19）：「是否已有在途生成」的**原子**进入判定。
+     *
+     * 取代原先 `activeGenerations.get()` 读 → `incrementAndGet()` 写之间的 check-then-act
+     * 竞态窗口（见 [concurrentGenerationRejection] KDoc 的「入口竞态窗口」）。
+     * `compareAndSet(false, true)` 是一次性的原子抢门：成功 = 本 flow 独占在途生成资格；
+     * 失败 = 已有另一条 `generateStream` 在途（含其 build-session 窗口、尚未自增
+     * `activeGenerations` 的瞬间），立即走 busy 拒绝。
+     *
+     * 释放：本 flow 体**最外层** `try/finally` 的 `set(false)`——任何正常收尾 / 异常 /
+     * 取消 / 提前 return（含两处 `EngineException` 拒斥）都释放 ⇒ 门不泄漏（否则后续生成
+     * 永久被判 busy）。与 [activeGenerations] 的关系：门是**入口判定原子化**的占位，
+     * `activeGenerations` 仍是会话态在途计数（被 `isBusy` / `waitForGenerationsToFinish`
+     * 读取）；门在 build-session 窗口即被持有（此时 active 仍为 0），自增发生在建会话之后，
+     * 二者不互斥。decoder 侧 `limitedParallelism(1)` 串行化与本门正交，均保持不变。
+     */
+    private val singleFlightGate = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
      * 生成世代序号 → 当前世代令牌（W59 A4，generation-scoped token 幂等防御）。
@@ -1047,12 +1069,36 @@ class LiteRtLmEngine(
     // -------------------------------------------------------- generate
 
     override fun generateStream(request: GenerationRequest): Flow<GenerationChunk> = flow {
-        // 🔴 W84-02：在途生成互斥（fail-fast 闸门）。**必须是 flow 体的第一条语句**，
-        // 早于下面的世代自增、复位块、熔断闸门与建会话 —— 更关键的是早于
-        // `activeGenerations.incrementAndGet()` 与 `generationCleanup` 所在的 try/finally。
-        // 若把本块挪到 increment 之后 / try 之内，拒斥路径会走到 generationCleanup 的
-        // `decrementAndGet()`：轻则减掉**别人的**在途计数（计数错乱、load 提前放行 ⇒
-        // native use-after-free），重则异常路径漏减 ⇒ 本实例**永久 busy**（W50 真机前科）。
+        // 🔴 W84-19：单飞门（AtomicBoolean CAS）—— 入口判定原子化。
+        // 抢门失败 = 已有在途生成（门被另一条 generateStream 持有，含其 build-session 窗口），
+        // 立即走与下方 W84-02 完全一致的 busy 拒绝分支（日志 + EngineException），
+        // 关闭「读 activeGenerations → incrementAndGet」之间的 check-then-act 竞态窗口
+        // （见 [concurrentGenerationRejection] KDoc 的「入口竞态窗口」）。CAS 失败即确定 busy：
+        // 此刻 activeGenerations 可能仍为 0（另一条流尚在 build-session、未自增），故以
+        // [CONCURRENT_GENERATION_BUSY_MESSAGE] 兜底，不依赖 active 读出。稳态拒斥账本
+        // concurrentGenerationRejection 与 decoder 侧 limitedParallelism(1) 均不变。
+        // ⚠️ 本 if 块位于任何 try 之外：CAS 失败 = 门被别人持有，本分支**不得**释放门。
+        if (!singleFlightGate.compareAndSet(false, true)) {
+            val gateBusyRejection =
+                concurrentGenerationRejection(activeGenerations.get())
+                    ?: CONCURRENT_GENERATION_BUSY_MESSAGE
+            // 只记日志、不置 conversationDirty、不 cancelProcess：本次请求**没有**碰过
+            // native Conversation，正在跑的那条流不受任何影响。
+            AgentLogStore.warn(
+                "并发生成被拒：另一条生成仍在进行（singleFlightGate 已被持有，" +
+                    "active=${activeGenerations.get()}），本次请求未开始"
+            )
+            throw EngineException(gateBusyRejection)
+        }
+        try {
+        // 🔴 W84-02：在途生成互斥（fail-fast 闸门）。**必须是本外层 try 块内的第一条语句**
+        // （单飞门 CAS 成功之后），早于下面的世代自增、复位块、熔断闸门与建会话 —— 更关键的是
+        // 早于 `activeGenerations.incrementAndGet()` 与 `generationCleanup` 所在的 try/finally。
+        // ⚠️ W84-19 起：本判定位于单飞门 CAS 成功之后，正常单流下恒见 active=0（门已串行化
+        // 入口）；此处保留为防御性稳态账本，语义与改动前逐字节一致。若把本块挪到 increment
+        // 之后 / try 之内，拒斥路径会走到 generationCleanup 的 `decrementAndGet()`：轻则
+        // 减掉**别人的**在途计数（计数错乱、load 提前放行 ⇒ native use-after-free），重则
+        // 异常路径漏减 ⇒ 本实例**永久 busy**（W50 真机前科）。
         // 两条不变量的完整论证（含「子代理嵌套 run 不触发」）见
         // [concurrentGenerationRejection] 的 KDoc。
         val busyRejection = concurrentGenerationRejection(activeGenerations.get())
@@ -1451,6 +1497,13 @@ class LiteRtLmEngine(
             // 收尾四件套单源（W58 修补 D）：与上方同步 catch **互斥穷尽**、不会重复执行，
             // 原逐条手抄版本已收敛进 `generationCleanup`（分叉面消除）。
             generationCleanup()
+        }
+        } finally {
+            // 🔴 W84-19：释放单飞门。本 flow 体**最外层** finally：任何正常收尾 / 异常 /
+            // 取消 / 提前 return（含上方两处 EngineException 拒斥路径）都会执行 ⇒ 门不泄漏。
+            // 顺序正确性：generationCleanup 的 activeGenerations.decrementAndGet 已在上方
+            // 内层 finally 完成，本 finally 仅置门为 false，二者不冲突、不产生新竞态。
+            singleFlightGate.set(false)
         }
     }
         .flowOn(engineDispatcher)
