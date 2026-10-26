@@ -559,8 +559,9 @@ jobs:
             #   「每条日志行 ≤400 且 20 条一条不少」两例）。
             #   另有 core-agent ToolArgsValidatorTest 2 例改契约（数字字符串由拒改收），
             #   用例数不变（21→21）。
-            #   ⇒ 由 830 上调 852（代码冻结后实测 852，无 @Ignore/参数化）。
-            baseline=852
+            #   ⇒ 由 852 上调 862（W85 新增 10 例：core-agent journal 尾读 4 + feature-chat
+            #   首轮无工具判定 3 + feature-models 删除忙闸门 3；代码冻结后实测 862，无 @Ignore/参数化）。
+            baseline=862
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then
