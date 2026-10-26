@@ -228,10 +228,32 @@ data class ModelPreset(
     val memBasis: String,
     val note: String,
     /**
-     * 下载完整性校验锚点（W84-15 务实版）：落盘后计算的 sha256 与本条比对，**非空才校验**
-     * （离线未回填即跳过，避免误拒）。独立拒绝通道（不匹配 ⇒ 拒 `.part` 转正 + 诊断页 ERROR
-     * 留痕，不污染 size 闸门）；体积偏差仅 WARN。离线锚点回填（逐文件实测摘要）与 DB 持久化
-     * 留待下波。
+     * 下载完整性校验锚点（W84-15 务实版，W86-02 回填）：落盘后计算的 sha256 与本条比对，
+     * **非空才校验**（离线未回填即跳过，避免误拒）。独立拒绝通道（不匹配 ⇒ 拒 `.part` 转正 +
+     * 诊断页 ERROR 留痕，不污染 size 闸门）；体积偏差仅 WARN。
+     *
+     * ## 锚点来源与复核方式（W86-02 回填，2026-10-26）
+     *
+     * 取值 = **ModelScope 镜像仓 `repo/files` API 返回的 `Sha256` 字段**（逐条实取，不是手算、
+     * 不是猜测）。复核脚本 = `scripts/fetch-preset-sha256.py`（离线可重跑，逐条打印
+     * 「预设体积 vs 仓库体积」的差值）。
+     *
+     * ⚠️ **跨源同一性判据（必读，勿放宽）**：一条预设对应三路直链（HF 主源 / hf-mirror /
+     * ModelScope），而本字段只有一个值 ⇒ 只有当三路**逐字节同源**时它才是有效锚点。
+     * 本仓无法直连 HF 取摘要（沙箱 502），故用**体积一致性**作代理判据：
+     * `ModelScope.Size == 本条 sizeBytes`（后者 2026-09 取自 HF API）。体积逐字节相等 +
+     * 文件名/仓库名相同 ⇒ 视为同源，回填该摘要。
+     * 现役 **14 条中 13 条通过该判据**；**Qwen2.5 1.5B · q8 刻意留空**（见下）。
+     *
+     * ## Qwen2.5 1.5B · q8 为什么留 null（不是漏做）
+     *
+     * 该条 `sizeBytes = 1597931520`，而 ModelScope 同名文件实测 **1597922856**（差 **8664 字节**）。
+     * 两侧不是同一份字节 ⇒ 把 ModelScope 的摘要回填进来，会让**从 HF 主源下载的正常文件**
+     * 被判成「篡改」（误拒 = 用户下 1.5GB 后拿不到模型）。而 HF 侧摘要本仓取不到（无直连）。
+     * ⇒ 在拿到 HF 侧权威摘要之前，该条**保持 null（fail-open，跳过校验）**，并在
+     * `docs/15-backlog.md` 登记待复核；**不要**为了「14/14 齐全」硬填。
+     * 顺带：这个 8664 字节的差也说明 `sizeBytes` 本身对该条可能已过期（它只用于下载前
+     * 存储空间估算，8 KB 级偏差无功能影响，故本波不动它）。
      */
     val sha256: String? = null,
     /** GPU 放行/禁用的依据与警示（模型卡展示）。空串 = 无特别说明。 */
@@ -416,6 +438,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W53 L2 容器取证（`gemma4gpu.jinja`）+ W72 七格复验（含 systemInstruction 维度）
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "a53a59001894c58e6bdb5b9b227709f91a2e3e556baa7d85acf9c55402ba5cf5",
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -434,6 +457,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W53 L2 容器取证（`gemma4.jinja`）+ W72 七格复验（含 systemInstruction 维度）
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c",
             mirrors = domesticMirrors("gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it.litertlm"),
         ),
         ModelPreset(
@@ -457,6 +481,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W72 现场抽取（容器字节数 == 预设 sizeBytes 2969059328）+ 七格复验
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "4912bb5a9c30993c51a7711f763212077458529312175df0573a78323a2bb7ff",
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it-gpu.litertlm"),
         ),
         ModelPreset(
@@ -477,6 +502,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W72 现场抽取（容器字节数 == 预设 sizeBytes 3659530240）+ 七格复验
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0",
             mirrors = domesticMirrors("gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it.litertlm"),
         ),
         ModelPreset(
@@ -514,6 +540,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // UNVERIFIED 理由 = `NO_TEMPLATE_IN_CONTAINER`：容器无明文 `chat_template`（section 扫描仅 TF_LITE_PREFILL_DECODE / model_type / prefill_* / decode）⇒ 走运行时内建模板，容器侧七格取证**方法不适用**（≠ 漏做）
             templateArraySafety = TemplateArraySafety.UNVERIFIED,
+            sha256 = "69b35f01759eed765641ab4af589bbe98131fd2825662a086d9037409b8c1295",
             mirrors = domesticMirrors(
                 "DeepSeek-R1-Distill-Qwen-1.5B",
                 "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -540,6 +567,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：**W72 真机 Q5** 同签名（journal 587 B 无 MODEL 消息）；⚠️ 本容器 user 分支的 `content=''` 性质被 system 侧报错遮蔽 —— 只修 system 分支即滑进 LOSSY（不可见失败）
             templateArraySafety = TemplateArraySafety.UNSAFE,
+            sha256 = "05b78bb57dd5ded8a76907cc953cbc57d6261ee9fa66fbfca21ae677a897da45",
             mirrors = domesticMirrors("MiniCPM5-2B", "MiniCPM5-2B_int4.litertlm"),
         ),
         ModelPreset(
@@ -556,6 +584,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // UNVERIFIED 理由 = `NO_TEMPLATE_IN_CONTAINER`：容器无明文 `chat_template`（section 扫描仅 TF_LITE_PREFILL_DECODE / model_type / prefill_* / decode）⇒ 走运行时内建模板，容器侧七格取证**方法不适用**（≠ 漏做）
             templateArraySafety = TemplateArraySafety.UNVERIFIED,
+            sha256 = "7764d4deb53800578307be33039476b38a6c370fff71bedb3c0552563e23ab02",
             mirrors = domesticMirrors(
                 "Phi-4-mini-instruct",
                 "Phi-4-mini-instruct_multi-prefill-seq_q8_ekv4096.litertlm",
@@ -575,6 +604,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W55 L1（本条 backendBasis 已载：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "f941a5f9482e31c1b7980456ac94269f2e45fffa28cd49f50c8435475c106dda",
             mirrors = domesticMirrors("LFM2.5-VL-450M", "LFM2.5-VL-450M_int8.litertlm"),
         ),
         // ── 视觉多模态批（2026-09-24 增补）：端侧 VL 帕累托前沿，500M/2B/1.6B/3B/8B 五档。
@@ -593,6 +623,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W55 L1（本条 backendBasis 已载：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "b808b328d845a600a33c5295f93d9217487317bd334dbc91b2a8d50e26e60ad0",
             mirrors = domesticMirrors("SmolVLM2-500M", "SmolVLM2-500M.litertlm"),
         ),
         ModelPreset(
@@ -609,6 +640,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W55 L1（本条 backendBasis 已载：`content is string` + `for item in content`，非 `+` 拼接 —— W55 已推翻「Qwen 系同源 ⇒ 风险最高」假设）
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "cf481776bcb16fe539a38c924a67fc213bb5ee55e6fa600729f060e64849066b",
             mirrors = domesticMirrors("Qwen2-VL-2B", "Qwen2-VL-2B.litertlm"),
         ),
         ModelPreset(
@@ -627,6 +659,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W55 L1（本条 backendBasis 已载：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "79ca9db8af91e40486a5dfcaf26549180fd6c811ad85f826e3aef20ad0bd565c",
             mirrors = domesticMirrors("LFM2.5-VL-1.6B", "LFM2.5-VL-1.6B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -644,6 +677,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W55 L1（本条 backendBasis 已载：`chat_template` 用 `content is string` + `for item in content`，非 `+` 拼接）
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "2393cfba9d78e930bca56e92a752b222bc8b0cb111356faf6c5f23d021a3fa5e",
             mirrors = domesticMirrors("LFM2.5-VL-3B", "LFM2.5-VL-3B_int4_fixB.litertlm"),
         ),
         ModelPreset(
@@ -666,6 +700,7 @@ object ModelPresets {
             evidenceLevel = EvidenceLevel.MEASURED,
             // 证据：W53 L2（本条 backendBasis 已载：模板对多元素 content 走 is-string 分支并循环吐 `<image_soft_token>`，非 Qwen2.5 的「+」拼接形态）
             templateArraySafety = TemplateArraySafety.SAFE,
+            sha256 = "d45ef0cd8141597d731d002b72a152ab1a0f8b9cda8d9a0f5e1bc3a4689dcbd0",
             mirrors = domesticMirrors("MiniCPM-V-4", "MiniCPM-V-4-int8.litertlm"),
         ),
     )

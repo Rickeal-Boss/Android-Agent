@@ -243,14 +243,16 @@ class SettingsRepository(private val context: Context) {
     suspend fun activeModelIdSync(): String? = activeModelId.first()
 
     suspend fun updateInferenceConfig(transform: (InferenceConfig) -> InferenceConfig) {
-        context.settingsDataStore.edit { prefs ->
-            val current = prefs[Keys.INFERENCE_CONFIG]?.let { raw ->
-                runCatching { AgentJson.Default.decodeFromString(InferenceConfig.serializer(), raw) }.getOrNull()
-            } ?: InferenceConfig()
-            prefs[Keys.INFERENCE_CONFIG] = AgentJson.Default.encodeToString(
-                InferenceConfig.serializer(),
-                transform(current).coerce(),
-            )
+        persistOrWarn("SettingsRepository.updateInferenceConfig") {
+            context.settingsDataStore.edit { prefs ->
+                val current = prefs[Keys.INFERENCE_CONFIG]?.let { raw ->
+                    runCatching { AgentJson.Default.decodeFromString(InferenceConfig.serializer(), raw) }.getOrNull()
+                } ?: InferenceConfig()
+                prefs[Keys.INFERENCE_CONFIG] = AgentJson.Default.encodeToString(
+                    InferenceConfig.serializer(),
+                    transform(current).coerce(),
+                )
+            }
         }
     }
 
@@ -259,24 +261,32 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setActiveModel(id: String?) {
-        context.settingsDataStore.edit { prefs ->
-            if (id == null) prefs.remove(Keys.ACTIVE_MODEL_ID) else prefs[Keys.ACTIVE_MODEL_ID] = id
+        persistOrWarn("SettingsRepository.setActiveModel") {
+            context.settingsDataStore.edit { prefs ->
+                if (id == null) prefs.remove(Keys.ACTIVE_MODEL_ID) else prefs[Keys.ACTIVE_MODEL_ID] = id
+            }
         }
     }
 
 
     suspend fun setAllowMeteredDownload(allow: Boolean) {
-        context.settingsDataStore.edit { it[Keys.ALLOW_METERED_DOWNLOAD] = allow }
+        persistOrWarn("SettingsRepository.setAllowMeteredDownload") {
+            context.settingsDataStore.edit { it[Keys.ALLOW_METERED_DOWNLOAD] = allow }
+        }
     }
 
     /** AI 能力档位落盘。UI 侧负责在用户选择后立即调用（设置页与输入区共用同一入口）。 */
     suspend fun setCapabilityMode(mode: AiCapabilityMode) {
-        context.settingsDataStore.edit { it[Keys.CAPABILITY_MODE] = mode.name }
+        persistOrWarn("SettingsRepository.setCapabilityMode") {
+            context.settingsDataStore.edit { it[Keys.CAPABILITY_MODE] = mode.name }
+        }
     }
 
     /** 工具披露模式落盘。与 [setCapabilityMode] 同款入口纪律（UI 选择后立即调用）。 */
     suspend fun setDisclosureMode(mode: ToolDisclosureMode) {
-        context.settingsDataStore.edit { it[Keys.DISCLOSURE_MODE] = mode.name }
+        persistOrWarn("SettingsRepository.setDisclosureMode") {
+            context.settingsDataStore.edit { it[Keys.DISCLOSURE_MODE] = mode.name }
+        }
     }
 
     /**
@@ -284,7 +294,9 @@ class SettingsRepository(private val context: Context) {
      * 用户拒绝权限时不落 true，否则下次启动开关是开的却永远不出通知。
      */
     suspend fun setGenerationNotification(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.GENERATION_NOTIFICATION] = enabled }
+        persistOrWarn("SettingsRepository.setGenerationNotification") {
+            context.settingsDataStore.edit { it[Keys.GENERATION_NOTIFICATION] = enabled }
+        }
     }
 
     /**
@@ -292,35 +304,47 @@ class SettingsRepository(private val context: Context) {
      * 否则会出现「路径为空但文件还在」的孤儿文件）。
      */
     suspend fun setWallpaperPath(path: String) {
-        context.settingsDataStore.edit { it[Keys.WALLPAPER_PATH] = path }
+        persistOrWarn("SettingsRepository.setWallpaperPath") {
+            context.settingsDataStore.edit { it[Keys.WALLPAPER_PATH] = path }
+        }
     }
 
     suspend fun setHasSeenOnboarding(seen: Boolean) {
-        context.settingsDataStore.edit { it[Keys.HAS_SEEN_ONBOARDING] = seen }
+        persistOrWarn("SettingsRepository.setHasSeenOnboarding") {
+            context.settingsDataStore.edit { it[Keys.HAS_SEEN_ONBOARDING] = seen }
+        }
     }
 
     /** 引导页看完（或跳过）时立刻落盘，供被杀进程重启后续跑。见 [hasSeenIntro]。 */
     suspend fun setHasSeenIntro(seen: Boolean) {
-        context.settingsDataStore.edit { it[Keys.HAS_SEEN_INTRO] = seen }
+        persistOrWarn("SettingsRepository.setHasSeenIntro") {
+            context.settingsDataStore.edit { it[Keys.HAS_SEEN_INTRO] = seen }
+        }
     }
 
     suspend fun setTosAccepted(accepted: Boolean) {
-        context.settingsDataStore.edit { it[Keys.IS_TOS_ACCEPTED] = accepted }
+        persistOrWarn("SettingsRepository.setTosAccepted") {
+            context.settingsDataStore.edit { it[Keys.IS_TOS_ACCEPTED] = accepted }
+        }
     }
 
     suspend fun setGemmaTermsAccepted(accepted: Boolean) {
-        context.settingsDataStore.edit { it[Keys.IS_GEMMA_TERMS_ACCEPTED] = accepted }
+        persistOrWarn("SettingsRepository.setGemmaTermsAccepted") {
+            context.settingsDataStore.edit { it[Keys.IS_GEMMA_TERMS_ACCEPTED] = accepted }
+        }
     }
 
     suspend fun setThemeState(state: ThemeState) {
-        context.settingsDataStore.edit { prefs ->
-            prefs[Keys.DARK_MODE] = state.darkMode.name
-            prefs[Keys.REDUCE_MOTION] = state.reduceMotion
-            prefs[Keys.GLASS_INTENSITY] = state.glassIntensity
-            prefs[Keys.ENABLE_NOISE] = state.enableNoise
-            prefs[Keys.HAPTIC_LEVEL] = state.hapticLevel
-            prefs[Keys.OVERLAY_OPACITY] = state.overlayOpacity
-            prefs[Keys.OVERLAY_BLUR_RADIUS] = state.overlayBlurRadius
+        persistOrWarn("SettingsRepository.setThemeState") {
+            context.settingsDataStore.edit { prefs ->
+                prefs[Keys.DARK_MODE] = state.darkMode.name
+                prefs[Keys.REDUCE_MOTION] = state.reduceMotion
+                prefs[Keys.GLASS_INTENSITY] = state.glassIntensity
+                prefs[Keys.ENABLE_NOISE] = state.enableNoise
+                prefs[Keys.HAPTIC_LEVEL] = state.hapticLevel
+                prefs[Keys.OVERLAY_OPACITY] = state.overlayOpacity
+                prefs[Keys.OVERLAY_BLUR_RADIUS] = state.overlayBlurRadius
+            }
         }
     }
 

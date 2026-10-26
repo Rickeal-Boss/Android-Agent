@@ -48,6 +48,7 @@ import com.rickeal.agent.core.data.notify.AndroidGenerationNotifier
 import com.rickeal.agent.core.data.notify.GenerationNotifier
 import com.rickeal.agent.core.data.perf.FrameStatsCollector
 import com.rickeal.agent.core.data.perf.PerformanceMonitorManager
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -372,8 +373,26 @@ class AppContainer(
      * 任何 `scope.launch { repository.appendMessage(...) }` 都会被立刻取消 ⇒
      * 「半截答案」只更新了内存 UI、磁盘零写入（W77 §4 的假修复陷阱）。
      * IO 调度器：落库是文件写，与 UI 无关。
+     *
+     * ## 异常边界（W86-01）
+     * 这是**第二层**兜底，不是第一层：第一层在仓库侧 `persistOrWarn`（`SettingsRepository`
+     * 等写点已全部套上），负责把「可恢复的落盘失败」就地转成一条 WARN 日志。
+     * 本 [CoroutineExceptionHandler] 只处理**漏网的**异常 —— 即那些从 `launch` 块里
+     * 逃出来的、没人接的 Throwable。没有它时这类异常会直达默认 handler ⇒ 进程被打死，
+     * 而「一次落盘失败」不应该等于「用户正在用的 App 突然消失」。
+     *
+     * ⚠️ CEH 的能力边界：它**只拦 `launch`**，拦不住 `async`（`async` 的异常挂在
+     * `Deferred` 上，只有 `await()` 时才抛）。本 scope 目前全部是 `launch` 用法，
+     * 没有 `async`；若将来新增 `async`，必须在 `await()` 处自行兜底，别指望这里。
      */
-    val processScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val processScopeExceptionHandler = CoroutineExceptionHandler { _, t ->
+        AgentLogStore.error(
+            "进程级协程未捕获异常（已拦截，进程存活）：${t::class.java.simpleName}: ${t.message}",
+        )
+    }
+
+    val processScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.IO + processScopeExceptionHandler)
 
     /**
      * 后台保活控制器（W77）：观察 [AgentRunner.isBusy]，忙则起前台服务、闲则宽限后停。

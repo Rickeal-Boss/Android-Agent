@@ -729,12 +729,13 @@ fun ChatScreen(
 /**
  * 终止原因 → 一行小字（Wave 31 流2）。
  *
- * 只对「用户需要知道、且当前有表达力」的两档渲染；其余值（ModelStopped /
+ * 只对「用户需要知道、且当前有表达力」的三档渲染；其余值（ModelStopped /
  * Interrupted）与 null 返回 null = **不渲染任何东西**（正常结束路径零 UI 变化）。
  * `when` 带 `else`：`TerminationReason` 枚举将来加值时不崩、不渲染。
  */
 private fun terminationHintOf(reason: TerminationReason?): String? = when (reason) {
     TerminationReason.BreakerTripped -> "（已被安全熔断，详见任务诊断）"
+    TerminationReason.GateRejected -> "（上一轮仍在生成，请等当前回复结束后再试）"
     TerminationReason.MaxRounds -> "（达到轮次上限）"
     else -> null
 }

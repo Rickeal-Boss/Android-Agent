@@ -108,6 +108,21 @@ class SalvageOutputTest {
         )
     }
 
+    /**
+     * W86-03：并发闸门拒斥（[TerminationReason.GateRejected]）的 run **一次都没开始**
+     * ⇒ 不进熔断救援判据；即便诊断卡 / 正文看似可救援，也必须落「非熔断」一侧返回 false。
+     */
+    @Test
+    fun 并发闸门拒斥不进熔断救援() {
+        assertFalse(
+            shouldSalvageOutput(
+                terminatedBy = TerminationReason.GateRejected,
+                report = reportOf(BreakerKind.WallClockBudget),
+                salvageText = "上一轮残留的半截文本",
+            ),
+        )
+    }
+
     /** 其余四种预算 / 外部型熔断（热 / 振荡 / 失败连击 / 生成超时）均保留。 */
     @Test
     fun 其余四种预算外部型熔断均保留() {

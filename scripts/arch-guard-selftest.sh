@@ -68,7 +68,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 54 55 56 57 58"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 54 55 56 57 58 59 60"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -147,6 +147,10 @@ affected_guards_for_file() {
     core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileTools.kt) echo "54" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/perf/PerformanceMonitorManager.kt) echo "55" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/perf/FrameStatsSession.kt) echo "56" ;;
+    # W86-04：W85 两处拆分落点脱闸补守（#59 FileArgNormalizer / #60 DiagnosticsLogRow）。
+    # ⚠️ 同上纪律：新增行数守卫必须同步本表（漏登记不判红 ⇒ --affected 静默漏跑）。
+    core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileArgNormalizer.kt) echo "59" ;;
+    feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsLogRow.kt) echo "60" ;;
     core-model/*)                                                                  echo "3 15 26 40 41 47" ;;
     *)                                                                             echo FULL ;;
   esac
@@ -1041,6 +1045,26 @@ KT
 package com.rickeal.agent.core.data.perf
 
 data class FrameStatsSession(val totalFrames: Long)
+KT
+  # 第 59/60 条（W86-04，两处拆分落点补守）同为 fail-closed：文件缺失即红 ⇒ 骨架必须
+  # 逐个铺出（漏铺任何一个都会让干净树正例与全部绿面 case 一起误红）。两份都给
+  # 「远低于阈值」的最小文件（#59 阈值 80 / #60 阈值 150）。
+  # ⚠️ 这是「拆分落点补守」的夹具面：case92/93 的逐字节备份 + 还原都以本铺点为前提，
+  #   删掉这两行 ⇒ case92/93 的 `cp` 直接失败（应当红，不许静默跳过）。
+  cat > "$root/core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileArgNormalizer.kt" <<'KT'
+package com.rickeal.agent.core.agent.tools
+
+internal fun normalizeFileArg(raw: String): String = raw.trim()
+KT
+  cat > "$root/feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsLogRow.kt" <<'KT'
+package com.rickeal.agent.feature.settings
+
+import androidx.compose.runtime.Composable
+
+@Composable
+internal fun DiagnosticsLogRow(text: String) {
+    androidx.compose.material3.Text(text)
+}
 KT
 }
 
@@ -5918,6 +5942,155 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case91c] 干净骨架（oem/ 17 行，远低于 200/120）被误判（第 58 条退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case92 / case92b（W86-04，第 59 条 = FileArgNormalizer.kt 80 行闸门）：红绿成对。
+#   背景：W85 把文件参数归一纯函数自 FileTools.kt 外提成独立文件（21 行），
+#     #54 实测随之下降、「已消肿」是假象 —— 外提的 21 行不再被任何守卫测量
+#     （「拆分把代码移出守卫视野」第三例，前两例 #58 / #56）。#59 把新落点纳入测量，
+#     本 case 钉住它真的会响。
+#   case92（红面）：注入 150 行假内容（>80）⇒ 必红，且必须命中「超 80 行上限」事实行
+#     （只按守卫名匹配证明不了判据真命中，W77 教训）。
+#   case92b（绿面）：注入 60 行（≤80）⇒ 必须退出 0。红绿成对：缺绿面则「文件在就红」
+#     的恒红僵尸规则也能让红面通过（case87b 家族同款纪律）。
+#   夹具在 scaffold 独立临时树里，但覆盖的是 scaffold 已铺的真夹具文件 ⇒ 照 case90
+#   的写法**逐字节备份 + diff 复核还原**，还原失败判 FAIL（不许静默带病继续）。
+# ---------------------------------------------------------------------------
+if guard_selected 59; then
+d="$TMP/case92-fileargnormalizer-oversize"
+scaffold "$d"
+FAN="$d/core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileArgNormalizer.kt"
+cp "$FAN" "$FAN.orig"
+{
+  echo 'package com.rickeal.agent.core.agent.tools'
+  echo ''
+  echo 'internal object FileArgNormalizerPadding {'
+  i=1
+  while [ "$i" -le 150 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$FAN"
+out="$(run_guard "$d")"; rc=$?
+cp "$FAN.orig" "$FAN" || true
+if diff -q "$FAN.orig" "$FAN" >/dev/null 2>&1; then
+  echo "PASS [case92] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case92] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case92 FileArgNormalizer.kt 超行数上限 (第 59 条)" "$rc" "$out" \
+  "FileArgNormalizer.kt 总行数 ≤ 80（core-agent 行数表 #25 家族第 18 员，触顶 = 启动 FileArgNormalizer 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 80 行上限"; then
+  echo "PASS [case92] 红来自真命中（输出含 超 80 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case92] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case92b-fileargnormalizer-legal-size"
+scaffold "$d"
+FAN="$d/core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileArgNormalizer.kt"
+cp "$FAN" "$FAN.orig"
+{
+  echo 'package com.rickeal.agent.core.agent.tools'
+  echo ''
+  echo 'internal object FileArgNormalizerPadding {'
+  i=1
+  while [ "$i" -le 60 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$FAN"
+out="$(run_guard "$d")"; rc=$?
+cp "$FAN.orig" "$FAN" || true
+if diff -q "$FAN.orig" "$FAN" >/dev/null 2>&1; then
+  echo "PASS [case92b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case92b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case92b 60 行合法规模 (第 59 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case92b] 60 行（≤80）合法文件被误判（第 59 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case93 / case93b（W86-04，第 60 条 = DiagnosticsLogRow.kt 150 行闸门）：红绿成对。
+#   背景与 #59 同源：W85 把 LogRow 一族自 DiagnosticsScreen.kt 外提（74 行），
+#     #50 实测随之下降，但外提的 74 行不再被测量 —— 同一波拆分的**第二个**脱闸落点。
+#   case93（红面）：注入 300 行（>150）⇒ 必红 + 命中「超 150 行上限」事实行。
+#   case93b（绿面）：注入 120 行（≤150）⇒ 退出 0。
+#   夹具纪律同 case92：逐字节备份 + diff 复核还原，失败判 FAIL。
+# ---------------------------------------------------------------------------
+if guard_selected 60; then
+d="$TMP/case93-diagnosticslogrow-oversize"
+scaffold "$d"
+DLR="$d/feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsLogRow.kt"
+cp "$DLR" "$DLR.orig"
+{
+  echo 'package com.rickeal.agent.feature.settings'
+  echo ''
+  echo 'internal object DiagnosticsLogRowPadding {'
+  i=1
+  while [ "$i" -le 300 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$DLR"
+out="$(run_guard "$d")"; rc=$?
+cp "$DLR.orig" "$DLR" || true
+if diff -q "$DLR.orig" "$DLR" >/dev/null 2>&1; then
+  echo "PASS [case93] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case93] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case93 DiagnosticsLogRow.kt 超行数上限 (第 60 条)" "$rc" "$out" \
+  "DiagnosticsLogRow.kt 总行数 ≤ 150（feature-settings 行数表 #25 家族第 19 员，触顶 = 启动 DiagnosticsLogRow 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 150 行上限"; then
+  echo "PASS [case93] 红来自真命中（输出含 超 150 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case93] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case93b-diagnosticslogrow-legal-size"
+scaffold "$d"
+DLR="$d/feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsLogRow.kt"
+cp "$DLR" "$DLR.orig"
+{
+  echo 'package com.rickeal.agent.feature.settings'
+  echo ''
+  echo 'internal object DiagnosticsLogRowPadding {'
+  i=1
+  while [ "$i" -le 120 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$DLR"
+out="$(run_guard "$d")"; rc=$?
+cp "$DLR.orig" "$DLR" || true
+if diff -q "$DLR.orig" "$DLR" >/dev/null 2>&1; then
+  echo "PASS [case93b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case93b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case93b 120 行合法规模 (第 60 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case93b] 120 行（≤150）合法文件被误判（第 60 条上限判据退化成恒红僵尸规则）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

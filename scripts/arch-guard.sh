@@ -1608,6 +1608,52 @@ check "W84 core/data/oem 包行数上限（合计 ≤200 / 单文件 ≤120；�
              [ "$m" -le 120 ] || echo "$(basename "$f") $m 行，超单文件 120 行上限（触顶 = 拆分评审）"
            done'
 
+# 59) FileArgNormalizer.kt 总行数上限（W86-04 拆分脱闸第三例补守）：#25 家族第 18 员
+#     （家族清单见 #48 注释）。
+#     ⚠️ 为何补（「拆分把代码移出守卫视野」**第三例**）：W85 把文件参数归一纯函数自
+#     FileTools.kt 外提成独立文件（实测 21 行）—— #54 的实测值随之下降、看起来
+#     「这块已消肿」，但外提的 21 行**不再被任何守卫测量**（本条落地前
+#     `grep '^check "' arch-guard.sh | grep FileArgNormalizer` 零命中）。
+#     前两例：#58（W84 A-1，oem/ 数据表外提）与 #56（W83-05，FrameStatsSession 外提）。
+#     纪律：**拆分落点必须有自己的行数闸门，没有小文件豁免条款** ——
+#     「文件小」不是不设闸门的理由，因为闸门防的是**未来**的增长，不是当下的大小。
+#     ⚠️ 阈值推导（W86 冻结时实测 21 行）：按「现值 × 约 3.8」取 80 —— 该文件是纯函数
+#     归一小件（无状态、无 IO），增长面只有「加归一规则」，故余量给宽；到 80 行说明
+#     规则族已多到该按「路径 / 空白 / 引号」分文件了。
+#     ⚠️ 触顶不是改数字，是启动 FileArgNormalizer 拆分评审（按归一规则族拆分）。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释：
+#     line-table.sh 的派生面正是 grep 该连写，写进注释会被当成守卫，导致派生数漂移）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+#     ⚠️ 编号纪律：取 #59（#53 是 selftest 元 case 专属号，禁止使用；#58 已用）。
+#     四处同步：arch-guard 本处 / selftest 的 KNOWN_GUARDS / selftest 的 case92 段 /
+#     selftest 的 affected_guards_for_file 映射表（另需 scaffold 夹具，否则干净树误红）。
+check "FileArgNormalizer.kt 总行数 ≤ 80（core-agent 行数表 #25 家族第 18 员，触顶 = 启动 FileArgNormalizer 拆分评审，非改阈值）" \
+  bash -c 'f=core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileArgNormalizer.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 59 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 80 ] || echo "FileArgNormalizer.kt 当前 $n 行，超 80 行上限（触顶 = 启动 FileArgNormalizer 拆分评审，非改阈值）"'
+
+# 60) DiagnosticsLogRow.kt 总行数上限（W86-04 拆分脱闸第三例补守·同波第二件）：#25 家族第 19 员
+#     （家族清单见 #48 注释）。
+#     ⚠️ 为何补（与 #59 同源）：W85 把 LogRow 一族（渲染 + 时间格式化 + 级别配色）自
+#     DiagnosticsScreen.kt 外提成独立文件（实测 74 行）—— #50 的实测值随之下降，
+#     但外提的 74 行**不再被任何守卫测量**。这是同一波拆分制造的**第二个**脱闸落点：
+#     一次拆分动作可以同时制造多个盲区，补守必须按落点数逐个数，不能按「动作」数。
+#     ⚠️ 阈值推导（W86 冻结时实测 74 行）：按「现值 × 约 2.0」取 150 —— 该文件是纯
+#     Compose 行渲染件（一个 @Composable 家族 + 两个纯格式化函数），增长面是
+#     「加日志级别 / 加列 / 加配色」，比纯数据表快，故余量取 2× 档而非 3.8× 档。
+#     ⚠️ 触顶不是改数字，是启动 DiagnosticsLogRow 拆分评审（行渲染 / 格式化 / 配色分离）。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+#     ⚠️ 编号纪律：取 #60（#53 是 selftest 元 case 专属号，禁止使用；#59 已被 #59 条占用）。
+#     四处同步：arch-guard 本处 / selftest 的 KNOWN_GUARDS / selftest 的 case93 段 /
+#     selftest 的 affected_guards_for_file 映射表（另需 scaffold 夹具，否则干净树误红）。
+check "DiagnosticsLogRow.kt 总行数 ≤ 150（feature-settings 行数表 #25 家族第 19 员，触顶 = 启动 DiagnosticsLogRow 拆分评审，非改阈值）" \
+  bash -c 'f=feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsLogRow.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 60 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 150 ] || echo "DiagnosticsLogRow.kt 当前 $n 行，超 150 行上限（触顶 = 启动 DiagnosticsLogRow 拆分评审，非改阈值）"'
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"

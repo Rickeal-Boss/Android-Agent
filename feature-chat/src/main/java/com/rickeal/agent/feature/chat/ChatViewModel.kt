@@ -207,9 +207,10 @@ data class ChatUiState(
      * 最近一次终态的**终止原因**（`AgentEvent.Finished.terminatedBy` /
      * `AgentEvent.Failed.terminatedBy`，Wave 31 流2）。
      *
-     * 此前该字段零消费者；本波只把「非正常终止」中语义明确的两档渲染为一行小字
+     * 此前该字段零消费者；本波只把「非正常终止」中语义明确的三档渲染为一行小字
      * （见 ChatScreen 的 terminationHintOf）：[TerminationReason.BreakerTripped] /
-     * [TerminationReason.MaxRounds]。其余值 / null ⇒ 不渲染（正常结束路径零 UI 变化）。
+     * [TerminationReason.GateRejected] / [TerminationReason.MaxRounds]。其余值 / null ⇒
+     * 不渲染（正常结束路径零 UI 变化）。
      * 起 run 时与 error / lastReport 同一处清 null（上一次的终止原因不粘到下一次）。
      */
     val lastTermination: TerminationReason? = null,

@@ -7,10 +7,7 @@ import androidx.core.net.toUri
 import com.rickeal.agent.core.model.AgentLogStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.BufferedInputStream
 import java.io.File
-import java.io.FileInputStream
-import java.security.MessageDigest
 
 /**
  * 下载中的临时后缀。
@@ -326,38 +323,57 @@ class ModelDownloader(private val context: Context) {
         }
         // W84-15：完整性锚点非空才校验。比对失败即拒绝转正（返回 null），.part 原样留在磁盘，
         // 不会被后续 exact / -N 兜底当成真名文件（两者都排除 .part）。
-        if (!expectedSha256.isNullOrBlank() && !verifySha256(source, expectedSha256)) {
-            AgentLogStore.error(
-                "模型下载完整性校验失败：.part 的 SHA-256 与预设锚点不符，" +
-                    "已拒绝转正（不登记为模型）。文件保留在下载目录：${source.absolutePath}",
-            )
+        if (!expectedSha256.isNullOrBlank() && !verifyBeforePromote(source, expectedSha256)) {
             return null
         }
         return renameToUnique(source, dir, name)
     }
 
     /**
-     * W84-15 流式 SHA-256：边读边摘要，避免把整个模型文件（2~4GB）载入内存。
-     * 返回小写十六进制串；任何 IO / 算法异常都归约为 null（交给调用方决定是否放行）。
+     * W86-02：转正前的完整性闸门 —— **三态**处置（摘要计算见 `Sha256Verifier.kt`）。
+     *
+     * W84-15 把「算不出」与「不符」都归约成 `false`，于是瞬态读错误会被诊断页报成
+     * 「与预设锚点不符」（用户读到的是「你下的文件被篡改」，事实是「我们没读成功」）。
+     * 本函数把两者分开：
+     *
+     *  - [Sha256Check.MATCH] ⇒ 放行；
+     *  - [Sha256Check.MISMATCH] ⇒ **拒绝转正**（唯一能判「文件是坏的」的状态），
+     *    `.part` 原样留盘、ERROR 留痕；
+     *  - [Sha256Check.UNREADABLE] ⇒ **重试一次**（成本 = 再顺序读一遍整文件，
+     *    2~4 GB 约 15~40 s，只在异常态发生）；仍算不出则**放行**并打 ERROR
+     *    「无法完成校验（IO 错误）」。
+     *
+     * ⚠️ 为什么「算不出」选择放行而不是拒绝（**与外审建议相反，这是本仓的裁决**）：
+     *  1. 拒绝语义的唯一机械依据是「摘要与锚点不等」；算不出时我们**没有**任何证据说明
+     *     文件是坏的 —— 「无法证伪」不等于「已证伪」。
+     *  2. 拒绝的代价是用户重下 2~4 GB；而放行的代价是「这个文件没被校验」，若它真的坏了，
+     *     引擎加载会**可见地失败**（init NOT_FOUND / 模板失败），不会静默腐化。
+     *  3. 与「锚点为空 ⇒ 跳过校验」的既有 fail-open 语义同源：缺证据时不拦。
+     *  诊断侧不静默：ERROR 级留痕写明「未经校验」，与「不符」的文案可机械区分。
      */
-    private fun sha256Hex(file: File): String? = runCatching {
-        val digest = MessageDigest.getInstance("SHA-256")
-        FileInputStream(file).use { fis ->
-            BufferedInputStream(fis, 8 * 1024).use { bis ->
-                val buf = ByteArray(8 * 1024)
-                var read: Int
-                while (bis.read(buf).also { read = it } != -1) {
-                    digest.update(buf, 0, read)
-                }
+    private fun verifyBeforePromote(file: File, expected: String): Boolean {
+        var verdict = checkSha256(file, expected)
+        if (verdict == Sha256Check.UNREADABLE) {
+            AgentLogStore.warn("完整性校验：首次读取摘要失败，重试一次（文件：${file.name}）")
+            verdict = checkSha256(file, expected)
+        }
+        return when (verdict) {
+            Sha256Check.MATCH -> true
+            Sha256Check.MISMATCH -> {
+                AgentLogStore.error(
+                    "模型下载完整性校验失败：.part 的 SHA-256 与预设锚点不符，" +
+                        "已拒绝转正（不登记为模型）。文件保留在下载目录：${file.absolutePath}",
+                )
+                false
+            }
+            Sha256Check.UNREADABLE -> {
+                AgentLogStore.error(
+                    "模型下载完整性校验**无法完成**（IO 错误，不是摘要不符）：两次读取均失败，" +
+                        "本次放行但该文件未经校验。文件：${file.absolutePath}",
+                )
+                true
             }
         }
-        digest.digest().joinToString("") { "%02x".format(it) }
-    }.getOrNull()
-
-    /** 比对：大小写不敏感。实际摘要算不出（null）直接判 false（调用方已先过滤非空，此处双保险）。 */
-    private fun verifySha256(file: File, expected: String): Boolean {
-        val actual = sha256Hex(file) ?: return false
-        return actual.equals(expected.trim(), ignoreCase = true)
     }
 
     /** rename 到一个不冲突的目标名（"name.ext" 被占用就依次试 "name-1.ext"…）。 */

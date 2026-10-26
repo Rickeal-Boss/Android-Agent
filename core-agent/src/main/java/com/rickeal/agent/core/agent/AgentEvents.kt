@@ -33,6 +33,19 @@ enum class TerminationReason {
     BreakerTripped,
 
     /**
+     * 引擎并发闸门拒斥（W86-03）：本次 run **一次都没开始** —— 同一引擎实例已有一条流在跑，
+     * 引擎侧 `singleFlightGate` fail-fast 拒绝第二条（见 `isConcurrentGenerationBusy`）。
+     *
+     * 为什么必须与 [BreakerTripped] 分开：
+     *  - 统计面：熔断次数是瓶颈报告的输入，「手快点了两次发送」不是熔断，混在一起会污染归因；
+     *  - 语义面：熔断 = 「跑到一半被 Harness 掐断」，本值 = 「压根没开始」，两者对
+     *    `shouldSalvageOutput`（熔断救援正文）与用户提示的期望完全不同。
+     * ⚠️ 新增本值**不得**改变任何既有路径的判据：凡以 `== BreakerTripped` 为判据的分支，
+     *    本值都落进「非熔断」一侧（= 现有 else 行为）。
+     */
+    GateRejected,
+
+    /**
      * 宿主/进程级中断（进程被杀、App 关闭）—— ZCode 的 `stopped(interrupted)` 语义。
      * 这个值**不会**被主动写入 journal：进程死亡时来不及写，「journal 无 settled 行」
      * 就是它的判据（恢复路径据此提示用户继续）。

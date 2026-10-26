@@ -104,7 +104,8 @@ internal fun AssistantPersistenceState.onCommitted(text: String) = copy(lastComm
  * - 排除 `StreamLoop` / `EmptyOutput` 是**语义正确**的：它们的输出是「被判定的乱文 / 空」，
  *   `resetStreamingText()` 清掉是设计意图（见 `AgentEvent.StreamReset` KDoc）。
  * - 真失败（`terminatedBy != BreakerTripped`，如引擎加载 / 重载 / 生成失败）不保留：那些
- *   路径没有「用户已见的有效输出」语义。
+ *   路径没有「用户已见的有效输出」语义。并发闸门拒斥（[TerminationReason.GateRejected]）
+ *   同属此侧：run 一次都没开始，无正文可救。
  * - 终止者取 `report.tripped` 里**最后一个 HARD** —— `WallClockBudget` 首次 SOFT trip 只进
  *   ledger 不中断，HARD 再 trip 一次才终止（见 `BreakerKind.WallClockBudget` KDoc）。
  *

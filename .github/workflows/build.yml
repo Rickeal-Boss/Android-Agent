@@ -478,6 +478,36 @@ jobs:
           bash scripts/fulltest.sh
 
       # -------------------------------------------------------------------
+      # 【W86-05 · 非门禁】新文件守卫存量扫描（advisory）。
+      # 动机：W85 把代码拆成 FileArgNormalizer.kt / DiagnosticsLogRow.kt 两个新文件，
+      #       两者都**没有行数守卫**；而 `scripts/check-new-file-guard.sh` 默认的
+      #       diff 模式只扫 `git diff --diff-filter=A`（未提交的新增），文件一旦提交
+      #       就永远扫不到 ⇒ 本仓「拆分把代码移出守卫视野」病理第三次复现。
+      #       `--all` 存量模式补上这条盲区（全仓 *.kt 逐个核对闸门登记面）。
+      # 为什么先 advisory 而不直接门禁：新机制早期误报会阻断正常开发，本仓既有范式是
+      #       「报告先行、门禁后置」（沿 W84-14 的取舍：先把口径跑准，再升级为硬门禁；
+      #       硬门禁落地时应当是 arch-guard 新守卫 + selftest 红绿两面，而不是靠 CI 步骤）。
+      # 非阻断三件套：if: always()（红跑也要出报告）+ continue-on-error: true（本步自身
+      #       出错不改 job 结论）+ run 内 `|| true`（保持本步显示为绿）。
+      # ⚠️ 本仓踩过的坑：脚本的 `::warning::` 被 `$(…)` 捕获后**不再是 workflow command**
+      #       注解（只会以字面文本进 Summary）⇒ 必须 `printf | grep -E '^::(warning|error)::'`
+      #       回显到 **stdout**，让 runner 重新识别为真注解（与下面 summary 步骤同一手法）。
+      #       `|| true` 保证 grep 无命中（rc=1）时本步仍绿。
+      # -------------------------------------------------------------------
+      - name: New-file guard (advisory, non-blocking)
+        if: always()
+        continue-on-error: true
+        run: |
+          out="$(bash scripts/check-new-file-guard.sh --all 2>&1 || true)"
+          printf '%s\n' "$out" | grep -E '^::(warning|error)::' || true
+          {
+            echo "### 新文件守卫（advisory · 非门禁）"
+            echo '```text'
+            echo "$out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # -------------------------------------------------------------------
       # 【Wave 50 可观测性 · 非门禁】汇总各模块真实用例数写 job summary。
       # 动机：绿跑 CI 不打印任何用例数（gradle 的「N tests completed」只在失败时出现、
       #       且只覆盖失败模块），而测试报告又只在失败时上传 ⇒ 从 CI 侧看不到
@@ -561,7 +591,15 @@ jobs:
             #   用例数不变（21→21）。
             #   ⇒ 由 852 上调 862（W85 新增 10 例：core-agent journal 尾读 4 + feature-chat
             #   首轮无工具判定 3 + feature-models 删除忙闸门 3；代码冻结后实测 862，无 @Ignore/参数化）。
-            baseline=862
+            # W86 保护面覆盖波 +8 例（**逐文件对账**）：core-data Sha256VerifierTest 4
+            #   （公开测试向量 / 锚点比对大小写与两侧空白不敏感 / 摘要不等 ⇒ MISMATCH /
+            #   **文件读不到 ⇒ UNREADABLE 而不是 MISMATCH** —— 后者是本波的核心判据：
+            #   「无法证伪」不等于「已证伪」，瞬态 IO 错误不得被报成篡改）；
+            #   core-data PersistenceGuardTest 3（正常透传 / IOException 不抛且归 null /
+            #   **CancellationException 必须 rethrow** —— 钉住「不用 runCatching」的理由）；
+            #   feature-chat SalvageOutputTest +1（GateRejected 不进熔断救援）。
+            #   ⇒ 由 862 上调 870（代码冻结后实测 870，无 @Ignore/参数化）。
+            baseline=870
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

@@ -1599,12 +1599,12 @@ class AgentRunner(
                             // W84 审查补漏：本函数另外三个终态出口（超时 / 重建失败 /
                             // 生成失败）都带诊断卡，唯独这条不带 ⇒ 「本 run 一次都没
                             // 开始」这个最需要说清的失败在诊断卡上零归因。补上。
-                            // terminatedBy 取 BreakerTripped：语义是「被 Harness 侧掐断，
-                            // 不是模型自己停的」—— 并发闸门正是 Harness 侧判据。
+                            // terminatedBy 取 GateRejected（W86-03）：本 run 一次都没开始，
+                            // 与「跑到一半被熔断」不同 —— 不得进熔断统计 / 救援判据。
                             report = buildBottleneckReportFor(
                                 state, journal, registeredToolNames, engineCause = t,
                             ),
-                            terminatedBy = TerminationReason.BreakerTripped,
+                            terminatedBy = TerminationReason.GateRejected,
                         ),
                     )
                     return null
