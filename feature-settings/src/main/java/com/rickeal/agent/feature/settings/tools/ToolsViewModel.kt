@@ -163,7 +163,14 @@ class ToolsViewModel(
                 _uiState.update { it.copy(running = false, error = "工具不存在：$name") }
                 return@launch
             }
-            val outcome = runCatching { tool.invoke(args) }
+            // 工具实现普遍做磁盘 / 网络 IO（FileReadTool 等内部不切调度器），而
+            // `viewModelScope` 默认 `Dispatchers.Main.immediate` —— 就地 invoke 会
+            // 把 IO 压在主线程上。生产路径 `ToolExecutionGuard` 显式
+            // `withContext(Dispatchers.IO)` 并写明同款理由，此处对齐：
+            // 本页恰是用来「对大文件 / 坏路径造失败态」的，最容易撞 ANR。
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { tool.invoke(args) }
+            }
             val result = outcome.getOrNull()
             if (result == null) {
                 _uiState.update {

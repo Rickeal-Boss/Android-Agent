@@ -88,12 +88,19 @@ class AgentPlanStore(
 
     /**
      * 公开只读视图：宿主（ChatViewModel / ChatRunCoordinator）打开 / 恢复会话时把既有计划回填进 UI 时间线。
-     * 只读，不 touch 访问序（读 UI 不该影响 LRU 的淘汰判断）。
+     *
+     * ⚠️ 口径订正（W84-A4）：**本函数并非「不 touch 访问序」**。`plans` 是
+     * `LinkedHashMap(16, 0.75f, **true**)`（accessOrder=true），而下面第 100 行的
+     * `plans[key]` 是一次 `get` ⇒ **会刷新该 key 的访问位、影响 LRU 淘汰顺序**。
+     * 旧注释的「读 UI 不该影响 LRU」是**意图**，不是现状。
+     * 实际成立的部分只有一条：**惰性回载的结果不写回 `plans`**（第 101 行的
+     * `loadSync` 分支不插表），所以「读 UI 不会把磁盘上的计划变成常驻内存」仍然为真。
+     * 若将来真的要「读 UI 完全不影响 LRU」，必须改用 `peek` 语义（`plans.entries`
+     * 查找或复制一份无访问序的索引），那是行为改动，不是注释改动。
      *
      * Wave4 审查（C-P1-3）：内存未命中时**必须惰性回载** —— 此前直接返回 emptyList()，
      * 冷启动（或该 key 被 LRU 淘汰）后计划时间线永远空白，只有等模型再调一次 plan 工具
-     * 才浮现，与调用方「打开会话就要看到时间线」的承诺不符。回载结果**不写回 plans**，
-     * 保留「读 UI 不影响 LRU」的原意。
+     * 才浮现，与调用方「打开会话就要看到时间线」的承诺不符。
      */
     @Synchronized
     fun stepsFor(key: String): List<PlanStep> {

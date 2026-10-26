@@ -106,10 +106,14 @@ class ToolArgsValidatorTest {
     }
 
     @Test
-    fun `NUMBER 拒绝字符串形式的数字`() {
+    fun `NUMBER 接受字符串形式的数字 —— 与工具侧宽容解析同口径`() {
+        // W84-A9 口径统一：工具侧读取器（FileTools.intArg / MemoryTools.intArg）明示
+        // 「数字字符串也接受」，故校验层不得比实现更严格 —— 否则一次本可成功的调用
+        // 会被拦成「参数校验失败」。非数字字符串仍然拦（见下一条）。
         val s = spec(ToolParameter("n", ToolParamType.NUMBER))
-        val v = violation(ToolArgsValidator.validate(s, "{\"n\":\"5\"}"), "n")
-        assertEquals("string", v.got)
+        assertEquals(emptyList(), ToolArgsValidator.validate(s, "{\"n\":\"5\"}"))
+        assertEquals(emptyList(), ToolArgsValidator.validate(s, "{\"n\":\"1.5\"}"))
+        assertEquals("string", violation(ToolArgsValidator.validate(s, "{\"n\":\"abc\"}"), "n").got)
     }
 
     @Test
@@ -121,9 +125,12 @@ class ToolArgsValidatorTest {
     }
 
     @Test
-    fun `INTEGER 接受整数`() {
+    fun `INTEGER 接受整数与整数字符串`() {
         val s = spec(ToolParameter("n", ToolParamType.INTEGER))
         assertEquals(emptyList(), ToolArgsValidator.validate(s, "{\"n\":42}"))
+        // W84-A9：字符串形式的整数同放行（模型常写 "42"），但 "5.5" 仍拦。
+        assertEquals(emptyList(), ToolArgsValidator.validate(s, "{\"n\":\"42\"}"))
+        assertEquals("string", violation(ToolArgsValidator.validate(s, "{\"n\":\"5.5\"}"), "n").got)
     }
 
     @Test

@@ -25,6 +25,7 @@ import com.rickeal.agent.core.model.ModelGpuSupport
 import com.rickeal.agent.core.model.ModelSamplingProfiles
 import com.rickeal.agent.core.model.Role
 import com.rickeal.agent.core.model.SamplingParams
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -432,17 +433,37 @@ class ChatViewModel(
         }
     }
 
-    /** 直接替换整份配置（设置页风格的一次性写入）。 */
-    fun onParamChange(config: InferenceConfig) {
-        _uiState.update { it.copy(config = config.coerce()) }
-        viewModelScope.launch { container.settingsRepository.updateInferenceConfig { config } }
-    }
+    // W84：onParamChange(config) 已删除（零生产调用点 + 整份快照写回；同族收敛见 mergeChatPanelParams）。
 
-    /** 按 transform 改配置并落盘。 */
+    /**
+     * 按 transform 改配置并落盘（分段控件 / 开关这类「点一下就定」的交互）。
+     *
+     * ⚠️ 落盘闭包同样**只改对话页参数面板编辑的键**（W83-09 + R4）：`next` 是由
+     * `_uiState.value.config` 派生出来的**整份快照**，直接整份写回会覆盖掉磁盘上
+     * 这期间被设置页 / 模型页改过的其他键。收敛键清单见 [mergeChatPanelParams]。
+     *
+     * ⚠️ 异常边界与 [commitParams] 同款（W84-03 收尾）：`viewModelScope` 不挂
+     * `CoroutineExceptionHandler` ⇒ DataStore IO 异常会打死进程。分段控件 / 开关是高频交互，
+     * 暴露面不比滑条小。warn 文案与 [commitParams] **逐字一致**，一处 grep 即可取证两处。
+     */
     fun onParamChangeWith(transform: (InferenceConfig) -> InferenceConfig) {
         val next = transform(_uiState.value.config).coerce()
         _uiState.update { it.copy(config = next) }
-        viewModelScope.launch { container.settingsRepository.updateInferenceConfig { next } }
+        viewModelScope.launch {
+            // ⚠️ 不能用 runCatching：它会把 CancellationException 一起吞掉，
+            // 协程以 normal 完成收尾（父 scope 仍取消，但 Job 的 isCancelled /
+            // joinAll 语义会漂移）。取消必须透传，只兜真正的 IO 异常。
+            try {
+                container.settingsRepository.updateInferenceConfig { current ->
+                    current.mergeChatPanelParams(next)
+                }
+            } catch (t: CancellationException) {
+                throw t
+            } catch (t: Throwable) {
+                // 不记 t.message：可能带路径 / 配置内容。
+                AgentLogStore.warn("参数落盘失败（${t.javaClass.simpleName}）")
+            }
+        }
     }
 
     /**
@@ -474,10 +495,45 @@ class ChatViewModel(
      * @param scope 落盘所用 scope。UI 事件路径传 [viewModelScope]；[onCleared] 必须传
      *   [AppContainer.processScope] —— viewModelScope 在 onCleared 之后已取消，从它
      *   launch 的协程不会执行（W77 落库同款纪律，见 ChatRunCoordinator 构造参数 KDoc）。
+     *
+     * ## ① 必须自带异常边界（W84-03 / P2-N1）
+     *
+     * 本方法的两条落盘路径**都没有上游兜底**：`processScope` 是
+     * `SupervisorJob() + Dispatchers.IO` 且**不挂** `CoroutineExceptionHandler`，
+     * `viewModelScope` 同样没有 ⇒ 根协程里任何未捕获异常直接走默认
+     * `UncaughtExceptionHandler`，**整个进程被打死**。DataStore 的 `edit` 会因磁盘满 /
+     * 目录不可写 / 序列化失败抛 IO 异常，而 W83-02 把落盘边界从 1 条扩到 4 条（滑条松手 /
+     * 系统提示词失焦 / 抽屉 dismiss / onCleared），暴露面同比放大 4 倍。
+     *
+     * 形态与 `LiquidAgentApplication.onCreate` 的冷启动预热逐字对齐：
+     * `runCatching { ... }.onFailure { AgentLogStore.warn("…（${it.javaClass.simpleName}）") }`。
+     * **只记异常类名、不记 message** —— message 里可能带文件路径或配置内容。
+     * 落盘失败**不回滚 UI**（内存侧即时生效，磁盘真值由仓库 flow 回灌校准，与全仓同款纪律）。
+     *
+     * ## ② 落盘闭包只改「对话页参数面板真正编辑的键」（W83-09 + R4）
+     *
+     * 此前闭包直接传整份 `next` 快照。`updateInferenceConfig` 在 `DataStore.edit` 内是
+     * **先 decode 磁盘现值、再 transform** —— 传整份快照等于用「调用那一刻」的旧值覆盖
+     * 其他键：这段窗口里若设置页改了 `thinking` / `ModelsViewModel` 切了 `backend`，
+     * 那次更新会被**静默抹掉**（内存侧即时生效，磁盘被回灌成旧值，用户看到开关自己弹回）。
+     * 收敛逻辑与键清单见 [mergeChatPanelParams]（W82-07 已用同一修法处理 `systemInstruction`，
+     * 本处是同族残余）。
      */
     private fun commitParams(scope: CoroutineScope) {
         val next = _uiState.value.config
-        scope.launch { container.settingsRepository.updateInferenceConfig { next } }
+        scope.launch {
+            // ⚠️ 不能用 runCatching（会吞 CancellationException），见 [onParamChangeWith]。
+            try {
+                container.settingsRepository.updateInferenceConfig { current ->
+                    current.mergeChatPanelParams(next)
+                }
+            } catch (t: CancellationException) {
+                throw t
+            } catch (t: Throwable) {
+                // 不记 t.message：可能带路径 / 配置内容。
+                AgentLogStore.warn("参数落盘失败（${t.javaClass.simpleName}）")
+            }
+        }
     }
 
     fun toggleThinking() {
@@ -540,8 +596,9 @@ class ChatViewModel(
         // [ChatRunCoordinator.collectRunWithPerfWindow] 首行同为 persistState / salvageText 的
         // 唯一清零点）。
         run.resetForNewConversation()
-        // 状态重建见 [ChatUiState.forNewConversation]（W68 B2-R1 修复：整体重建时必须
-        // 一并保留 activeModelKnownBroken，否则新会话激活态提示静默失效）。
+        // 状态重建见 [ChatUiState.forNewConversation]（W68 B2-R1：必须一并保留
+        // activeModelKnownBroken；W84-03：capabilityMode / disclosureMode 同属「独立冷流
+        // 字段」，漏掉它们会让权限档位与披露模式静默回落默认值 —— 安全向变宽）。
         _uiState.value = _uiState.value.forNewConversation()
     }
 
@@ -739,18 +796,40 @@ internal fun ChatUiState.applyTerminalEvent(event: AgentEvent): ChatUiState = wh
  * 「新会话」状态重建（W68 B2-R1，严质衡 B2 复审 Finding 1 修复）。
  *
  * [ChatViewModel.onNewConversation] 需要**整体重建** [ChatUiState]（清消息 / 草稿 / 流式 /
- * 上一次的提示卡），只保留跨会话不变的四项 + 激活模型。本函数把这层重建提为**纯函数**
- * （不触 Compose / Android API）以便 JVM 单测（`ChatUiStateTest` / `ActivationWarningTest`）。
+ * 上一次的提示卡），只保留跨会话不变的字段。本函数把这层重建提为**纯函数**
+ * （不触 Compose / Android API）以便 JVM 单测（`ChatUiStateTest` / `ActivationWarningTest` /
+ * `NewConversationStateTest`）。
  *
- * ## 为什么必须保留 [ChatUiState.activeModelKnownBroken]（本修复的要害）
+ * ## 冷流字段必列清单（**同坑已踩两次，第三次前先读这张表**）
  *
- * 该字段由 core-data 派生流 `activeModelKnownBroken` **collect 一次后写回**，而该流是
- * `combine(settings.activeModelId, models)` 的冷派生 —— 「新对话」时两上游均**不变** ⇒
- * 派生流**不重发**（collect 协程只订阅一次）。故若重建把字段打回默认 `null`，**无人会恢复它**：
- * E2B·GPU / E4B·GPU 这类「已知坏 ∧ GPU 白名单内」模型，在新会话 run 里第一子句
- * （`knownBrokenOn != null`）与第二子句（`GPU ∧ ∉ 白名单`）**双 false** ⇒ 静默不再提示，
- * 把 `ActivationWarningGate.reset()` 的「新会话可再提示一次」**整个抵消** —— 退化成
- * 「仅 VM 首个会话提示」。保留本字段即让 gate 复位后的重校验**有真值可判**。
+ * 要害是同一条：这些字段都由 `init` 里**一次性订阅**的 flow/StateFlow 写回，而
+ * 「点新对话」既不改变任何上游、也不重订阅 ⇒ **流不会重发**，重建时若打回默认值，
+ * **没有任何人会把真值恢复回来**（要等下一次上游变化，而那次变化可能永不发生）。
+ * 每新增一个来自独立流的状态字段，必须在这张表里登记并决定「保留 / 刻意重置」：
+ *
+ * | 字段 | 上游（订阅点） | 新会话处置 |
+ * |---|---|---|
+ * | [ChatUiState.config] / [ChatUiState.agentMaxRounds] / [ChatUiState.toolsEnabled] | `settingsRepository.inferenceConfig` | **保留**（参数面板的预览态就在这里） |
+ * | [ChatUiState.capabilityMode] | `settingsRepository.capabilityMode` | **保留**（W84-03：漏了它 = 权限档位静默回落） |
+ * | [ChatUiState.disclosureMode] | `settingsRepository.disclosureMode` | **保留**（同上） |
+ * | [ChatUiState.availableModels] | `modelRepository.models` | **保留** |
+ * | [ChatUiState.activeModel] | `settingsRepository.activeModelId` | **保留** |
+ * | [ChatUiState.activeModelKnownBroken] | `modelRepository.activeModelKnownBroken`（派生 combine） | **保留**（W68 B2-R1） |
+ * | [ChatUiState.sessionDiagnostics] | `engineFactory…sessionDiagnostics`（引擎 StateFlow） | 刻意**重置**（见下） |
+ *
+ * `sessionDiagnostics` 之所以是唯一例外：它的值由引擎在**会话建成时整体重发**
+ * （`LiteRtLmEngine.ensureConversation` 末尾 `_sessionDiagnostics.value = …`），而
+ * [ChatViewModel.onNewConversation] 会清空 conversationId ⇒ 下一次 run 必然重建会话 ⇒
+ * 必然重发（自愈）。反过来保留它会把**上一会话**的降级结论粘到新会话上，在「还没发第一句」
+ * 的窗口里显示一条与当前会话无关的降级小字。
+ *
+ * ## W84-03（P1，安全向）：为什么 [ChatUiState.capabilityMode] / [ChatUiState.disclosureMode] 必须保留
+ *
+ * 两者此前**不在**重建参数里 ⇒ 点「新对话」后静默回落构造默认值：
+ * `capabilityMode` 从用户选的 `READ_ONLY` 变成 `WORKSPACE_WRITE`（**权限面被悄悄放宽**，
+ * 这是安全向回归），`disclosureMode` 回落 `FULL`（工具清单全量进提示词，披露面同时变宽）。
+ * 而设置流此刻不重发 ⇒ 界面显示与实际下发**长期不一致**，直到用户去设置页再动一次开关。
+ * 本页每次 run 都把这两个字段下发给 `AgentRequest`，所以它们不是「显示态」而是**执行态**。
  *
  * ## 不保留 [ChatUiState.activeModelWarning]（刻意）
  *
@@ -758,10 +837,64 @@ internal fun ChatUiState.applyTerminalEvent(event: AgentEvent): ChatUiState = wh
  */
 internal fun ChatUiState.forNewConversation(): ChatUiState = ChatUiState(
     config = config,
+    // W84-03：独立冷流（capabilityMode / disclosureMode 各一条），新会话不重发 ⇒ 必须沿用上一值。
+    capabilityMode = capabilityMode,
+    disclosureMode = disclosureMode,
     availableModels = availableModels,
     activeModel = activeModel,
     toolsEnabled = toolsEnabled,
     agentMaxRounds = agentMaxRounds,
     // 要害：派生流在新会话不重发 ⇒ 必须沿用上一值，否则激活态重校验在新会话静默失效。
     activeModelKnownBroken = activeModelKnownBroken,
+)
+
+/**
+ * 把**对话页参数面板真正编辑的那些键**从 [next]（对话页内存快照）合并进本对象
+ * （= `updateInferenceConfig` 闭包里拿到的**磁盘现值**）。
+ *
+ * ## 为什么需要它（W83-09 + R4：整份快照覆盖写回丢更新）
+ *
+ * `SettingsRepository.updateInferenceConfig` 在 `DataStore.edit` 内**先 decode 磁盘现值、
+ * 再跑 transform**。若 transform 忽略入参、直接返回对话页的整份内存快照（旧形态），
+ * 就等于用「对话页最后一次 collect 时」的旧值覆盖所有其他键 —— 这期间设置页改的
+ * `thinking`、模型页切的 `backend` 会被静默抹掉（内存侧已生效、磁盘被回灌成旧值，
+ * 表现为开关自己弹回）。W82-07 已用「落盘闭包只改本键」修掉 `systemInstruction` 一处，
+ * 本函数是**同族残余**的收敛点（对话页侧）。
+ *
+ * ## 键清单（唯一依据 = `ChatParamsPanel.kt` / `ChatParamsContent` 的交互面）
+ *
+ * 面板实际能改的键（11 个）：
+ *  1. `backend`（计算后端分段控件）
+ *  2. `sampling.temperature`
+ *  3. `sampling.topP`
+ *  4. `sampling.topK`
+ *  5. `sampling.repetitionPenalty`
+ *  6. `maxTokens`
+ *  7. `contextLength`
+ *  8. `maxAgentRounds`
+ *  9. `thinking`（思考模式分段控件）
+ *  10. `systemInstruction`（三边界 flush）
+ *  11. `enableTools`（启用工具调用开关）
+ *
+ * **刻意不写**（面板无任何入口，一律取磁盘现值 [InferenceConfig] 的 `this`）：
+ * `sampling.seed`（无 UI）、`visionBackend`、`audioBackend`、`thinkingTokenBudget`、
+ * `nativeToolChannel`（设置页专属开关）、`stream`。
+ *
+ * ⚠️ `sampling` 是**逐字段** copy 而不是 `sampling = next.sampling`：整体替换会把
+ * `seed` 一并按对话页的旧值覆盖 —— 那是「按键收敛」自己制造的新丢更新。
+ */
+internal fun InferenceConfig.mergeChatPanelParams(next: InferenceConfig): InferenceConfig = copy(
+    sampling = sampling.copy(
+        temperature = next.sampling.temperature,
+        topP = next.sampling.topP,
+        topK = next.sampling.topK,
+        repetitionPenalty = next.sampling.repetitionPenalty,
+    ),
+    maxTokens = next.maxTokens,
+    contextLength = next.contextLength,
+    maxAgentRounds = next.maxAgentRounds,
+    backend = next.backend,
+    thinking = next.thinking,
+    systemInstruction = next.systemInstruction,
+    enableTools = next.enableTools,
 )

@@ -17,6 +17,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import com.rickeal.agent.core.data.notify.OngoingNotificationSlot
 import com.rickeal.agent.core.model.AgentLogStore
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 「run 期间保活」的前台服务壳（W77 / W78）。
@@ -66,8 +67,9 @@ class AgentForegroundService : Service() {
     @Volatile
     private var pendingText: String? = null
 
-    @Volatile
-    private var refreshScheduled: Boolean = false
+    /** 「已有一个刷新 Runnable 在队列里」的闩。`@Volatile Boolean` 的 check-then-set 在两线程同时读到
+     *  false 时会各自 post ⇒ 队列两个 Runnable，「恒 ≤1」失效（W84-05）⇒ AtomicBoolean + CAS。 */
+    private val refreshScheduled = AtomicBoolean(false)
 
     @Volatile
     private var destroyed: Boolean = false
@@ -158,10 +160,10 @@ class AgentForegroundService : Service() {
     private fun refreshOngoing(text: String): Boolean {
         if (destroyed) return false
         pendingText = text
-        if (refreshScheduled) return true
-        refreshScheduled = true
+        // CAS 抢闩：抢不到 = 已有 Runnable 在队列里，它执行时会读到上面刚写的 pendingText（合并语义）。
+        if (!refreshScheduled.compareAndSet(false, true)) return true
         mainHandler.post {
-            refreshScheduled = false
+            refreshScheduled.set(false)
             val latest = pendingText ?: return@post
             // 双重检查：从 post 到执行之间服务可能已销毁 ⇒ 不能把通知「复活」。
             if (destroyed) return@post

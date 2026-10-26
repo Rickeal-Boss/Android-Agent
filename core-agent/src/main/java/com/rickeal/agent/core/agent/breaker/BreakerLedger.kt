@@ -2,8 +2,17 @@ package com.rickeal.agent.core.agent.breaker
 
 /**
  * 一次工具执行的事实账（[BreakerLedger.recordAttempt] 的入参收编）。
- * 只收「真的跑过」的调用：未注册 / 已忽略 / 被拒 / Schema 违规不执行的工具调用
- * **不算 attempt**（与 §3.2(d)「失败计数针对执行失败」的口径一致）。
+ *
+ * ⚠️ 口径订正（W84-A3）：**不是**「只收真的跑过的调用」。当前有两个记账点，其中
+ * **未注册工具**（AgentRunner 的 `emitUnregisteredTool` 分支）也记一条 `ok = false`
+ * —— 这是**有意偏离** §3.2(d)「失败计数针对执行失败」的地方，目的是给
+ * `BottleneckReport` 的 `ToolUnavailable` 档供归因线索（线索文案只在该路径产出，
+ * 见 AgentRunner 该分支的同步注释）。
+ * ⇒ 读本账本时的正确理解：**「尝试过的工具」包含从未真正执行的调用**；诊断卡上
+ * 出现一个「失败但没跑过」的工具，是未注册（模型编了名字 / 没启用）而不是执行炸了。
+ *
+ * 仍然**不入账**的：已忽略（同参重复）、被拒（审批拒绝 / 熔断 / 无审批通道）、
+ * Schema 违规 —— 它们连「尝试」都不算，且各自的归因走别处。
  */
 data class ToolAttempt(
     val tool: String,
@@ -60,8 +69,18 @@ class BreakerLedger {
     }
 
     /**
-     * 工具执行事实入账（成败 / 错误 / 耗时）。仅 AgentRunner 的 executeWithGuard
-     * 返回处一处调用 —— 未执行的工具调用（被拒 / 忽略 / 未注册 / Schema 违规）不进来。
+     * 工具调用事实入账（成败 / 错误 / 耗时）。
+     *
+     * ⚠️ 口径订正（W84-A3）：**不止一处调用**。当前两个记账点：
+     *  1. `AgentRunner` 的 `executeWithGuard` 返回处 —— 真的执行过的调用；
+     *  2. `AgentRunner` 的**未注册工具**分支 —— 从未执行的调用，`ok = false`，
+     *     error 为「未注册的工具：<name>」。
+     * 第 2 点是有意为之（给 `BottleneckReport` 的 `ToolUnavailable` 档供归因线索），
+     * 不是漏改。**新增记账点前先想清楚诊断卡语义**：`triedTools` 的口径是
+     * 「模型尝试过的工具」，不是「真跑过的工具」。
+     *
+     * 仍然不入账的：已忽略（同参重复）/ 被拒（审批拒绝、熔断、无审批通道）/
+     * Schema 违规 —— 这些连「尝试」都不算。
      */
     fun recordAttempt(
         tool: String,

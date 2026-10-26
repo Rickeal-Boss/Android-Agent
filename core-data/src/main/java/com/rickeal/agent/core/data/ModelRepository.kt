@@ -189,11 +189,20 @@ class ModelRepository(
     }
 
     suspend fun upsert(model: ModelDescriptor) = withContext(Dispatchers.IO) {
-        writeMutex.withLock {
-            val next = _models.value.filter { it.id != model.id } + model
-            store.write("models.json", next, ListSerializer(ModelDescriptor.serializer()))
-            _models.value = next
-        }
+        writeMutex.withLock { upsertLocked(model) }
+    }
+
+    /**
+     * [upsert] 的**锁内**实现：调用方必须已持 [writeMutex]（`Mutex` 不可重入，
+     * 本函数内部绝不再 `withLock`）。
+     *
+     * 抽出它只为让「读 `_models.value` → 合并 → 整份写回」这一复合动作能在**同一把锁**
+     * 里完成（W84-05 修 [importFromPath] 的锁外预读），不改变 [upsert] 的任何语义。
+     */
+    private suspend fun upsertLocked(model: ModelDescriptor) {
+        val next = _models.value.filter { it.id != model.id } + model
+        store.write("models.json", next, ListSerializer(ModelDescriptor.serializer()))
+        _models.value = next
     }
 
     /**
@@ -372,17 +381,30 @@ class ModelRepository(
      *
      * 幂等：同一路径重复登记（下载完成后 refresh() 又扫到、用户重试下载）会复用已有条目的 id，
      * 避免清单里出现「同路径不同 id」的重复项。
+     *
+     * ## 预读必须在锁内（W84-05，并发原子性）
+     *
+     * 此前 `existing` 在 [writeMutex] **锁外**预读、再交给 [upsert] 整份覆盖写回 —— 两个
+     * 并发登记（或与 [refresh] / [remove] 交错）时，后写者拿着**陈旧快照**覆盖先写者，
+     * 表现为「刚登记的模型从清单里消失」，且无任何报错。现把「读 → 合并 → 写」整体收进
+     * 同一把锁（复用 [upsertLocked]）。
+     *
+     * 为什么**不**改成「id 由 path 派生」：id 是既有 UUID 语义，被 `active_model_id`
+     * （DataStore）与 UI 选择态长期引用 —— 换算法会让**存量条目的 id 全部变化**，等价于
+     * 把用户的当前模型选择清空。故取改动最小、且不触碰 id 语义的这一条。
      */
     suspend fun importFromPath(path: String): ModelDescriptor? = withContext(Dispatchers.IO) {
         val file = File(path)
         if (!file.isFile) return@withContext null
         val absolute = file.absolutePath
-        val existing = _models.value.firstOrNull { it.path == absolute }
-        val base = existing?.copy(fileName = file.name, sizeBytes = file.length())
-            ?: ModelDescriptor(path = absolute, fileName = file.name, sizeBytes = file.length())
-        val descriptor = ModelHeuristics.applyTo(base)
-        upsert(descriptor)
-        descriptor
+        writeMutex.withLock {
+            val existing = _models.value.firstOrNull { it.path == absolute }
+            val base = existing?.copy(fileName = file.name, sizeBytes = file.length())
+                ?: ModelDescriptor(path = absolute, fileName = file.name, sizeBytes = file.length())
+            val descriptor = ModelHeuristics.applyTo(base)
+            upsertLocked(descriptor)
+            descriptor
+        }
     }
 
     private fun scanDirectories(): List<ModelDescriptor> {

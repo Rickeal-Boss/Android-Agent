@@ -13,6 +13,7 @@ import com.google.ai.edge.litertlm.Role as NativeRole
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ToolCall as NativeToolCall
 import com.google.ai.edge.litertlm.ToolProvider
+import com.rickeal.agent.core.engine.CONCURRENT_GENERATION_BUSY_MESSAGE
 import com.rickeal.agent.core.engine.EngineCapabilities
 import com.rickeal.agent.core.engine.EngineException
 import com.rickeal.agent.core.engine.EngineLoadConfig
@@ -201,6 +202,58 @@ internal fun summarizeContentTypes(contents: List<Content>): String {
  * 一个调用点，本单测仍绿。该缺口由守卫 #33（世代门控接线）互补钉死，二者合起来才完整。
  */
 internal fun shouldDropStaleDisposal(token: Long, current: Long): Boolean = token != current
+
+/**
+ * 在途生成互斥判据（W84-02，外提为 `internal` 纯函数以便 JVM 单测）。
+ *
+ * 返回 null = 可以开始；非 null = 用户可读的拒斥文案（取自契约层单源常量
+ * [CONCURRENT_GENERATION_BUSY_MESSAGE]）。
+ *
+ * 为什么需要闸门：本类是 `DefaultEngineFactory` 的**单例缓存实例**，而 native 侧只有
+ * **一个** `Conversation`。健康探针与聊天可以同时调 [LiteRtLmEngine.generateStream]
+ * —— 两条流会往同一个 native Conversation 里交错 sendMessage，输出串台、会话水印错乱；
+ * 此前唯一的保护是 `isBusy`（建议性 Boolean，读与调之间有窗口）与 `load` / `unload`
+ * 的 `waitForGenerationsToFinish()`（只在换模型时生效）。本闸门把互斥面从「换模型时」
+ * 扩展到**每次生成入口**，把双流交错窗口从整个生成期收窄到「建会话期」（见下方
+ * 「覆盖窗口」——它**不是**严格意义的硬约束）。
+ *
+ * ### ⚠️ 覆盖窗口（如实申报，W84 审查 P2-1）
+ *
+ * 本闸门是 **check-then-act**：读 `activeGenerations` 在 flow 首行，写
+ * `incrementAndGet()` 在其后（中间夹 `loader.ensureConversationWithDegrade`，suspend）。
+ * `engineDispatcher` 是 `limitedParallelism(1)`，只保证不**并行**执行，不保证不**交错**
+ * ⇒ 两条流可以都读到 0 再都放行，窗口宽度 = 建会话耗时。真实触发面很窄
+ * （探针 + 聊天同时起步，且探针只查建议性 `isBusy`、而 A 尚未自增 ⇒ `isBusy` 也为 false）。
+ *
+ * **不宣称「硬闸门」**：它把窗口从「整个生成期」缩到「建会话期」，是巨大改善但不是
+ * 零窗口。彻底修法 = 独立的 `AtomicBoolean` 占位 CAS（从闸门到自增之间包 try/finally
+ * 释放），**不能复用 `activeGenerations`**（下方不变量 1：建会话必须先于自增，否则
+ * 重建闸门自等自死锁）。该修法登记为 W84-19（本波不做：改动面在生成主路径，
+ * 收尾波不引入新风险）。
+ *
+ * 语义选择（方案① fail-fast）：并发的第二条流**立刻失败**，不排队。排队会让
+ * 「另一条流」的等待时长不可控（4B 单轮可达数十秒），且会把用户可见的取消/超时
+ * 语义搅在一起；fail-fast 的文案本身就是可行动指引。
+ *
+ * ⚠️ 两条不变量（外审 N-5 明确要求，改动前必读）：
+ *
+ *  1. **抛点必须在 `activeGenerations.incrementAndGet()` 之前，且不得进入
+ *     `generationCleanup` 所在的 try/finally**。否则拒斥路径会执行 `decrementAndGet()`
+ *     把**别人的**在途计数减掉（计数错乱），或者漏减 ⇒ 该实例**永久 busy**
+ *     （`LiteRtLmEngine` 的 `generationCleanup` 注释记载的 W50 真机前科：
+ *     「上一次生成仍在继续」永远不消失）。本闸门因此放在 flow 体的**第一条语句**，
+ *     早于世代自增、复位块、熔断闸门与建会话，也早于任何 try 块。
+ *
+ *  2. **子代理嵌套 run 不触发本闸门**：`AskSubagentTool` 的子 run 发生在父 run 的
+ *     **工具执行阶段**，此时父 run 的 `generateStream` 早已收集完毕、`activeGenerations`
+ *     已归还为 0。这条今天靠**时序**成立（父生成 → 父执行工具 → 子生成），
+ *     fail-fast 上线后它成为**引擎级设计约束**：若将来有人让「父生成」与「子生成」
+ *     并行（例如工具执行与下一轮生成流水线化），子 run 会被这里直接拒掉。
+ *     该不变量**无法用 JVM 单测覆盖**（需要可实例化的引擎 + 真实工具阶段时序），
+ *     故如实申报为 KDoc 约束 + 调用点注释（`AskSubagentTool` 起子 run 处）双向指认。
+ */
+internal fun concurrentGenerationRejection(active: Int): String? =
+    if (active > 0) CONCURRENT_GENERATION_BUSY_MESSAGE else null
 
 /**
  * LiteRT-LM 本地引擎。
@@ -994,10 +1047,32 @@ class LiteRtLmEngine(
     // -------------------------------------------------------- generate
 
     override fun generateStream(request: GenerationRequest): Flow<GenerationChunk> = flow {
+        // 🔴 W84-02：在途生成互斥（fail-fast 闸门）。**必须是 flow 体的第一条语句**，
+        // 早于下面的世代自增、复位块、熔断闸门与建会话 —— 更关键的是早于
+        // `activeGenerations.incrementAndGet()` 与 `generationCleanup` 所在的 try/finally。
+        // 若把本块挪到 increment 之后 / try 之内，拒斥路径会走到 generationCleanup 的
+        // `decrementAndGet()`：轻则减掉**别人的**在途计数（计数错乱、load 提前放行 ⇒
+        // native use-after-free），重则异常路径漏减 ⇒ 本实例**永久 busy**（W50 真机前科）。
+        // 两条不变量的完整论证（含「子代理嵌套 run 不触发」）见
+        // [concurrentGenerationRejection] 的 KDoc。
+        val busyRejection = concurrentGenerationRejection(activeGenerations.get())
+        if (busyRejection != null) {
+            // 只记日志、不置 conversationDirty、不 cancelProcess：本次请求**没有**碰过
+            // native Conversation，正在跑的那条流不受任何影响。
+            AgentLogStore.warn(
+                "并发生成被拒：另一条生成仍在进行（active=${activeGenerations.get()}），本次请求未开始"
+            )
+            throw EngineException(busyRejection)
+        }
         // W59 A4（generation-scoped token）：世代自增**先于 flow 体内一切入口逻辑**
         //（复位块 / 熔断闸门 / 建会话）—— 每个 flow 收集即一个新世代。当前代的所有既有
         // 路径仅多一次相等比较，行为逐字节不变（token 恒等）；迟到 / 异世代的模板失败
         // 处置在 handleTemplateRenderFailure 首行按 token 丢弃（幂等单源，见其 KDoc）。
+        // ⚠️ W84-02 起本句有**唯一例外**：上面的在途互斥闸门在自增之前就返回。
+        // 这是刻意的 —— 被拒的请求**没有开始**，不算一个世代；若它也自增，正在跑的那条
+        // 流的世代会被判成「异世代」，它迟到的模板失败处置（证伪 / 计数 / persist）
+        // 就会被 [handleTemplateRenderFailure] 整批丢弃，等于「一次被拒的并发请求
+        // 顺手让真在跑的生成失去自愈记账」。
         val token = generationSeq.incrementAndGet().toLong()
         currentGenerationToken = token
         // W58 修补 B（单调证伪的用户复位路径）：用户把「原生工具通道」开关重新打开

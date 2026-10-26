@@ -239,7 +239,16 @@ fun ChatMessageList(
                     // = 「App 卡死 20 秒」。这一行只在「已开始生成但首个 token 未到」
                     // （答案与思考都空）的窗口显示，把等待归因说清楚。完整产品裁决
                     // （后台预热 A/B 案）挂 W82-15 parked，本行是零成本止血。
-                    if (streamAnswer.isEmpty() && streamThink.isNullOrBlank()) {
+                    //
+                    // W84-07① 收窄作用面：「答案与思考都空」这条窗口条件**不足以**
+                    // 支撑「首次需加载模型」这个断言 —— 每轮开头 text 都会被
+                    // StreamReset 清空、下一轮 TextDelta 到达前同样命中该条件，
+                    // 于是非思考模型的工具轮次几乎每轮开头都闪一次「首次需加载
+                    // 模型」，而那恰是最不可能冷启的时刻（模型早就在显存里）。
+                    // 补一道首轮判据：见 [isFirstRoundWithoutToolOutput]。
+                    if (isFirstRoundWithoutToolOutput(messages, toolTraces) &&
+                        streamAnswer.isEmpty() && streamThink.isNullOrBlank()
+                    ) {
                         Text(
                             text = "正在生成回复（首次需加载模型，约 20 秒）…",
                             style = MaterialTheme.typography.labelSmall,
@@ -481,6 +490,46 @@ fun ChatToolCard(
                 )
             }
         }
+    }
+}
+
+/**
+ * TTFT 提示行（「首次需加载模型，约 20 秒」）的作用面判据（W84-07①，纯函数）。
+ *
+ * 返回 true = 本次 run 仍停在**首轮**、且此前**没有任何工具输出** —— 只有这个
+ * 窗口里「模型正在加载」才是大概率成立的归因（W82 取证：round0 20.2s vs
+ * round1 1.47s）。
+ *
+ * ## 为什么这两条判据等价于「首轮且本轮之前无工具结果」
+ * composable 层拿不到 `ChatUiState.agentRound`（本组件入参里没有轮次字段，
+ * 而为一行提示把状态层层上提、改 [ChatMessageList] 签名不值当），只能用现成的
+ * 两个入参反推：
+ *
+ *  1. **[toolTraces] 为空 ⇒ 本次 run 内还没有任何工具调用**。`toolTraces` 的
+ *     生命周期严格等于「一次 run」：`onSend` / `onRetry` / `onRecover` /
+ *     `onSendFrom` 起 run 时清空，`Finished` 终态再清空（见 ChatRunCoordinator
+ *     各 `toolTraces = emptyList()` 写入点），run 内跨轮只追加不清。故它非空
+ *     ⇔ 已经进入过工具轮次。
+ *  2. **[messages] 里没有任何已完成的 MODEL / TOOL 消息、也没有任何消息携带
+ *     toolResults ⇒ 本会话此前没跑完过一轮**。流式中的那条在
+ *     `StreamingState` 而不在 `messages`（见 ChatUiState.messages KDoc），工具
+ *     过程消息只进 journal 不落会话（见 ChatRunCoordinator `MessageCommitted`
+ *     分支注释）—— 即 `messages` 只在轮次**终态**增长。故「无 MODEL 消息」
+ *     ⇔ 本会话尚无已交付的助手回复。
+ *
+ * 两条同时成立时，用户看到的空气泡只可能是「本进程首次推理」或「本会话第一轮」，
+ * 「首次需加载模型」的措辞与事实相符；任一不成立就退回中性气泡（不写归因），
+ * 不再在工具轮次开头闪一条不实的加载提示。
+ */
+private fun isFirstRoundWithoutToolOutput(
+    messages: List<ChatMessage>,
+    toolTraces: List<ToolTrace>,
+): Boolean {
+    if (toolTraces.isNotEmpty()) return false
+    return messages.none { message ->
+        message.role == Role.MODEL ||
+            message.role == Role.TOOL ||
+            message.toolResults.isNotEmpty()
     }
 }
 

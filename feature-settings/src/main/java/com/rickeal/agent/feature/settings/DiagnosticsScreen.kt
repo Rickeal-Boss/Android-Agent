@@ -22,8 +22,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.rickeal.agent.core.data.perf.FrameStatsCollector
@@ -160,10 +161,18 @@ fun DiagnosticsScreen(
     var snapshot by remember { mutableStateOf(AgentLogStore.recent(MAX_SHOWN)) }
     var persisted by remember { mutableStateOf(emptyList<AgentLog>()) }
 
+    // 快照重取（W84 N2）。内存环只有 pull 出口（`AgentLogStore.recent`），没有可观察
+    // 容器 —— 真做成可观察要改 `:core-model`（不在本页范围），所以只能在「确定有新日志」
+    // 的时机显式重取。触发点收敛到这一处：进页面 + 自检状态变化 + 手动刷新钮。
     // 磁盘读取必须离开组合阶段（组合跑在主线程，不该做磁盘 IO）。
-    LaunchedEffect(Unit) {
-        persisted = withContext(Dispatchers.IO) { readPersistedErrors() }
+    val refreshLogs: () -> Unit = {
+        snapshot = AgentLogStore.recent(MAX_SHOWN)
+        scope.launch { persisted = withContext(Dispatchers.IO) { readPersistedErrors() } }
     }
+    // 以 probeState 为 key：首次组合即触发（等价于原来的 LaunchedEffect(Unit)），
+    // 之后**自检每跑一次都重取** —— 探针的日志正是写在这条路径上，此前要手动点
+    // 「刷新」才看得到，等于探针结果和它自己的日志对不上。
+    LaunchedEffect(probeState) { refreshLogs() }
 
     val levelFilter = levelOfFilter(filterIndex)
     val visible = if (levelFilter == null) snapshot else snapshot.filter { it.level == levelFilter }
@@ -198,395 +207,421 @@ fun DiagnosticsScreen(
             )
         },
     ) { _ ->
-        Column(
+        // W84-07② 懒渲染（原为 `Column + verticalScroll`，一次性组合 200 条日志）。
+        // 旧实现的代价是**进页面即长任务**：`for (log in visible) LogRow(log)` 把上限
+        // [MAX_SHOWN] 条日志全部组合成 GlassCard（每张卡一层玻璃），且全在同一个
+        // `verticalScroll` 容器里 ⇒ 每次滚动都要重新测量/布局整段内容，一条 400 字符的
+        // 日志（AgentLogStore 出口截断上限）足以让布局本身掉帧。改 LazyColumn 后日志区
+        // 逐条懒组合 + 离屏回收。
+        //
+        // 视觉零变化：条目间距仍是 `spacedBy(tokens.cardGap)`；内边距改走 `contentPadding`
+        // （原链上 verticalScroll 在 padding 之前，内边距本就在滚动内容里，二者等价）。
+        // 头部固定区（筛选 / 渲染能力 / 自检 / 物理量 / 帧统计）收进**单个** item ——
+        // 数量固定 ≤5，惰性无收益，拆开只会把连续代码打散。
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .navigationBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 12.dp)
+                .navigationBarsPadding(),
+            contentPadding = PaddingValues(
+                start = 14.dp,
+                end = 14.dp,
+                top = 12.dp,
                 // 悬浮页签占位（2026-09-26）：加在滚动内容**之内**，末尾条目能滚出
                 // 页签区；内容本体仍从玻璃页签底下穿过（见 LocalBottomBarOverlay KDoc）。
-                .padding(bottom = LocalBottomBarOverlay.current),
+                bottom = 12.dp + LocalBottomBarOverlay.current,
+            ),
             verticalArrangement = Arrangement.spacedBy(tokens.cardGap),
         ) {
-            GlassCard(contentPadding = PaddingValues(14.dp)) {
-                Column {
-                    GlassSegmented(
-                        items = FILTER_LABELS,
-                        selectedIndex = filterIndex,
-                        onSelected = { filterIndex = it },
-                    )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "只记录异常与决策点；ERROR 级额外落盘，其余仅存内存",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.onGlassSubtle,
-                            modifier = Modifier.weight(1f),
-                        )
-                        GlassButton(
-                            text = "刷新",
-                            onClick = {
-                                snapshot = AgentLogStore.recent(MAX_SHOWN)
-                                scope.launch {
-                                    persisted = withContext(Dispatchers.IO) { readPersistedErrors() }
-                                }
-                            },
-                            modifier = Modifier.padding(start = 10.dp),
-                        )
-                        GlassButton(
-                            text = "复制全部",
-                            onClick = {
-                                // 复制**当前可见**的两区（磁盘区只在「全部 / ERROR」筛选下显示，
-                                // 故这里用同一个 showPersisted 判据，保证「所见即所复制」）。
-                                val shownPersisted = if (showPersisted) persisted else emptyList()
-                                val text = diagnosticsPlainText(shownPersisted, visible)
-                                // 用 android.content.ClipboardManager 而不是 LocalClipboardManager：
-                                // 后者面向富文本（AnnotatedString），取证场景要的是可粘贴的纯文本。
-                                // 写剪贴板不需要权限；ClipData / setPrimaryClip 远早于 minSdk 31。
-                                val manager = context.getSystemService(Context.CLIPBOARD_SERVICE)
-                                    as? ClipboardManager
-                                if (manager == null) {
-                                    // 失败可见化：静默失败 = 用户以为复制成功，然后白等一场。
-                                    Toast.makeText(context, "剪贴板不可用", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    // 显式绑成非空局部量：后面在 runCatching 的 lambda 里用，
-                                    // 不依赖「智能转换穿透 lambda」这种边界行为。
-                                    val clipboard: ClipboardManager = manager
-                                    // setPrimaryClip 会抛（远端剪贴板服务异常等）：它跑在 onClick
-                                    // 里，抛出去就是一次崩溃，而这只是「复制点日志」这种低价值动作。
-                                    val copied = runCatching {
-                                        clipboard.setPrimaryClip(
-                                            ClipData.newPlainText("LiquidAgent 诊断日志", text),
-                                        )
-                                    }.isSuccess
-                                    // 两种结局都说了：写入失败 / 成功（带条数）。
-                                    Toast.makeText(
-                                        context,
-                                        if (copied) {
-                                            "已复制 ${shownPersisted.size + visible.size} 条日志"
-                                        } else {
-                                            "复制失败（剪贴板拒绝写入）"
-                                        },
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
-                                }
-                            },
-                            modifier = Modifier.padding(start = 10.dp),
-                        )
-                    }
-                }
-            }
-
-            /* ------------------------------------------ 玻璃渲染能力（折射降级诊断） */
-            // 为什么 API 直读而不是查日志：Lens.kt 的折射降级日志在 release 包会被
-            // R8 -assumenosideeffects 整条删除（见 Lens.kt:139-140），诊断页不能依赖日志。
-            // 这三项都是设备能力的客观事实，不随参数变化，因此放在最上面先给结论。
-            val sdkInt = Build.VERSION.SDK_INT
-            val runtimeShader = isRuntimeShaderSupported()
-            GlassCard(contentPadding = PaddingValues(14.dp)) {
-                Column {
-                    Text(
-                        text = "玻璃渲染能力",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = colors.onGlass,
-                    )
-                    Text(
-                        text = "设备 Android $sdkInt（${Build.VERSION.RELEASE}）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.onGlassSubtle,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                    CapabilityRow(
-                        label = "折射（液态玻璃）",
-                        supported = runtimeShader,
-                        supportedText = "支持（完整折射）",
-                        unsupportedText = "不支持 —— 仅模糊，需 Android 13+",
-                    )
-                    CapabilityRow(
-                        label = "背景模糊",
-                        supported = isRenderEffectSupported(),
-                        supportedText = "支持",
-                        unsupportedText = "不支持（需 Android 12+）",
-                    )
-                    Text(
-                        text = if (runtimeShader) {
-                            "本机为完整折射：玻璃边缘有厚度弯折与色散，这是正常形态。"
-                        } else {
-                            "本机不支持 AGSL 折射，玻璃已降级为纯模糊 —— 这不是参数问题，" +
-                                "折射带 / 强度 / 底色调什么都调不出来，也不是 bug。"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.onGlassSubtle,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                }
-            }
-
-            /* ------------------------------------------ 模型自检（Wave 44 P0-1） */
-            // 手动触发的小样本自检：对当前模型跑两条固定短 prompt，检查输出是否退化。
-            // 质量结论（PASS/DEGRADED/BAD）与「执行失败 / 未运行」严格区分（见 ProbeUiState
-            // KDoc）—— 后者不是「模型坏」的结论，文案与配色都必须区分。
-            // W71（T-2/I-2）：PASS ∧ 激活模型已登记已知坏 ⇒ 「自检面结论」与「已登记坏结论」
-            // 并列呈现 + 免责一行（展示层全部经 probePresentation 纯函数产出，JVM 可测）。
-            GlassCard(contentPadding = PaddingValues(14.dp)) {
-                Column {
-                    Text(
-                        text = "模型自检",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = colors.onGlass,
-                    )
-                    Text(
-                        text = "对当前模型跑两条固定短 prompt，检查输出是否退化（保留 token / 复读 / " +
-                            "空输出）。手动触发；会重建一次会话，用户下一条消息会重新 prefill。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.onGlassSubtle,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                    val presentation = probePresentation(probeState, knownBrokenOn)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = presentation.headline,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = probeToneColor(presentation.headlineTone),
-                            modifier = Modifier.weight(1f),
-                        )
-                        GlassButton(
-                            text = "运行自检",
-                            onClick = onRunProbe,
-                            loading = probeState is ProbeUiState.Running,
-                            enabled = probeState !is ProbeUiState.Running,
-                            modifier = Modifier.padding(start = 10.dp),
-                        )
-                    }
-                    // 第二行：耗时·采样预览（或执行失败澄清）；null = 不渲染。
-                    presentation.detail?.let { line ->
-                        Text(
-                            text = line.text,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = probeToneColor(line.tone),
-                            modifier = Modifier.padding(top = 6.dp),
-                        )
-                    }
-                    // 并列登记行（W71 B2；W72 起也覆盖 NotRun(ENGINE_NOT_LOADED)）。
-                    presentation.knownBroken?.let { line ->
-                        Text(
-                            text = line.text,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = probeToneColor(line.tone),
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
-                    // 免责一行（W71 B3 / I-2）：仅 PASS；与登记行同家族（warning）口径。
-                    presentation.disclaimer?.let { line ->
-                        Text(
-                            text = line.text,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = probeToneColor(line.tone),
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
-                    // 命中明细（仅 Completed 有）：HARD=danger / SOFT=warning，与结论同口径。
-                    if (probeState is ProbeUiState.Completed) {
-                        for (hit in probeState.hits) {
+            item(key = "header") {
+                Column(verticalArrangement = Arrangement.spacedBy(tokens.cardGap)) {
+                    GlassCard(contentPadding = PaddingValues(14.dp)) {
+                        Column {
+                            GlassSegmented(
+                                items = FILTER_LABELS,
+                                selectedIndex = filterIndex,
+                                onSelected = { filterIndex = it },
+                            )
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(top = 4.dp),
-                                verticalAlignment = Alignment.Top,
+                                    .padding(top = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    text = "${hit.id} · ${hit.severity.name}",
+                                    text = "只记录异常与决策点；ERROR 级额外落盘，其余仅存内存",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (hit.severity == CriterionSeverity.HARD) {
-                                        colors.danger
-                                    } else {
-                                        colors.warning
-                                    },
-                                )
-                                Text(
-                                    text = hit.evidence,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
                                     color = colors.onGlassSubtle,
-                                    modifier = Modifier.padding(start = 8.dp),
+                                    modifier = Modifier.weight(1f),
+                                )
+                                GlassButton(
+                                    text = "刷新",
+                                    onClick = refreshLogs,
+                                    modifier = Modifier.padding(start = 10.dp),
+                                )
+                                GlassButton(
+                                    text = "复制全部",
+                                    onClick = {
+                                        // 复制**当前可见**的两区（磁盘区只在「全部 / ERROR」筛选下显示，
+                                        // 故这里用同一个 showPersisted 判据，保证「所见即所复制」）。
+                                        val shownPersisted = if (showPersisted) persisted else emptyList()
+                                        val text = diagnosticsPlainText(shownPersisted, visible)
+                                        // 用 android.content.ClipboardManager 而不是 LocalClipboardManager：
+                                        // 后者面向富文本（AnnotatedString），取证场景要的是可粘贴的纯文本。
+                                        // 写剪贴板不需要权限；ClipData / setPrimaryClip 远早于 minSdk 31。
+                                        val manager = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                            as? ClipboardManager
+                                        if (manager == null) {
+                                            // 失败可见化：静默失败 = 用户以为复制成功，然后白等一场。
+                                            Toast.makeText(context, "剪贴板不可用", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            // 显式绑成非空局部量：后面在 runCatching 的 lambda 里用，
+                                            // 不依赖「智能转换穿透 lambda」这种边界行为。
+                                            val clipboard: ClipboardManager = manager
+                                            // setPrimaryClip 会抛（远端剪贴板服务异常等）：它跑在 onClick
+                                            // 里，抛出去就是一次崩溃，而这只是「复制点日志」这种低价值动作。
+                                            val copied = runCatching {
+                                                clipboard.setPrimaryClip(
+                                                    ClipData.newPlainText("LiquidAgent 诊断日志", text),
+                                                )
+                                            }.isSuccess
+                                            // 两种结局都说了：写入失败 / 成功（带条数）。
+                                            Toast.makeText(
+                                                context,
+                                                if (copied) {
+                                                    "已复制 ${shownPersisted.size + visible.size} 条日志"
+                                                } else {
+                                                    "复制失败（剪贴板拒绝写入）"
+                                                },
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        }
+                                    },
+                                    modifier = Modifier.padding(start = 10.dp),
                                 )
                             }
                         }
                     }
-                }
-            }
 
-            /* ------------------------------------------ 物理量（Wave 30 性能采样） */
-            if (perfHeader != null) {
-                GlassCard(contentPadding = PaddingValues(14.dp)) {
-                    Column {
-                        Text(
-                            text = "物理量",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = colors.onGlass,
-                        )
-                        Text(
-                            text = perfHeader,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.onGlassSubtle,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                        // 电池温度（W81，审查 P1-3）：ThermalGovernor 用电池温度 ≥44.9℃
-                        // 做熔断主判据（W43），但此前诊断页零展示 ⇒ 用户被「拒新 run /
-                        // 轮间冷却」却不知情。口径与 AppContainer 给 ThermalGovernor 的
-                        // batteryTempTenths **同源**（同一个 ACTION_BATTERY_CHANGED
-                        // sticky broadcast 的 EXTRA_TEMPERATURE，十分之一℃）—— 不另起
-                        // 采集源、不 1Hz 轮询 registerReceiver(null, …)（每次一次
-                        // binder，审查明确警告）。
-                        var batteryTempTenths by remember {
-                            mutableIntStateOf(Int.MIN_VALUE)
-                        }
-                        DisposableEffect(Unit) {
-                            val receiver = object : BroadcastReceiver() {
-                                override fun onReceive(ctx: Context?, intent: Intent?) {
-                                    batteryTempTenths = intent?.getIntExtra(
-                                        BatteryManager.EXTRA_TEMPERATURE,
-                                        Int.MIN_VALUE,
-                                    ) ?: Int.MIN_VALUE
-                                }
-                            }
-                            val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-                            // 进程内接收，不被外部唤起；API 33+ 必须显式
-                            // RECEIVER_NOT_EXPORTED（ContextCompat 跨版本安全，
-                            // 与 ScreenStateMonitor 同款）。ACTION_BATTERY_CHANGED 是
-                            // 受保护的系统广播，NOT_EXPORTED 不影响系统侧投递。
-                            val sticky = ContextCompat.registerReceiver(
-                                context,
-                                receiver,
-                                filter,
-                                ContextCompat.RECEIVER_NOT_EXPORTED,
-                            )
-                            // registerReceiver 的返回值即当前 sticky intent —— 立即取
-                            // 初值，无需等下一次广播（温度变化很慢，粘性值就是现状），
-                            // 也免掉一次 registerReceiver(null, …) 的 binder 往返。
-                            if (sticky != null) receiver.onReceive(context, sticky)
-                            onDispose { context.unregisterReceiver(receiver) }
-                        }
-                        PerfRow(
-                            "电池温度",
-                            if (batteryTempTenths != Int.MIN_VALUE) {
-                                // 保护线引用 ThermalGovernor 的常量（W82 单源化）：此前这里
-                                // 硬编码 "44.9"，熔断线一调就与真实判据脱钩 —— 而这一行的
-                                // 全部价值就是让用户看懂「为什么被拒」，报错数字必须同源。
-                                "%.1f℃（保护线 ${ThermalGovernor.BATTERY_FUSE_CELSIUS}℃）"
-                                    .format(batteryTempTenths / 10f)
-                            } else {
-                                "—"
-                            },
-                        )
-                        val latestSample = perfSamples.lastOrNull()
-                        if (latestSample == null) {
+                    /* ------------------------------------------ 玻璃渲染能力（折射降级诊断） */
+                    // 为什么 API 直读而不是查日志：Lens.kt 的折射降级日志在 release 包会被
+                    // R8 -assumenosideeffects 整条删除（见 Lens.kt:139-140），诊断页不能依赖日志。
+                    // 这三项都是设备能力的客观事实，不随参数变化，因此放在最上面先给结论。
+                    val sdkInt = Build.VERSION.SDK_INT
+                    val runtimeShader = isRuntimeShaderSupported()
+                    GlassCard(contentPadding = PaddingValues(14.dp)) {
+                        Column {
                             Text(
-                                text = "暂无样本：打开本页或运行任务时开始采样（1s 间隔）",
+                                text = "玻璃渲染能力",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = colors.onGlass,
+                            )
+                            Text(
+                                text = "设备 Android $sdkInt（${Build.VERSION.RELEASE}）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                            CapabilityRow(
+                                label = "折射（液态玻璃）",
+                                supported = runtimeShader,
+                                supportedText = "支持（完整折射）",
+                                unsupportedText = "不支持 —— 仅模糊，需 Android 13+",
+                            )
+                            CapabilityRow(
+                                label = "背景模糊",
+                                supported = isRenderEffectSupported(),
+                                supportedText = "支持",
+                                unsupportedText = "不支持（需 Android 12+）",
+                            )
+                            Text(
+                                text = if (runtimeShader) {
+                                    "本机为完整折射：玻璃边缘有厚度弯折与色散，这是正常形态。"
+                                } else {
+                                    "本机不支持 AGSL 折射，玻璃已降级为纯模糊 —— 这不是参数问题，" +
+                                        "折射带 / 强度 / 底色调什么都调不出来，也不是 bug。"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = colors.onGlassSubtle,
                                 modifier = Modifier.padding(top = 6.dp),
                             )
-                        } else {
-                            // CPU-秒曲线（单调递增；斜率即占用强度）。
-                            CpuSecondsChart(
-                                samples = perfSamples,
-                                color = colors.onGlass,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(64.dp)
-                                    .padding(top = 8.dp),
-                            )
-                            PerfRow("CPU 累计", "%.1f s".format(latestSample.cpuSeconds))
-                            PerfRow(
-                                "CPU 占比（最近 1s）",
-                                latestSample.cpuPercent?.let { "%.0f%%".format(it) } ?: "—",
-                            )
-                            PerfRow("PSS", "${latestSample.pssKb / 1024} MB")
-                            PerfRow("可用内存", "${latestSample.availMemBytes / (1024 * 1024)} MB")
                         }
                     }
-                }
-            }
 
-            /* ------------------------------------------ 帧统计（W81，审查 P0-1 的 07a 档） */
-            // 仅 debug 构建显示：采集器按 FLAG_DEBUGGABLE 门控，release 包恒零行为。
-            // 为什么帧级数据只剩这条路：W80-01 取证 PDRM00 dumpsys gfxinfo 帧统计恒 0
-            // （设备级不可用）；JankStats 底层就是 Choreographer.FrameCallback 封装，但引它
-            // 要动版本锁死纪律 —— 零依赖自采覆盖「滚动 / 生成期掉帧率」这个唯一消费场景
-            // （详见 FrameStatsCollector KDoc）。W82：订阅与渲染整体搬进 FrameStatsCard，
-            // 本函数不再持有任何帧统计数据（4Hz 发布只重组卡片）。
-            if (frameStatsCollector != null && frameStatsCollector.isDebuggable) {
-                FrameStatsCard(collector = frameStatsCollector)
+                    /* ------------------------------------------ 模型自检（Wave 44 P0-1） */
+                    // 手动触发的小样本自检：对当前模型跑两条固定短 prompt，检查输出是否退化。
+                    // 质量结论（PASS/DEGRADED/BAD）与「执行失败 / 未运行」严格区分（见 ProbeUiState
+                    // KDoc）—— 后者不是「模型坏」的结论，文案与配色都必须区分。
+                    // W71（T-2/I-2）：PASS ∧ 激活模型已登记已知坏 ⇒ 「自检面结论」与「已登记坏结论」
+                    // 并列呈现 + 免责一行（展示层全部经 probePresentation 纯函数产出，JVM 可测）。
+                    GlassCard(contentPadding = PaddingValues(14.dp)) {
+                        Column {
+                            Text(
+                                text = "模型自检",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = colors.onGlass,
+                            )
+                            Text(
+                                text = "对当前模型跑两条固定短 prompt，检查输出是否退化（保留 token / 复读 / " +
+                                    "空输出）。手动触发；会重建一次会话，用户下一条消息会重新 prefill。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                            val presentation = probePresentation(probeState, knownBrokenOn)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = presentation.headline,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = probeToneColor(presentation.headlineTone),
+                                    modifier = Modifier.weight(1f),
+                                )
+                                GlassButton(
+                                    text = "运行自检",
+                                    onClick = onRunProbe,
+                                    loading = probeState is ProbeUiState.Running,
+                                    enabled = probeState !is ProbeUiState.Running,
+                                    modifier = Modifier.padding(start = 10.dp),
+                                )
+                            }
+                            // 第二行：耗时·采样预览（或执行失败澄清）；null = 不渲染。
+                            presentation.detail?.let { line ->
+                                Text(
+                                    text = line.text,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = probeToneColor(line.tone),
+                                    modifier = Modifier.padding(top = 6.dp),
+                                )
+                            }
+                            // 并列登记行（W71 B2；W72 起也覆盖 NotRun(ENGINE_NOT_LOADED)）。
+                            presentation.knownBroken?.let { line ->
+                                Text(
+                                    text = line.text,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = probeToneColor(line.tone),
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                            // 免责一行（W71 B3 / I-2）：仅 PASS；与登记行同家族（warning）口径。
+                            presentation.disclaimer?.let { line ->
+                                Text(
+                                    text = line.text,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = probeToneColor(line.tone),
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                            // 命中明细（仅 Completed 有）：HARD=danger / SOFT=warning，与结论同口径。
+                            if (probeState is ProbeUiState.Completed) {
+                                for (hit in probeState.hits) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 4.dp),
+                                        verticalAlignment = Alignment.Top,
+                                    ) {
+                                        Text(
+                                            text = "${hit.id} · ${hit.severity.name}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (hit.severity == CriterionSeverity.HARD) {
+                                                colors.danger
+                                            } else {
+                                                colors.warning
+                                            },
+                                        )
+                                        Text(
+                                            text = hit.evidence,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = colors.onGlassSubtle,
+                                            modifier = Modifier.padding(start = 8.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    /* ------------------------------------------ 物理量（Wave 30 性能采样） */
+                    if (perfHeader != null) {
+                        GlassCard(contentPadding = PaddingValues(14.dp)) {
+                            Column {
+                                Text(
+                                    text = "物理量",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = colors.onGlass,
+                                )
+                                Text(
+                                    text = perfHeader,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.onGlassSubtle,
+                                    modifier = Modifier.padding(top = 2.dp),
+                                )
+                                // 电池温度（W81，审查 P1-3）：ThermalGovernor 用电池温度 ≥44.9℃
+                                // 做熔断主判据（W43），但此前诊断页零展示 ⇒ 用户被「拒新 run /
+                                // 轮间冷却」却不知情。口径与 AppContainer 给 ThermalGovernor 的
+                                // batteryTempTenths **同源**（同一个 ACTION_BATTERY_CHANGED
+                                // sticky broadcast 的 EXTRA_TEMPERATURE，十分之一℃）—— 不另起
+                                // 采集源、不 1Hz 轮询 registerReceiver(null, …)（每次一次
+                                // binder，审查明确警告）。
+                                var batteryTempTenths by remember {
+                                    mutableIntStateOf(Int.MIN_VALUE)
+                                }
+                                DisposableEffect(Unit) {
+                                    val receiver = object : BroadcastReceiver() {
+                                        override fun onReceive(ctx: Context?, intent: Intent?) {
+                                            batteryTempTenths = intent?.getIntExtra(
+                                                BatteryManager.EXTRA_TEMPERATURE,
+                                                Int.MIN_VALUE,
+                                            ) ?: Int.MIN_VALUE
+                                        }
+                                    }
+                                    val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+                                    // 进程内接收，不被外部唤起；API 33+ 必须显式
+                                    // RECEIVER_NOT_EXPORTED（ContextCompat 跨版本安全，
+                                    // 与 ScreenStateMonitor 同款）。ACTION_BATTERY_CHANGED 是
+                                    // 受保护的系统广播，NOT_EXPORTED 不影响系统侧投递。
+                                    val sticky = ContextCompat.registerReceiver(
+                                        context,
+                                        receiver,
+                                        filter,
+                                        ContextCompat.RECEIVER_NOT_EXPORTED,
+                                    )
+                                    // registerReceiver 的返回值即当前 sticky intent —— 立即取
+                                    // 初值，无需等下一次广播（温度变化很慢，粘性值就是现状），
+                                    // 也免掉一次 registerReceiver(null, …) 的 binder 往返。
+                                    if (sticky != null) receiver.onReceive(context, sticky)
+                                    onDispose { context.unregisterReceiver(receiver) }
+                                }
+                                PerfRow(
+                                    "电池温度",
+                                    if (batteryTempTenths != Int.MIN_VALUE) {
+                                        // 保护线引用 ThermalGovernor 的常量（W82 单源化）：此前这里
+                                        // 硬编码 "44.9"，熔断线一调就与真实判据脱钩 —— 而这一行的
+                                        // 全部价值就是让用户看懂「为什么被拒」，报错数字必须同源。
+                                        "%.1f℃（保护线 ${ThermalGovernor.BATTERY_FUSE_CELSIUS}℃）"
+                                            .format(batteryTempTenths / 10f)
+                                    } else {
+                                        "—"
+                                    },
+                                )
+                                val latestSample = perfSamples.lastOrNull()
+                                if (latestSample == null) {
+                                    Text(
+                                        text = "暂无样本：打开本页或运行任务时开始采样（1s 间隔）",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = colors.onGlassSubtle,
+                                        modifier = Modifier.padding(top = 6.dp),
+                                    )
+                                } else {
+                                    // CPU-秒曲线（单调递增；斜率即占用强度）。
+                                    CpuSecondsChart(
+                                        samples = perfSamples,
+                                        color = colors.onGlass,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(64.dp)
+                                            .padding(top = 8.dp),
+                                    )
+                                    PerfRow("CPU 累计", "%.1f s".format(latestSample.cpuSeconds))
+                                    PerfRow(
+                                        "CPU 占比（最近 1s）",
+                                        latestSample.cpuPercent?.let { "%.0f%%".format(it) } ?: "—",
+                                    )
+                                    PerfRow("PSS", "${latestSample.pssKb / 1024} MB")
+                                    PerfRow("可用内存", "${latestSample.availMemBytes / (1024 * 1024)} MB")
+                                }
+                            }
+                        }
+                    }
+
+                    /* ------------------------------------------ 帧统计（W81，审查 P0-1 的 07a 档） */
+                    // 仅 debug 构建显示：采集器按 FLAG_DEBUGGABLE 门控，release 包恒零行为。
+                    // 为什么帧级数据只剩这条路：W80-01 取证 PDRM00 dumpsys gfxinfo 帧统计恒 0
+                    // （设备级不可用）；JankStats 底层就是 Choreographer.FrameCallback 封装，但引它
+                    // 要动版本锁死纪律 —— 零依赖自采覆盖「滚动 / 生成期掉帧率」这个唯一消费场景
+                    // （详见 FrameStatsCollector KDoc）。W82：订阅与渲染整体搬进 FrameStatsCard，
+                    // 本函数不再持有任何帧统计数据（4Hz 发布只重组卡片）。
+                    if (frameStatsCollector != null && frameStatsCollector.isDebuggable) {
+                        FrameStatsCard(collector = frameStatsCollector)
+                    }
+
+                }
             }
 
             /* ------------------------------------------ 上次崩溃前的记录（磁盘） */
             // 这一区是整个诊断设施存在的理由：崩溃 = 进程死 = 内存缓冲全没，
             // 所以「最需要日志的场景」只能靠落盘文件回答。
+            // 区头（标题 + 清空钮）单独一个 item，日志本身走 items 懒渲染 ——
+            // 磁盘区 + 内存区合计最多 2×[MAX_SHOWN] 条，是本次改造的唯一动机。
             if (showPersisted && persisted.isNotEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "上次崩溃前的记录（${persisted.size} 条）",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = colors.onGlass,
-                        )
-                        Text(
-                            text = "来自磁盘：ERROR 级在写入时即落盘，重启 App 后仍可回看",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.onGlassSubtle,
+                item(key = "persistedHeader") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "上次崩溃前的记录（${persisted.size} 条）",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = colors.onGlass,
+                            )
+                            Text(
+                                text = "来自磁盘：ERROR 级在写入时即落盘，重启 App 后仍可回看",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onGlassSubtle,
+                            )
+                        }
+                        GlassButton(
+                            text = "清空",
+                            onClick = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) { clearPersistedErrors() }
+                                    persisted = withContext(Dispatchers.IO) { readPersistedErrors() }
+                                }
+                            },
+                            modifier = Modifier.padding(start = 10.dp),
                         )
                     }
-                    GlassButton(
-                        text = "清空",
-                        onClick = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) { clearPersistedErrors() }
-                                persisted = withContext(Dispatchers.IO) { readPersistedErrors() }
-                            }
-                        },
-                        modifier = Modifier.padding(start = 10.dp),
-                    )
                 }
-                for (log in persisted.asReversed()) {
-                    LogRow(log)
-                }
+                // 刻意不给 key：`AgentLog` 只有 (level, message, atMillis) 三个字段，
+                // 同一毫秒同一文案的两条日志是完全可能的 —— 拿它当 key 会撞重复键、
+                // LazyColumn 直接抛 IllegalArgumentException（key 必须唯一）。位置键
+                // 足够：这是只读快照，不需要跨刷新保持条目身份。
+                items(persisted.asReversed()) { log -> LogRow(log) }
             }
 
             /* ------------------------------------------ 本次运行（内存） */
-            Text(
-                text = "本次运行（内存 ${snapshot.size} 条 · 上限 ${AgentLogStore.DEFAULT_CAPACITY}）",
-                style = MaterialTheme.typography.titleSmall,
-                color = colors.onGlass,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-
-            if (visible.isEmpty()) {
-                GlassEmptyState(
-                    title = "暂无日志",
-                    subtitle = "正常轮次不会写日志，所以空是正常的",
+            item(key = "memoryTitle") {
+                Text(
+                    text = "本次运行（内存 ${snapshot.size} 条 · 上限 ${AgentLogStore.DEFAULT_CAPACITY}）",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = colors.onGlass,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
 
-            // 最新的排在最上面：真出问题时不用先滚到底。
-            for (log in visible.asReversed()) {
-                LogRow(log)
+            if (visible.isEmpty()) {
+                item(key = "empty") {
+                    GlassEmptyState(
+                        title = "暂无日志",
+                        subtitle = "正常轮次不会写日志，所以空是正常的",
+                    )
+                }
             }
 
-            Box(modifier = Modifier.size(tokens.bottomBarHeight))
+            // 最新的排在最上面：真出问题时不用先滚到底。
+            items(visible.asReversed()) { log -> LogRow(log) }
+
+            // 末尾占位（沿用原实现）：让最后一条能滚出悬浮页签区。它与 contentPadding.bottom
+            // 是两个不同来源（实体条目 vs 内边距），叠加后与改造前一致。
+            item(key = "tailSpacer") {
+                Box(modifier = Modifier.size(tokens.bottomBarHeight))
+            }
         }
     }
 }
@@ -614,6 +649,11 @@ private fun LogRow(log: AgentLog) {
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 color = colors.onGlass,
+                // W84-07②：正文封顶 6 行 + 溢出省略。单条已被截到 400 字符，但一行
+                // 400 字符在窄屏上是几百行的排版量，且这类超长日志往往整批出现（崩溃
+                // 现场 / 引擎报错）—— 不封顶既掉帧、又把后面的日志全顶出屏幕。
+                maxLines = LOG_MESSAGE_MAX_LINES,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
@@ -1049,6 +1089,15 @@ private fun levelColor(level: AgentLogLevel): Color {
 
 /** 一次最多取多少条：与环形缓冲容量一致，读全量即可。 */
 private val MAX_SHOWN: Int = AgentLogStore.DEFAULT_CAPACITY
+
+/**
+ * 单条日志正文的最大展示行数（W84-07②）。
+ *
+ * 取 6 而不是 1~2：本页定位是崩溃现场取证，堆栈头行 + 前几帧、引擎报错的关键一行都在
+ * 前 6 行内。配合 [TextOverflow.Ellipsis] 让「被截断」在画面上可见 —— 完整原文仍可经
+ * 「复制全部」原样取出（[diagnosticsPlainText] 走 log.message 全量，不经本行）。
+ */
+private const val LOG_MESSAGE_MAX_LINES = 6
 
 private val FILTER_LABELS: List<String> = listOf("全部", "INFO", "WARN", "ERROR")
 

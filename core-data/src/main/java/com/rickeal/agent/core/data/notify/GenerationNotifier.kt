@@ -76,7 +76,13 @@ class AndroidGenerationNotifier(
     private val perfSampleProvider: () -> PerfSample? = { null },
 ) : GenerationNotifier {
 
-    /** 上次真正 notify 的时刻（节流用）。[enabled] 关闭时不更新，避免重新打开后立刻补发旧节奏。 */
+    /** 上次真正 notify 的时刻（节流用）。[enabled] 关闭时不更新，避免重新打开后立刻补发旧节奏。
+     *  ⚠️ 挂 `@Volatile`（W84-05，与同文件 [enabled] 形态对齐）：写点有两处且**不同线程** ——
+     *  [onTick]（引擎回调线程）与 [stop]（UI / 主线程归零）；读点只在 [onTick]。无 `@Volatile`
+     *  时读线程可能长期看到 0L，节流失效、每秒刷一次通知（或相反：归零不可见，下次 run 的首条
+     *  通知被旧节奏吞掉）。它只存「最近一次」而非累加，故不需要 CAS —— 竞态最坏结果只是两个
+     *  线程各发一次通知（下一 tick 即收敛）。 */
+    @Volatile
     private var lastEmitAt: Long = 0L
 
     // 写点只有 UI 侧收集设置流的一处，读点在 onTick；挂 @Volatile 防止跨线程可见性问题。

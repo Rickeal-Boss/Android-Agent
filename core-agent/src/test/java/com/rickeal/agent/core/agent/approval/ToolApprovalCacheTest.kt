@@ -205,6 +205,21 @@ class ToolApprovalCacheTest {
         assertEquals(ToolApprovalDecision.APPROVED, peek())
     }
 
+    @Test
+    fun `revokeAll 不误删前缀相同的相邻会话`() {
+        // W84-A9 核查结论：`revokeAll` 用的是 `"$cid|"`（带 `|` 边界），**不是裸前缀**，
+        // 所以 cid "c1" 不会连带清掉 "c1x" 的授权。本用例把这条边界钉死 ——
+        // 若将来有人把 keyOf 的分隔符改掉（或把匹配改成裸 startsWith(cid)），
+        // 这里立刻红：跨会话误删授权 = 用户要重新弹一次卡，属可见回归。
+        grant(toolName = "t1", conversationId = "c1")
+        grant(toolName = "t2", conversationId = "c1x")
+
+        cache.revokeAll("c1")
+
+        assertNull(peek(toolName = "t1", conversationId = "c1"))
+        assertEquals(ToolApprovalDecision.APPROVED, peek(toolName = "t2", conversationId = "c1x"))
+    }
+
     // ── 摘要与哈希（companion 纯函数） ───────────────────────────────────────
 
     @Test

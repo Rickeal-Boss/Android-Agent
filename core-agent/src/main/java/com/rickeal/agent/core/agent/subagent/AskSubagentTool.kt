@@ -189,6 +189,19 @@ class AskSubagentTool(
         // 工具白名单：未声明 allowedTools = 继承全部**已注册工具**（ask_actor 自身
         // 永远排除，防递归自我委派）。继承面必须从真实 ToolRegistry 取 —— Wave2
         // 误用 SubagentRegistry 的 Actor 名当工具名，子 run 实际零工具。
+        //
+        // 🔴 latent 安全声明（W84-A7，只记录不改行为）：本行「未声明 ⇒ 取**全量注册表**」
+        // 与下方 `approvalHandler` 缺省（null ⇒ 子 run 无审批通道、危险工具 fail-closed
+        // 被拒）合在一起，当前**能**挡住越权，但挡住的机制是**两件事的巧合**：
+        //   ① 档位闸门（`capabilityMode` 往下传，ReadOnly / 工作区档位仍会拦写）；
+        //   ② `spec.dangerous || requiresConfirmation` 的工具在子 run 里因无审批通道
+        //      恒走 fail-closed 拒绝分支（见 AgentRunner 的 `handler == null` 分支）。
+        // ⇒ **若将来新增一个「effect = WRITE 却不声明 dangerous / requiresConfirmation」
+        // 的工具**，①②同时失效：子 run 会拿到它、档位闸门之外无人拦，于是
+        // 「子 run 绕过父 run 的工具白名单 + 审批」成为一条真实可达的越权路径。
+        // 届时的正确修法不是给子 run 接审批通道，而是：**未声明 allowedTools 时
+        // 取父 run 的 allowedTools（而不是全量注册表）**，或对子 run 强制
+        // `capabilityMode = ReadOnly`。本波不改（会改变 ask_actor 的既有能力面）。
         val toolNames = (definition.allowedTools
             ?: toolRegistry?.specs()?.map { it.name }.orEmpty())
             .filter { it != TOOL_NAME }
@@ -234,6 +247,14 @@ class AskSubagentTool(
         var rounds = 0
         var finalText = ""
         var failureMessage: String? = null
+        // ⚠️ 并发闸门依赖（W84-02）：本子 run 的 `generateStream` 与父 run 的**同一个**
+        // 引擎实例共用 native Conversation，而引擎侧 `concurrentGenerationRejection` 是
+        // fail-fast 硬闸门（activeGenerations > 0 即拒）。此处之所以安全，靠的是**时序**：
+        // 子 run 起于父 run 的**工具执行阶段**，此时父 run 的 generateStream 已收集完毕、
+        // 在途计数已归还为 0。
+        // 🔴 若将来把「工具执行」与「下一轮生成」并行化（流水线 / 提前预热下一轮），
+        // 子 run 会在下面这行被引擎直接拒掉（父模型只会看到一条「模型正在生成上一条
+        // 回复」的失败），必须先把引擎闸门改成排队或按会话隔离，再动那个时序。
         agentRunner.runUnlocked(request).collect { event ->
             when (event) {
                 is AgentEvent.MessageCommitted -> sessions.append(sessionKey, event.message)

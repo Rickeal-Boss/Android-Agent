@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
@@ -35,6 +36,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -71,7 +73,16 @@ import com.rickeal.agent.core.model.ModelGpuSupport
 import com.rickeal.agent.core.model.ModelPreset
 import com.rickeal.agent.core.model.ModelPresetMirror
 import com.rickeal.agent.core.model.ModelPresets
+import kotlinx.coroutines.delay
 import java.util.Locale
+
+/**
+ * 一次性告知（`ModelsUiState.message`）的自动消退时长。
+ *
+ * 4000ms：与设置页系统提示词的提交防抖同量级，够读完一句「已删除 / 加载完成：xxx」，
+ * 又不会让提示长期占位。`error` 类**不**走这个时长（见 [ModelsScreen] 顶部注释）。
+ */
+private const val TRANSIENT_MESSAGE_MILLIS = 4000L
 
 @Composable
 fun ModelsScreen(
@@ -81,6 +92,26 @@ fun ModelsScreen(
     val state by viewModel.uiState.collectAsState()
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
+
+    /* ───────────── 提示条的自动消退（W84-P2-11）─────────────
+     * 缺陷：message / error 只在下一次写点被覆盖，用户不主动操作就**永远粘在页面上**
+     *（「已删除」「加载完成：xxx」这类一次性告知会一直挂着）。
+     *
+     * 修法只落在**渲染侧**（不逐个改 VM 的 29 个写入点）：
+     *  - `message` 类（成功 / 进行中告知）⇒ 4s 后自动清空。key 用「当前这条文案」而不是
+     *    `Unit`：连续两次不同告知会重开计时（第二次也拿到完整 4s 可读时间）。
+     *  - `error` 类 ⇒ **不自动消退**，只给手动关闭（见下方提示条的关闭钮）。
+     *    这是「失败可见化」纪律：失败原因不该在用户读完之前自己消失，与设置页同款口径。
+     *  - `capabilitiesText` 是常驻派生文案（不是一次性告知）⇒ 同样不自动消退，
+     *    所以判据只认 `state.message` 且 `error == null`（error 优先级更高，见渲染处）。
+     */
+    val autoDismissibleMessage = state.message?.takeIf { state.error == null }
+    LaunchedEffect(autoDismissibleMessage) {
+        if (autoDismissibleMessage != null) {
+            delay(TRANSIENT_MESSAGE_MILLIS)
+            viewModel.onDismissMessage()
+        }
+    }
 
     // 旋转 / 折叠展开会重建 Activity，这几项丢了用户就得重走一遍 SAF 文件选择器，
     // 所以都改用 rememberSaveable。
@@ -243,12 +274,29 @@ fun ModelsScreen(
             item(span = { GridItemSpan(maxLineSpan) }) {
                 val notice = state.error ?: state.message ?: state.capabilitiesText
                 if (notice != null) {
-                    Text(
-                        text = notice,
-                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                        color = if (state.error != null) colors.danger else colors.onGlassMuted,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    // 关闭钮只在「确实可关」时出现：`capabilitiesText` 是常驻派生文案，
+                    // onDismissMessage 清不掉它 ⇒ 给它配一个点了没反应的钮比不配更糟。
+                    val dismissible = state.error != null || state.message != null
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = notice,
+                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                            color = if (state.error != null) colors.danger else colors.onGlassMuted,
+                            modifier = Modifier.weight(1f),
+                        )
+                        // W84-P2-11：手动关闭。`error` 类**不自动消退**（见函数顶部的
+                        // LaunchedEffect），这条出口是它唯一的消失方式；`message` 类也可
+                        // 提前关掉，不必等 4s。
+                        if (dismissible) {
+                            GlassIconButton(
+                                icon = Icons.Filled.Close,
+                                contentDescription = "关闭提示",
+                                onClick = viewModel::onDismissMessage,
+                                contentColor = colors.onGlassMuted,
+                                pressOnly = true,
+                            )
+                        }
+                    }
                 }
             }
         }

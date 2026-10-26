@@ -1,7 +1,9 @@
 package com.rickeal.agent.core.engine.local
 
+import com.rickeal.agent.core.engine.EngineException
 import com.rickeal.agent.core.engine.EngineFactory
 import com.rickeal.agent.core.engine.GenerationRequest
+import com.rickeal.agent.core.engine.isConcurrentGenerationBusy
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.CriterionHit
 import com.rickeal.agent.core.model.EngineKind
@@ -129,7 +131,12 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
         if (!running.compareAndSet(false, true)) return ProbeOutcome.NotRun(NotRunReason.ENGINE_BUSY)
         try {
             val engine = engineFactory.create(EngineKind.LOCAL)
-            // UI 前置（建议性，Boolean 有窗口；真闸门在引擎侧）—— 二者都不是质量结论。
+            // UI 前置（建议性，Boolean 有窗口）—— 二者都不是质量结论。
+            // ⚠️ W84-02 起「真闸门在引擎侧」这句话**第一次为真**：`generateStream` 的
+            // 第一条语句就是 [concurrentGenerationRejection] 硬闸门，读到 false 之后
+            // 才起来的另一条流会让本探针在 collect 处收到「在途互斥」拒斥（下方按
+            // NotRun(ENGINE_BUSY) 处理）。因此这两行仍然只是**省一次无谓调用**的
+            // 快速路径，不是正确性依据 —— 正确性由引擎闸门 + 下方的分类处理共同保证。
             if (!engine.isLoaded) return ProbeOutcome.NotRun(NotRunReason.ENGINE_NOT_LOADED)
             if (engine.isBusy) return ProbeOutcome.NotRun(NotRunReason.ENGINE_BUSY)
 
@@ -173,6 +180,13 @@ class ModelHealthProbe(private val engineFactory: EngineFactory) {
         } catch (t: CancellationException) {
             // 外部取消（用户离开页面）：向上传播，不吞（否则宿主无法感知取消）。
             throw t
+        } catch (t: EngineException) {
+            // W84-02：在途互斥拒斥 ⇒ **跳过自检**，不是「引擎故障」。
+            // 与上方 `engine.isBusy` 快速路径同语义（同一个 NotRunReason），区别只是
+            // 这次是引擎侧硬闸门抓到的（读 false 与真正开始之间起来的另一条流）。
+            // 归类成 Failed 会让用户看到「自检失败」而模型其实健康、只是正忙。
+            if (isConcurrentGenerationBusy(t)) return ProbeOutcome.NotRun(NotRunReason.ENGINE_BUSY)
+            return ProbeOutcome.Failed(t.message?.take(200) ?: t.javaClass.simpleName)
         } catch (t: Exception) {
             return ProbeOutcome.Failed(t.message?.take(200) ?: t.javaClass.simpleName)
         } finally {

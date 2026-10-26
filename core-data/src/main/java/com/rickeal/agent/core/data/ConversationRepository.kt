@@ -67,11 +67,13 @@ class ConversationRepository(
     /**
      * 串行化「读全文 → 改 → 写全文 + 写索引」的复合操作。
      *
-     * 只加在 [appendMessage] / [rename] / [autoTitle] / [delete] 这些"读-改-写"入口上，
-     * **[save] 本身不加锁**：它是这些入口的公共落盘步骤，加锁会让它们自锁。
+     * 只加在 [appendMessage] / [rename] / [autoTitle] / [delete] / [create] 这些"读-改-写"
+     * 入口上，**[save] 本身不加锁**：它是这些入口的公共落盘步骤，加锁会让它们自锁。
      * （`Mutex` **不可重入**：同一协程二次 `withLock` 会永久挂起，不是抛异常——
      * 所以下面每个加锁的入口都直接调 [save]，绝不改调另一个加锁的方法。
-     * [autoTitle] 尤其要注意：它曾经转调 [rename]，加互斥后必须改成自己 save。）
+     * [autoTitle] 尤其要注意：它曾经转调 [rename]，加互斥后必须改成自己 save。
+     * [create] 的加锁理由见该函数 KDoc —— 它读 `_metas.value` 再整份重写 `index.json`，
+     * 无锁并发会让后写者覆盖先写者、留下无索引的孤儿会话文件。）
      */
     private val writeMutex = Mutex()
 
@@ -173,9 +175,21 @@ class ConversationRepository(
         onConversationDeleted(id)
     }
 
+    /**
+     * 新建会话并落盘。
+     *
+     * ⚠️ **必须持 [writeMutex]**（W84-05，并发原子性）：此前这里直调 [save]，而 [save]
+     * 自身不加锁（见 [writeMutex] 的说明），它第一步是读 `_metas.value` 再**整份重写**
+     * `index.json`。两个并发 `create` 各自读到同一份旧快照，后写者覆盖先写者 ⇒ 磁盘上
+     * 留下**无索引的孤儿会话文件**（`<id>.json` 在、`index.json` 里没有它）：列表页与抽屉
+     * 都看不到，用户以为会话没建成，而那个文件要等下次 delete / 清理路径才会被消化。
+     *
+     * 锁**不可重入**（见 [writeMutex] KDoc）⇒ 这里只包住 [save] 本身，绝不转调
+     * [rename] / [autoTitle] / [appendMessage] / [delete] 这些自己会加锁的入口。
+     */
     suspend fun create(title: String = "新对话"): Conversation {
         val conversation = Conversation(title = title)
-        save(conversation)
+        writeMutex.withLock { save(conversation) }
         return conversation
     }
 

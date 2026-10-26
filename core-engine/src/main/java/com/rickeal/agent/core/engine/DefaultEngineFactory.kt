@@ -25,7 +25,27 @@ class DefaultEngineFactory(
 
     private val engines = ConcurrentHashMap<EngineKind, LlmEngine>()
 
-    override fun create(kind: EngineKind): LlmEngine = engines.getOrPut(kind) {
+    /**
+     * 取缓存实例，缺失则创建（N-3：`getOrPut` → `computeIfAbsent`）。
+     *
+     * 为什么必须换：`ConcurrentHashMap.getOrPut`（Kotlin 的 `MutableMap` 扩展）是
+     * 「先 get，为 null 再 put」两步**非原子**操作。并发 `create()` 时两个线程可以同时
+     * 读到 null、各自 new 一个 [LiteRtLmEngine]，后 put 的覆盖先 put 的 —— 被覆盖的那个
+     * **既没被 close() 也没人持有**，它背后的 native Engine（2~3GB 权重）泄漏到 GC 都
+     * 收不掉（`close()` 不是 finalizer），真机上就是「进一次模型页内存涨一截」。
+     * `computeIfAbsent` 在桶锁内完成「判空 + 写入」，同一 kind 至多创建一个实例。
+     *
+     * ⚠️ 换用 `computeIfAbsent` 的前提（已核）：lambda 体内**不得**回头访问 `engines`
+     * 本身 —— CHM 的 `computeIfAbsent` 在映射函数执行期间持有桶锁，重入同一 map 的
+     * 修改操作会抛 `IllegalStateException`（JDK 9+ 递归更新检测）甚至死锁。当前 lambda
+     * 只读构造参数 `resilienceStore`，不碰 `engines`，故安全；将来若要在 lambda 里
+     * 查/写缓存，必须改回显式 `putIfAbsent` + 二次判空。
+     *
+     * 📌 同源问题第三处（W84 N-3）：另两处非原子 `getOrPut` 在 `AppContainer` 的
+     * `historyStores` / `tokenLedgers`，由 B 批同波修 —— 三处判据、危害与修法同源，
+     * 改一处漏两处会让「并发只建一个实例」的纪律看起来成立而实际不成立。
+     */
+    override fun create(kind: EngineKind): LlmEngine = engines.computeIfAbsent(kind) {
         when (kind) {
             EngineKind.LOCAL -> LiteRtLmEngine(resilienceStore)
         }

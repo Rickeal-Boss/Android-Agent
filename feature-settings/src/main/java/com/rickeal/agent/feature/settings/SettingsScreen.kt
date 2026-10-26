@@ -25,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Storage
@@ -45,6 +46,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -52,6 +54,8 @@ import com.rickeal.agent.core.design.GlassBackdropBlurOverride
 import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassChip
+import com.rickeal.agent.core.design.GlassIconButton
+import com.rickeal.agent.core.design.GlassIconButtonShape
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.GlassScaffold
 import com.rickeal.agent.core.design.GlassSegmented
@@ -82,6 +86,15 @@ import kotlinx.coroutines.delay
  */
 private const val SYSTEM_INSTRUCTION_COMMIT_DEBOUNCE_MS = 400L
 
+/**
+ * 成功/中性提示的自动消退时长（W84-07③）。
+ *
+ * 取 4000ms：本页提示都是一句话（「已保存」「已切换…」），中文阅读速度下 2s 偏赶、
+ * 5s 起就变成「等它消失」的负担；Toast.LENGTH_LONG 的 3.5s 是同一量级的参照。
+ * 只作用于 `message`，`error` 不自动消退（失败必须留在画面上，见渲染处注释）。
+ */
+private const val NOTICE_AUTO_DISMISS_MS = 4_000L
+
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
@@ -95,10 +108,20 @@ fun SettingsScreen(
     val tokens = LocalGlassTokens.current
     val context = LocalContext.current
 
+    // 「通知使用权」的实时门控（W84 N2）：`areNotificationsEnabled()` 是**系统侧**状态，
+    // 用户在系统设置里授权 / 撤销后不会触发任何重组。原来这里在组合中直接读一次，
+    // 结果开关按**旧值**渲染：已授权却仍显示「去开启」的副文案（或反过来），
+    // 要点一次开关才自愈。改成可观察变量 + ON_RESUME 重读（与下面
+    // `refreshBackgroundRestriction` 同一条 return 时机），从系统设置返回即校正。
+    var notificationsEnabled by remember {
+        mutableStateOf(NotificationManagerCompat.from(context).areNotificationsEnabled())
+    }
+
     // 从系统设置页返回时重读「电池优化豁免」状态（W77）：用户可能刚在系统里改完，
     // 不刷新就会一直显示离开前那一态。读的是系统态、不落盘，代价可忽略。
     LifecycleResumeEffect(Unit) {
         viewModel.refreshBackgroundRestriction()
+        notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
         onPauseOrDispose { }
     }
 
@@ -109,12 +132,15 @@ fun SettingsScreen(
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
+        // 系统侧状态就地同步（W84 N2）：授权结果本身就是 `areNotificationsEnabled()` 的
+        // 新值，不必等下一次 ON_RESUME —— 否则开关在弹框关闭到 resume 之间会闪回旧态。
+        notificationsEnabled = granted
         if (granted) viewModel.onGenerationNotificationChange(true)
         // 拒绝：什么都不做 —— onGenerationNotificationChange 不被调用，
         // DataStore 里仍是 false，开关自然弹回，避免「开着却永远不出通知」。
     }
     val needNotificationPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-        !NotificationManagerCompat.from(context).areNotificationsEnabled()
+        !notificationsEnabled
 
     // 自定义壁纸（Wave 9 需求 3b）：Photo Picker（系统进程内运行，零权限、拿不到
     // 照片真实路径，只有一个一次性 content:// Uri）。取消选择返回 null —— 不动现有壁纸。
@@ -944,13 +970,53 @@ fun SettingsScreen(
                 }
             }
 
+            // ── 提示区（W84-07③：自动消退 + 手动关闭）───────────────────────────
+            // 此前这一行是「只写不销」：`message` 由 VM 的 ~29 个写入点置位，而全仓
+            // 唯一的 `onDismissMessage()` 没有任何调用者 —— 提示一旦出现就永久粘在
+            // 页尾，用户既等不到它消失、也没有关掉它的手段（页面本身没有别的关闭
+            // 交互）。这里补两条**消费侧**通路，不改任何写入点：
+            //  1. 非错误类提示（`message`）4 秒后自动清除；
+            //  2. 无论 message 还是 error，都带一枚关闭钮 —— 用户不必等倒计时。
+            //
+            // ⚠️ error **不自动消退**（`noticeIsError` 分支刻意不 delay）：本仓的
+            // 「失败可见化」铁律要求失败信息留在画面上直到用户确认；把「壁纸导入
+            // 失败」这类错误 4 秒后自动抹掉，等于把失败伪装成没发生过。所以自动
+            // 消退只作用于成功/中性提示，错误只提供手动关闭。
+            //
+            // 判据用 `notice`（= error ?: message）做 key：提示内容变了就重新计时，
+            // 不会出现「新提示沿用旧倒计时立刻消失」。同一字符串被重复置位时 key
+            // 不变、倒计时不重头（此路径可接受：重复点同一次保存无需重读一遍）。
             val notice = state.error ?: state.message
+            val noticeIsError = state.error != null
+            LaunchedEffect(notice, noticeIsError) {
+                // 无提示 / 是 error ⇒ 不起计时器（error 只走手动关闭，见上）。
+                if (notice == null || noticeIsError) return@LaunchedEffect
+                delay(NOTICE_AUTO_DISMISS_MS)
+                viewModel.onDismissMessage()
+            }
             if (notice != null) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
                         text = notice,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (state.error != null) colors.danger else colors.onGlassMuted,
+                        color = if (noticeIsError) colors.danger else colors.onGlassMuted,
+                        // 居中口径沿用原实现（原来是 Box(contentAlignment = Center)）；
+                        // weight 把右侧关闭钮的位置让出来，避免长文案压到按钮上。
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // pressOnly：关闭钮紧邻页尾的玻璃背景，再叠一层玻璃会浑浊
+                    // （与诊断页顶栏返回钮同一处理）。
+                    GlassIconButton(
+                        icon = Icons.Filled.Close,
+                        contentDescription = "关闭提示",
+                        onClick = viewModel::onDismissMessage,
+                        shape = GlassIconButtonShape.Capsule,
+                        pressOnly = true,
+                        iconSize = 16.dp,
                     )
                 }
             }

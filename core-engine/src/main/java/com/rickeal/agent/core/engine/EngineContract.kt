@@ -73,6 +73,37 @@ data class EngineCapabilities(
 class EngineException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 /**
+ * 「引擎正在生成，本次请求未开始」的**单源**文案（W84-02 在途互斥闸门）。
+ *
+ * 为什么要有这个常量而不是各处各写一句：这条拒斥**不是引擎故障**，两个上层消费者
+ * 都必须能把它与真实故障区分开 ——
+ *  - [com.rickeal.agent.core.engine.local.ModelHealthProbe] 收到它要按「跳过自检」
+ *    （`NotRun(ENGINE_BUSY)`）处理，不能报成「自检失败」；
+ *  - `AgentRunner` 收到它**绝不能**走「生成失败 → 重建引擎」路径（`evict` + `close`
+ *    会把另一条流正在使用的 native Conversation 抽掉 ⇒ SIGSEGV，进程直接没）。
+ *
+ * 实现层用 [isConcurrentGenerationBusy] 判，不散落字符串比较。
+ *
+ * ⚠️ 文案本身是**用户可见**的（随 `AgentEvent.Failed` 上屏）：只陈述「发生了什么 +
+ * 下一步怎么做」，不提引擎/会话/native 等内部词。
+ */
+const val CONCURRENT_GENERATION_BUSY_MESSAGE: String =
+    "模型正在生成上一条回复，本次请求没有开始。请等当前回复结束，或先点停止，再重试。"
+
+/**
+ * 该异常是否为「在途生成互斥」拒斥（见 [CONCURRENT_GENERATION_BUSY_MESSAGE]）。
+ *
+ * 判据 = 类型 + 文案双匹配：`EngineException` 是引擎侧唯一的失败类型，文案取自
+ * 同一常量 ⇒ 不会与「上一次生成仍在继续，请稍候重试」（`load` / `unload` 的等待超时
+ * 文案）混淆 —— 那是**真的**需要重建/等待的故障，不是闸门拒斥。
+ *
+ * public 而非 internal：`core-agent`（AgentRunner）与 `core-engine`（探针）是两个模块，
+ * internal 跨不过模块边界。
+ */
+fun isConcurrentGenerationBusy(error: Throwable): Boolean =
+    error is EngineException && error.message == CONCURRENT_GENERATION_BUSY_MESSAGE
+
+/**
  * 引擎会话级诊断快照（Wave 33）。
  *
  * 存在理由：用户真机反复出现的「只输出提示词然后胡言乱语」在 Wave 24 修了主根因
@@ -201,6 +232,11 @@ interface LlmEngine {
      * 「读到 false」与「真正调用 load()/unload()」之间天然存在一个窗口，
      * 期间另一条流完全可以起来。所以 load() / unload() 里的
      * `waitForGenerationsToFinish()` 闸门必须保留，不可因为加了本字段而移除。
+     *
+     * 同理（W84-02）：**读本字段也不能作为「可以安全开始一次生成」的依据** ——
+     * `generateStream` 自己有一条在途互斥硬闸门，并发时抛
+     * [EngineException]（文案 = [CONCURRENT_GENERATION_BUSY_MESSAGE]）。本字段只是
+     * 省掉一次注定被拒的调用的快速路径；被拒时用 [isConcurrentGenerationBusy] 分类。
      */
     val isBusy: Boolean
         get() = false

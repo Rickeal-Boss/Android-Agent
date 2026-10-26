@@ -153,20 +153,32 @@ class AppContainer(
      *
      * 生命周期：实例与会话同生命周期，随 AppContainer 存活；会话删除后目录条目
      * 残留（一个空 store 对象 + 已删目录的引用），无泄漏风险，不值得为此加失效回调。
+     *
+     * ⚠️ 取用必须走 `computeIfAbsent`（W84-05）：`ConcurrentHashMap.getOrPut` 是
+     * 「先 get、再 put」的两步组合，**不是原子操作** —— 并发首取会各自 `open()` 一个实例，
+     * 后者覆盖前者，于是两个调用方拿到**不同实例**，实例级 `commitMutex` 再次失效（正是
+     * 本池化要根治的那个缺陷）。`computeIfAbsent` 的映射函数在同一个 bin 锁内执行，
+     * 同 key 只会建一次；映射函数内**不得**回调本 map（会自锁），故 `open()` 必须是纯路径
+     * 构造（现实现即如此，不做任何磁盘 IO）。
      */
     private val historyStores = java.util.concurrent.ConcurrentHashMap<String, SegmentedHistoryStore>()
 
     fun historyStore(conversationId: String): SegmentedHistoryStore =
-        historyStores.getOrPut(conversationId) {
+        historyStores.computeIfAbsent(conversationId) {
             SegmentedHistoryStore.open(historyRoot, conversationId)
         }
 
     /**
      * 按会话缓存的 run 级 token 账本池（Wave 30 RunTokenLedger，historyStores 同款
-     * 池化范式 —— ConcurrentHashMap + getOrPut 逐字同构）。
+     * 池化范式 —— ConcurrentHashMap + `computeIfAbsent` 逐字同构）。
      *
      * 账本按会话聚合（「切会话再切回」复用同一实例），run 级快照由 AgentRunner
      * 经 `AgentRequest.tokenLedger` 单点回写（见 [RunTokenLedger] KDoc 的接线纪律）。
+     *
+     * ⚠️ **本池是活面**（W84-05）：`getOrPut` 非原子 ⇒ 并发首取时两个调用方各拿一个账本，
+     * 而 AgentRunner 回写的是其中一个、UI 读的是另一个 ⇒ **token 计数在 UI 侧永不动**
+     * （不报错、不崩溃，纯静默失效，最难排查）。改 `computeIfAbsent` 后同 key 只建一次。
+     * 映射函数 `InMemoryRunTokenLedger()` 是纯构造，不回调本 map。
      *
      * 生命周期：实例随 AppContainer 存活；会话删除后残留一个空账本对象，
      * 无泄漏、不值得加失效回调（与 [historyStores] 的既有结论同口径）。
@@ -174,7 +186,7 @@ class AppContainer(
     private val tokenLedgers = java.util.concurrent.ConcurrentHashMap<String, RunTokenLedger>()
 
     fun tokenLedger(conversationId: String): RunTokenLedger =
-        tokenLedgers.getOrPut(conversationId) {
+        tokenLedgers.computeIfAbsent(conversationId) {
             InMemoryRunTokenLedger()
         }
 

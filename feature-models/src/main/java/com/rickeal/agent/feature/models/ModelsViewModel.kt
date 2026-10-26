@@ -18,6 +18,7 @@ import com.rickeal.agent.core.model.ModelFamily
 import com.rickeal.agent.core.model.ModelGpuSupport
 import com.rickeal.agent.core.model.ModelPreset
 import com.rickeal.agent.core.model.ModelPresets
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -40,6 +41,14 @@ private const val DOWNLOAD_RATE_EMA_ALPHA = 0.3
  * 必须说清**为什么**和**怎么办**，否则用户只会以为按钮坏了。
  */
 private const val BUSY_GENERATING_MESSAGE = "对话正在生成中，请先停止或等待完成"
+
+/**
+ * W84-P2-12：载入中 / 生成中点了「删除」时的提示。
+ *
+ * 与 [BUSY_GENERATING_MESSAGE] 分开：删除的拦下有两种成因（载模型中 / 生成中），
+ * 合成一句会漏掉「加载还没结束」这一支，用户会去点「停止生成」却发现根本没有生成在跑。
+ */
+private const val BUSY_DELETE_MESSAGE = "模型正在加载或对话正在生成中，暂时无法删除，请稍后再试"
 
 /**
  * **只作用于「查不到预设」那一支**的尾部余量，别当成全局安全系数用。
@@ -415,12 +424,24 @@ class ModelsViewModel(
         // 本次下载的落盘名（纯字符串运算，提前算出来：下面判「是不是同名重下」要用）
         val fileName = trimmed.substringBefore('?').substringAfterLast('/').ifBlank { "model.litertlm" }
         val supersededName = _uiState.value.downloadName
+        // W84-R1：被取代的旧 **DownloadManager 任务**必须一起取消。⚠️ 旧 id 必须在清
+        // [activeDownloadId] **之前**抓（那之后字段就是 null）。只 cancel 轮询协程的话，
+        // 旧 DM 任务变成孤儿：继续耗流量 / 存储，下完的产物既没人转正也没人清理 ——
+        // 用户看到的是「进度条没了，流量还在走」。顺序沿 [onCancelDownload] 的纪律：
+        // 先停观察者（下面两步），再动 DM 任务。
+        val supersededId = activeDownloadId
         val hadActivePoll = downloadPollJob != null
         downloadPollJob?.cancel()
         downloadPollJob = null
         // ⚠️ 必须同时清 activeDownloadId：否则旧协程的 L2 守卫（局部 id == 字段）仍然成立，
         // 只能靠 cancel() 的异步性兜住「已取消却还能再写一帧 UI」的窗口。清掉之后 L2 才接管。
         activeDownloadId = null
+        if (supersededId != null) {
+            // cancel / discardPartFiles 都是 suspend（内部有磁盘 IO），必须进协程。
+            // `dm.remove(id)` 只动**该任务自己的**文件，不会误删新任务正在写的同名 .part
+            // （DownloadManager 对同目标名会自动落成 `-1` 后缀，见 stripDuplicateSuffix）。
+            viewModelScope.launch { container.modelDownloader.cancel(supersededId) }
+        }
         // 同名重下**不在这里删**：新任务 enqueue 自己会 deletePartFiles（含 forget confirmedNames），
         // 而这条 discard 与「DM 开始写新的 .part」是并发的，删晚一步就会删掉正在写入的文件。
         if (hadActivePoll && !supersededName.isNullOrBlank() && supersededName != fileName) {
@@ -982,8 +1003,10 @@ class ModelsViewModel(
                     var config = _uiState.value.config
                     // GPU 白名单兜底（2026-09-26；W69 C5 判据同源）：模型卡已拦截 GPU 选择，
                     // 但历史配置可能仍记着 GPU（白名单上线前选过）。GPU 路径不支持时是 native
-                    // 崩溃，catch 不住 —— 加载前最后一道：未列入白名单的一律落回 CPU，记忆值
-                    // 同步改写（否则 UI 显示 GPU、引擎实际 CPU，状态说谎）。判据直接用
+                    // 崩溃，catch 不住 —— 加载前最后一道：未列入白名单的一律落回 CPU。
+                    // ⚠️ 落回必须**内存与磁盘都改写**（W84-P2-13 订正）：此前只改内存，
+                    // 磁盘真值仍是 GPU ⇒ 每次激活都重跑一遍回落 + 重打一条 warn，冷启时 UI
+                    // 还会先按磁盘值显示 GPU（短暂说谎）。判据直接用
                     // ModelGpuSupport.isGpuVerified(fileName)（白名单口径），与模型卡、引擎保命道同源。
                     val preset = ModelPresets.findByFileName(model.fileName)
                     if (
@@ -996,6 +1019,19 @@ class ModelsViewModel(
                         )
                         config = config.copy(backend = InferenceBackend.CPU)
                         _uiState.update { it.copy(config = config) }
+                        // 落盘**只改 backend 本键**（W83-09 同纪律）：整份 config 覆盖会把
+                        // 这段窗口里设置页 / 对话页刚改的其他键静默抹掉。
+                        // 独立 try/catch：落盘失败不能把「本次加载」一起打掉（本次仍按 CPU 走）。
+                        // ⚠️ 不用 runCatching：会吞 CancellationException（取消必须透传）。
+                        try {
+                            container.settingsRepository.updateInferenceConfig { current ->
+                                current.copy(backend = InferenceBackend.CPU)
+                            }
+                        } catch (t: CancellationException) {
+                            throw t
+                        } catch (t: Throwable) {
+                            AgentLogStore.warn("GPU 回落落盘失败（${t.javaClass.simpleName}）")
+                        }
                     }
                     val engine = container.engineFactory.create(EngineKind.LOCAL)
                     engine.load(
@@ -1086,6 +1122,17 @@ class ModelsViewModel(
 
     fun onDelete(id: String, deleteFile: Boolean) {
         viewModelScope.launch {
+            // W84-P2-12：忙时闸门。删除会动到「正在加载 / 正在生成」的那份文件与引擎实例，
+            // 两条路径都不可恢复：
+            //  · 加载中删 ⇒ load 的后半段（capabilities 探测 / 会话建立）找不到文件，报一个
+            //    与用户操作无关的错；
+            //  · 生成中删在用模型 ⇒ 引擎持有的权重被移走，native 层异常（runCatching 抓不住）。
+            // 判据与 [loadModel] / [onUnload] 同源（[isEngineBusy] 覆盖 run 全生命周期），
+            // 口径一致才不会出现「加载被拦、删除却放行」的不对称。
+            if (_uiState.value.loadingModelId != null || isEngineBusy()) {
+                _uiState.update { it.copy(message = BUSY_DELETE_MESSAGE) }
+                return@launch
+            }
             container.modelRepository.remove(id, deleteFile = deleteFile)
             if (_uiState.value.activeModelId == id) {
                 container.settingsRepository.setActiveModel(null)

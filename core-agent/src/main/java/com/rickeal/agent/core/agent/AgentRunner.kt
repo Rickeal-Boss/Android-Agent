@@ -1,10 +1,12 @@
 package com.rickeal.agent.core.agent
 
+import com.rickeal.agent.core.engine.CONCURRENT_GENERATION_BUSY_MESSAGE
 import com.rickeal.agent.core.engine.EngineEnvironment
 import com.rickeal.agent.core.engine.EngineFactory
 import com.rickeal.agent.core.engine.EngineLoadConfig
 import com.rickeal.agent.core.engine.GenerationRequest
 import com.rickeal.agent.core.engine.LlmEngine
+import com.rickeal.agent.core.engine.isConcurrentGenerationBusy
 import com.rickeal.agent.core.engine.local.thinkingCharBudgetFor
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ChatMessage
@@ -1573,6 +1575,40 @@ class AgentRunner(
                     // 直接上抛，把收尾交给唯一出口。
                     throw t
                 }
+                // 🔴 W84-02：引擎「在途互斥」拒斥**不是**生成故障 —— 必须在本 catch 的
+                // 重建/重试逻辑**之前**分流掉。
+                // 为什么不能落进下方既有路径：下方的处置是 `rebuildEngine` = `evict` +
+                // `close()`。`close()` 不是 suspend、也不等在途生成，而此刻**另一条流
+                // 正在这个实例上跑 native 解码** —— 抽掉它的 native 对象就是
+                // use-after-free ⇒ SIGSEGV（`runCatching` 抓不住、日志记不下来）。
+                // 也不能「重试一次」：闸门是 fail-fast 语义，另一条流没结束前重试只会
+                // 再撞同一个闸门，白烧一轮（4B 每轮数十秒）。
+                // 故：按「本次未能开始」直接终态失败，引擎实例原样保留给正在跑的那条流。
+                if (isConcurrentGenerationBusy(t)) {
+                    AgentLogStore.warn(
+                        "生成未开始：引擎正在为另一条流生成（并发闸门拒斥），本轮不重建引擎、不重试"
+                    )
+                    journal?.append(
+                        AgentRunJournal.KIND_SETTLED,
+                        AgentRunJournal.settledPayload("Failed", round),
+                    )
+                    emit(
+                        AgentEvent.Failed(
+                            t.message ?: CONCURRENT_GENERATION_BUSY_MESSAGE,
+                            t,
+                            // W84 审查补漏：本函数另外三个终态出口（超时 / 重建失败 /
+                            // 生成失败）都带诊断卡，唯独这条不带 ⇒ 「本 run 一次都没
+                            // 开始」这个最需要说清的失败在诊断卡上零归因。补上。
+                            // terminatedBy 取 BreakerTripped：语义是「被 Harness 侧掐断，
+                            // 不是模型自己停的」—— 并发闸门正是 Harness 侧判据。
+                            report = buildBottleneckReportFor(
+                                state, journal, registeredToolNames, engineCause = t,
+                            ),
+                            terminatedBy = TerminationReason.BreakerTripped,
+                        ),
+                    )
+                    return null
+                }
                 if (generationAttempt >= 1) {
                     // ERROR：唯一的一次重试也用完了 —— 终态，用户会看到「生成失败」。
                     // 流式连接被截断（引擎已补 LENGTH 终帧）后重试仍失败的情况也收敛到这里。
@@ -1690,10 +1726,14 @@ class AgentRunner(
         }
         // ── 工具调用振荡检测（Wave 30 §2.6）──────────────────────────
         // 签名历史跨轮存活（RunState 字段，见其注释），环形容量对齐
-        // BLOCK_CYCLE_HISTORY 的既有纪律。检出 → HARD 熔断。与同参硬护栏的
-        // 交互：同参死锁（distance=1）被下方既有硬护栏挡在第 3 次起「忽略不执行」，
-        // 不再产生新历史项 ⇒ 两判据无重复 trip 面；顺序上先追加历史不影响既有
-        // streak 逻辑（纯插入，不动原行）。
+        // BLOCK_CYCLE_HISTORY 的既有纪律。检出 → HARD 熔断。
+        // 与同参硬护栏的交互（W84-A1 订正，旧注释写反了）：同参死锁（distance=1）的
+        // **执行**被下方既有硬护栏挡在第 3 次起「忽略不执行」，但那些被忽略的调用
+        // **仍然进历史** —— `addLast` 在下一行、硬护栏之前（`ToolOscillationDetectorTest`
+        // 的「同参连发 6 次不检出」用例按此口径钉死）。所以两判据无重复 trip 面的
+        // 真实理由**不是**「不产生新历史项」，而是判据二的**真交替闸门**（相邻两两
+        // 不等）把「同签名连发」这种簇状序列挡在门外：归因留在同参重复，不写成振荡。
+        // 顺序上先追加历史不影响既有 streak 逻辑（纯插入，不动原行）。
         state.callSignatureHistory.addLast(callSignature)
         if (state.callSignatureHistory.size > ToolOscillationDetector.HISTORY_CAPACITY) {
             state.callSignatureHistory.removeFirst()
@@ -1797,7 +1837,7 @@ class AgentRunner(
             )
             return ToolCallStep.NextCall
         }
-        // ── 审批闸门（Octop tool_guard / ZCode 命令审批语义移植）────
+        // ── 审批闸门判据（W84-01 起整体上移到参数校验**之前**；纯计算、无副作用）──
         // 优先级链：策略豁免 > 审批缓存（用户显式授权、同参、TTL 内）>
         // 拒绝熔断（防换参骚扰）> 人在回路。fail-closed 纪律不变：
         // 审批通道缺失或异常一律拒绝，绝不默认放行。
@@ -1816,7 +1856,82 @@ class AgentRunner(
         val needsApproval = tool.spec.dangerous || tool.spec.requiresConfirmation ||
             paramGated || capabilityGated
         val autoApproved = tool.spec.dangerous && policy.autoApproveDangerous
-        if (needsApproval && !autoApproved) {
+        /** 本次调用是否会**弹审批卡**（= 走人在回路，且未被 autoApproveDangerous 豁免）。 */
+        val willPromptApproval = needsApproval && !autoApproved
+
+        // ── 参数 Schema 校验（ZCode typed-ask 语义的移植）─────────────
+        // 在执行前按 ToolSpec.parameters 校验类型/必填/枚举；违规不执行工具，
+        // 而是把结构化差异（路径 + 期望 + 实得）作为失败结果回给模型，
+        // 让它在下一轮定向修复 —— 端侧 4B 的工具失败大头是参数给错，
+        // 笼统的"执行异常"只会诱发盲猜循环。
+        //
+        // 🔴 W84-01：本块**必须**位于审批闸门之前（此前它在审批块之后）。动机：模型
+        // 参数给错（端侧 4B 高频）时用户会先看到一张畸形调用卡并被要求授权，合理拒绝
+        // 2 次即触发 [DENIAL_CIRCUIT_LIMIT] 熔断 —— 此后即使模型把参数修对，该工具在
+        // 本 run 剩余轮次里也被永久拒掉。校验前移后「畸形调用」不再消耗审批机会、
+        // 不再累加拒绝计数，熔断只由**用户对合法调用的拒绝**驱动。
+        //
+        // 🔴 更关键的一条（下一波「优化」回去会立刻掉可观测性，勿动）：
+        // **`emit(AgentEvent.ToolCallStarted(call))` 必须早于参数校验** —— 否则校验
+        // 失败的调用在 UI 侧**一条轨迹都没有**：`ChatRunCoordinator.handleEvent` 的
+        // `ToolResultReceived` 分支是 `toolTraces.map { … }`，**只更新已存在轨迹、
+        // 绝不新建**；而轨迹唯一的创建点就是 `ToolCallStarted`（去重后 append）与
+        // `ApprovalRequested`（审批占位）。校验失败路径不经过审批 ⇒ 没有占位 ⇒
+        // 结果事件无处可落 ⇒ 用户看不到「模型把参数给错了」这张最需要诊断价值的
+        // 失败卡，只剩日志与回灌模型的文本。
+        //
+        // ⚠️ 但 Started **不能无条件前置**（与上一条同源，二者必须一起满足）：
+        // `ChatRunCoordinator` 的 `ApprovalRequested` 分支是无去重 `+ append`
+        //（不像 `ToolCallStarted` 那样先查 `any { it.id == call.id }`）。若对
+        // 「会弹审批卡」的调用也先发 Started，随后 `ApprovalRequested` 会再 append
+        // 一条同 id 轨迹 ⇒ 同一次调用在 UI 上出现**两张卡**（`ToolResultReceived`
+        // 按 id 匹配会把两张都更新成同一结果，看起来就是纯重复）。
+        // ⇒ 故只在 `!willPromptApproval` 时在这里前置发 Started；走审批的调用，正常路径的
+        // 轨迹由 `ApprovalRequested` 立（唯一创建点），放行后也**不需要**补发 Started。
+        // 唯一例外 = 走审批但**参数校验失败**：该路径压根到不了 `ApprovalRequested`，
+        // 由下方失败分支里那次「只为落卡」的 Started 补位（见该分支注释）。
+        // 第二个例外 = 走审批但**审批缓存命中**：`ApprovalRequested` 在
+        // `cachedDecision != APPROVED` 分支内，命中时整块跳过 ⇒ 由审批块内那次
+        // 「缓存命中补发」的 Started 补位（见该分支注释）。
+        //
+        // 逐路径可见性（W84 前 → 后）：
+        //  ① 普通工具 + 参数合法      ：有卡 → 有卡（时机提前到执行前，无副作用）；
+        //  ② 普通工具 + 参数非法      ：有卡(FAILED) → **有卡(FAILED)**（本条就是上面
+        //     那条铁律要保住的东西，此前「只移校验块」的写法会把它变成无卡）；
+        //  ③ 危险工具 + 参数非法      ：有卡(先弹审批再失败) → **有卡(FAILED，不再弹
+        //     审批)**。轨迹由下方失败分支里那次「只为落卡」的 Started 创建 —— 见
+        //     该分支的注释。这是 P1-1 要修的核心场景（畸形参数 + 需要审批），
+        //     用户最需要看到「模型把参数给错了」这张卡，故不能让它无卡；
+        //  ④ 危险工具 + 用户拒绝      ：有卡(SKIPPED) → 有卡(SKIPPED)（轨迹仍由
+        //     `ApprovalRequested` 立，Started 未参与 ⇒ 逐字节不变）；
+        //  ⑤ 审批通道缺失 / 拒绝熔断  ：无卡 → 无卡（Started 未发，`ToolSkipped`
+        //     与 `ToolResultReceived` 都只 map 不新建 ⇒ 与 W84 前一致）。
+        //     ⚠️ 这两条**故意不补** Started：它们本来就没有审批占位，补了会造出
+        //     一张「从未发生的执行」的假卡 —— 保持现状；
+        //  ⑥ autoApproveDangerous 放行：有卡 → 有卡（Started 前置到审批判定前，
+        //     仍在该工具真正执行之前）；
+        //  ⑦ 走审批 + **缓存命中**     ：有卡 → 有卡（W84 审查补漏：换序后该路径
+        //     曾一度无卡 —— `ApprovalRequested` 在 `!= APPROVED` 分支内，命中即跳过。
+        //     现由审批块内补发的 Started 立卡，见该处注释）。
+        if (!willPromptApproval) emit(AgentEvent.ToolCallStarted(call))
+
+        val violations = ToolArgsValidator.validate(tool.spec, call.argumentsJson)
+        if (violations.isNotEmpty()) {
+            // 走审批的调用此时还没有任何轨迹创建点（校验已前移到审批之前 ⇒ 不会走到
+            // 下方的 `ApprovalRequested`）。这里补一次 Started **只为给失败卡一个落点**：
+            // 不发审批事件、不弹卡、不累加拒绝计数（P1-1 的语义不变），但 UI 能看到
+            // 「这次调用的参数是错的」。
+            // ⚠️ 只能放在失败分支内：参数合法时若也发，随后 `ApprovalRequested` 会再
+            // append 一条同 id 轨迹 ⇒ 两张卡（见上方 ⚠️ 段）。
+            if (willPromptApproval) emit(AgentEvent.ToolCallStarted(call))
+            AgentLogStore.warn(
+                "工具参数校验失败：${call.name}（${violations.size} 项）"
+            )
+            emitToolFailure(call, ToolArgsValidator.renderForModel(call.name, violations), working, journal)
+            return ToolCallStep.NextCall
+        }
+        // ── 审批闸门（人在回路；判据已在参数校验之前算好，见上方 [willPromptApproval]）──
+        if (willPromptApproval) {
             // 审批缓存命中 = 用户此前显式授权仍在 TTL 内（同参重试免弹卡）。
             // 档位入 key（Wave 28 P1-1）：授权是「某档位下的放行」，降档
             // （如 WORKSPACE_WRITE → READ_ONLY）必须重新弹卡，否则 30min TTL
@@ -1829,6 +1944,18 @@ class AgentRunner(
                     request.conversationId,
                     request.capabilityMode.name,
                 )
+            // 🔴 W84 审查补漏：审批**缓存命中**（== APPROVED）时下方整块被跳过 ⇒
+            // 既不会发 `ApprovalRequested`（那是唯一的审批占位创建点），也不会走到
+            // 上面 `!willPromptApproval` 的 `ToolCallStarted` ⇒ **该次调用在 UI 上
+            // 一张轨迹都没有**（`ToolResultReceived` 只 map 不新建）。W84-01 换序前
+            // `ToolCallStarted` 是无条件发的，故这是换序引入的回归。
+            // 这里补发一次：`ChatRunCoordinator` 的 `ToolCallStarted` 分支带
+            // `any { it.id == call.id }` 去重，与任何既有轨迹共存安全。
+            // 路径可达性：授权缓存由用户「相同调用不再询问」写入（ttlMillis=0 ⇒ 长期），
+            // 一点之后同参调用全部走这条分支。
+            if (cachedDecision == ToolApprovalDecision.APPROVED) {
+                emit(AgentEvent.ToolCallStarted(call))
+            }
             if (cachedDecision != ToolApprovalDecision.APPROVED) {
                 // 拒绝熔断：同一工具连续被拒 N 次后跳过审批直接拒 ——
                 // 防止模型换参数反复触发授权卡（熔断按工具名计数，
@@ -1909,21 +2036,10 @@ class AgentRunner(
             }
         }
 
-        emit(AgentEvent.ToolCallStarted(call))
-
-        // ── 参数 Schema 校验（ZCode typed-ask 语义的移植）─────────────
-        // 在执行前按 ToolSpec.parameters 校验类型/必填/枚举；违规不执行工具，
-        // 而是把结构化差异（路径 + 期望 + 实得）作为失败结果回给模型，
-        // 让它在下一轮定向修复 —— 端侧 4B 的工具失败大头是参数给错，
-        // 笼统的"执行异常"只会诱发盲猜循环。
-        val violations = ToolArgsValidator.validate(tool.spec, call.argumentsJson)
-        if (violations.isNotEmpty()) {
-            AgentLogStore.warn(
-                "工具参数校验失败：${call.name}（${violations.size} 项）"
-            )
-            emitToolFailure(call, ToolArgsValidator.renderForModel(call.name, violations), working, journal)
-            return ToolCallStep.NextCall
-        }
+        // 参数 Schema 校验与 `ToolCallStarted` 均已上移至审批闸门之前（W84-01）。
+        // 这里只剩「校验通过且审批已放行」的执行起点 —— 不要在本行之后重新插入
+        // 校验块，也不要再补发 `ToolCallStarted`（会与上方前置的那次重复；
+        // 走审批的调用其轨迹由 `ApprovalRequested` 立，见上方 KDoc 的逐路径可见性表）。
 
         // 挂载子代理上下文：ask_actor 从协程上下文读取父 run 的
         // conversation/config/model（协程元素而非可变全局，取消安全）。
@@ -2181,7 +2297,14 @@ class AgentRunner(
                     // 也不会重试，从而杜绝提醒风暴。每个签名至多提醒一次。
                     // （置位在 repeatSignatureVerdict 内已先行完成。）
                     AgentLogStore.info("无进展检测：第 ${state.round + 1} 轮命中重复回答（与历史签名相同），注入提醒")
-                    state.pendingReminder = REPEAT_REMINDER
+                    // 单槽纪律（W84-A2 与 2203 行的文档对齐）：已有待注入提醒时不覆盖 ——
+                    // 优先级 同参 > 重复回答 > 零工具，本分支居中，不得盖掉同参提醒。
+                    // 该守卫当前**不可达**（工具循环的 pendingReminder 在下一轮生成前
+                    // 已消费并清零），加它是为了让「文档写的单槽纪律」在代码里成立，
+                    // 而不是靠时序巧合。注意置位已由 repeatSignatureVerdict 先行完成
+                    // ⇒ 真被守卫挡掉时这条提醒就丢了（不重试），这与「杜绝提醒风暴」
+                    // 的既有纪律一致。
+                    if (state.pendingReminder == null) state.pendingReminder = REPEAT_REMINDER
                 }
                 RepeatSignatureVerdict.RemindedRepeat -> if (calls.isEmpty()) {
                     AgentLogStore.error(

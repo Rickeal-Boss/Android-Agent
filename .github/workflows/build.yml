@@ -545,7 +545,22 @@ jobs:
             # W83-08 崩溃 handler 再 +3 例（app CrashSceneLoggerTest：现场行含线程/异常/
             #   堆栈前 10 帧与 cause 链 / 最近日志按 4 条分块 / 无历史时省略日志段）。
             #   ⇒ 由 827 上调 830（代码冻结后实测 830，无 @Ignore/参数化）。
-            baseline=830
+            # W84 收尾波 +22 例（**逐文件对账**）：core-engine ConcurrentGenerationGateTest +6
+            #   （在途闸门纯函数：0 放行 / 1 与 3 拒斥且文案同源 / 异常识别 / load-unload 等待超时
+            #   不算互斥 / 非 EngineException 不算）；core-agent FileListPathArgTest +4
+            #   （省略 path 回落 / 纯空白回落 / 显式子目录原样 / 回落值即沙箱根语义）；
+            #   core-agent ToolApprovalCacheTest +1（revokeAll 不误删前缀相同的相邻会话 ——
+            #   钉住 `|` 分隔符边界，外审原报「前缀误删」经回源证伪）；feature-chat
+            #   NewConversationStateTest +5（新会话保留 capabilityMode / disclosureMode /
+            #   knownBroken / config+toolsEnabled，清消息与终态）；feature-chat
+            #   ChatPanelParamsMergeTest +4（面板 11 键按内存值 / 非面板键取磁盘现值 /
+            #   sampling 逐字段不覆盖 seed / 同值恒等）；app CrashSceneLoggerTest 3→5
+            #   （原 3 例中 2 例改期望与改名，新增「堆栈行 ≤400 且自报帧数 == 实际帧数」
+            #   「每条日志行 ≤400 且 20 条一条不少」两例）。
+            #   另有 core-agent ToolArgsValidatorTest 2 例改契约（数字字符串由拒改收），
+            #   用例数不变（21→21）。
+            #   ⇒ 由 830 上调 852（代码冻结后实测 852，无 @Ignore/参数化）。
+            baseline=852
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

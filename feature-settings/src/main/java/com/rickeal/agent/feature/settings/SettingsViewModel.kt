@@ -144,11 +144,35 @@ class SettingsViewModel(
 
     /**
      * 一次性写入配置（分段控件、开关这类"点一下就定"的交互走这里，直接落盘）。
+     *
+     * ⚠️ **落盘闭包只改本键**（W83-09 / R4；先例 = 下方 [onSystemInstructionCommit] 的
+     * W82-07 处置）：落盘时把**同一个 transform** 交给 `updateInferenceConfig`，让它在
+     * `DataStore.edit` 内对**磁盘现值**求值，而不是传「调用这一刻」算好的整份 `next`。
+     *
+     * 为什么这是必须的：`updateInferenceConfig` 的契约是「先 decode 磁盘现值，再
+     * transform」，传整份快照等于用调用时的旧值覆盖其他键。而 `InferenceConfig` 在
+     * DataStore 里是**一份 JSON、三个写者共用**（本 VM / `ChatViewModel` /
+     * `ModelsViewModel`）—— 后完成者会把前一个写者刚改的键静默抹掉，内存侧又已按
+     * `next` 渲染，于是「UI 显示 A、磁盘是 B」，要等仓库 flow 回灌才自愈。
+     *
+     * 为什么「原样下推 transform」就等于「只改本键」：现有全部调用点都是
+     * `it.copy(单个键 = …)`（分段控件选 thinking、原生工具通道开关、点选人格写
+     * systemInstruction），transform 本身只碰一个字段、其余字段从入参原样带过 ——
+     * 所以把它作用在磁盘现值上，未被编辑的键自然取磁盘真值。无需为每个键各写一份
+     * copy，也就不会出现「新加一个开关忘了同步闭包」的漏项。
+     *
+     * 内存侧仍即时生效（不等落盘），磁盘真值由仓库 flow 回灌校准 —— 与全仓
+     * 「落盘失败不回滚 UI」同款。`coerce()` 仓库侧已调，闭包里不重复。
+     *
+     * 前提：`transform` 必须是**纯函数**（现有调用点全是 `it.copy(...)`）。它会被求值
+     * 两次（内存一次、落盘一次），带副作用的 transform 不适用本方法。
      */
     fun onConfigChange(transform: (InferenceConfig) -> InferenceConfig) {
-        val next = transform(_uiState.value.config).coerce()
-        _uiState.update { it.copy(config = next) }
-        viewModelScope.launch { container.settingsRepository.updateInferenceConfig { next } }
+        _uiState.update { it.copy(config = transform(it.config).coerce()) }
+        viewModelScope.launch {
+            // 只改本键：其余键以磁盘现值为准（消除「整份覆盖丢更新」）。
+            container.settingsRepository.updateInferenceConfig { current -> transform(current) }
+        }
     }
 
     /**
@@ -235,6 +259,21 @@ class SettingsViewModel(
     }
 
     /**
+     * 拖动期间累积的「本键」变换（W83-09 / R4），供 [onConfigCommit] 落盘时重放。
+     *
+     * [onConfigPreview] 是逐帧回调、每次只改**一个键**，落盘却要等到松手 —— 为了不在
+     * 落盘那一刻退回「整份快照覆盖」，这里把预览用过的 transform 攒下来，提交时对
+     * **磁盘现值**重放，语义仍是「只改我拖过的那些键」。
+     *
+     * 用组合（`transform(previous(current))`）而不是「只留最后一次」：正常时序下每个
+     * 滑块的 `onValueChangeFinished` 会立刻提交，攒不到两次；但两个滑块事件万一交错
+     * （或将来有人去掉 commit 直连），组合写法不会丢键，代价只有一行。
+     *
+     * 无需同步：写入点全部是 Compose 回调（主线程）。
+     */
+    private var pendingConfigTransform: ((InferenceConfig) -> InferenceConfig)? = null
+
+    /**
      * 只改内存里的配置，**不落盘**。
      *
      * 滑块 `onValueChange` 是逐帧回调（约 60 次/秒），若在这里直接写 DataStore，
@@ -244,11 +283,34 @@ class SettingsViewModel(
      */
     fun onConfigPreview(transform: (InferenceConfig) -> InferenceConfig) {
         _uiState.update { it.copy(config = transform(it.config).coerce()) }
+        val previous = pendingConfigTransform
+        pendingConfigTransform = if (previous == null) {
+            transform
+        } else {
+            { config: InferenceConfig -> transform(previous(config)) }
+        }
     }
 
+    /**
+     * 提交拖动结果（`onValueChangeFinished` 调一次）。
+     *
+     * ⚠️ **不再传整份快照**（W83-09 / R4；先例 = 上方 [onSystemInstructionCommit] 的
+     * W82-07 处置）：旧实现 `updateInferenceConfig { next }` 拿「松手这一刻」的整份
+     * config 覆盖磁盘 —— 拖动这几十~几百毫秒内其他写者（`ChatViewModel` /
+     * `ModelsViewModel`）改过的键会被静默抹掉。现在只重放 [pendingConfigTransform]，
+     * 其余键取磁盘现值。
+     *
+     * 没有待提交的 transform 时**直接返回**：没有预览就没有「本键」可写，此时把整份
+     * 快照写回去正是要消除的那条覆盖路径（现有调用点都是 preview → commit 配对，
+     * 松手未产生任何 preview 的极端情况本来就无值可写）。
+     */
     fun onConfigCommit() {
-        val next = _uiState.value.config
-        viewModelScope.launch { container.settingsRepository.updateInferenceConfig { next } }
+        val transform = pendingConfigTransform ?: return
+        pendingConfigTransform = null
+        viewModelScope.launch {
+            // 只改本键：其余键以磁盘现值为准（消除「整份覆盖丢更新」）。
+            container.settingsRepository.updateInferenceConfig { current -> transform(current) }
+        }
     }
 
     /**

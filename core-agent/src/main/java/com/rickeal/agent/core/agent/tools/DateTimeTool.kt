@@ -31,12 +31,16 @@ class DateTimeTool(private val context: ToolContext) : Tool {
         val pattern = stringArg(argumentsJson, "pattern").ifBlank { "yyyy-MM-dd HH:mm:ss" }
         val formatter = runCatching { DateTimeFormatter.ofPattern(pattern) }
             .getOrElse { DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss") }
+        // 单次采样（W84-A9）：formatted 与 epochMillis 必须来自**同一个** Instant ——
+        // 此前两处各自调 context.nowMillis()，两次调用可差 1ms（甚至跨秒），
+        // 用户会看到「12:00:00（epochMillis=…001）」这种自相矛盾的输出；
+        // 单测注入固定时钟时更是必然漂移。
         val instant = Instant.ofEpochMilli(context.nowMillis())
         val formatted = formatter.withZone(zoneId).format(instant)
         return ToolResult(
             name = spec.name,
             ok = true,
-            output = "$formatted（时区：$zoneId，epochMillis=${context.nowMillis()}）",
+            output = "$formatted（时区：$zoneId，epochMillis=${instant.toEpochMilli()}）",
         )
     }
 }

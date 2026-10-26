@@ -129,12 +129,28 @@ object ToolArgsValidator {
         return (listOf(head) + body + listOf(tail)).joinToString("\n")
     }
 
-    /** 类型不匹配时返回实际类型描述；匹配返回 null。 */
+    /**
+     * 类型不匹配时返回实际类型描述；匹配返回 null。
+     *
+     * ⚠️ 数字字符串口径（W84-A9 统一，**本层放宽**）：NUMBER / INTEGER 接受
+     * **字符串形式的数字**（`"5"` / `"1.5"`）。
+     *
+     * 为什么放宽而不是让工具侧收紧：本类的既定哲学（见 ToolArgsValidatorTest 类头）
+     * 是「只在**必然执行失败**时拦」。而工具侧的读取器**明示**宽容 ——
+     * `FileTools.intArg`「数字与数字字符串都接受（模型常把 5 写成 "5"）」、
+     * `MemoryTools.intArg`「数字字符串也接受」。也就是说 `{"offset": "5"}` 交给工具
+     * **不会**执行失败 ⇒ 校验层拦它违背自己的判据，且把一次本可成功的调用变成
+     * 「参数校验失败」（4B 模型写 `"5"` 是高频形态）。
+     * 故统一到**宽容侧**：校验层不得比它所守的实现更严格。
+     * ⚠️ 仍拦的：非数字字符串（`"abc"`）、INTEGER 位置的浮点（`5.5` / `"5.5"`）——
+     * 这两类在读取器里确实会退化成默认值/失败，属「必然执行失败」。
+     */
     private fun typeMismatch(expected: ToolParamType, element: JsonElement): String? {
         val ok = when (expected) {
             ToolParamType.STRING -> element is JsonPrimitive && element.isString
-            ToolParamType.NUMBER -> element is JsonPrimitive && !element.isString && isNumeric(element.content)
-            ToolParamType.INTEGER -> element is JsonPrimitive && !element.isString &&
+            // 不判 isString：字符串形式的数字放行（见本函数 KDoc）。
+            ToolParamType.NUMBER -> element is JsonPrimitive && isNumeric(element.content)
+            ToolParamType.INTEGER -> element is JsonPrimitive &&
                 element.content.toLongOrNull() != null
             ToolParamType.BOOLEAN -> element is JsonPrimitive && !element.isString &&
                 (element.content == "true" || element.content == "false")
