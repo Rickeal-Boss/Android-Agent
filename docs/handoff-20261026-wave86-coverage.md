@@ -150,4 +150,13 @@
 
 ## 十、CI 实跑
 
-推送后回填（本波 2 commits）。
+- push：`6b01caf..8599935 core-fix -> core-fix`（2 commits）。
+- **run `40350019795`（push，head_sha=`8599935`）三 job 全 success**：
+  - **Unit tests**：success —— 内含 Architecture guard（arch-guard.sh 真仓 **59/59**）+ **全量 selftest**
+    （含新增 case92/92b/93/93b 与元 case53 四方一致）+ fulltest.sh **870/0**。
+  - **Lint (baseline gate)**：success（0 新增）。
+  - **Assemble Debug (JDK 21)**：success。
+- **本地 vs CI 一致性**：本地 fulltest 870/0、arch-guard 59/59、selftest `--only 59` PASS=5、
+  line-table 19+1 —— 与 CI 全量口径一致。⚠️ 本地未跑全量 selftest（每 case 重跑 arch-guard.sh，
+  200+ case 开销不可接受；用户已明确指导本地只冒烟、全量归 CI），CI 绿 = 全量真绿。
+- 外审 F3 点名的「CI 实证回填」惯例，本波已恢复（W85 那次的缺口一并补上，见 W85 交接 §五之二）。
