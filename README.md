@@ -315,7 +315,7 @@ Android-Agent/
 - [x] **M5** — Agent 能力：思考模式、工具调用、Agent 循环编排
 - [x] **M6** — 模型市场：导入、能力探测、下载管理
 - [x] **M7** — ~~远程后端：OkHttp + SSE，与本地引擎统一切换~~ 已移除（云端 API 整体删除，现为纯端侧）
-- [ ] **M8** — 打磨：动效、无障碍、性能、发布签名
+- [ ] **M8** — 打磨：动效、无障碍、性能、发布签名（无障碍挂 **W84-13**（parked，重启前提 = core-design 波）；此承诺不删，仅给出账目指针，见 [`docs/15-backlog.md`](docs/15-backlog.md)）
 - [ ] **M9** — **Harness 升级**（`harness` 分支）—— `harness` 分支自 2026-09-26 起冻结；`harness-improve` 为过渡分支，**自 W48 起活跃开发迁至 `improve`**（云端自 `harness-improve` 的同一提交 `1a0b45a` 新建）：移植 ZCode（Journal/Actor/typed-ask）
   与 Octop（工具审批/长期记忆/委派）的核心机制 —— 蓝图见
   [`docs/11-harness-blueprint.md`](docs/11-harness-blueprint.md)

@@ -129,6 +129,8 @@ spec 声明 `param("path", …, required = false)` 明示默认根目录；invok
 | 5 | `SamplingParams.kt:13-15` | 温度注释称「LiteRT-LM SamplerConfig 无 repetition penalty」，与 0.17.1 起 RepetitionPenaltyConfig 真实生效矛盾（同文件 :5-9 另说）——降档理由已过期 |
 | 6 | `SettingsViewModel.kt:689` | 称「此前无统一恢复面」，W81-06 的 `restoreUiStateFromConfig()`（:162）即恢复面 |
 
+> ⚠️ **W84 勘误（第 6 行）**：该项**定位失实** —— `SettingsViewModel.kt` 在 HEAD 只有 **320 行**（W84 C 岗改动后工作区 382 行），`:689` 不存在；`restoreUiStateFromConfig` 全仓 **0 命中**。**按证伪处理，不修**（本表其余 5 处仍成立，W84-09 批量订正时只做那 5 处）。
+
 ### 代码质量 / 小优化（15 处，摘重）
 - `AgentRunner.kt:2179-2184` Remind 分支缺单槽检查（理论不可达——工具循环当轮末清零；补 `if (state.pendingReminder == null)` 与文档对齐）
 - `ToolExecutionGuard.kt:61` 工具超时非冻结感知（裸 withTimeout；灭屏冻结 15s+ 解冻瞬间误杀正常工具调用——端侧灭屏即冻结场景可达；P3-6）

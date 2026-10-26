@@ -53,6 +53,8 @@
 - **挂账 parked（新）**：W83-09 commitParams 丢更新面 / W83-10 LQ-2 逐例取证 / W83-11 SegmentedHistoryStore（**外审「零调用点」部分证伪**：AppContainer 有访问器+池但无生产调用方 ⇒ 运行期死代码）/ W83-12 下载完整性校验（外审 P1-1）/ W83-13 journal reconcile→reclaim+schema 版本（P2-2/P2-3 一石三鸟）/ W83-14 coroutines-test 可测性评审（P2-4）。
 - **证伪/不成立**：无新增（本波外审条目基本全部成立或部分成立）。
 
+> ⚠️ 勘误（W84）：W83-12 / W83-13 已在 W84 转 active（承接行 = W84-15 / W84-16），本节「parked」表述仅代表 W83 收尾时点状态。
+
 ## 六、挂账权威表更新摘要（docs/15-backlog.md）
 
 - W83-01~08 八项 **closed-done**（销账判据逐行写明）。

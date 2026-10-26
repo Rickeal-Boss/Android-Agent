@@ -68,7 +68,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 54 55 56 57"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 54 55 56 57 58"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -121,7 +121,11 @@ affected_guards_for_file() {
     #    放在通配行之后就会被降级成只跑 #45 ⇒ #46 的 case 静默少跑。
     core-data/src/main/java/com/rickeal/agent/core/data/background/OemBackgroundPolicy.kt) echo "45 46" ;;
     # W83-05：#46 改双文件扫描后，证据表载体（oem/OemBackgroundData.kt）也是 #46 的面。
-    core-data/src/main/java/com/rickeal/agent/core/data/oem/OemBackgroundData.kt) echo "46" ;;
+    # W84 A-1：该文件同时落在 `oem/` 包内 ⇒ 也受 #58（包级行数）约束。
+    core-data/src/main/java/com/rickeal/agent/core/data/oem/OemBackgroundData.kt) echo "46 58" ;;
+    # W84 A-1：#58 = `core/data/oem/` 包级行数闸门。通配行**必须排在上一行之后**
+    # （bash `case` 先匹配先赢；反了会把 OemBackgroundData.kt 降级成只跑 #58、漏跑 #46）。
+    core-data/src/main/java/com/rickeal/agent/core/data/oem/*) echo "58" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/background/RunForegroundPolicy.kt) echo "43 45" ;;
     core-data/src/main/java/com/rickeal/agent/core/data/background/*)              echo "45" ;;
     .github/workflows/build.yml)                                                   echo "22 23 26" ;;
@@ -5859,6 +5863,61 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case90b] 90 行（≤100）合法文件被误判（第 56 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case91 / case91b / case91c（W84 A-1，第 58 条 = `core/data/oem/` 包级行数闸门）：红绿成对。
+#   背景：W83-05 把 GUIDES/EVIDENCE 数据表拆到兄弟目录 `core/data/oem/`（80 行）后，
+#     #45 实测 953（余 47）看起来已消肿，但真实总量 953+80=1033 > 1000 —— 那 80 行
+#     **不再被任何守卫测量**（拆分即脱闸）。#58 把新落点纳入测量，本 case 钉住它真的会响。
+#   case91（红面）：往 `oem/` 注入 1 个 250 行假 `.kt` ⇒ 单文件面（>120）与合计面
+#     （骨架 17 + 250 > 200）**同时越限** —— 一次夹具行使两条判据（口径同 case79）。
+#     注入文件用**独立新文件名**（不改现有 OemBackgroundData.kt）：既不动 #46 的
+#     证据表载体（避免两守卫判据混在一起、无法隔离归因），也顺带证明 #58 的扫描面
+#     是**目录递归**而不是「只认已知文件名」。
+#   case91b：断言两条**事实行**都在（`超 200 行上限` + `超单文件 120 行上限`）——
+#     只按守卫名匹配证明不了「判据真命中」（W77 教训：守卫报红 ≠ 真命中）。
+#   case91c（绿面）：干净骨架（oem/ 仅 17 行）⇒ 必须退出 0。红绿成对：缺绿面则
+#     「目录在就红」的恒红僵尸规则也能让红面通过（case87b 家族同款纪律）。
+#   夹具在 scaffold 独立临时树里，随 $TMP 一起删除 ⇒ 天然可回滚，不触碰真实工作树。
+# ---------------------------------------------------------------------------
+if guard_selected 58; then
+d="$TMP/case91-oem-package-oversize"
+scaffold "$d"
+{
+  echo 'package com.rickeal.agent.core.data.oem'
+  echo ''
+  echo 'internal object OemPadding {'
+  i=1
+  while [ "$i" -le 250 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$d/core-data/src/main/java/com/rickeal/agent/core/data/oem/OemPadding.kt"
+out="$(run_guard "$d")"; rc=$?
+assert_red "case91 oem/ 包规模越限 (第 58 条)" "$rc" "$out" \
+  "W84 core/data/oem 包行数上限（合计 ≤200 / 单文件 ≤120；触顶 = 启动 oem 数据表拆分评审，非改阈值）"
+missing=""
+printf '%s\n' "$out" | grep -qF "超 200 行上限" || missing="$missing 合计面事实行(超 200 行上限)"
+printf '%s\n' "$out" | grep -qF "超单文件 120 行上限" || missing="$missing 单文件面事实行(超单文件 120 行上限)"
+if [ -z "$missing" ]; then
+  echo "PASS [case91b] 两条判据同时命中（合计越 200 + 单文件越 120 的事实行都在）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case91b] 守卫判红但缺事实行：$missing（假红 / 判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case91c-oem-package-legal-size"
+scaffold "$d"
+out="$(run_guard "$d")"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case91c 干净骨架 oem/ 17 行 (第 58 条绿面)] 退出 0（未把「目录在」当红，包级判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case91c] 干净骨架（oem/ 17 行，远低于 200/120）被误判（第 58 条退化成恒红僵尸规则）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

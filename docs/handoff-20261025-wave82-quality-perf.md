@@ -89,6 +89,8 @@
 | W79-07 | `background/` 拆分（**余 4**——下波动该包前必须先拆；唯一有效解 = 移出包到兄弟目录 `core/data/oem/`，禁子目录；可移面仅 GUIDES） | active |
 | W80-06 / W80-07 / W80-08 | 写去抖 Phase B / JankStats / 模糊降强度 | parked |
 
+> ⚠️ **勘误（W84）**：上表 W82-13 的「修法已定：改走 onParamChange」与实现不符 —— 实际修法为**三边界 flush + BackHandler**，见 W83-02/W83-07。历史交接文档不改史，仅加此指针（同款勘误已加在 `docs/04-code-review.md:747`）。
+
 ## 六、验证状态与未完成项（如实申报）
 
 **已完成**：

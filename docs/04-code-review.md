@@ -745,6 +745,8 @@ fun release(kind: EngineKind) { engines.remove(kind)?.let { runCatching { it.clo
 且一旦别的写操作触发 `inferenceConfig` 回流（`:82-92`），编辑内容会被覆盖丢失。
 
 **修法**：文本框用 `onParamChange`（即时落盘），或加防抖：
+
+> ⚠️ **勘误（W84）**：实际修法为三边界 flush + BackHandler，见 W83-02/W83-07。本段「改走 `onParamChange`」的表述与实现不符（历史记录不改史，仅加此指针）。
 ```kotlin
 // ChatViewModel 增加
 private var commitJob: Job? = null
