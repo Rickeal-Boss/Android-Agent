@@ -25,10 +25,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -40,9 +38,7 @@ import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LiquidGlassSurface
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassConfig
-import com.rickeal.agent.core.design.LocalOverlayBlurState
 import com.rickeal.agent.core.design.OVERLAY_TEXT_MIN_SCRIM
-import com.rickeal.agent.core.design.OverlayBlurScope
 import com.rickeal.agent.core.design.asOverlayColors
 import com.rickeal.agent.feature.settings.tools.SandboxFilesContent
 import com.rickeal.agent.feature.settings.tools.SandboxFilesPreviewDialog
@@ -91,14 +87,26 @@ internal val WORKSPACE_EDGE_ZONE_WIDTH = 24.dp
  * app 启动就建等于每次冷启动都白扫一遍 IO）；null = 尚未打开过，面板内只渲染
  * 头部（正常流里面板打开前 VM 已就位，null 只是一帧的兜底）。
  *
- * 模糊：三路联动 ——
- *  1. 面板自身的锚点位移**逐帧**驱动 body 模糊（`MainShell` 里
- *     `workspaceBlurProgress`，与抽屉的 `drawerBlurProgress` 同思路，完全跟手）；
- *  2. 开启时经 [LocalOverlayBlurState] 登记 [OverlayBlurScope.SHELL]（对话框同一条
- *     通道）：`shellBlurProgress` 弹簧随之抬升，`max` 语义下取两者更强的一条，
- *     同时把「页签条单独补糊」的分支按既有规则关掉（SHELL 生效时 body 级已覆盖页签）；
- *  3. scrim 的压暗也在 draw 阶段读进度（`drawBehind`），**不在组合期读** [state] 的
- *     逐帧状态 —— 这是 `DrawerBackHandler` KDoc 记载过的整屏重组事故的既定防线。
+ * 模糊：**只由面板自身的锚点位移驱动**（`MainShell` 里 `workspaceBlurProgress`，
+ * 与抽屉的 `drawerBlurProgress` 同思路，完全跟手）。
+ *
+ * ⚠️ **不要再把它登记进 LocalOverlayBlurState 的 SHELL 通道**（W89 修正，真机取证）：
+ * 曾经的做法是「位移进度」与「登记表触发的 `shellBlurProgress` 弹簧」在 `MainShell`
+ * 里取 `max`。两条时间线在**关闭拖拽**时直接打架，实测（10s 慢拖 + 逐帧截图）：
+ *
+ * | 面板左缘 | 位移进度 | 背景清晰度 |
+ * |---|---|---|
+ * | 194→613（拖了 47% 行程） | 1.00→0.53 | 0.59→0.42（**一直全糊**） |
+ * | 639（刚过两锚点中点） | 0.50 | **0.42→143**（一帧内变清晰） |
+ *
+ * 机理：`shellBlurProgress` 只在 `currentValue` 翻到 Closed（即拖过两锚点中点）时才释放，
+ * 在此之前恒为 1 ⇒ `max` 把位移进度**完全压掉**（面板滑走、背景纹丝不动）；
+ * 过中点后弹簧从 1 开始衰减，与手指位置再无关系 ⇒ 表现为「中途模糊强度突变」。
+ * 位移进度本身已经是 0..1 的完整信息（面板开合的唯一真源），再叠一条弹簧只会
+ * 制造第二个真源 —— 与 W88 参数面板「位移/压暗/模糊同源」的结论是同一条纪律。
+ *
+ * scrim 的压暗同样在 draw 阶段读进度（`drawBehind`），**不在组合期读** [state] 的
+ * 逐帧状态 —— 这是 `DrawerBackHandler` KDoc 记载过的整屏重组事故的既定防线。
  *
  * @param state 锚点状态（Closed 锚 = +面板宽度、Open 锚 = 0，见调用方构造）。
  *   由调用方持有：打开回调、页签切换关闭、返回键统一处理都要读写它。
@@ -132,20 +140,8 @@ internal fun WorkspaceOverlay(
     // 本 composable 的重组频率因此与「面板开关」同频，不会每帧重组。
     val open = state.currentValue == WorkspaceOverlayValue.Open
 
-    // ── 覆盖层模糊登记（SHELL 通道，同 LiquidDialog）─────────────────────────
-    // 登记**不受**「背景模糊」总闸影响：登记表还参与「页签条补糊」的判据联动
-    // （MainShell 的 navBarBlurProgress），总闸关闭时所有进度本来就归零，多登记无副作用。
-    // onDispose 只在登记过的分支挂（ChatScreen 参数面板同款写法，见那里的说明）。
-    val overlayBlurState = LocalOverlayBlurState.current
-    val blurToken = remember { Any() }
-    DisposableEffect(overlayBlurState, blurToken, open) {
-        if (open) {
-            overlayBlurState.acquire(blurToken, OverlayBlurScope.SHELL)
-            onDispose { overlayBlurState.release(blurToken) }
-        } else {
-            onDispose { }
-        }
-    }
+    // ── 覆盖层模糊：只由 blurProgress（锚点位移）驱动 ─────────────────────────
+    // 刻意**不**登记 LocalOverlayBlurState（推导与真机数据见上方 KDoc「模糊」一节）。
 
     Box(modifier = modifier.fillMaxSize()) {
         // ── scrim：压暗随进度走（draw 阶段读，零重组）；点按关闭仅在开态挂上 ──

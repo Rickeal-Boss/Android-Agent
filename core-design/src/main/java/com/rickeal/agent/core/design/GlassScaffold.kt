@@ -63,6 +63,24 @@ val LocalBottomBarOverlay: ProvidableCompositionLocal<Dp> =
     staticCompositionLocalOf { 0.dp }
 
 /**
+ * 顶部悬浮页签条的**占位高度**（W89：横屏手机的一级导航改成顶部横条）。
+ *
+ * 与 [LocalBottomBarOverlay] 同族、方向相反：app 层 `MainShell` 在
+ * `WindowSizeClass.tabBarPlacement() == Top` 时 provide 该高度，其余形态 provide
+ * 默认 0.dp。当前取值 **72dp** = 条高 64 + 上下外层内边距 4×2（底部条是 84dp =
+ * 64 + 10×2）。两处数值必须与 `GlassNavBar` 的 `verticalPadding` **手工同源**，
+ * 改任一侧必须同步另一侧 —— 横屏只压内边距、不动 64dp 条高，是因为 344dp 的窗口
+ * 高度里 84dp 会把空态挤掉半屏（真机实测），而 64dp 的条高是形态本身。
+ *
+ * 消费方式与底部条**刻意不同**：底部条是"内容从玻璃底下穿过"，所以只加在
+ * **滚动内边距**上；顶部条则直接把 `GlassScaffold` 的整列下移（顶栏与内容一起），
+ * 理由是横屏高度本就紧张（308dp），再让内容钻到条下面会让首条消息被永久遮住一截，
+ * 且顶部条没有"滚出去"的出路。
+ */
+val LocalTopBarOverlay: ProvidableCompositionLocal<Dp> =
+    staticCompositionLocalOf { 0.dp }
+
+/**
  * 玻璃骨架。壁纸铺底 → 顶栏 → 内容 → 底栏 → FAB / Snackbar 浮层。
  * 刻意不用 material3 的 Scaffold：我们需要壁纸贯穿整个层级，且 inset 由调用方决定。
  *
@@ -96,6 +114,8 @@ fun GlassScaffold(
     // 悬浮页签占位（COMPACT 下 84dp，见 LocalBottomBarOverlay KDoc）：
     // 抬升 FAB / snackbar 槽位 + 下发 content 的默认 bottom padding。
     val overlay = LocalBottomBarOverlay.current
+    // 顶部页签条占位（W89，横屏手机）：整列下移，见 LocalTopBarOverlay KDoc。
+    val topOverlay = LocalTopBarOverlay.current
     CompositionLocalProvider(
         LocalBackdrop provides layerBackdrop,
     ) {
@@ -111,6 +131,7 @@ fun GlassScaffold(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .padding(top = topOverlay)
                     .windowInsetsPadding(contentWindowInsets),
             ) {
                 topBar()

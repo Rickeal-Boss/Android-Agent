@@ -570,10 +570,12 @@ Android-Agent/
 
 ### 📸 现状快照（2026-10-27，收尾时点）
 
-> **活数字（每波收官重测，勿誊抄；W88 时点）**：`@Test` **881**（= `build.yml` 用例基线，严格口径）｜
-> arch-guard **59 条**机械守卫｜selftest 全量由 CI 兜（本地只跑 `--only` / `--affected` 子集）｜
-> fulltest **881 / 0 / 0**（9 模块）｜lint **0 新增**（baseline 门禁，冻结值只许缩不许涨）｜
-> `docs/15` **active 19** 条｜**0 tag**｜`main` 落后 `core-fix` 见 `git rev-list`。
+> **活数字（每波收官重测，勿誊抄；W89 时点）**：`@Test` **890**（= `build.yml` 用例基线，严格口径）｜
+> arch-guard **61 条**机械守卫（+1 条 **advisory**：≥700 行且无闸门的 `.kt` 聚合计数，只告警不判红）｜
+> selftest 全量由 CI 兜（本地只跑 `--only` / `--affected` 子集）｜
+> fulltest **890 / 0 / 0**（9 模块）｜lint **0 新增**（baseline 门禁，冻结值只许缩不许涨）｜
+> `docs/16` 双向一致性已机械化（`scripts/check-doc16-parity.sh`，白名单只许缩）｜
+> `docs/15` **active 18** 条｜**0 tag**｜`main` 落后 `core-fix` 见 `git rev-list`。
 > **CI 实证**：`build.yml` run **`40521616097`**（head `c12ee48`，W88）三 job 全 success；
 > 上一波 `40506931622`（head `b9716d7`，W87）同样三 job 全 success；
 > `release.yml` dispatch run **`40498254820`** 全 success（R8 + 签名轨首次见光）。
@@ -587,13 +589,15 @@ Android-Agent/
 > - **W87 = 收尾就绪度**：R8 + 签名轨在 `core-fix` 上首次见光且全绿（run `40498254820`）／
 >   README 现状快照 + canonical 三处口径合一／新增 `AGENTS.md` + `docs/16` + `docs/17`／
 >   三份外审的过期处方按现役树证伪（C-3 / N-A / C-2）。
-> - **W88 = UI 收尾（用户点名的最后一波）**：按钮动效（`reduceMotion` 语义反转 + 分段控件真按压 + 双影通道）／
+> - **W88 = UI 收尾**：按钮动效（`reduceMotion` 语义反转 + 分段控件真按压 + 双影通道）／
 >   推理参数覆盖层**跟手拖拽退出**且位移·压暗·模糊同源／横屏手机全量适配（工作区面板恢复、弹窗 actions 可达、
 >   页签 5 项不再溢出、空态不再被裁）。
+> - **W89 = UI 修复（收尾期残余）**：沙箱工作区模糊「中途突变」= 双进度源取 max（删 SHELL 登记）／推理参数覆盖层慢退出掉帧（`gfxinfo` 50th 36→**19ms**，卡顿 96.99%→5.55%）／横屏一级导航改**顶部横向条**（`TabBarPlacement` 三分支 + `LocalTopBarOverlay`）／外审 D-1/D-2/D-3/H2 治理件落地。
 
-> **接手指针**：最新交接 = [`docs/handoff-20261027-wave88-ui.md`](docs/handoff-20261027-wave88-ui.md)；
+> **接手指针**：最新交接 = [`docs/handoff-20261027-wave89-ui2.md`](docs/handoff-20261027-wave89-ui2.md)；
 > 挂账权威 = [`docs/15-backlog.md`](docs/15-backlog.md)（四态 active / parked / closed-done / closed-dead）；
 > 已知限制（有意不做） = [`docs/17-known-limitations.md`](docs/17-known-limitations.md)；
+> **tag 日执行单** = [`docs/18-tag-runbook.md`](docs/18-tag-runbook.md)；
 > agent 作业契约 = [`AGENTS.md`](AGENTS.md)。
 
 > ⚠️ **沿革完整性申报（诚实优先）**：上方波次段逐波记录到 **W74（2026-10-18）**为止，**W75–W83 未逐波补沿革**

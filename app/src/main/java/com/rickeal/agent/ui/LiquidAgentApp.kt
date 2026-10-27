@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -72,6 +73,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -99,7 +101,9 @@ import com.rickeal.agent.core.design.LocalGlassConfig
 import com.rickeal.agent.core.design.LocalGlassTokens
 import com.rickeal.agent.core.design.LocalOverlayBlurState
 import com.rickeal.agent.core.design.LocalWallpaperImage
+import com.rickeal.agent.core.design.LocalTopBarOverlay
 import com.rickeal.agent.core.design.OverlayBlurState
+import com.rickeal.agent.core.design.TabBarPlacement
 import com.rickeal.agent.core.design.TabSpec
 import com.rickeal.agent.core.design.WindowHeightClass
 import com.rickeal.agent.core.design.WindowSizeClass
@@ -116,6 +120,7 @@ import com.rickeal.agent.core.design.motion.entranceReveal
 import com.rickeal.agent.core.design.motion.rememberCircularRevealState
 import com.rickeal.agent.core.design.pressLayerBlock
 import com.rickeal.agent.core.design.rememberWindowSizeClass
+import com.rickeal.agent.core.design.tabBarPlacement
 import com.rickeal.agent.feature.chat.ChatRoute
 import com.rickeal.agent.feature.chat.chatGraph
 import com.rickeal.agent.feature.models.ModelsRoute
@@ -317,6 +322,11 @@ private fun MainShell() {
         else -> routeTop(currentRoute) ?: TopDestination.CHAT
     }
 
+    // 一级导航落点（W89）：竖屏=底部条 / 平板=左侧竖栏 / 横屏手机=**顶部横条**。
+    // 三档判定收在纯函数 WindowSizeClass.tabBarPlacement() 里（JVM 可测），
+    // 调用点**不再**用 useTwoPane 兜底 —— 那正是横屏手机被当成平板的根因。
+    val tabPlacement = windowSize.tabBarPlacement()
+
     // ── 左侧抽屉（Wave 10 Phase 2b C-3）──────────────────────────────────────
     // 只在 COMPACT 且停在「对话」页使用（见下面 ModalNavigationDrawer 的
     // gesturesEnabled）：MEDIUM/EXPANDED 保持常驻 GlassNavRail 的双栏形态，抽屉在
@@ -472,10 +482,11 @@ private fun MainShell() {
         // `selected` 由上方回退栈派生（:302，同一 composable 作用域）：页签切换 /
         // 导航变化才变，组合期读它的重组频率低，可接受。
         // W88：横屏手机（w≥MEDIUM 但 h=COMPACT）仍要有抽屉 —— 它与平板同宽但不是
-        // 平板：Rail 只是页签入口，会话列表与工作区面板在横屏没有别的落点。
-        // 判据与下面 chatGraph 的 onOpenDrawer / onOpenWorkspace 必须**逐字同源**，
-        // 否则会出现"有汉堡但滑不出抽屉"或反之。
-        gesturesEnabled = (!windowSize.useTwoPane || windowSize.isLandscapePhone) &&
+        // 平板：页签只是入口，会话列表与工作区面板在横屏没有别的落点。
+        // W89：三处判据统一收敛成 `tabPlacement`（纯函数，JVM 可测），不再各自
+        // 手写 `useTwoPane && !isLandscapePhone` —— 那种"三处逐字同源"的纪律
+        // 只能靠人眼维持，改一漏一就是"有汉堡但滑不出抽屉"。
+        gesturesEnabled = (tabPlacement != TabBarPlacement.Rail) &&
             selected == TopDestination.CHAT,
         drawerContent = {
             // 宽屏也照常 compose（只是永远关着、且禁用侧滑）：ModalNavigationDrawer 内部
@@ -559,7 +570,7 @@ private fun MainShell() {
                         enabled = overlayBlurEnabled,
                     ),
             ) {
-                if (windowSize.useTwoPane) {
+                if (tabPlacement == TabBarPlacement.Rail) {
                     GlassNavRail(
                         selected = selected,
                         onSelect = { destination ->
@@ -596,8 +607,13 @@ private fun MainShell() {
                 // + GlassNavBar 上下 padding 10×2 —— 与 GlassNavBar 的实际组成**强同步**，
                 // 改任一侧必须同步另一侧）下发给各屏的滚动内边距；宽屏走 GlassNavRail
                 // 无底栏，provide 0dp。
+                // W89：横屏手机改「顶部横条」后，底部占位归零、顶部占位 84dp
+                // （[LocalTopBarOverlay]，由 GlassScaffold 把整列下移，见其 KDoc）。
                 CompositionLocalProvider(
-                    LocalBottomBarOverlay provides if (windowSize.useTwoPane) 0.dp else 84.dp,
+                    LocalBottomBarOverlay provides
+                        if (tabPlacement == TabBarPlacement.Bottom) 84.dp else 0.dp,
+                    LocalTopBarOverlay provides
+                        if (tabPlacement == TabBarPlacement.Top) 72.dp else 0.dp,
                 ) {
                     // ── Tab 长条的「动态模糊」内容源（2026-09-26，根因修复）───────────────
                     // 真因比「壁纸是纯色」更底层：壁纸由**每个 feature 屏自己的 GlassScaffold**
@@ -614,9 +630,11 @@ private fun MainShell() {
                     //
                     // 性能：整页内容录进 GraphicsLayer 属逐帧录制（滚动/转场时重录），与
                     // 屏内录壁纸同机制。挂在 enableBackdropBlur（UI-07 性能开关）与
-                    // 非宽屏两个条件下 —— 关掉背景模糊时连录制一起停（玻璃本来就退化为
-                    // 底色 + 高光），宽屏没有底部页签，录了也没人消费。
-                    val recordContent = glassCfg.enableBackdropBlur && !windowSize.useTwoPane
+                    // 「有悬浮页签条」两个条件下 —— 关掉背景模糊时连录制一起停（玻璃本来
+                    // 就退化为底色 + 高光），左侧竖栏形态没有悬浮条，录了也没人消费。
+                    // W89：横屏手机的顶部横条同样是悬浮玻璃条 ⇒ 也要录制。
+                    val recordContent =
+                        glassCfg.enableBackdropBlur && tabPlacement != TabBarPlacement.Rail
                     val contentBackdrop = rememberLayerBackdrop()
                     val navBarBackdrop = if (recordContent) contentBackdrop else LocalBackdrop.current
                     Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
@@ -700,7 +718,7 @@ private fun MainShell() {
                                 // 汉堡只在 COMPACT 出现：宽屏没有抽屉（Rail 就是入口），
                                 // 传 null ⇒ ChatScreen 顶栏不渲染该图标。
                                 // W88：横屏手机不再丢抽屉（理由见 gesturesEnabled 处）。
-                                onOpenDrawer = if (windowSize.useTwoPane && !windowSize.isLandscapePhone) {
+                                onOpenDrawer = if (tabPlacement == TabBarPlacement.Rail) {
                                     null
                                 } else {
                                     { drawerScope.launch { drawerState.open() } }
@@ -711,7 +729,7 @@ private fun MainShell() {
                                 // W88：横屏手机必须保留工作区面板 —— 抽屉有 Rail 替代，
                                 // 工作区面板**没有任何替代入口**，此前被 useTwoPane 一并砍掉
                                 // 等于整个功能在横屏消失（真机复现：横屏无「工作区」图标）。
-                                onOpenWorkspace = if (windowSize.useTwoPane && !windowSize.isLandscapePhone) {
+                                onOpenWorkspace = if (tabPlacement == TabBarPlacement.Rail) {
                                     null
                                 } else {
                                     {
@@ -726,7 +744,10 @@ private fun MainShell() {
                                 onOpenModels = { navController.navigateTop(ModelsRoute.build()) },
                             )
                         }
-                    if (!windowSize.useTwoPane) {
+                    // 悬浮页签条：底部（竖屏）或**顶部**（横屏手机，W89）。
+                    // 两者是**同一枚组件、同一形态**，只有对齐与 inset 方向不同 ——
+                    // 用户要求「保持原来的形态」，所以不做第二套排版。
+                    if (tabPlacement != TabBarPlacement.Rail) {
                         // 页签玻璃的背景源 = NavHost 录制层（各屏壁纸 + 页面内容，见上方
                         // recordContent 注释）。只包住导航栏子树，不影响屏幕内部的玻璃采样。
                         CompositionLocalProvider(LocalBackdrop provides navBarBackdrop) {
@@ -743,10 +764,24 @@ private fun MainShell() {
                                         navController.navigateTop(destination.route)
                                     }
                                 },
-                                modifier = Modifier
-                                    .align(Alignment.BottomCenter)
-                                    .fillMaxWidth()
-                                    .navigationBarsPadding(),
+                                modifier = when (tabPlacement) {
+                                    // 横屏手机：贴顶。状态栏在横屏仍占屏幕**上沿**（真机实测
+                                    // 1080×2400 转 90° 后状态栏仍在顶部），故必须 statusBarsPadding，
+                                    // 否则条会被时钟/信号图标压住。占位高度由 LocalTopBarOverlay
+                                    // 单独下发（84dp，不含状态栏），两侧同源。
+                                    TabBarPlacement.Top -> Modifier
+                                        .align(Alignment.TopCenter)
+                                        .fillMaxWidth()
+                                        .statusBarsPadding()
+                                    else -> Modifier
+                                        .align(Alignment.BottomCenter)
+                                        .fillMaxWidth()
+                                        .navigationBarsPadding()
+                                },
+                                // 横屏顶部条压到 4dp 外层内边距（72dp 总高）：
+                                // 横屏可用高度只有 344dp，84dp 会把空态挤掉半屏
+                                // （真机实测：0.78 屏高的内容区 84dp 时不够 138dp 的空态预算）。
+                                verticalPadding = if (tabPlacement == TabBarPlacement.Top) 4.dp else 10.dp,
                                 // PANEL 场景的页签补糊已撤除（UI-1019 Batch 2）：
                                 // sheet 通底后页签浮在 sheet 玻璃上，补糊会让两者融成
                                 // 一片灰雾，与「与底部 Tab 栏隔断」需求相反。
@@ -762,7 +797,7 @@ private fun MainShell() {
             // overlayBackdropBlur）会把 Row 的子树一起糊掉（Compose 没有「反模糊」），
             // 面板会被自己触发的模糊糊掉。层级推导见 OverlayBackdropBlur.kt 的类 KDoc。
             // 宽屏不组合：useTwoPane 下没有右滑面板（入口传 null、手势判据也排除）。
-            if (!windowSize.useTwoPane || windowSize.isLandscapePhone) {
+            if (tabPlacement != TabBarPlacement.Rail) {
                 WorkspaceOverlay(
                     state = workspaceState,
                     viewModel = workspaceViewModel,
@@ -1092,6 +1127,12 @@ private fun GlassNavBar(
     selected: TopDestination,
     onSelect: (TopDestination) -> Unit,
     modifier: Modifier = Modifier,
+    // 条的外层纵向内边距（W89）：竖屏底部 10dp（既有），横屏顶部 4dp。
+    // 只压内边距、**不动 64dp 的条高**（与 W88 压 NavRail 内边距同一纪律：
+    // 形态与触控目标不变，只让位给紧张的那一维）。
+    // ⚠️ 改它必须同步 MainShell 里 LocalBottomBarOverlay / LocalTopBarOverlay 的
+    //    84.dp / 72.dp（两处是"条高 + 上下内边距"的手工同源）。
+    verticalPadding: Dp = 10.dp,
 ) {
     LiquidBottomTabs(
         tabs = TopDestination.entries.map { destination ->
@@ -1099,7 +1140,7 @@ private fun GlassNavBar(
         },
         selectedIndex = TopDestination.entries.indexOf(selected),
         onSelected = { index -> onSelect(TopDestination.entries[index]) },
-        modifier = modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+        modifier = modifier.padding(horizontal = 14.dp, vertical = verticalPadding),
     )
 }
 

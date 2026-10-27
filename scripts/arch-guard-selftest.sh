@@ -68,7 +68,7 @@ USAGE
 
 # 已知「有 selftest case」的守卫编号（用于校验 --only 参数，防拼错后静默零跑）。
 # 新增守卫 case 时同步追加（否则 --only <新号> 会被判为未知编号而报错）。
-KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 54 55 56 57 58 59 60"
+KNOWN_GUARDS="3 5 7 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 54 55 56 57 58 59 60 61 62"
 
 # 自洽性 case 编号（不对应任何 arch-guard 守卫；守的是自测网自身的一致性）。
 # ⚠️ 与 KNOWN_GUARDS **故意分开两张表**：这些号在 arch-guard.sh 里没有 `# N)` 定义，
@@ -151,6 +151,11 @@ affected_guards_for_file() {
     # ⚠️ 同上纪律：新增行数守卫必须同步本表（漏登记不判红 ⇒ --affected 静默漏跑）。
     core-agent/src/main/java/com/rickeal/agent/core/agent/tools/FileArgNormalizer.kt) echo "59" ;;
     feature-settings/src/main/java/com/rickeal/agent/feature/settings/DiagnosticsLogRow.kt) echo "60" ;;
+    # W89 D-1：外审「前 16 大 .kt 有 9 个无行数守卫」的两个 UI 波落点（#61 LiquidAgentApp /
+    # #62 LiquidBottomTabs）。
+    # ⚠️ 同上纪律：新增行数守卫必须同步本表（漏登记不判红 ⇒ --affected 静默漏跑）。
+    app/src/main/java/com/rickeal/agent/ui/LiquidAgentApp.kt) echo "17 61" ;;
+    core-design/src/main/java/com/rickeal/agent/core/design/LiquidBottomTabs.kt) echo "62" ;;
     core-model/*)                                                                  echo "3 15 26 40 41 47" ;;
     *)                                                                             echo FULL ;;
   esac
@@ -1064,6 +1069,28 @@ import androidx.compose.runtime.Composable
 @Composable
 internal fun DiagnosticsLogRow(text: String) {
     androidx.compose.material3.Text(text)
+}
+KT
+  # 第 61/62 条（W89 D-1，两个 UI 波行数落点）同为 fail-closed：文件缺失即红 ⇒ 骨架必须
+  # 逐个铺出（漏铺任何一个都会让干净树正例与全部绿面 case 一起误红）。两份都给「远低于
+  # 阈值」的最小文件（#61 阈值 1500 / #62 阈值 1250）。
+  # ⚠️ 夹具纪律：app/ 与 core-design/ 里**不得**出现 `XxxViewModel(` 主构造形态（会误触
+  #    第 17 条直构造守卫）、不得 import domain/feature 包（会误触第 2 条 core-design 零业务
+  #    依赖）。case94/95 的逐字节备份 + 还原都以本铺点为前提，删掉即 `cp` 失败（应当红）。
+  mkdir -p "$root/app/src/main/java/com/rickeal/agent/ui"
+  cat > "$root/app/src/main/java/com/rickeal/agent/ui/LiquidAgentApp.kt" <<'KT'
+package com.rickeal.agent.ui
+
+internal object LiquidAgentApp {
+    const val NAME: String = "LiquidAgent"
+}
+KT
+  mkdir -p "$root/core-design/src/main/java/com/rickeal/agent/core/design"
+  cat > "$root/core-design/src/main/java/com/rickeal/agent/core/design/LiquidBottomTabs.kt" <<'KT'
+package com.rickeal.agent.core.design
+
+internal object LiquidBottomTabs {
+    const val TAB_COUNT: Int = 5
 }
 KT
 }
@@ -6091,6 +6118,151 @@ if [ "$rc" -eq 0 ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL [case93b] 120 行（≤150）合法文件被误判（第 60 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case94 / case94b（W89 D-1，第 61 条 = LiquidAgentApp.kt 1500 行闸门）：红绿成对。
+#   背景：外审量化「全仓前 16 大 .kt 有 9 个没有任何行数守卫」，本文件 1301 行、app 层
+#     最大且是每波 UI 改动的必落点 —— 守卫的触发条件此前是「被注意到过」而不是「在变大」。
+#   case94（红面）：注入 1600 行（>1500）⇒ 必红 + 命中「超 1500 行上限」事实行
+#     （只按守卫名匹配证明不了判据真命中，W77 教训）。
+#   case94b（绿面）：注入 1200 行（≤1500）⇒ 退出 0。红绿成对：缺绿面则「文件在就红」
+#     的恒红僵尸规则也能让红面通过（case87b 家族同款纪律）。
+#   夹具纪律同 case92：逐字节备份 + diff 复核还原，失败判 FAIL。
+# ---------------------------------------------------------------------------
+if guard_selected 61; then
+d="$TMP/case94-liquidagentapp-oversize"
+scaffold "$d"
+LAA="$d/app/src/main/java/com/rickeal/agent/ui/LiquidAgentApp.kt"
+cp "$LAA" "$LAA.orig"
+{
+  echo 'package com.rickeal.agent.ui'
+  echo ''
+  echo 'internal object LiquidAgentAppPadding {'
+  i=1
+  while [ "$i" -le 1600 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$LAA"
+out="$(run_guard "$d")"; rc=$?
+cp "$LAA.orig" "$LAA" || true
+if diff -q "$LAA.orig" "$LAA" >/dev/null 2>&1; then
+  echo "PASS [case94] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case94] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case94 LiquidAgentApp.kt 超行数上限 (第 61 条)" "$rc" "$out" \
+  "LiquidAgentApp.kt 总行数 ≤ 1500（app 行数表 #25 家族第 20 员，触顶 = 启动 LiquidAgentApp 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 1500 行上限"; then
+  echo "PASS [case94] 红来自真命中（输出含 超 1500 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case94] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case94b-liquidagentapp-legal-size"
+scaffold "$d"
+LAA="$d/app/src/main/java/com/rickeal/agent/ui/LiquidAgentApp.kt"
+cp "$LAA" "$LAA.orig"
+{
+  echo 'package com.rickeal.agent.ui'
+  echo ''
+  echo 'internal object LiquidAgentAppPadding {'
+  i=1
+  while [ "$i" -le 1200 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$LAA"
+out="$(run_guard "$d")"; rc=$?
+cp "$LAA.orig" "$LAA" || true
+if diff -q "$LAA.orig" "$LAA" >/dev/null 2>&1; then
+  echo "PASS [case94b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case94b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case94b 1200 行合法规模 (第 61 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case94b] 1200 行（≤1500）合法文件被误判（第 61 条上限判据退化成恒红僵尸规则）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# case95 / case95b（W89 D-1，第 62 条 = LiquidBottomTabs.kt 1250 行闸门）：红绿成对。
+#   背景同 case94：core-design 层唯一过千行且无闸门的文件（1095 行）。
+#   case95（红面）：注入 1300 行（>1250）⇒ 必红 + 命中「超 1250 行上限」事实行。
+#   case95b（绿面）：注入 1000 行（≤1250）⇒ 退出 0。
+#   夹具纪律同 case94。
+# ---------------------------------------------------------------------------
+if guard_selected 62; then
+d="$TMP/case95-liquidbottomtabs-oversize"
+scaffold "$d"
+LBT="$d/core-design/src/main/java/com/rickeal/agent/core/design/LiquidBottomTabs.kt"
+cp "$LBT" "$LBT.orig"
+{
+  echo 'package com.rickeal.agent.core.design'
+  echo ''
+  echo 'internal object LiquidBottomTabsPadding {'
+  i=1
+  while [ "$i" -le 1300 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$LBT"
+out="$(run_guard "$d")"; rc=$?
+cp "$LBT.orig" "$LBT" || true
+if diff -q "$LBT.orig" "$LBT" >/dev/null 2>&1; then
+  echo "PASS [case95] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case95] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+assert_red "case95 LiquidBottomTabs.kt 超行数上限 (第 62 条)" "$rc" "$out" \
+  "LiquidBottomTabs.kt 总行数 ≤ 1250（core-design 行数表 #25 家族第 21 员，触顶 = 启动 LiquidBottomTabs 拆分评审，非改阈值）"
+if printf '%s\n' "$out" | grep -qF "超 1250 行上限"; then
+  echo "PASS [case95] 红来自真命中（输出含 超 1250 行上限 事实行）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case95] 守卫判红但输出不含超行数事实行（假红或判据未真命中）"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  FAIL=$((FAIL + 1))
+fi
+
+d="$TMP/case95b-liquidbottomtabs-legal-size"
+scaffold "$d"
+LBT="$d/core-design/src/main/java/com/rickeal/agent/core/design/LiquidBottomTabs.kt"
+cp "$LBT" "$LBT.orig"
+{
+  echo 'package com.rickeal.agent.core.design'
+  echo ''
+  echo 'internal object LiquidBottomTabsPadding {'
+  i=1
+  while [ "$i" -le 1000 ]; do echo "    val v$i = $i"; i=$((i + 1)); done
+  echo '}'
+} > "$LBT"
+out="$(run_guard "$d")"; rc=$?
+cp "$LBT.orig" "$LBT" || true
+if diff -q "$LBT.orig" "$LBT" >/dev/null 2>&1; then
+  echo "PASS [case95b] 夹具已逐字节还原（cp 备份 + diff 复核一致）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case95b] 夹具还原失败（diff 不一致）"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$rc" -eq 0 ]; then
+  echo "PASS [case95b 1000 行合法规模 (第 62 条绿面)] 退出 0（未把「文件在」当红，上限判据非僵尸）"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL [case95b] 1000 行（≤1250）合法文件被误判（第 62 条上限判据退化成恒红僵尸规则）"
   printf '%s\n' "$out" | sed 's/^/    | /'
   FAIL=$((FAIL + 1))
 fi

@@ -478,6 +478,24 @@ jobs:
           bash scripts/fulltest.sh
 
       # -------------------------------------------------------------------
+      # 【W89 D-3 · 门禁】docs/16 ↔ arch-guard 双向一致性（最小机械版）。
+      # 动机：`docs/16-acceptance-criteria.md` §三 写了「文档有而脚本不抛 = FAIL；脚本抛而
+      #       文档无 = FAIL」，但全仓 `scripts/*.sh` 对 docs/16 **零引用** ⇒ 纯文档声明。
+      # 判据本体 = `scripts/check-doc16-parity.sh`（2 次 awk + 1 次 grep -c，实测 < 2s；
+      #       「4 分 52 秒的工具没人会跑 = 守卫自动作废」）。
+      # 位置说明：arch-guard 本体在 assemble-debug job 的 `Architecture guard` 步骤；本步是
+      #       它的**文档对面**，按 W89 D-3 落 Unit tests job（单测之后、advisory 之前）。
+      # 失败即红（不做 continue-on-error）：白名单只许缩不许涨 —— 涨 = 「新规则只写文档」
+      #       或「新增守卫不登记 AREA.NNN」，正是本文件要治的两种漂移。
+      # ⚠️ 已知边界：`docs/**` 在 `on.push.paths-ignore` 里 ⇒ **纯文档推送不跑本步**；
+      #       文档与守卫同时改的波次才会行使判据。
+      # -------------------------------------------------------------------
+      - name: Docs/guard parity (docs/16 ↔ arch-guard)
+        run: |
+          chmod +x scripts/check-doc16-parity.sh
+          bash scripts/check-doc16-parity.sh
+
+      # -------------------------------------------------------------------
       # 【W86-05 · 非门禁】新文件守卫存量扫描（advisory）。
       # 动机：W85 把代码拆成 FileArgNormalizer.kt / DiagnosticsLogRow.kt 两个新文件，
       #       两者都**没有行数守卫**；而 `scripts/check-new-file-guard.sh` 默认的
@@ -505,6 +523,47 @@ jobs:
             echo '```text'
             echo "$out"
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # -------------------------------------------------------------------
+      # 【W89 D-2 · 非门禁】release dispatch 纪律提示（把「零机械提示」变成机械提醒）。
+      # 事实（回源核实，勿照抄外审）：`release.yml` 的 `on.push.branches` 只有
+      #       UI / harness / harness-improve / improve —— **没有 core-fix**。这是刻意取舍
+      #       （R8 + 签名双轨按需 dispatch，不占常规 CI 配额），代价是 push 到 core-fix
+      #       **永不触发 release 轨**，而 R8 结论有时效性（缩减规则 / 依赖矩阵 / 签名配置
+      #       任一变化都会让「上次那条绿」不再代表当下）。
+      # 本步只提示、不判红、**不联网**：CI 里拿不到「上次 release dispatch」的历史，
+      #       故判据退化为「本波是否改到会进 release 轨的路径」+ 改动文件计数（本地 git），
+      #       给出固定提示文案。非阻断三件套：`if: always()` + `continue-on-error: true`
+      #       + run 内 `|| true`（与上面 New-file guard 同款，保持本步显示为绿）。
+      # ⚠️ 不改动任何既有步骤的语义（尤其 Unit tests 的 arch-guard / fulltest / baseline
+      #       计数校验）：本步是纯新增，放在两条 advisory 之间。
+      # -------------------------------------------------------------------
+      - name: Release dispatch reminder (advisory, non-blocking)
+        if: always()
+        continue-on-error: true
+        run: |
+          base=""
+          if git rev-parse --verify -q origin/main >/dev/null 2>&1; then
+            base="origin/main...HEAD"
+          fi
+          if [ -n "$base" ]; then
+            files="$(git diff --name-only "$base" 2>/dev/null || true)"
+          else
+            files="$(git show --name-only --pretty=format: HEAD 2>/dev/null || true)"
+          fi
+          n="$(printf '%s\n' "$files" | grep -cE '^(app|core-[a-z]+|feature-[a-z]+|gradle)/' || true)"
+          echo "::notice::本波改动触及 release 轨路径的文件数 = ${n}（基线来源：${base:-HEAD 单提交}）。release.yml 的 push.branches 不含 core-fix ⇒ R8 结论不会自动刷新；打 tag / RC 前请手动 dispatch release.yml，并确认 Assemble release APK / AAB 未 skipped（分支 dispatch 上 Gate tag release on signing secrets 本就 skipped，属正常）。"
+          {
+            echo "### release dispatch 纪律（advisory · 非门禁）"
+            echo ""
+            echo "> \`release.yml\` 的 \`on.push.branches\` **不含 \`core-fix\`**（R8 签名双轨按需 dispatch）。"
+            echo "> 本步不判红、不联网，只做提醒：**打 tag / RC 前**对该 sha 手动 dispatch \`release.yml\`，"
+            echo "> 确认 **R8 产物步骤未 skipped**（\`Assemble release APK\` / \`Assemble release AAB\`）——"
+            echo "> 分支 dispatch 上 \`Gate tag release on signing secrets\` 本就 skipped（\`if\` 只匹配 tag），属正常。"
+            echo ""
+            echo "- 本波触及 release 轨路径的文件数：\`${n}\`"
+            echo "- 比对基线：\`${base:-HEAD 单提交（无 origin/main）}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # -------------------------------------------------------------------
@@ -614,7 +673,13 @@ jobs:
             #   （参数面板下滑退出判据：位移未过阈回弹 / 快速下甩即便位移小也退出 /
             #   上甩否决大位移 / 高度未测量时永不判退 —— 最后一条是"任何抖动都会关面板"的防线）。
             #   ⇒ 由 874 上调 881（代码冻结后实测 881，无 @Ignore/参数化）。
-            baseline=881
+            # W89 UI 修复波 +9 例（**逐文件对账**）：core-design 新建 OverlayBlurMathTest 6
+            #   （覆盖阈值随半径增大而变小 / 按 1-s / 退化输入夹到上界 / 不透明度两端精确 /
+            #   区间内单调不减 / 阈值为零直接全覆盖 —— 钉住玻璃覆盖层的纯函数口径）；
+            #   WindowSizeClassTest 3→6（竖屏手机页签在底部 / 横屏手机页签在顶部 /
+            #   平板保持左侧竖栏 —— 钉住页签拓扑三分支）。
+            #   ⇒ 由 881 上调 890（代码冻结后实测 890，无 @Ignore/参数化）。
+            baseline=890
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

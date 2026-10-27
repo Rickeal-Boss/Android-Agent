@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -44,6 +45,7 @@ import com.rickeal.agent.core.design.GlassAttachmentKind
 import com.rickeal.agent.core.design.GlassBubble
 import com.rickeal.agent.core.design.GlassBubbleAttachment
 import com.rickeal.agent.core.design.GlassBubbleUsage
+import com.rickeal.agent.core.design.GlassButton
 import com.rickeal.agent.core.design.GlassCard
 import com.rickeal.agent.core.design.GlassEmptyState
 import com.rickeal.agent.core.design.GlassEmptyStateAction
@@ -178,32 +180,55 @@ fun ChatMessageList(
                 // OnboardingScreen 同一写法）。
                 val compactHeight =
                     rememberWindowSizeClass().height == WindowHeightClass.COMPACT
-                Box(
+                BoxWithConstraints(
                     modifier = Modifier.fillParentMaxHeight(if (compactHeight) 1f else 0.7f),
                     contentAlignment = Alignment.Center,
                 ) {
-                    // 空态两出口：都去模型页（导入本地文件 / 从推荐列表下载）。
-                    // 本应用为纯端侧运行，无远程端点可配。
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState()),
-                    ) {
-                        GlassEmptyState(
-                            title = "开始一段对话",
-                            subtitle = "先在「模型」页导入 .litertlm / .task，或从推荐列表下载",
-                            actions = listOf(
-                                GlassEmptyStateAction(label = "导入本地模型", onClick = onOpenModels),
-                                GlassEmptyStateAction(label = "下载推荐模型", onClick = onOpenModels),
-                            ),
-                            // 横屏紧凑档：40dp 上下留白在 344dp 高的窗口里会把两个
-                            // 出口按钮顶出视口（真机：按钮被切成半截）。实测列表视口
-                            // ≈138dp（344 − 顶栏 72 − 输入区 90 − 列表 contentPadding 24），
-                            // 内容 = 标题 24 + 副标题 18 + 按钮 48 + 两处 8 间距 = 106dp
-                            // ⇒ 留白只能给 12dp（106 + 24 = 130 < 138），16dp 会正好贴边
-                            // 把按钮下缘切掉一条（真机复测）。
-                            verticalPadding = if (compactHeight) 12.dp else 40.dp,
-                        )
+                    // 极窄档（W89）：横屏手机的页签条从左侧竖栏改到**顶部横条**后，
+                    // 空态条目只剩 ≈70dp（列表视口 ≈94dp − contentPadding 24dp）——
+                    // 「标题 + 两按钮」要 80dp，上下各被裁 5dp（真机截图：按钮下缘被切掉）。
+                    // 这一档只留两个出口按钮（48dp）：按钮文案本身已经说明了去路，
+                    // 标题与副标题在 70dp 里只能二选一，而"能点"比"能读"重要。
+                    if (maxHeight < 80.dp) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            GlassButton(
+                                text = "导入本地模型",
+                                onClick = onOpenModels,
+                                modifier = Modifier.weight(1f),
+                            )
+                            GlassButton(
+                                text = "下载推荐模型",
+                                onClick = onOpenModels,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    } else {
+                        // 空态两出口：都去模型页（导入本地文件 / 从推荐列表下载）。
+                        // 本应用为纯端侧运行，无远程端点可配。
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            GlassEmptyState(
+                                title = "开始一段对话",
+                                subtitle = "先在「模型」页导入 .litertlm / .task，或从推荐列表下载",
+                                actions = listOf(
+                                    GlassEmptyStateAction(label = "导入本地模型", onClick = onOpenModels),
+                                    GlassEmptyStateAction(label = "下载推荐模型", onClick = onOpenModels),
+                                ),
+                                // 横屏紧凑档：40dp 上下留白在 344dp 高的窗口里会把两个
+                                // 出口按钮顶出视口（真机：按钮被切成半截）。实测列表视口
+                                // ≈138dp（344 − 顶栏 72 − 输入区 90 − 列表 contentPadding 24），
+                                // 内容 = 标题 24 + 副标题 18 + 按钮 48 + 两处 8 间距 = 106dp
+                                // ⇒ 留白只能给 12dp（106 + 24 = 130 < 138），16dp 会正好贴边
+                                // 把按钮下缘切掉一条（真机复测）。
+                                verticalPadding = if (compactHeight) 12.dp else 40.dp,
+                            )
+                        }
                     }
                 }
             }

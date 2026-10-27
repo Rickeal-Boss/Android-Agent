@@ -75,8 +75,9 @@ import kotlin.math.roundToInt
  *    缩略图面积约为全屏的 1/18）—— 高斯在这么小的空间里逐帧重做也近乎免费，
  *    于是半径可以**逐帧连续**变化，0.25px 台阶换算回屏幕空间 ≈ 1px（@3x ≈ 0.35dp），
  *    20dp 满量程约 55~60 级过渡，级跳不可辨（用户要的「更多级别」）；
- *  - 附带第二重收益：p≥1 时缩略图完全盖住内容，可以**跳过一次全量内容绘制**
- *    （深度模糊下背景本来就糊到看不清细节，放大后的缩略图与真模糊视觉等价）；
+ *  - 附带第二重收益：p 超过「覆盖阈值」（见 [coverThresholdOf]）后缩略图完全盖住内容，
+ *    可以**跳过一次全量内容绘制**（深度模糊下背景本来就糊到看不清细节，放大后的
+ *    缩略图与真模糊视觉等价）—— 这条是逐帧成本的大头，W89 真机实测它值 ~17ms/帧；
  *  - **取舍（用户提案的既定语义）**：捕获的是**激活瞬间的静态背景** —— 覆盖层开着期间
  *    背景内容变化（如流式输出）不重录；p 回 0 作废捕获标记，下次激活重新捕获。
  *
@@ -224,6 +225,60 @@ private const val THUMB_MAX_WIDTH_PX = 256f
 private const val THUMB_BLUR_STEP_PX = 0.25f
 
 /**
+ * 「缩略图完全盖住内容」的进度阈值**上限/下限**（见 [coverThresholdOf]）。
+ * 推导给出的是连续值，夹在区间内只防两个退化：半径极小时阈值趋近 1（等于永不覆盖）、
+ * 半径极大时阈值趋近 0（覆盖得太早，交叉淡入的两端差异变大）。
+ */
+private const val COVER_FROM_MIN = 0.03f
+private const val COVER_FROM_MAX = 0.35f
+
+/**
+ * 交叉淡入结束、缩略图开始**完全替代**内容的进度阈值。
+ *
+ * ## 为什么必须有这条曲线（W89 真机实测）
+ *
+ * 旧实现在 `p < 1` 的整个区间里既 `drawContent()` 又叠一层 `alpha = p` 的缩略图。
+ * 两个后果，一个观感、一个性能：
+ *  - **观感**：`p = 0.5` 时是「50% 清晰 + 50% 模糊」的双重曝光，读者看到的是
+ *    幽灵重影而不是"逐渐糊"；再往后清晰层淡出，中间会有一段被读成"强度突变"。
+ *  - **性能**（真机 `dumpsys gfxinfo`，10s 慢拖参数面板）：
+ *    `Total frames 764 / Janky 741 (96.99%) / 50th 36ms`。同一手势把
+ *    「背景模糊」总闸关掉后是 `950 / 16 (1.68%) / 19ms` ⇒ **每帧多付 ~17ms**，
+ *    全部花在 `drawContent()` 上：它让整棵子树（壁纸 layerBackdrop 全屏离屏录制 +
+ *    每个玻璃节点的 backdrop 采样）逐帧重画，而缩略图管线本来的意义恰恰是
+ *    "不用再画内容"。
+ *
+ * ## 阈值怎么定
+ *
+ * 交叉淡入只在 `p ∈ [0, coverFrom]` 内做，之后 `alpha = 1`、不再 `drawContent()`。
+ * `coverFrom` 取「模糊半径正好等于缩略图**降采样自身**的软化量」的那个点：
+ * 双线性放大 1/scale 倍的分辨率损失 ≈ `0.5/scale` 屏幕 px，取 2 倍作为"已可辨"的界，
+ * 于是 `coverFrom = (1/scale) / radiusPx`。默认 19dp @3x、scale 0.237 ⇒ ≈0.074。
+ * 物理含义：**交叉淡入的两端（清晰 vs 该半径下的模糊）在视觉上已经等价**，
+ * 所以切换点本身不可辨；半径调大时阈值自动变小（大半径下更早覆盖），
+ * 半径调小时阈值自动变大（小半径下更晚覆盖），不需要按档位手调。
+ */
+internal fun coverThresholdOf(scale: Float, radiusPx: Float): Float {
+    if (radiusPx <= 0f || scale <= 0f) return COVER_FROM_MAX
+    return ((1f / scale) / radiusPx).coerceIn(COVER_FROM_MIN, COVER_FROM_MAX)
+}
+
+/**
+ * 缩略图的不透明度：`p ∈ [0, coverFrom]` 上做 smoothstep 淡入，之后恒为 1。
+ *
+ * 抽成纯函数是为了能被 JVM 单测钉住三条性质（[OverlayBlurMathTest]）：
+ * 端点精确（p=0 ⇒ 0、p≥coverFrom ⇒ 1）、区间内单调不减、`coverFrom ≤ 0` 时退化安全。
+ * 这三条任一被改坏，表现都是"背景在某个进度上闪一下"——**没有任何报错**，
+ * 只能靠单测拦住。
+ */
+internal fun thumbnailCoverAlpha(p: Float, coverFrom: Float): Float {
+    if (coverFrom <= 0f) return 1f
+    val t = (p / coverFrom).coerceIn(0f, 1f)
+    return t * t * (3f - 2f * t)
+}
+
+
+/**
  * [Modifier.overlayBackdropBlur] 的跨帧状态。draw block 的闭包随重组重建，
  * 「已捕获尺寸」与 BlurEffect 实例缓存必须住在 remember 的对象里才跨得住帧。
  */
@@ -249,7 +304,7 @@ private class ThumbPipelineCache {
  * 就是全屏离屏重建，只能粗台阶量化（级跳可见）。新管线改为：draw 阶段把内容
  * 降采样录制进 [rememberGraphicsLayer] 的缩略图层（激活期内仅捕获一次），
  * 在缩略图上做廉价逐帧模糊，再放大铺回 —— 半径逐帧连续、成本可忽略，
- * 且 p≥1 时可跳过全量内容绘制（缩略图完全盖住内容）。
+ * 且 p 超过覆盖阈值后连全量内容绘制一起省掉（见 [coverThresholdOf]）。
  *
  * @param progress 0..1 的模糊强度，**只能在 draw 阶段读**（lambda 每次执行都在 draw 阶段）。
  *   0 表示不挂 RenderEffect、不录缩略图（零成本）。
@@ -326,12 +381,19 @@ fun Modifier.overlayBackdropBlur(
             }
         }
         thumbLayer.renderEffect = cache.cachedEffect
-        // 淡入：p<1 时缩略图半透明地叠在下层内容上（下层内容也在画），p 趋近 1 逐渐盖满。
-        thumbLayer.alpha = p
-        if (p < 1f) drawContent()
-        // p≥1 时缩略图完全盖住内容 ⇒ 跳过一次全量内容绘制（缩略图管线的第二重收益）。
-        withTransform({ scale(1f / scale, 1f / scale, Offset.Zero) }) {
-            drawLayer(thumbLayer)
+        // ── 覆盖曲线（W89，见 coverThresholdOf 的推导）────────────────────────
+        // p < coverFrom：内容照画，缩略图按 smoothstep 淡入（这一段是"清晰→该半径下的
+        //   模糊"，两端视觉等价，所以淡入本身不可辨）；
+        // p ≥ coverFrom：**不再 drawContent()** —— 缩略图完全盖住内容，每帧只剩
+        //   "256px 图层做一次高斯 + 放大铺回"，这是本管线省掉那 17ms 的唯一开关。
+        val coverFrom = coverThresholdOf(scale, radius.toPx())
+        val cover = thumbnailCoverAlpha(p, coverFrom)
+        thumbLayer.alpha = cover
+        if (cover < 1f) drawContent()
+        if (cover > 0f) {
+            withTransform({ scale(1f / scale, 1f / scale, Offset.Zero) }) {
+                drawLayer(thumbLayer)
+            }
         }
     }
 }

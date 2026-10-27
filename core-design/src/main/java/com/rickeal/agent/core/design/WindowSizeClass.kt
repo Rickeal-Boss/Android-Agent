@@ -40,6 +40,44 @@ data class WindowSizeClass(
         get() = width >= WindowWidthClass.MEDIUM && height == WindowHeightClass.COMPACT
 }
 
+/**
+ * 一级导航（5 个页签）在三种窗口形态下的落点。
+ *
+ * 抽成枚举 + 纯函数（而不是在 `MainShell` 里写三个散落的布尔）的唯一理由是
+ * **可 JVM 测**：三档判据写错的表现全是"不报错但形态错"（竖屏冒出侧栏、
+ * 横屏又回到左栏挤掉正文宽度），只有钉住三条分支才能防回归。
+ */
+enum class TabBarPlacement {
+    /** 竖屏手机：底部悬浮玻璃条（既有形态）。 */
+    Bottom,
+
+    /** 平板 / 折叠屏展开 / 桌面：左侧常驻竖栏（图标 + 文字）。 */
+    Rail,
+
+    /**
+     * 横屏手机：**顶部横向条**（W89 用户需求）。
+     *
+     * 为什么不是 Rail：横屏手机的高度只有 308~344dp，左侧竖栏虽然省高度，
+     * 但它把正文的**横向**宽度切掉 88dp + 两侧内边距，而横屏恰恰是横向最富余、
+     * 纵向最紧张 —— 竖栏让整页看起来"不是全屏"。改成顶部横条后：
+     *  - 正文横向吃满（视觉全屏，与用户原话一致）；
+     *  - 页签形态与竖屏底部条**完全一致**（同一枚 [LiquidBottomTabs]），不引入第二套排版；
+     *  - 顶部让位由 `LocalTopBarOverlay` 下发给各屏 `GlassScaffold`，
+     *    内容不会钻到条下面。
+     */
+    Top,
+}
+
+/**
+ * 一级导航落点判定。三档互斥且穷尽，**不要**在调用点再用 `if (useTwoPane)` 兜底
+ * （那正是横屏手机被当成平板、整块工作区面板消失的根因，见 [isLandscapePhone]）。
+ */
+fun WindowSizeClass.tabBarPlacement(): TabBarPlacement = when {
+    isLandscapePhone -> TabBarPlacement.Top
+    useTwoPane -> TabBarPlacement.Rail
+    else -> TabBarPlacement.Bottom
+}
+
 // ⚠️ 两个分档函数此前是 `private`：分档阈值（600/840 / 480/900）是 Material 3 的
 // 窗口尺寸等级断点，写错一档的后果是「平板被判成手机 → 两栏布局永不出现」，
 // 而这类错误在单手/折叠屏真机上才发现得到。改 `internal` 只为让 JVM 单测能直接

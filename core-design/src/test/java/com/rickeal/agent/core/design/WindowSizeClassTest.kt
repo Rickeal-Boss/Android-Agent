@@ -111,4 +111,53 @@ class WindowSizeClassTest {
             WindowSizeClass(widthClassOf(1200), heightClassOf(344)).isLandscapePhone,
         )
     }
+
+    // ── 一级导航落点（W89）──────────────────────────────────────────────────
+
+    @Test
+    fun `竖屏手机页签在底部`() {
+        // 真机竖屏：360×748dp。
+        assertEquals(
+            TabBarPlacement.Bottom,
+            WindowSizeClass(widthClassOf(360), heightClassOf(748)).tabBarPlacement(),
+        )
+        // 极窄小窗也不能掉到别的分支。
+        assertEquals(
+            TabBarPlacement.Bottom,
+            WindowSizeClass(widthClassOf(320), heightClassOf(640)).tabBarPlacement(),
+        )
+    }
+
+    @Test
+    fun `横屏手机页签在顶部`() {
+        // 真机横屏：w764dp / h344dp（OPPO PDRM00 转 90°）。这一档必须是 Top ——
+        // 它同时是"工作区面板不能被砍掉"的判据（isLandscapePhone），两件事同源。
+        assertEquals(
+            TabBarPlacement.Top,
+            WindowSizeClass(widthClassOf(764), heightClassOf(344)).tabBarPlacement(),
+        )
+    }
+
+    @Test
+    fun `平板保持左侧竖栏`() {
+        // 竖屏平板（800×1000）：宽 MEDIUM、高 MEDIUM ⇒ 不是横屏手机 ⇒ 竖栏。
+        assertEquals(
+            TabBarPlacement.Rail,
+            WindowSizeClass(widthClassOf(800), heightClassOf(1000)).tabBarPlacement(),
+        )
+        // 横屏平板（1280×800）：高 MEDIUM ⇒ 竖栏（高度够，不需要为省高度把条挪到顶部）。
+        assertEquals(
+            TabBarPlacement.Rail,
+            WindowSizeClass(widthClassOf(1280), heightClassOf(800)).tabBarPlacement(),
+        )
+        // 高度正好 480dp（MEDIUM 下沿）——断点两侧：
+        assertEquals(
+            TabBarPlacement.Top,
+            WindowSizeClass(widthClassOf(764), heightClassOf(479)).tabBarPlacement(),
+        )
+        assertEquals(
+            TabBarPlacement.Rail,
+            WindowSizeClass(widthClassOf(764), heightClassOf(480)).tabBarPlacement(),
+        )
+    }
 }

@@ -1654,6 +1654,89 @@ check "DiagnosticsLogRow.kt 总行数 ≤ 150（feature-settings 行数表 #25 �
            n=$(wc -l < "$f")
            [ "$n" -le 150 ] || echo "DiagnosticsLogRow.kt 当前 $n 行，超 150 行上限（触顶 = 启动 DiagnosticsLogRow 拆分评审，非改阈值）"'
 
+# 61) LiquidAgentApp.kt 总行数上限（W89 D-1，外审「行数守卫覆盖面缺口」）：#25 家族第 20 员
+#     （家族清单见 #48 注释）。
+#     ⚠️ 为何补（外审量化：全仓前 16 大 `.kt` 有 **9 个**没有任何行数守卫 —— 守卫的触发
+#     条件一直是「这个文件被注意到过」而不是「这个文件在变大」）：本文件 1301 行，全仓
+#     第 4 大、app 层最大，且是 W76~W88 每一波 UI 改动的必落点（本波还会再涨 ~120 行）。
+#     ⚠️ 阈值推导（W89 冻结时实测 1301 行）：按「现值 + ~15%」取 1500（余 199）——
+#     与 #57（ModelsViewModel 1400）/ #18（ChatViewModel 1600）同档；**不贴现值**：贴现值
+#     = 下一波第一件事就是调阈值（#49 的 250 贴身阈值已制造过一次被动）。
+#     ⚠️ 触顶不是改数字，是启动 LiquidAgentApp 拆分评审（应用骨架 / 抽屉装配 / 工作区
+#     覆盖层三段分离，与 README 挂账 J4「SandboxFilesViewModel 直构造白名单」的迁移同批做）。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释：
+#     line-table.sh 的派生面正是 grep 该连写，写进注释会被当成守卫，导致派生数漂移）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+#     ⚠️ 编号纪律：取 #61（#53 是 selftest 元 case 专属号，禁止使用；#60 已用）。
+#     六处同步：arch-guard 本处 / selftest 的 KNOWN_GUARDS / selftest 的 case94 段 /
+#     selftest 的 affected_guards_for_file 映射表 / selftest 的 scaffold 夹具 /
+#     scripts/line-table.sh 的 MIN_ROWS（行数表派生面，漏改即 `--check` 判红）。
+check "LiquidAgentApp.kt 总行数 ≤ 1500（app 行数表 #25 家族第 20 员，触顶 = 启动 LiquidAgentApp 拆分评审，非改阈值）" \
+  bash -c 'f=app/src/main/java/com/rickeal/agent/ui/LiquidAgentApp.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 61 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 1500 ] || echo "LiquidAgentApp.kt 当前 $n 行，超 1500 行上限（触顶 = 启动 LiquidAgentApp 拆分评审，非改阈值）"'
+
+# 62) LiquidBottomTabs.kt 总行数上限（W89 D-1，同上）：#25 家族第 21 员
+#     （家族清单见 #48 注释）。
+#     ⚠️ 为何补：core-design 层最大文件（1095 行，全仓第 6），是「设计系统组件」里唯一
+#     没有闸门却已过千行的文件 —— 设计系统一旦长成 god-file，「改一个页签要重编译整个
+#     设计层」的代价会固化成日常。本条与 #2（core-design 零业务依赖）互补：**结构边界**
+#     与**体积边界**分开守，任一单独存在都拦不住另一形态的腐化。
+#     ⚠️ 阈值推导（W89 冻结时实测 1095 行）：按「现值 + ~14%」取 1250（余 155）。
+#     ⚠️ 触顶不是改数字，是启动 LiquidBottomTabs 拆分评审（指示器动画 / 页签项 / 布局
+#     测量三段分离）。
+#     ⚠️ 维护纪律：本注释内**不得出现**「总行数」+ 小于等于号 的连写（原因见 #49 注释）。
+#     文件缺失 → exit 1 + ::error::（守卫面失效必须判红，绝不静默放行）。
+#     ⚠️ 编号纪律：取 #62（#53 是 selftest 元 case 专属号，禁止使用；#61 已被占用）。
+#     六处同步：同 #61 注释末段（含 line-table.sh 的 MIN_ROWS）。
+check "LiquidBottomTabs.kt 总行数 ≤ 1250（core-design 行数表 #25 家族第 21 员，触顶 = 启动 LiquidBottomTabs 拆分评审，非改阈值）" \
+  bash -c 'f=core-design/src/main/java/com/rickeal/agent/core/design/LiquidBottomTabs.kt
+           if [ ! -f "$f" ]; then echo "::error::$f 不存在（被改名/删除？第 62 条守卫面已失效）"; exit 1; fi
+           n=$(wc -l < "$f")
+           [ "$n" -le 1250 ] || echo "LiquidBottomTabs.kt 当前 $n 行，超 1250 行上限（触顶 = 启动 LiquidBottomTabs 拆分评审，非改阈值）"'
+
+# ---------------------------------------------------------------------------
+# ADVISORY（**不是守卫**，不占守卫号、不进 KNOWN_GUARDS / selftest、不改退出码）：
+# 行数守卫覆盖面聚合 —— 「≥700 行且无行数守卫的 .kt」数量与最大值。
+#
+# 为什么只报聚合、不逐条列（项目铁律「告警的量级本身就是判据」）：
+#   本仓前 16 大 .kt 长期有 9 个无闸门，逐条打印会变成每波都出现的长清单 ⇒ 人眼直接
+#   跳过（W86-05 的 206 条教训）。这里只给「几个 / 最大多少」，量级变化才是信号。
+#   冻结基线 ADV_BASELINE = 7（W89 补 #61/#62 之后的实测值）：**超过基线**才打
+#   `::warning::`（新脱闸落点），持平/低于基线只打一行普通输出。低于基线时人眼下调本值。
+#   扫描面 = **main 源集**（`src/test` / `src/androidTest` 显式排除）：#25 家族从不覆盖
+#   测试源集（无任何测试文件有闸门），把 723 行的 ToolDisclosureTest 算进来只会让本
+#   聚合数恒为「8 = 7 + 一个永远不补闸门的测试文件」，把基线钉死成噪声。
+#
+# ⚠️ 判据钉**行首代码形态**，不裸 grep 注释（仓内已有事故记录：line-table.sh 曾把
+#   注释里的「总行数」+ 小于等于号 连写当成守卫、进而解析失败）：守卫清单只从 `^check "` 行 +
+#   其下一行的 `f=` 提取 —— 注释里提到某个文件名（如 #49 注释提到 FrameStatsCollector）
+#   不会被误算成「该文件已有守卫」。
+# ⚠️ 单进程扫描：find 一次 + wc 一次 + awk 一次（不用逐文件 grep/wc 起子进程）。
+# ---------------------------------------------------------------------------
+ADV_BASELINE=7
+adv_guarded="$(awk '/^check ".*总行数/{ if (getline > 0) { if (match($0, /f=[^ ]+/)) print substr($0, RSTART+2, RLENGTH-2) } }' "$0")"
+adv_report="$(find . \( -name .git -o -name build -o -name .gradle -o -name .kotlin \) -prune -o \
+    -name '*.kt' -type f -not -path '*/src/test/*' -not -path '*/src/androidTest/*' -print0 2>/dev/null \
+  | xargs -0 wc -l 2>/dev/null \
+  | awk -v g="$adv_guarded" '
+      BEGIN { n = split(g, a, "\n"); for (i = 1; i <= n; i++) G[a[i]] = 1 }
+      $2 != "total" {
+        p = $2; sub(/^\.\//, "", p)
+        if ($1 >= 700 && !(p in G)) { c++; if ($1 > max) { max = $1; name = p } }
+      }
+      END { printf "%d %d %s", c + 0, max + 0, name }')"
+adv_n="${adv_report%% *}"
+adv_rest="${adv_report#* }"
+adv_max="${adv_rest%% *}"
+adv_name="${adv_rest#* }"
+if [ "${adv_n:-0}" -gt "$ADV_BASELINE" ]; then
+  echo "::warning::[advisory 行数守卫覆盖] ≥700 行且无行数守卫的 .kt = ${adv_n} 个（基线 ${ADV_BASELINE}），最大 ${adv_max} 行（${adv_name}）—— 新脱闸落点？补闸门而不是调基线"
+else
+  echo "[advisory] 行数守卫覆盖：≥700 行且无行数守卫的 .kt = ${adv_n} 个（基线 ${ADV_BASELINE}），最大 ${adv_max} 行（${adv_name:-无}）—— 不判红"
+fi
+
 echo "-----------------------------------------"
 if [ "$fail" -ne 0 ]; then
   echo "架构守卫未通过，请修复上述问题后再合并。"
