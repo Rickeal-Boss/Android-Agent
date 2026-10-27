@@ -217,11 +217,21 @@
 上一次全绿只证明 `ce976ef` 那一刻成立。`tags: - 'v*'` 独立于 `branches` 过滤 ⇒ 打 tag 本身会触发 release，
 不能等打 tag 那天才第一次跑。
 
-### 6.2 build.yml（push 后由 CI 出结果，本交接 §6.2 待回填）
+### 6.2 build.yml（push 后实证）
 
-> ⚠️ **待回填**：本波 push 后的 `build.yml` run id / 三 job 结论。若本次 CI 出现 FAIL，
-> 以 CI 为准（本地未跑全量 selftest —— 每 case 重跑 `arch-guard.sh`，200+ case 的 spawn 开销不可接受；
-> 用户已明确指导「本地只冒烟、全量归 CI」，CI 绿 = 全量真绿）。
+- push：`ce976ef..b9716d7 core-fix -> core-fix`（4 commits）。
+- run **`40506931622`**（push，head `b9716d7`）**三 job 全 success**：
+
+| job | 结论 | 内含 |
+|---|---|---|
+| **Unit tests** | **success** | Architecture guard（`arch-guard.sh` 真仓 **59/59**）+ **全量 selftest**（含新增附加④ 的红绿夹具面与元 case 四方一致）+ `fulltest.sh` **874/0** |
+| **Lint (baseline gate)** | **success** | 0 新增 |
+| **Assemble Debug (JDK 21)** | **success** | — |
+
+- **本地 vs CI 一致性**：本地 fulltest **874/0/0**、arch-guard **59/59**、对账 **34 处**、lint 0 新增
+  —— 与 CI 全量口径一致。
+- ⚠️ **本地未跑全量 selftest**（每 case 重跑 `arch-guard.sh`，200+ case 的 spawn 开销不可接受；
+  用户已明确指导「本地只冒烟、全量归 CI」）。**CI 绿 = 全量真绿**（CI 有 FAIL 即 exit 1）。
 
 ## 七、挂账权威表更新摘要（`docs/15-backlog.md`）
 
