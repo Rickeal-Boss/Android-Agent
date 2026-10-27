@@ -1,6 +1,8 @@
 package com.rickeal.agent.onboarding
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -99,40 +101,53 @@ fun OnboardingScreen(onFinished: () -> Unit) {
             )
         }
 
-        Column(
+        // W88 横屏修正：本页全文件此前**零滚动**，而中间卡片的内容高度是固定的
+        // （图标 40 + 标题 + 正文 + 24×2 内边距）。横屏手机可用高只有 ≈344dp，
+        // 扣掉顶栏与底部圆点/按钮后 ≈180dp ⇒ 卡片被压住、正文盖住圆点（真机同型事故
+        // 见 ConsentScreens 的历史记录：按钮被顶出屏幕后只能杀进程）。
+        // 这里用「Box 居中 + 内层可滚」：内容放得下时视觉与原来完全一致（Box 居中），
+        // 放不下时滚动而不是裁切。verticalScroll 的节点高度 = min(内容, 视口)，
+        // 所以居中在两种情况下都成立。
+        Box(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            verticalArrangement = Arrangement.Center,
+            contentAlignment = Alignment.Center,
         ) {
-            GlassCard(
-                modifier = Modifier.fillMaxWidth(),
-                material = GlassMaterial.THICK,
-                cornerRadius = tokens.radiusXl,
-                contentPadding = PaddingValues(24.dp),
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
             ) {
-                Column(
+                GlassCard(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                    material = GlassMaterial.THICK,
+                    cornerRadius = tokens.radiusXl,
+                    contentPadding = PaddingValues(24.dp),
                 ) {
-                    Icon(
-                        imageVector = page.icon,
-                        contentDescription = null,
-                        tint = colors.accent,
-                        modifier = Modifier.size(40.dp),
-                    )
-                    Text(
-                        text = page.title,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = colors.onGlass,
-                        modifier = Modifier.padding(top = 16.dp),
-                    )
-                    Text(
-                        text = page.body,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.onGlassMuted,
-                        modifier = Modifier.padding(top = 10.dp),
-                    )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Icon(
+                            imageVector = page.icon,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier.size(40.dp),
+                        )
+                        Text(
+                            text = page.title,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = colors.onGlass,
+                            modifier = Modifier.padding(top = 16.dp),
+                        )
+                        Text(
+                            text = page.body,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onGlassMuted,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                    }
                 }
             }
         }

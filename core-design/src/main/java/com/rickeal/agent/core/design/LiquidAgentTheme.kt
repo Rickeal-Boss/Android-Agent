@@ -164,7 +164,11 @@ fun LiquidAgentTheme(
         LocalGlassConfig provides glassConfig,
         LocalGlassBackdrop provides backdrop,
         LocalGlassTokens provides tokens,
-        LocalLiquidMotion provides if (glassConfig.reduceMotion) LiquidMotion.Gentle else LiquidMotion.Default,
+        // ⚠️ reduceMotion 的语义是「去掉动画」，不是「放慢动画」（2026-10-27 订正）。
+        // 这里曾经是 `if (reduceMotion) LiquidMotion.Gentle else Default` —— 而 Gentle 的
+        // stiffness 是 50、Default 是 400 ⇒ **打开「减少动效」反而慢 8 倍**，与开关意图相反。
+        // 正确映射是 Instant（stiffness 1e5、临界阻尼，≈1~2 帧到位）；见其 KDoc。
+        LocalLiquidMotion provides if (glassConfig.reduceMotion) LiquidMotion.Instant else LiquidMotion.Default,
     ) {
         MaterialTheme(
             colorScheme = materialColors,

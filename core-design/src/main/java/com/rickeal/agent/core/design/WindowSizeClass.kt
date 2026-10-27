@@ -19,6 +19,25 @@ data class WindowSizeClass(
     /** 大屏：可同时容纳「列表 + 内容 + 常驻参数面板」。 */
     val useThreePane: Boolean
         get() = width == WindowWidthClass.EXPANDED
+
+    /**
+     * 横屏手机：**宽度**够到双栏，但**高度**只有 COMPACT（典型 800×360dp）。
+     *
+     * 为什么必须有这个派生位（W88 实测）：`useTwoPane` 只看宽度，于是手机横屏
+     * （1080×2400 @480dpi 转 90° ⇒ w764dp / h308~344dp）与平板被归成同一档，
+     * 而两者的**高度预算**差一倍。直接拿 `useTwoPane` 当"宽屏"用，在横屏手机上会：
+     *  - 砍掉会话抽屉与「本地工作区」面板（抽屉有 Rail 替代，工作区面板**没有任何替代入口**
+     *    ⇒ 功能整体丢失）；
+     *  - 让参数面板按 0.78 屏高展开（≈268dp，弹键盘后可视区 ≈5dp）。
+     *
+     * 判据刻意**不改断点、不加枚举**：600/840 与 480/900 是 Material 3 的窗口尺寸等级，
+     * 已被 [WindowSizeClassTest] 逐条钉住，动它们会让「平板被判成手机」这类错误
+     * 在折叠屏真机上才暴露。这里只做**派生**：宽 ≥ MEDIUM 且 高 = COMPACT。
+     *
+     * 竖屏恒 false（竖屏手机高度 ≥ MEDIUM，平板更不用说）⇒ 竖屏行为逐字节不变。
+     */
+    val isLandscapePhone: Boolean
+        get() = width >= WindowWidthClass.MEDIUM && height == WindowHeightClass.COMPACT
 }
 
 // ⚠️ 两个分档函数此前是 `private`：分档阈值（600/840 / 480/900）是 Material 3 的

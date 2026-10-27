@@ -150,12 +150,14 @@ fun CyberJoystickSwitch(
     val currentOnCheckedChange by rememberUpdatedState(onCheckedChange)
 
     // ▸ 按压缩放 — 瞬时反馈
+    // W88 订正：原来是 `NoBouncy + StiffnessHigh`（临界阻尼、无过冲），与全仓
+    // 「按压要有果冻回弹」的口径相反 —— 同一个 App 里只有这个开关按下是"死"的。
+    // 改走 LocalLiquidMotion（与 GlassButton / GlassChip / 页签同源），
+    // 松手时带一次轻微过冲。量程只有 0.1，默认阈值 0.01 会截掉尾部，故显式收紧。
     val pressScale = animateFloatAsState(
         targetValue = if (isPressed) 0.9f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessHigh,
-        ),
+        animationSpec = LiquidMotion.floatSpring(LocalLiquidMotion.current),
+        visibilityThreshold = 0.001f,
         label = "press_scale",
     )
 

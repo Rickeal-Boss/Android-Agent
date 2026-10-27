@@ -78,4 +78,37 @@ class WindowSizeClassTest {
         assertTrue(shortButWide.useTwoPane)
         assertTrue(shortButWide.useThreePane)
     }
+
+    // ── 派生位：横屏手机（W88）──────────────────────────────────────────────
+
+    @Test
+    fun `横屏手机判据只认 宽MEDIUM以上 且 高COMPACT`() {
+        // 真机实测：OPPO PDRM00 1080×2400 @480dpi 转 90° ⇒ w764dp / h344dp。
+        // 这一档必须为 true —— 它是「工作区面板不能被 useTwoPane 砍掉」的唯一开关。
+        assertTrue(
+            WindowSizeClass(widthClassOf(764), heightClassOf(344)).isLandscapePhone,
+        )
+    }
+
+    @Test
+    fun `同宽但高度够的平板不是横屏手机`() {
+        // 800×1000dp 的折叠屏展开态：宽度同档，但高度 MEDIUM ⇒ 是真平板，
+        // 必须继续享受「双栏 + 无抽屉」的既有语义。
+        assertFalse(
+            WindowSizeClass(widthClassOf(800), heightClassOf(1000)).isLandscapePhone,
+        )
+    }
+
+    @Test
+    fun `窄而矮的窗口也不是横屏手机`() {
+        // 宽度不够 MEDIUM（分屏小窗 500×400）：既没有双栏，也不该走"横屏手机"分支。
+        assertFalse(
+            WindowSizeClass(widthClassOf(500), heightClassOf(400)).isLandscapePhone,
+        )
+        // 平板横屏（1200×344）：宽度 EXPANDED 但高度 COMPACT ⇒ 仍算"矮宽"，
+        // 走横屏手机分支（高度预算与手机横屏同病：面板/弹窗都放不下）。
+        assertTrue(
+            WindowSizeClass(widthClassOf(1200), heightClassOf(344)).isLandscapePhone,
+        )
+    }
 }

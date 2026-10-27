@@ -607,7 +607,14 @@ jobs:
             #   异常类名不记 message）。为让整条 write 路径在 JVM 上可达，JsonFileStore 新增可注入的
             #   pidProvider（默认 Process.myPid，与既有 json 参数同为测试接缝，不是行为改动）。
             #   ⇒ 由 870 上调 874（代码冻结后实测 874，无 @Ignore/参数化）。
-            baseline=874
+            # W88 UI 收尾波 +7 例：core-design WindowSizeClassTest +3（横屏手机派生判据
+            #   `isLandscapePhone`：764×344 为真 / 800×1000 平板为假 / 500×400 小窗为假 +
+            #   1200×344 矮宽为真 —— 钉住「宽度够但高度不够」这一档，它是工作区面板
+            #   不被 useTwoPane 砍掉的唯一开关）；feature-chat SheetDismissPredicateTest +4
+            #   （参数面板下滑退出判据：位移未过阈回弹 / 快速下甩即便位移小也退出 /
+            #   上甩否决大位移 / 高度未测量时永不判退 —— 最后一条是"任何抖动都会关面板"的防线）。
+            #   ⇒ 由 874 上调 881（代码冻结后实测 881，无 @Ignore/参数化）。
+            baseline=881
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

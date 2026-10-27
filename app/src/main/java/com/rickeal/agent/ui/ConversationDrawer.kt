@@ -2,6 +2,8 @@ package com.rickeal.agent.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +37,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
@@ -385,11 +389,26 @@ private fun ConversationRow(
         // 删除入口：48dp 触控目标（项目自己的 minTouchTarget 标准），图标 18dp。
         // 不给 ripple（同整行口径）。禁用态图标降一档亮度（onGlassMuted），
         // 与整行「点不动」的视觉语言一致。
+        //
+        // W88：整行「点选后抽屉立即关闭」本身是反馈，所以整行刻意不加按压色；
+        // 但**删除**是唯一没有即时结果反馈的动作（要等确认对话框、且行随后消失），
+        // 按下去毫无回应会让人以为没点中 ⇒ 这里补一层自绘按压底色（危险色，
+        // 与整行的中性口径区分）。仍不用 ripple —— 玻璃上贴塑料的观感问题不变。
+        val deleteInteraction = remember { MutableInteractionSource() }
+        val deletePressed by deleteInteraction.collectIsPressedAsState()
         Box(
             modifier = Modifier
                 .size(tokens.minTouchTarget)
+                .drawBehind {
+                    if (deletePressed && enabled) {
+                        drawRoundRect(
+                            color = colors.danger.copy(alpha = 0.12f),
+                            cornerRadius = CornerRadius(8.dp.toPx()),
+                        )
+                    }
+                }
                 .clickable(
-                    interactionSource = null,
+                    interactionSource = deleteInteraction,
                     indication = null,
                     enabled = enabled,
                     role = Role.Button,

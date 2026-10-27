@@ -1,6 +1,8 @@
 package com.rickeal.agent.feature.chat
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +50,8 @@ import com.rickeal.agent.core.design.GlassEmptyStateAction
 import com.rickeal.agent.core.design.GlassMaterial
 import com.rickeal.agent.core.design.LocalGlassColors
 import com.rickeal.agent.core.design.LocalGlassTokens
+import com.rickeal.agent.core.design.WindowHeightClass
+import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.core.model.Attachment
 import com.rickeal.agent.core.model.ChatMessage
 import com.rickeal.agent.core.model.Role
@@ -166,17 +170,41 @@ fun ChatMessageList(
     ) {
         if (messages.isEmpty() && !isStreaming) {
             item(key = "empty") {
-                Box(modifier = Modifier.fillParentMaxHeight(0.7f), contentAlignment = Alignment.Center) {
+                // 横屏修正（W88，真机复现）：0.7 × 视口在竖屏是 ≈470dp（内容 ≈186dp，
+                // 居中很舒服），但横屏视口只有 ≈170dp ⇒ 0.7 = 119dp < 内容高度，
+                // Box 居中把标题上下各裁掉一半（真机截图：「开始一段对话」只剩下半截）。
+                // 两处修：① 高度档 COMPACT 时吃满视口；② 内容放不下时**滚动**而不是被裁
+                //（Box 居中 + 内层 verticalScroll：短内容仍居中，长内容可滚，与
+                // OnboardingScreen 同一写法）。
+                val compactHeight =
+                    rememberWindowSizeClass().height == WindowHeightClass.COMPACT
+                Box(
+                    modifier = Modifier.fillParentMaxHeight(if (compactHeight) 1f else 0.7f),
+                    contentAlignment = Alignment.Center,
+                ) {
                     // 空态两出口：都去模型页（导入本地文件 / 从推荐列表下载）。
                     // 本应用为纯端侧运行，无远程端点可配。
-                    GlassEmptyState(
-                        title = "开始一段对话",
-                        subtitle = "先在「模型」页导入 .litertlm / .task，或从推荐列表下载",
-                        actions = listOf(
-                            GlassEmptyStateAction(label = "导入本地模型", onClick = onOpenModels),
-                            GlassEmptyStateAction(label = "下载推荐模型", onClick = onOpenModels),
-                        ),
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        GlassEmptyState(
+                            title = "开始一段对话",
+                            subtitle = "先在「模型」页导入 .litertlm / .task，或从推荐列表下载",
+                            actions = listOf(
+                                GlassEmptyStateAction(label = "导入本地模型", onClick = onOpenModels),
+                                GlassEmptyStateAction(label = "下载推荐模型", onClick = onOpenModels),
+                            ),
+                            // 横屏紧凑档：40dp 上下留白在 344dp 高的窗口里会把两个
+                            // 出口按钮顶出视口（真机：按钮被切成半截）。实测列表视口
+                            // ≈138dp（344 − 顶栏 72 − 输入区 90 − 列表 contentPadding 24），
+                            // 内容 = 标题 24 + 副标题 18 + 按钮 48 + 两处 8 间距 = 106dp
+                            // ⇒ 留白只能给 12dp（106 + 24 = 130 < 138），16dp 会正好贴边
+                            // 把按钮下缘切掉一条（真机复测）。
+                            verticalPadding = if (compactHeight) 12.dp else 40.dp,
+                        )
+                    }
                 }
             }
         }

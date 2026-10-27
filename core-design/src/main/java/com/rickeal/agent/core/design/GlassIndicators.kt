@@ -22,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /** 思考中的三点呼吸指示器（错相位 + 缩放，不用线性位移）。 */
@@ -93,12 +94,20 @@ fun GlassEmptyState(
      */
     actions: List<GlassEmptyStateAction> = emptyList(),
     action: (@Composable () -> Unit)? = null,
+    /**
+     * 竖向内边距。默认 40dp 是竖屏的呼吸量；**横屏手机（窗口高 COMPACT）必须收到
+     * 16dp 一档** —— 实测 344dp 高的窗口里正文可视区只剩 ≈200dp，40dp 上下留白
+     * 会把两个出口按钮顶出视口（真机截图：按钮被切成半截）。
+     * 调用方按 `WindowSizeClass.height` 传值，本组件不自读窗口尺寸（core-design
+     * 的纯展示组件不依赖窗口状态，便于预览与复用）。
+     */
+    verticalPadding: Dp = 40.dp,
 ) {
     val colors = LocalGlassColors.current
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 32.dp, vertical = 40.dp),
+            .padding(horizontal = 32.dp, vertical = verticalPadding),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {

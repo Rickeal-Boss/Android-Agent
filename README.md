@@ -570,10 +570,10 @@ Android-Agent/
 
 ### 📸 现状快照（2026-10-27，收尾时点）
 
-> **活数字（每波收官重测，勿誊抄）**：`@Test` **874**（= `build.yml` 用例基线，严格口径）｜
+> **活数字（每波收官重测，勿誊抄；W88 时点）**：`@Test` **881**（= `build.yml` 用例基线，严格口径）｜
 > arch-guard **59 条**机械守卫｜selftest 全量由 CI 兜（本地只跑 `--only` / `--affected` 子集）｜
-> fulltest **874 / 0 / 0**（9 模块）｜lint **0 新增**（baseline 门禁，冻结值只许缩不许涨）｜
-> `docs/15` **active 19** 条｜**0 tag**｜`main` 落后 `core-fix` **727 commits**。
+> fulltest **881 / 0 / 0**（9 模块）｜lint **0 新增**（baseline 门禁，冻结值只许缩不许涨）｜
+> `docs/15` **active 19** 条｜**0 tag**｜`main` 落后 `core-fix` 见 `git rev-list`。
 > **CI 实证**：`build.yml` run **`40506931622`**（head `b9716d7`）三 job 全 success；
 > `release.yml` dispatch run **`40498254820`** 全 success（R8 + 签名轨首次见光）。
 
@@ -583,8 +583,14 @@ Android-Agent/
 > - **W86 = 保护面覆盖度（从 0 到 1）**：落盘异常单点收口（92 处 `Scope.launch` 的覆盖面）／
 >   sha256 锚点 **13 / 14** 通电 + 三态分流（`MATCH` / `MISMATCH` / `UNREADABLE`）／
 >   拆分脱闸入闸（**#59 / #60**）／软守卫接 CI advisory。
+> - **W87 = 收尾就绪度**：R8 + 签名轨在 `core-fix` 上首次见光且全绿（run `40498254820`）／
+>   README 现状快照 + canonical 三处口径合一／新增 `AGENTS.md` + `docs/16` + `docs/17`／
+>   三份外审的过期处方按现役树证伪（C-3 / N-A / C-2）。
+> - **W88 = UI 收尾（用户点名的最后一波）**：按钮动效（`reduceMotion` 语义反转 + 分段控件真按压 + 双影通道）／
+>   推理参数覆盖层**跟手拖拽退出**且位移·压暗·模糊同源／横屏手机全量适配（工作区面板恢复、弹窗 actions 可达、
+>   页签 5 项不再溢出、空态不再被裁）。
 
-> **接手指针**：最新交接 = [`docs/handoff-20261026-wave86-coverage.md`](docs/handoff-20261026-wave86-coverage.md)；
+> **接手指针**：最新交接 = [`docs/handoff-20261027-wave88-ui.md`](docs/handoff-20261027-wave88-ui.md)；
 > 挂账权威 = [`docs/15-backlog.md`](docs/15-backlog.md)（四态 active / parked / closed-done / closed-dead）；
 > 已知限制（有意不做） = [`docs/17-known-limitations.md`](docs/17-known-limitations.md)；
 > agent 作业契约 = [`AGENTS.md`](AGENTS.md)。

@@ -312,6 +312,18 @@ private fun glassCornerRadiusPx(size: Size, cornerRadiusPx: Float, capsule: Bool
 /**
  * 液态按压反馈：按下时整体缩放到 pressScale 再回弹。
  * 与 `liquidGlass` 组合使用即可获得 iOS 26/27 的"果冻"手感。
+ *
+ * ## 三个刻意的写法（W88 订正）
+ *
+ * 1. **不 `by` 委托**：`by` 会在**组合期**把 State 读成 Float ⇒ 按压动画每帧重组整条
+ *    modifier 链（连带调用方的 content）。这里持有 State，把 `.value` 的读取推迟到
+ *    `graphicsLayer {}` 的绘制期 lambda ⇒ 每帧只失效绘制。与 `GlassSurface.kt:99-107`
+ *    的既有纪律同款（那里写着「刻意不用 by 委托」，本文件此前是反例）。
+ * 2. **`visibilityThreshold = 0.001f`**：`animateFloatAsState` 的 Float 默认阈值是 0.01，
+ *    而本动画的量程只有 `1 - pressScale ≈ 0.035` ⇒ 最后约 29% 的行程会被阈值直接截断
+ *    （表现为"回弹尾巴被砍掉一截"，真机上比数字更难察觉）。缩小到 0.001 即完整收敛。
+ * 3. **按下与松开共用一条弹簧是有意的**：松手即回弹是需求本身（果冻手感的来源），
+ *    不是"忘了分开两档"。不要改成按下快、松手慢的两段式 —— 那会让松手像"泄气"。
  */
 @Composable
 fun Modifier.liquidPress(
@@ -320,13 +332,22 @@ fun Modifier.liquidPress(
 ): Modifier {
     val motion = LocalLiquidMotion.current
     val pressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
+    val scale = animateFloatAsState(
         targetValue = if (enabled && pressed) motion.pressScale else 1f,
         animationSpec = LiquidMotion.floatSpring(motion),
+        visibilityThreshold = PRESS_VISIBILITY_THRESHOLD,
         label = "liquidPress",
     )
     return this.graphicsLayer {
-        scaleX = scale
-        scaleY = scale
+        // 绘制期取值（不是组合期的 Float）：每帧只失效绘制，不重组。
+        val s = scale.value
+        scaleX = s
+        scaleY = s
     }
 }
+
+/**
+ * 按压缩放动画的收敛阈值（见 [liquidPress] 的 KDoc 第 2 条）。
+ * 0.001 相对 0.035 的量程 ≈ 2.9% ⇒ 视觉上完整收敛，又不会为了追最后一位小数多跑几帧。
+ */
+private const val PRESS_VISIBILITY_THRESHOLD = 0.001f

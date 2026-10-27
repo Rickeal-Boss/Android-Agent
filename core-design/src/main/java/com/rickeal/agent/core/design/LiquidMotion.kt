@@ -43,8 +43,34 @@ private const val ExpressiveDampingRatio = 0.55f
 object LiquidMotion {
     val Default = LiquidMotionSpec()
 
-    /** M3E spatial 档：大位移用，慢而稳，几乎不过冲。 */
+    /**
+     * M3E spatial 档：大位移用，慢而稳，几乎不过冲。
+     *
+     * ⚠️ **当前无消费方**（2026-10-27 核实：全仓零引用）。更关键的是：**不要**再拿它当
+     * `reduceMotion` 的替代档 —— 历史上 `LiquidAgentTheme` 把 `reduceMotion = true` 映射到
+     * 本档（stiffness 50），而 `Default` 是 400 ⇒ **打开「减少动效」反而慢 8 倍**，
+     * 与开关语义完全相反。`reduceMotion` 的正确映射是 [Instant]（近瞬时到位）。
+     */
     val Gentle = LiquidMotionSpec(stiffness = Spring.StiffnessVeryLow, dampingRatio = 0.95f)
+
+    /**
+     * `reduceMotion` 专用：**近瞬时到位**（≈30ms），语义是**去掉动画**而不是放慢动画。
+     *
+     * 判据与踩过的坑：`LiquidAgentTheme` 曾把 `reduceMotion = true` 映射到 [Gentle]
+     * （`StiffnessVeryLow` = 50，而 `Default` 是 400）⇒ 用户打开「减少动效」后所有读
+     * `LocalLiquidMotion` 的路径（GlassSurface 按压、LiquidDialog 进场、GlassSegmented
+     * 选中缩放、GlassTextField 聚焦、OverlayBackdropBlur）**慢了 8 倍**。
+     * 本仓早有正确写法的先例：`OverlayBackdropBlur.kt` 在 reduceMotion 下直接
+     * `snapTo(target)`、`LiquidAgentApp` 用 `tween(if (reduceMotion) 0 else ...)`。
+     *
+     * 取 `stiffness = 1e5f` + `DampingRatioNoBouncy`（临界阻尼）：ω ≈ 316 rad/s，
+     * 感知收敛 ≈1~2 帧（≈30ms），既不会出现"跳变"的观感断裂，也不会被用户感知为动画。
+     * **不要**调低这个刚度去"柔化"reduceMotion —— 那等于把语义再改回"放慢"。
+     */
+    val Instant = LiquidMotionSpec(
+        stiffness = 100_000f,
+        dampingRatio = Spring.DampingRatioNoBouncy,
+    )
 
     /** M3E effects 档：小反馈用，快而弹。 */
     val Snappy = LiquidMotionSpec(stiffness = Spring.StiffnessMedium, dampingRatio = 0.68f)

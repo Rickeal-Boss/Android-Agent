@@ -64,7 +64,6 @@ import com.rickeal.agent.core.design.LocalOverlayBlurState
 import com.rickeal.agent.core.design.OverlayBlurScope
 import com.rickeal.agent.core.design.overlayBackdropBlur
 import com.rickeal.agent.core.design.rememberGlassHaptics
-import com.rickeal.agent.core.design.rememberOverlayBlurProgress
 import com.rickeal.agent.core.design.rememberWindowSizeClass
 import com.rickeal.agent.core.model.AgentLogStore
 import com.rickeal.agent.core.model.ModelModality
@@ -130,10 +129,15 @@ fun ChatScreen(
             onDispose { }
         }
     }
-    val panelBlurProgress = rememberOverlayBlurProgress(
-        active = { panelOpen },
-        enabled = panelBlurEnabled,
-    )
+    // W88 议题 3：模糊进度改为**与面板位移同源**。
+    // 改前是 `rememberOverlayBlurProgress(active = { panelOpen })` 起一条独立弹簧 ——
+    // 面板自身的位移走 AnimatedVisibility 的 tween、模糊走另一条弹簧，两条时间线
+    // 在拖动/回弹期必然错拍（面板已经拖下去了、背景还糊着）。现在位移、scrim 压暗、
+    // 背景模糊三者都读同一个 `SheetDragHandle.progress`，物理上不可能脱节。
+    // 句柄由本屏创建并下传：面板是常驻挂载的模糊修饰符的**兄弟**节点，
+    // 只有共用同一个实例才能同源。默认值 0f ⇒ 从未打开过面板时整屏不糊。
+    val sheetDragHandle = remember { SheetDragHandle() }
+    val panelBlurProgress: () -> Float = remember(sheetDragHandle) { { sheetDragHandle.progress } }
 
     val pickImage = rememberImagePicker { uri, name -> viewModel.onAttachImage(uri, name) }
     val pickAudio = rememberAudioPicker { uri, name -> viewModel.onAttachAudio(uri, name) }
@@ -163,7 +167,7 @@ fun ChatScreen(
             .overlayBackdropBlur(
                 progress = panelBlurProgress,
                 radius = glassCfgForBlur.overlayBlurRadius.dp,
-                enabled = glassCfgForBlur.enableBackdropBlur,
+                enabled = panelBlurEnabled,
             ),
         topBar = {
             GlassTopBar(
@@ -721,6 +725,8 @@ fun ChatScreen(
             onParamPreview = viewModel::onParamPreview,
             onParamCommit = viewModel::onParamCommit,
             onParamChange = viewModel::onParamChangeWith,
+            // 与上面 overlayBackdropBlur 读的是**同一个**句柄 ⇒ 位移/压暗/模糊同源。
+            dragHandle = sheetDragHandle,
             modifier = Modifier.fillMaxSize(),
         )
     }

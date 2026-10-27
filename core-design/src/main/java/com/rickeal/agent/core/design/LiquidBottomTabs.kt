@@ -33,7 +33,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -145,7 +144,7 @@ data class TabSpec(
  *  - 可见行刻意**不含** velocity 各向异性项（那是胶囊 layerBlock 里额外的乘除）：
  *    双影只在按压（含点住）时可见，拖动期注册无意义。
  */
-private val LocalLiquidBottomTabScale = staticCompositionLocalOf<(Boolean) -> Float> { { _ -> 1f } }
+private val LocalLiquidBottomTabScale = LocalPressScaleRegistration
 
 /**
  * 真·LiquidBottomTabs：**选中指示胶囊随选中项横向滑动**的底部页签。
@@ -624,9 +623,12 @@ fun LiquidBottomTabs(
 
             // 高光中心跟随"胶囊当前位置"而不是手指落点 —— 手指在哪不重要，
             // 玻璃胶囊滑到哪，高光就在哪。
-            val interactiveHighlight = remember(animationScope) {
+            // reduceMotion 进 remember key：翻开关时要重建实例，否则按压/归位仍旧走弹簧。
+            val tabsReduceMotion = LocalGlassConfig.current.reduceMotion
+            val interactiveHighlight = remember(animationScope, tabsReduceMotion) {
                 InteractiveHighlight(
                     animationScope = animationScope,
+                    reduceMotion = tabsReduceMotion,
                     position = { size, _ ->
                         // 与胶囊 translationX 同一套钳制（见下方 renderValue 注释）。
                         val v = dampedDragAnimation.value.coerceIn(0f, (tabsCount - 1).toFloat())

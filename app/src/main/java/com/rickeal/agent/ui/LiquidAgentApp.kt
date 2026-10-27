@@ -101,6 +101,7 @@ import com.rickeal.agent.core.design.LocalOverlayBlurState
 import com.rickeal.agent.core.design.LocalWallpaperImage
 import com.rickeal.agent.core.design.OverlayBlurState
 import com.rickeal.agent.core.design.TabSpec
+import com.rickeal.agent.core.design.WindowHeightClass
 import com.rickeal.agent.core.design.WindowSizeClass
 import com.rickeal.agent.core.design.WindowWidthClass
 import com.rickeal.agent.core.design.overlayBackdropBlur
@@ -470,7 +471,12 @@ private fun MainShell() {
         //    所在页保持一致才是自洽的。
         // `selected` 由上方回退栈派生（:302，同一 composable 作用域）：页签切换 /
         // 导航变化才变，组合期读它的重组频率低，可接受。
-        gesturesEnabled = !windowSize.useTwoPane && selected == TopDestination.CHAT,
+        // W88：横屏手机（w≥MEDIUM 但 h=COMPACT）仍要有抽屉 —— 它与平板同宽但不是
+        // 平板：Rail 只是页签入口，会话列表与工作区面板在横屏没有别的落点。
+        // 判据与下面 chatGraph 的 onOpenDrawer / onOpenWorkspace 必须**逐字同源**，
+        // 否则会出现"有汉堡但滑不出抽屉"或反之。
+        gesturesEnabled = (!windowSize.useTwoPane || windowSize.isLandscapePhone) &&
+            selected == TopDestination.CHAT,
         drawerContent = {
             // 宽屏也照常 compose（只是永远关着、且禁用侧滑）：ModalNavigationDrawer 内部
             // 要 measure 它的 drawerContent，给空内容会在取首个子项时炸；而为了宽屏不 compose
@@ -693,7 +699,8 @@ private fun MainShell() {
                                 onOpenSettings = { navController.navigateTop(SettingsRoute.build()) },
                                 // 汉堡只在 COMPACT 出现：宽屏没有抽屉（Rail 就是入口），
                                 // 传 null ⇒ ChatScreen 顶栏不渲染该图标。
-                                onOpenDrawer = if (windowSize.useTwoPane) {
+                                // W88：横屏手机不再丢抽屉（理由见 gesturesEnabled 处）。
+                                onOpenDrawer = if (windowSize.useTwoPane && !windowSize.isLandscapePhone) {
                                     null
                                 } else {
                                     { drawerScope.launch { drawerState.open() } }
@@ -701,7 +708,10 @@ private fun MainShell() {
                                 // 「工作区」入口（Wave 40 G1）：同汉堡的判据形态 —— 宽屏
                                 // 传 null（不渲染入口、不做右滑面板），COMPACT 打开右侧覆盖层。
                                 // 首次打开才置真 workspaceRequested ⇒ VM（init 扫盘）此刻才创建。
-                                onOpenWorkspace = if (windowSize.useTwoPane) {
+                                // W88：横屏手机必须保留工作区面板 —— 抽屉有 Rail 替代，
+                                // 工作区面板**没有任何替代入口**，此前被 useTwoPane 一并砍掉
+                                // 等于整个功能在横屏消失（真机复现：横屏无「工作区」图标）。
+                                onOpenWorkspace = if (windowSize.useTwoPane && !windowSize.isLandscapePhone) {
                                     null
                                 } else {
                                     {
@@ -752,7 +762,7 @@ private fun MainShell() {
             // overlayBackdropBlur）会把 Row 的子树一起糊掉（Compose 没有「反模糊」），
             // 面板会被自己触发的模糊糊掉。层级推导见 OverlayBackdropBlur.kt 的类 KDoc。
             // 宽屏不组合：useTwoPane 下没有右滑面板（入口传 null、手势判据也排除）。
-            if (!windowSize.useTwoPane) {
+            if (!windowSize.useTwoPane || windowSize.isLandscapePhone) {
                 WorkspaceOverlay(
                     state = workspaceState,
                     viewModel = workspaceViewModel,
@@ -1135,8 +1145,18 @@ private fun GlassNavRail(
     // ≈19dp、132dp 档 ≈35dp。取 28dp / 36dp = 覆盖侵入量后再留一档呼吸空间。
     // 用显式 when 而不是 railWidth 系数换算：这两个值是从胶囊几何推出来的离散档位，
     // 不是线性关系 —— 写成 `railWidth * k` 会让读者误以为连续可调，反而藏住推导。
-    val contentVerticalPad = when (windowSize.width) {
-        WindowWidthClass.EXPANDED -> 36.dp
+    // 横屏手机（h=COMPACT，实测 344dp）的高度预算（W88 真机修正）：
+    //   可用 = 344 − 外层 vertical padding 24 − 2×contentVerticalPad
+    //   需要 = 5 项 × 48（触控纪律，不因横屏缩小） + 4 个 4dp 间距 = 256dp
+    // 取 contentVerticalPad = 12dp ⇒ 可用 296dp > 256dp，**5 项全部可见**。
+    // 此前 28dp + 标题（≈28dp）+ 6dp 间距 ⇒ 需要 ≈310dp > 264dp，真机上「设置」
+    // 被挤到屏外，必须先滚动导航栏才能切页（已复现）。
+    // ⚠️ 只压缩内边距与间距、**不动 48dp 触控目标**；标题在 COMPACT 高度下不渲染
+    // （它只是品牌字，横屏的空间要留给可点项）。
+    val compactHeight = windowSize.height == WindowHeightClass.COMPACT
+    val contentVerticalPad = when {
+        compactHeight -> 12.dp
+        windowSize.width == WindowWidthClass.EXPANDED -> 36.dp
         else -> 28.dp
     }
     // 横屏（MEDIUM）高度预算放不下「图标 + 文字」，只显示图标（推导见类 KDoc「2」）。
@@ -1156,14 +1176,16 @@ private fun GlassNavRail(
             modifier = Modifier
                 .fillMaxHeight()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compactHeight) 4.dp else 6.dp),
         ) {
-            Text(
-                text = "Liquid",
-                style = MaterialTheme.typography.titleSmall,
-                color = colors.onGlass,
-                modifier = Modifier.padding(start = 6.dp, bottom = 8.dp),
-            )
+            if (!compactHeight) {
+                Text(
+                    text = "Liquid",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = colors.onGlass,
+                    modifier = Modifier.padding(start = 6.dp, bottom = 8.dp),
+                )
+            }
             for (destination in TopDestination.entries) {
                 NavDestinationItem(
                     destination = destination,
@@ -1209,7 +1231,11 @@ private fun NavDestinationItem(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val animationScope = rememberCoroutineScope()
-    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope) }
+    // reduceMotion 进 remember key（见 InteractiveHighlight 的 KDoc）：翻开关要重建实例。
+    val navReduceMotion = LocalGlassConfig.current.reduceMotion
+    val interactiveHighlight = remember(animationScope, navReduceMotion) {
+        InteractiveHighlight(animationScope, reduceMotion = navReduceMotion)
+    }
     // 局部别名：semantics 块里赋值目标（selected 语义属性）与参数同名，避免误读。
     val isSelected = selected
 

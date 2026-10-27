@@ -2,6 +2,8 @@ package com.rickeal.agent.core.design
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -53,6 +56,7 @@ import com.rickeal.agent.core.design.liquid.shadow.Shadow
 import com.rickeal.agent.core.design.liquid.shapes.Capsule
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -328,21 +332,35 @@ private fun SegmentedIndicator(
             },
     ) {
         /* ── 1. 可见行：纯文字 + clickable（无自身玻璃、无手势）──────────── */
-        Row(modifier = Modifier.fillMaxWidth()) {
-            items.forEachIndexed { index, item ->
-                SegmentItem(
-                    text = item,
-                    selected = index == currentIndex,
-                    enabled = enabled,
-                    onClick = {
-                        currentIndex = index
-                        // 用户动作位点直发（与 LiquidBottomTabs 同款，见收集器注释）。
-                        onSelectedCallback(index)
-                        // 点击换项 → 一次 tick（与拖动换项同规格）。
-                        currentHaptics.tick()
-                    },
-                    modifier = Modifier.weight(1f),
-                )
+        // 双影注册（W88）：胶囊按压时会被 DDA 放大到 60/48 = 1.25×，而折射层会把
+        // 回显行按同一 compound 再画一遍 ⇒ 真实文字 1.0× 与折射拷贝 1.25× 错位，
+        // 就是用户看到的"重影"。这里把胶囊的实时 scaleY 下发给可见行，
+        // 让真实文字跟着一起放大，两份逐帧对齐。
+        // 注册条件与 LiquidBottomTabs 同口径：**只有真选中格、且胶囊确实压在它上面**
+        // （拖动途中胶囊在别的格上，此时放大会让文字与胶囊一起"错位地变大"）。
+        CompositionLocalProvider(
+            LocalPressScaleRegistration provides { registered ->
+                val capsuleOnSelected =
+                    abs(dampedDragAnimation.value - currentIndex) < 0.5f
+                if (registered && capsuleOnSelected) dampedDragAnimation.scaleY else 1f
+            },
+        ) {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                items.forEachIndexed { index, item ->
+                    SegmentItem(
+                        text = item,
+                        selected = index == currentIndex,
+                        enabled = enabled,
+                        onClick = {
+                            currentIndex = index
+                            // 用户动作位点直发（与 LiquidBottomTabs 同款，见收集器注释）。
+                            onSelectedCallback(index)
+                            // 点击换项 → 一次 tick（与拖动换项同规格）。
+                            currentHaptics.tick()
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
 
@@ -522,11 +540,30 @@ private fun SegmentItem(
     val tokens = LocalGlassTokens.current
     val motion = LocalLiquidMotion.current
 
-    val pressScale by animateFloatAsState(
+    // ⚠️ 语义订正（W88）：旧代码把这个值叫 `pressScale`，但它的 targetValue 是
+    // `if (selected) 1f else 0.94f` —— 那是**选中态**缩放，与按压无关。
+    // 名字骗人 + 点未选中项毫无反馈，是本轮用户反馈"按钮没有回弹"的一部分。
+    val selectedScale by animateFloatAsState(
         targetValue = if (selected) 1f else 0.94f,
         animationSpec = LiquidMotion.floatSpring(motion),
-        label = "segmentScale",
+        label = "segmentSelectedScale",
     )
+    // 真·按压反馈：按下 0.97、松手回弹。挂在 interactionSource 上而不是再挂一层
+    // InteractiveHighlight.gestureModifier —— 分段控件的拖拽手势已经独占在
+    // matchParentSize 的静态宿主上（见本文件上方"坐标反馈"注释），
+    // 再加一层手势会与它抢事件（历史坑：InteractiveHighlight.kt:97-111）。
+    val pressInteraction = remember { MutableInteractionSource() }
+    val pressed by pressInteraction.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (enabled && pressed) 0.97f else 1f,
+        animationSpec = LiquidMotion.floatSpring(motion),
+        // 量程只有 0.03：默认阈值 0.01 会截掉最后 1/3 的回弹行程。
+        visibilityThreshold = 0.001f,
+        label = "segmentPressScale",
+    )
+    // 双影注册值（见 LocalPressScaleRegistration 的 KDoc）。**在 graphicsLayer 里调用**
+    // 而不是组合期读：它逐帧变化，组合期读会让这个 Text 每帧重组。
+    val pressScaleRegistration = LocalPressScaleRegistration.current
     val textColor = if (selected) colors.onGlass else colors.onGlassSubtle
 
     Box(
@@ -534,7 +571,7 @@ private fun SegmentItem(
             .then(
                 if (enabled) {
                     Modifier.clickable(
-                        interactionSource = null,
+                        interactionSource = pressInteraction,
                         indication = null,
                         role = Role.Button,
                         onClick = onClick,
@@ -560,8 +597,11 @@ private fun SegmentItem(
             // graphicsLayer 缩放的是其后的绘制，若挂外层会把 48dp 命中区也缩掉
             //（0.94 → 实际命中 45dp，违反触摸目标标准）；挂内层只缩视觉不缩命中。
             modifier = Modifier.graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
+                // 三个量相乘：选中态（0.94/1.0）× 按压（0.97/1.0）× 双影注册（胶囊 scaleY）。
+                // 注册项在 draw 阶段读 ⇒ 按压逐帧变化只失效绘制，不重组。
+                val s = selectedScale * pressScale * pressScaleRegistration(selected)
+                scaleX = s
+                scaleY = s
             },
             textAlign = TextAlign.Center,
         )

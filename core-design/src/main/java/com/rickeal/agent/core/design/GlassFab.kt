@@ -36,7 +36,17 @@ fun GlassFab(
     val colors = LocalGlassColors.current
     val tokens = LocalGlassTokens.current
     val animationScope = rememberCoroutineScope()
-    val interactiveHighlight = remember(animationScope) { InteractiveHighlight(animationScope, continuousOnVertical = true) }
+    // reduceMotion 必须进 remember key：只当参数传进去的话，用户在设置页翻开关时
+    // 已有实例不会重建，按压/归位仍旧走弹簧（开关"不生效"）。取值本身是 CompositionLocal
+    // 读取，重组时自然拿到新值。
+    val reduceMotion = LocalGlassConfig.current.reduceMotion
+    val interactiveHighlight = remember(animationScope, reduceMotion) {
+        InteractiveHighlight(
+            animationScope = animationScope,
+            continuousOnVertical = true,
+            reduceMotion = reduceMotion,
+        )
+    }
     val showLabel = expanded && !label.isNullOrBlank()
 
     Row(

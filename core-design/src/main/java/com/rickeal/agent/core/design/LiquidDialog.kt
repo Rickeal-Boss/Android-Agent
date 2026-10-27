@@ -6,9 +6,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -27,6 +30,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
@@ -194,12 +198,22 @@ fun LiquidDialog(
             val radius = tokens.radiusXl
             val radiusPx = with(density) { radius.toPx() }
             val hasHeader = icon != null || title != null || subtitle != null
+            // W88 横屏修正：本组件此前**没有任何高度上限**，Column 是 wrapContent
+            // ⇒ 内容一高（`RecommendedModelDialog` 的列表 + 头部 + 按钮 ≈570dp）
+            // 在横屏 344dp 的窗口里就把 actions 推出屏幕，用户**够不到「取消」**
+            // —— 与 `ConsentScreens` 那次「按钮被顶出屏幕只能杀进程」同型事故。
+            // 取窗口高 90%：留 10% 让遮罩仍然可见（否则弹窗贴满上下边，
+            // 用户会以为整屏都是弹窗）。
+            @Suppress("ConfigurationScreenWidthHeight")
+            val maxDialogHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.9f)
 
             Column(
                 modifier = modifier
                     .fillMaxWidth()
                     // 屏幕左右各留 20dp：玻璃只覆盖弹窗本体，不铺满全屏。
                     .padding(horizontal = 20.dp)
+                    // 高度上限（见上）：短内容弹窗触发不到，行为零变化。
+                    .heightIn(max = maxDialogHeight)
                     .drawBackdrop(
                         backdrop = EmptyBackdrop,
                         shape = { RoundedCornerShape(radius) },
@@ -284,7 +298,16 @@ fun LiquidDialog(
                             }
                         }
                     }
-                    Box(modifier = Modifier.padding(top = if (hasHeader) 12.dp else 0.dp)) {
+                    // 内容区可滚 + 弹性占位（W88）：超过上限时**只有内容区**滚动，
+                    // 头部与 actions 恒在可视区内（这是"够不到按钮"的真正解法 ——
+                    // 整块 Column 一起滚的话，用户仍可能停在按钮看不见的位置）。
+                    // weight(fill = false)：内容短时保持原高度（不拉伸），长时吃掉剩余空间。
+                    Box(
+                        modifier = Modifier
+                            .padding(top = if (hasHeader) 12.dp else 0.dp)
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
                         content()
                     }
                     if (actions != null) {

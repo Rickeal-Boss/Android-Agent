@@ -112,12 +112,22 @@ private const val VERTICAL_INTENT_TAN30 = 0.577f
  * @param position 高光中心的计算方式。默认跟随手指落点；
  *   需要让高光跟随**别的状态**（例如 BottomTabs 跟随选中项而不是手指）时传入自定义实现。
  * @param continuousOnVertical 纵向拖动时是否保持跟手（见上）。纯视觉控件传 true。
+ * @param reduceMotion 是否去掉按压/归位的弹簧动画（见 [setPressed] 与 [gestureModifier]
+ *   的 `finally` 分支）。**默认 false = 逐字节保持既有行为**；所有调用点必须显式传
+ *   `LocalGlassConfig.current.reduceMotion` —— 默认值只作编译兜底，勿依赖。
+ *
+ *   ⚠️ 刻意**不**把 `LiquidMotionSpec` 做成构造参数（方案 1.3-A② 的原写法）：`PressSpring` /
+ *   `OffsetSettleSpring` 的 `spring(0.5f, 300f)` 是 2026-09-26 真机验证过的果冻手感，
+ *   任何"默认值 = 现值"的等价改写都只能靠注释保证；一旦默认值与现值不等（例如默认取
+ *   `LiquidMotion.Default` 的 400/0.82），忘记传参的调用点就会**静默变手感**。
+ *   这里只加一个布尔开关，弹簧数值一个字不动。
  */
 @Stable
 class InteractiveHighlight(
     private val animationScope: CoroutineScope,
     private val position: ((size: Size, offset: Offset) -> Offset)? = null,
     private val continuousOnVertical: Boolean = false,
+    private val reduceMotion: Boolean = false,
 ) {
 
     private val pressAnimatable = Animatable(0f)
@@ -316,12 +326,21 @@ class InteractiveHighlight(
                 setPressed(false)
                 rawOffsetX = 0f
                 rawOffsetY = 0f
-                // 松手归零走**欠阻尼**弹簧（上游 `animateTo(startPosition, spring(0.5,300))`）：
-                // 元素从手指位置弹回原位、带一次轻微过冲 —— 果冻手感的第二个来源。
-                // 本仓旧实现用默认 spec（临界阻尼）= 单调归零，没有弹动。
-                animationScope.launch {
-                    offsetXAnimatable.animateTo(0f, OffsetSettleSpring)
-                    offsetYAnimatable.animateTo(0f, OffsetSettleSpring)
+                if (reduceMotion) {
+                    // reduceMotion：归位也是「去掉动画」—— 直接归零，不留任何回弹尾巴。
+                    // 用 snapTo 而不是把弹簧调硬：调硬仍是一条动画时间线（且要维护第二套数值）。
+                    animationScope.launch {
+                        offsetXAnimatable.snapTo(0f)
+                        offsetYAnimatable.snapTo(0f)
+                    }
+                } else {
+                    // 松手归零走**欠阻尼**弹簧（上游 `animateTo(startPosition, spring(0.5,300))`）：
+                    // 元素从手指位置弹回原位、带一次轻微过冲 —— 果冻手感的第二个来源。
+                    // 本仓旧实现用默认 spec（临界阻尼）= 单调归零，没有弹动。
+                    animationScope.launch {
+                        offsetXAnimatable.animateTo(0f, OffsetSettleSpring)
+                        offsetYAnimatable.animateTo(0f, OffsetSettleSpring)
+                    }
                 }
             }
         }
@@ -340,12 +359,21 @@ class InteractiveHighlight(
      * 同一状态，不会打架。其余 7 个消费点不受影响（纯增量公开，函数体未动）。
      */
     fun setPressed(pressed: Boolean) {
+        val target = if (pressed) 1f else 0f
         animationScope.launch {
-            pressAnimatable.animateTo(
-                targetValue = if (pressed) 1f else 0f,
-                // 欠阻尼（上游 0.5/300）：按下/松手都带过冲收敛 —— 果冻手感来源之一。
-                animationSpec = PressSpring
-            )
+            if (reduceMotion) {
+                // reduceMotion = 去掉动画（语义见 LiquidMotion.Instant 的 KDoc）：
+                // 按压/松手的形变瞬时到位，不再有果冻过冲。
+                // ⚠️ 只影响按压进度；拖动中的瞬时跟手（上面 gestureModifier 的
+                // `snapTo(rawOffset)`）本来就无动画，保持不变 —— 拖拽不是动画。
+                pressAnimatable.snapTo(target)
+            } else {
+                pressAnimatable.animateTo(
+                    targetValue = target,
+                    // 欠阻尼（上游 0.5/300）：按下/松手都带过冲收敛 —— 果冻手感来源之一。
+                    animationSpec = PressSpring
+                )
+            }
         }
     }
 }
