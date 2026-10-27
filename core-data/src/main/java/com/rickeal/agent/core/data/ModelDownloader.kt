@@ -368,7 +368,7 @@ class ModelDownloader(private val context: Context) {
             }
             Sha256Check.UNREADABLE -> {
                 AgentLogStore.error(
-                    "模型下载完整性校验**无法完成**（IO 错误，不是摘要不符）：两次读取均失败，" +
+                    "模型下载完整性校验「无法完成」（IO 错误，不是摘要不符）：两次读取均失败，" +
                         "本次放行但该文件未经校验。文件：${file.absolutePath}",
                 )
                 true
@@ -401,7 +401,19 @@ class ModelDownloader(private val context: Context) {
         }
     }
 
-    /** `model.litertlm` 与 `model-1.litertlm` 都归一成 `model.litertlm`（DownloadManager 的重名规则）。 */
+    /**
+     * `model.litertlm` 与 `model-1.litertlm` 都归一成 `model.litertlm`（DownloadManager 的重名规则）。
+     *
+     * ⚠️ **贪婪误剥（W87-07：只写纪律，刻意不改行为）**：`^(.*)-\d+(\.[^.]+)$` 里的 `.*`
+     * 是贪婪的 ⇒ 任何以 `-<数字>` **结尾**的文件名都会被剥掉尾巴
+     * （`foo-2.litertlm` → `foo.litertlm`）。后果不是崩溃而是**静默失配**：
+     * [deletePartFiles] 漏删孤儿 `.part`（攒成 GB 级垃圾）、[promotePartFile] 的 `-N`
+     * 兜底匹配不到自己那一份。
+     * ⇒ 纪律：**预设文件名不得以 `-<数字>` 结尾**（尾部 `-数字` 是 DownloadManager 改名
+     * 产物的专用形态，不能被预设自身占用）。现役 14 条**实测零踩雷**（14/14 过本正则后
+     * 逐字不变；清单与判据见 `ModelPresets` 文件头的「文件名纪律」段）。
+     * 收尾期**刻意不改正则行为**（改行为风险高于收益），故此处只留纪律。
+     */
     private fun stripDuplicateSuffix(name: String): String {
         val match = Regex("^(.*)-\\d+(\\.[^.]+)$").find(name) ?: return name
         return match.groupValues[1] + match.groupValues[2]

@@ -64,21 +64,30 @@ internal object CrashSceneLogger {
     private const val STACK_FRAME_LIMIT = 6
 
     /**
-     * 单行落盘预算（字符）。
+     * 脱敏增长余量（字符）。
      *
-     * 出口 `AgentLogStore` 的 `MAX_MESSAGE_CHARS` = 400，且它的顺序是**先脱敏再截断**
-     * （`sanitize`：`secretPattern.replace` → 再比 400）。脱敏会让行**变长**
-     * （`?key=x`(7) → `?key=***`(8)，每处 +1 字符）⇒ 若本对象按 400 组装，
+     * 出口 [AgentLogStore] 的顺序是**先脱敏再截断**（`sanitize`：`secretPattern.replace`
+     * → 再比 [AgentLogStore.MAX_MESSAGE_CHARS]）。脱敏会让行**变长**
+     * （`?key=x`(7) → `?key=***`(8)，每处 +1 字符）⇒ 若本对象按出口上限组装，
      * 一条含 1 处 secret 的行就会在出口被截掉尾部 1 字符 —— 「本对象产出的每行都
-     * 永不触发截断」这个承诺**不成立**（W84 审查 P3-2 实证）。
-     *
-     * 故取 **396 = 400 − 4**，把 4 字符余量留给脱敏增长（覆盖同一行 ≤4 处 secret 的
-     * 常见形态）。⚠️ 如实申报边界：一行含 **>4 处** secret 的极端形态仍可能在出口被
-     * 截尾 —— 那是脱敏降级后的行，可接受，且不影响「条数承诺」（一条日志始终只占一行）。
-     *
-     * `MAX_MESSAGE_CHARS` 是 `private`，跨模块取不到，故在此复写：**两边必须同步改**。
+     * 永不触发截断」这个承诺**不成立**（W84 审查 P3-2 实证）。取 4 = 覆盖同一行
+     * ≤4 处 secret 的常见形态。
      */
-    private const val LOG_LINE_BUDGET = 396
+    private const val SANITIZE_GROWTH_RESERVE = 4
+
+    /**
+     * 单行落盘预算（字符）= 出口上限 − [SANITIZE_GROWTH_RESERVE] = 400 − 4 = **396**。
+     *
+     * ⚠️ 上限**不再手抄**（W87-05）：此前这里写死 396，并注明「`MAX_MESSAGE_CHARS` 是
+     * `private` 取不到，两边必须同步改」—— 那就是同一个数字的两处手抄，改一处即静默漂移。
+     * 现在上限直接取自 [AgentLogStore.MAX_MESSAGE_CHARS]（已放宽为 public：Kotlin 的
+     * `internal` 按**模块**隔离，`core-model` 的 internal 跨不过到 `app`）⇒「每行都不超过
+     * 出口上限」这个承诺由**构造**保证，不靠人记。
+     *
+     * ⚠️ 如实申报边界：一行含 **>4 处** secret 的极端形态仍可能在出口被截尾 —— 那是脱敏
+     * 降级后的行，可接受，且不影响「条数承诺」（一条日志始终只占一行）。
+     */
+    private const val LOG_LINE_BUDGET = AgentLogStore.MAX_MESSAGE_CHARS - SANITIZE_GROWTH_RESERVE
 
     /** 防重入闸：留痕路径自身异常时短路（进程本就活不了，别无限递归）。 */
     private val recording = AtomicBoolean(false)

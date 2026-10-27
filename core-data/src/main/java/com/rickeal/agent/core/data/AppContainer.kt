@@ -21,7 +21,6 @@ import com.rickeal.agent.core.agent.ToolContext
 import com.rickeal.agent.core.agent.ToolRegistry
 import com.rickeal.agent.core.agent.installBuiltInTools
 import com.rickeal.agent.core.agent.approval.InMemoryToolApprovalCache
-import com.rickeal.agent.core.agent.history.SegmentedHistoryStore
 import com.rickeal.agent.core.agent.memory.AgentMemory
 import com.rickeal.agent.core.agent.memory.installMemoryTools
 import com.rickeal.agent.core.agent.plan.AgentPlanStore
@@ -142,36 +141,8 @@ class AppContainer(
     val historyRoot: File = File(context.filesDir, "history")
 
     /**
-     * 按会话缓存的回合归档存储池（外部审查报告2 §4.1，B3 锁失效根治）。
-     *
-     * ⚠️ Wave 30 判死：当前**零调用点**（写入入口 archiveTurnNow 已摘除），
-     * 保留池化与实现以备将来接线——启用条件见 [SegmentedHistoryStore] 类头。
-     *
-     * [SegmentedHistoryStore] 的 commitMutex 是**实例级** Mutex：此前宿主每次
-     * archiveTurn 都 `open()` 一个新实例，四个并发归档入口各拿各的锁，互斥形同虚设。
-     * 按 conversationId 池化后，同一会话的所有归档路径共享同一实例 ——
-     * commitMutex 因此真正生效。
-     *
-     * 生命周期：实例与会话同生命周期，随 AppContainer 存活；会话删除后目录条目
-     * 残留（一个空 store 对象 + 已删目录的引用），无泄漏风险，不值得为此加失效回调。
-     *
-     * ⚠️ 取用必须走 `computeIfAbsent`（W84-05）：`ConcurrentHashMap.getOrPut` 是
-     * 「先 get、再 put」的两步组合，**不是原子操作** —— 并发首取会各自 `open()` 一个实例，
-     * 后者覆盖前者，于是两个调用方拿到**不同实例**，实例级 `commitMutex` 再次失效（正是
-     * 本池化要根治的那个缺陷）。`computeIfAbsent` 的映射函数在同一个 bin 锁内执行，
-     * 同 key 只会建一次；映射函数内**不得**回调本 map（会自锁），故 `open()` 必须是纯路径
-     * 构造（现实现即如此，不做任何磁盘 IO）。
-     */
-    private val historyStores = java.util.concurrent.ConcurrentHashMap<String, SegmentedHistoryStore>()
-
-    fun historyStore(conversationId: String): SegmentedHistoryStore =
-        historyStores.computeIfAbsent(conversationId) {
-            SegmentedHistoryStore.open(historyRoot, conversationId)
-        }
-
-    /**
-     * 按会话缓存的 run 级 token 账本池（Wave 30 RunTokenLedger，historyStores 同款
-     * 池化范式 —— ConcurrentHashMap + `computeIfAbsent` 逐字同构）。
+     * 按会话缓存的 run 级 token 账本池（Wave 30 RunTokenLedger；池化范式 =
+     * ConcurrentHashMap + `computeIfAbsent`）。
      *
      * 账本按会话聚合（「切会话再切回」复用同一实例），run 级快照由 AgentRunner
      * 经 `AgentRequest.tokenLedger` 单点回写（见 [RunTokenLedger] KDoc 的接线纪律）。
@@ -182,7 +153,8 @@ class AppContainer(
      * 映射函数 `InMemoryRunTokenLedger()` 是纯构造，不回调本 map。
      *
      * 生命周期：实例随 AppContainer 存活；会话删除后残留一个空账本对象，
-     * 无泄漏、不值得加失效回调（与 [historyStores] 的既有结论同口径）。
+     * 无泄漏、不值得加失效回调（该结论对池化对象通用，见
+     * [cleanupConversationArtifacts] 的「不清理的」段）。
      */
     private val tokenLedgers = java.util.concurrent.ConcurrentHashMap<String, RunTokenLedger>()
 
@@ -386,8 +358,12 @@ class AppContainer(
      * 没有 `async`；若将来新增 `async`，必须在 `await()` 处自行兜底，别指望这里。
      */
     private val processScopeExceptionHandler = CoroutineExceptionHandler { _, t ->
+        // 日志口径（W87-04）：只记异常类名，**不记 `t.message`** —— 与 `persistOrWarn` /
+        // `ChatViewModel` / `WallpaperStore.logImportFailure` 统一。落盘类异常的 message
+        // 在真机上常含完整绝对路径，而这条日志会随备份 / 文件分享离开设备；异常类名
+        // 已足够定位「哪类失败」，本条本就是进程级兜底，无需再靠 message 定位写点。
         AgentLogStore.error(
-            "进程级协程未捕获异常（已拦截，进程存活）：${t::class.java.simpleName}: ${t.message}",
+            "进程级协程未捕获异常（已拦截，进程存活）：${t::class.java.simpleName}",
         )
     }
 
@@ -762,8 +738,8 @@ class AppContainer(
      * ⚠️ **不清理的（如实申报）**：
      *  - 内容寻址 blob 池（`ContentAddressedPool`）：外部审查 🟡-3 的结论是「只增池」，
      *    不做按会话删除（池内块可能被多会话共享，按 cid 删会误伤），本波沿用该结论；
-     *  - [historyStores] / [tokenLedgers] 的池化对象：随 AppContainer 存活，会话删除后
-     *    残留一个空 store / 空账本对象，无泄漏（与各自 KDoc 的既有结论同口径）。
+     *  - [tokenLedgers] 的池化对象：随 AppContainer 存活，会话删除后残留一个空账本对象，
+     *    无泄漏（理由见该属性 KDoc 的生命周期段，此处不重复）。
      *
      * ⚠️ **失败不反噬删除本身**：四步各自 `runCatching` + 记 WARN —— 删除的**权威结果**
      * 是会话文件与索引已落盘（[ConversationRepository.delete] 的职责），清理是卫生位；

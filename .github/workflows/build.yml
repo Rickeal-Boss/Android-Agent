@@ -599,7 +599,15 @@ jobs:
             #   **CancellationException 必须 rethrow** —— 钉住「不用 runCatching」的理由）；
             #   feature-chat SalvageOutputTest +1（GateRejected 不进熔断救援）。
             #   ⇒ 由 862 上调 870（代码冻结后实测 870，无 @Ignore/参数化）。
-            baseline=870
+            # W87 收尾就绪度波 +4 例：core-data JsonFileStoreTest（正常写返回 true 且内容可读回 +
+            #   不残留孤儿 tmp / **写操作被取消时 write 必须 rethrow CancellationException 而不是
+            #   返回 false** —— 钉住 W87-01「本文件曾是最后一条漏网的落盘路径」/ **读操作被取消时
+            #   read 必须 rethrow 而不是返回 null**（同族收口：null 只表示「不存在 / 解析失败」，
+            #   把取消当 null 会让调用方走「没有数据可写回」分支）/ 落盘失败返回 false 且日志只记
+            #   异常类名不记 message）。为让整条 write 路径在 JVM 上可达，JsonFileStore 新增可注入的
+            #   pidProvider（默认 Process.myPid，与既有 json 参数同为测试接缝，不是行为改动）。
+            #   ⇒ 由 870 上调 874（代码冻结后实测 874，无 @Ignore/参数化）。
+            baseline=874
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

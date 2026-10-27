@@ -38,6 +38,19 @@ package com.rickeal.agent.core.model
  *  - `.litertlm` = 新版 LiteRT-LM 运行时格式，本项目引擎直接支持。
  *  - `.task`    = 旧版 MediaPipe / LiteRT Task 格式，仅作兼容导入，推理行为可能受限。
  *
+ * ## ⚠️ 新增预设的**文件名纪律**（W87-07；动 `ModelDownloader.stripDuplicateSuffix` 前先读这条）
+ *
+ * `ModelDownloader.stripDuplicateSuffix` 用正则 `^(.*)-\d+(\.[^.]+)$` 把
+ * `model-1.litertlm` 归一成 `model.litertlm`（DownloadManager 重名落盘规则）。该正则的
+ * `.*` 是**贪婪**的 ⇒ 任何以 `-<数字>` 结尾的文件名都会被误剥（`foo-2.litertlm` → `foo.litertlm`）。
+ * 后果不是崩溃而是**静默失配**：`deletePartFiles` 漏删孤儿 `.part`（取消重下几次就攒出
+ * GB 级垃圾）、`promotePartFile` 的 `-N` 兜底匹配不到自己那一份。
+ * ⇒ **新增预设的文件名不得以 `-<数字>` 结尾** —— 尾部 `-数字` 是 DownloadManager 的改名
+ * 产物专用形态，不能被预设自身占用。
+ * 现役 14 条**实测零踩雷**（W87-07：14/14 过该正则后逐字不变 —— `Qwen2.5-1.5B…`、
+ * `MiniCPM5-2B_int4`、`MiniCPM-V-4-int8` 等含 `-数字` 的都落在**非结尾**位置）。
+ * 本波**刻意不改正则行为**（收尾期改行为风险高于收益），只把纪律写死在这里。
+ *
  * ## 关于「建议可用内存」的口径（务必读完再改数字）
  *
  * 估算公式：**(W × f_backend + KV(n) + O) × 1.25**

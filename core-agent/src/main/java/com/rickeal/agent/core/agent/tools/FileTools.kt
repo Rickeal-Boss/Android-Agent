@@ -464,7 +464,15 @@ internal object FileReadPager {
 private fun intArg(argumentsJson: String, key: String, default: Int): Int {
     val element = json(argumentsJson)[key] ?: return default
     val primitive = element as? JsonPrimitive ?: return default
-    return primitive.content.toIntOrNull() ?: default
+    // W87-08：工具 schema 校验层用 `toDoubleOrNull` 判数字，故 `"1e5"` 这类科学计数法形态
+    // 会**被校验放行**，而这里 `toIntOrNull` 必然失败 ⇒ 静默降级 default（口径漂移、无声）。
+    // 不改返回值语义（仍降级），只在降级分支留一条痕，别让「校验通过但参数被换掉」无声发生。
+    return primitive.content.toIntOrNull() ?: default.also {
+        AgentLogStore.warn(
+            "file_read 参数 $key=\"${primitive.content}\" 非整数字面量（如科学计数法 1e5），" +
+                "已按默认值 $it 处理",
+        )
+    }
 }
 
 class FileWriteTool(context: ToolContext) : SandboxedFileTool(context) {
@@ -571,5 +579,3 @@ class FileListTool(context: ToolContext) : SandboxedFileTool(context) {
         }
     }
 }
-
-

@@ -6,6 +6,7 @@ import android.os.Process
 
 import com.rickeal.agent.core.model.AgentJson
 import com.rickeal.agent.core.model.AgentLogStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.DeserializationStrategy
@@ -18,10 +19,38 @@ import java.io.File
  *
  * 读：解析失败一律返回 null（而不是抛异常）—— 一个坏掉的会话文件不该让整个 App 起不来。
  * 所有 IO 都在 Dispatchers.IO 上，不阻塞主线程。
+ *
+ * ## 取消语义（W87-01）：本文件曾是最后一条漏网的落盘路径
+ *
+ * 全仓落盘路径在 W84 / W86-01 已立过同一条铁律（论证见
+ * [PersistenceGuard] 的「为什么不用 `runCatching`」）：**吞掉 [CancellationException]
+ * 不是小事** —— Job 会从 cancelled 变 completed，`joinAll` 提前返回、`isCancelled`
+ * 变 false，结构化并发里的父协程再也等不到真实的取消信号。而 [write] 是全仓**最核心**
+ * 的落盘路径（会话 JSON / 模型清单 / 索引全走它），危害面比 `SettingsRepository` 大。
+ * 改动前这里是 `catch (t: Throwable)` + fallback 里的 `runCatching` —— 两处都会把取消
+ * 吞成「落盘失败 ⇒ 返回 false」，是 W86-01 收口时唯一漏掉的一条。
+ *
+ * 因此本类固定两条纪律，**顺序不可调换**：
+ *  1. [CancellationException] 的 catch 必须排在 `Throwable` 之前，并原样 rethrow；
+ *  2. 退化 rename 的兜底不许用 `runCatching`（它捕获 `Throwable`），必须显式 try/catch。
+ *
+ * ⚠️ 现状精度说明（不要据此撤掉上面的纪律）：[write] 的 block 内目前没有挂起点，
+ * 阻塞 IO 不会自己抛取消异常，`withContext` 又会在返回时按 Job 状态重抛 —— 所以
+ * 「吞取消」眼下并**不**产生用户可见的错误结果。这条纪律是**防御性**的：它保证将来
+ * 一旦 block 内出现挂起点（例如换成可取消的流式写），取消不会被静默改写成 `false`。
  */
 class JsonFileStore(
     private val baseDir: File,
     private val json: Json = AgentJson.Default,
+    /**
+     * 进程号来源，仅用于生成唯一临时文件名。默认 [Process.myPid]。
+     *
+     * 单独抽成参数是为了让 JVM 单测能注入固定值：本模块单测不开
+     * `returnDefaultValues`，直接调 `android.os.Process.myPid()` 会抛
+     * `RuntimeException: Method myPid ... not mocked`，整条 [write] 路径在 JVM 上不可达。
+     * 与 [json] 参数同一性质（可注入的测试接缝），生产调用点不传即默认值。
+     */
+    private val pidProvider: () -> Long = { Process.myPid().toLong() },
 ) {
     suspend fun ensureDir() = withContext(Dispatchers.IO) {
         if (!baseDir.exists()) baseDir.mkdirs()
@@ -39,13 +68,25 @@ class JsonFileStore(
         File(baseDir, fileName).exists()
     }
 
+    /**
+     * 读并反序列化。返回 null 的契约只有两种含义：**文件不存在** 与 **解析失败**。
+     *
+     * ⚠️ **取消不是第三种「读失败」**（W87-01 同族收口）：[CancellationException] 必须原样
+     * rethrow，不能改写成 null。把取消当 null 比 [write] 返回 false 更危险 —— 调用方会把
+     * 「协程被取消」读成「没有数据」，例如 `ModelRepository.refresh` 见到 null 会走
+     * 「首次启动，可以放心写回」的分支（见 [exists] 的 KDoc），于是**一次取消就能把损坏的
+     * 清单覆盖成「只剩当前扫描到的」**，用户手动登记的条目永久消失。
+     */
     suspend fun <T> read(fileName: String, strategy: DeserializationStrategy<T>): T? =
         withContext(Dispatchers.IO) {
             val file = File(baseDir, fileName)
             if (!file.exists()) return@withContext null
             try {
                 json.decodeFromString(strategy, file.readText())
-            } catch (t: Throwable) {
+            } catch (cancel: CancellationException) {
+                // 顺序不可调换：取消排在 Throwable 之前，绝不改写成 null（见本函数 KDoc）。
+                throw cancel
+            } catch (_: Throwable) {
                 null
             }
         }
@@ -58,6 +99,9 @@ class JsonFileStore(
      * —— 磁盘满时静默丢数据（模型清单 / 会话全文）是最难排查的故障形态。
      * 现有全部调用点都把返回值当语句用（忽略返回值），签名加宽编译兼容；
      * 需要区分成败的调用方将来可直接消费返回值。
+     *
+     * **唯一的例外是取消**：`CancellationException` 一律原样向外抛（不返回 false），
+     * 纪律与理由见类 KDoc「取消语义」一节。
      */
     suspend fun <T> write(
         fileName: String,
@@ -68,7 +112,7 @@ class JsonFileStore(
         val target = File(baseDir, fileName)
         // 临时文件必须**唯一**：固定名会与并发/上一次崩溃残留的 tmp 相互覆盖。
         // 也不能用「读全文再整写」兜底 —— 那正是会把会话文件写坏的路径。
-        val tmp = File(baseDir, tmpName(fileName))
+        val tmp = File(baseDir, tmpName(fileName, pidProvider()))
         try {
             // Wave4 审查（E-P1-1）：tmp 写入必须在 try 内 —— 磁盘配额耗尽时 writeText 抛
             // IOException，此前直接炸穿到 ChatViewModel.viewModelScope（无异常处理器），
@@ -81,18 +125,33 @@ class JsonFileStore(
                 StandardCopyOption.REPLACE_EXISTING,
             )
             true
+        } catch (cancel: CancellationException) {
+            // ⚠️ 顺序不可调换：取消必须排在 Throwable 之前，绝不吞（见类 KDoc）。
+            throw cancel
         } catch (t: Throwable) {
             // 某些文件系统不支持 ATOMIC_MOVE，退化为普通 rename（仍是元数据操作，非逐字节重写）。
             // 注意：writeText 失败时 move 也会失败，退化 rename 静默不成 —— 所以 finally 统一清 tmp。
             // 退化 rename **成功**同样算落盘成功（严质衡审查 P2-2）：失败的是「原子性」
             // 而不是「写入」，返回 true 才与调用方感知一致。
-            val fallback = runCatching {
+            //
+            // 这里刻意**不用** `runCatching`：它捕获 Throwable，会把取消一并吞掉
+            // （W87-01 修正点，论证同 PersistenceGuard 的 KDoc）。显式 try/catch 保留
+            // 「取消透传」这一条分支。
+            val fallbackSucceeded = try {
                 Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                true
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Throwable) {
+                false
             }
-            if (fallback.isSuccess) {
+            if (fallbackSucceeded) {
                 true
             } else {
-                AgentLogStore.error("JSON 落盘失败：$fileName（${t.javaClass.simpleName}: ${t.message}）")
+                // 日志口径（W87-04）：只记异常类名，不记 t.message —— 落盘异常的消息在真机上
+                // 常含完整绝对路径，而这条日志会随备份 / 分享离开设备；fileName（路径末段）
+                // 已足够定位「哪一次写失败」。
+                AgentLogStore.error("JSON 落盘失败：$fileName（${t.javaClass.simpleName}）")
                 false
             }
         } finally {
@@ -130,9 +189,9 @@ class JsonFileStore(
     }
 
     private companion object {
-        /** [write] 生成的临时文件名：$fileName.<nano>.<pid>.tmp */
-        fun tmpName(fileName: String): String =
-            "$fileName.${System.nanoTime()}.${Process.myPid()}.tmp"
+        /** [write] 生成的临时文件名：$fileName.<nano>.<pid>.tmp（[pid] 由构造参数注入）。 */
+        fun tmpName(fileName: String, pid: Long): String =
+            "$fileName.${System.nanoTime()}.$pid.tmp"
 
         /** 精确匹配某个 fileName 的临时文件名形态（不做前缀模糊匹配）。 */
         fun tmpPattern(fileName: String): Regex =

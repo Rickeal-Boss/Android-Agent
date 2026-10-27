@@ -1,7 +1,6 @@
 package com.rickeal.agent.core.data
 
 import com.rickeal.agent.core.model.AgentLogStore
-import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.security.MessageDigest
@@ -21,12 +20,19 @@ import java.security.MessageDigest
  *  - [UNREADABLE]：**根本没算出来**（IO 错误）⇒ 不构成篡改证据，按「未经校验」处置
  *    （见 `ModelDownloader.promotePartFile` 的处置与论证）。
  *
- * ## 缓冲为什么是 1 MiB（W86-02 外审 B-3）
+ * ## 缓冲为什么是 1 MiB（W86-02 外审 B-3；W87-06 去掉冗余的内层缓冲）
  *
  * `BufferedInputStream.read(buf, off, len)` 在 `len >= 内部缓冲` 时会**绕过缓冲直达底层**，
  * 所以旧实现（8 KiB 缓冲 + 8 KiB 数组）实际是「每 8 KiB 一次 read syscall」：
  * 4 GB 文件 ≈ **52 万次**系统调用。1 MiB 缓冲把它降到 ≈ 4 千次（128×），
  * 代价是 1 MiB 瞬时堆 —— 对 2~4 GB 模型文件的校验来说这是零成本。
+ *
+ * ⚠️ W87-06 外审 nit 订正：既然读数组与 BIS 内部缓冲同大（都是 [SHA256_BUFFER_BYTES]），
+ * BIS 的**每一次** read 都走上面那条「绕过缓冲」的快路径 ⇒ 它那 1 MiB 内部缓冲**从未被用过**，
+ * 却让瞬时堆变成 **2 MiB**（旧 KDoc 只写 1 MiB，名义 ≠ 实效）。故去掉 BIS 包装，直接对
+ * `FileInputStream` 做 1 MiB 直读：syscall 次数不变（本来就是直读）、峰值堆回到 **1 MiB**、
+ * 短读由 while 循环天然兜住。
+ *
  * ⚠️ 这个数字在**锚点回填之后**才会被用户感知（回填前校验分支根本不进），
  * 所以缓冲与锚点必须同批落地，否则「回填锚点」会以「下载莫名变慢几十秒」的形式被发现。
  */
@@ -54,12 +60,12 @@ internal const val SHA256_BUFFER_BYTES: Int = 1024 * 1024
 internal fun sha256HexOf(file: File): String? = try {
     val digest = MessageDigest.getInstance("SHA-256")
     FileInputStream(file).use { fis ->
-        BufferedInputStream(fis, SHA256_BUFFER_BYTES).use { bis ->
-            val buf = ByteArray(SHA256_BUFFER_BYTES)
-            var read: Int
-            while (bis.read(buf).also { read = it } != -1) {
-                digest.update(buf, 0, read)
-            }
+        // 单缓冲直读（W87-06）：不再套 BufferedInputStream —— 它的内部缓冲会被 read(buf)
+        // 整段绕过（见 [Sha256Check] KDoc），纯冗余却多占 1 MiB 堆。
+        val buf = ByteArray(SHA256_BUFFER_BYTES)
+        var read: Int
+        while (fis.read(buf).also { read = it } != -1) {
+            digest.update(buf, 0, read)
         }
     }
     digest.digest().joinToString("") { "%02x".format(it) }

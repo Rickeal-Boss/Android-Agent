@@ -4,6 +4,7 @@ import android.util.Log
 import com.rickeal.agent.core.model.AgentLog
 import com.rickeal.agent.core.model.AgentLogLevel
 import com.rickeal.agent.core.model.AgentLogStore
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.file.Files
@@ -28,6 +29,16 @@ import java.nio.file.StandardCopyOption
  * 崩溃可能就发生在写日志的下一行代码。异步/缓冲写会把「崩溃前最后一条」一起丢掉，
  * 那恰恰是本类唯一要保住的东西。ERROR 是低频事件，一次几毫秒的追加换「崩溃有迹可循」是划算的。
  * 同理，[append] 全程 try/catch：它跑在「已经出错的路径」上，再抛异常只会把原始错误顶掉。
+ *
+ * ## 取消语义（W87-01 同族收口）
+ * [append] 与 [compactIfNeeded] 里对 [CancellationException] 一律**原样 rethrow**，
+ * 不写成 `runCatching`（它捕获 `Throwable`，会把取消吞成「日志写失败」）。论证与
+ * `JsonFileStore.write` / `PersistenceGuard` 同一套。
+ *
+ * ⚠️ **如实标注：本类全是同步写，没有任何挂起点**，所以取消异常实际上不会从这里产生 ——
+ * 这一层透传是**形式对齐 + 防御**，不是现存缺陷修复，别在交接里写成「修了一个真 bug」。
+ * 之所以仍然要加：本波的核心教训就是「修好的范式没有复制到同族」，留一个例外等于给
+ * 后人一个「这里可以吞」的错误示范。
  *
  * ## 本类同时是 `AgentLogStore` 的**唯一** sink 装配点
  * 除落盘外，[install] 里还并入了 logcat 取证出口（全级别）。两者都必须在**同一个**
@@ -132,7 +143,7 @@ class AgentLogFileStore(private val file: File) {
      */
     @Synchronized
     private fun append(atMillis: Long, level: AgentLogLevel, message: String) {
-        runCatching {
+        try {
             file.parentFile?.mkdirs()
             // 先保证「行边界」：崩溃可能把上一行写成半截且**没有换行**，
             // 这时直接 append 会把新记录拼到那半截后面，导致这条新记录也解析不出来 ——
@@ -142,6 +153,13 @@ class AgentLogFileStore(private val file: File) {
             // 进程崩溃（非掉电）不会丢；崩溃最多撕坏最后一行，而 read() 会跳过坏行。
             file.appendText(buildLine(atMillis, level, message) + "\n")
             compactIfNeeded()
+        } catch (cancel: CancellationException) {
+            // W87-01 同族收口：取消必须原样外传，不能与「日志写失败」混为一谈。
+            // 本类全是同步写（见类 KDoc「取消语义」），这里是形式对齐，不是现存缺陷修复。
+            throw cancel
+        } catch (_: Throwable) {
+            // 日志写失败即静默丢弃：日志设施绝不能反过来影响主流程（原为 runCatching，
+            // 换成显式 try/catch 只为保留上面那条取消分支）。
         }
     }
 
@@ -189,10 +207,18 @@ class AgentLogFileStore(private val file: File) {
                 StandardCopyOption.ATOMIC_MOVE,
                 StandardCopyOption.REPLACE_EXISTING,
             )
-        } catch (t: Throwable) {
-            // 部分文件系统不支持 ATOMIC_MOVE，退化为普通 rename（仍是元数据操作）
-            runCatching {
+        } catch (cancel: CancellationException) {
+            // 同 [append]：取消不吞（W87-01 同族）。
+            throw cancel
+        } catch (_: Throwable) {
+            // 部分文件系统不支持 ATOMIC_MOVE，退化为普通 rename（仍是元数据操作）。
+            // 刻意不用 runCatching：它捕获 Throwable，会把取消一并吞掉（同 JsonFileStore.write）。
+            try {
                 Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Throwable) {
+                // 退化 rename 也失败：原文件保持不动（宁可丢压缩机会，也不丢记录）。
             }
             runCatching { tmp.delete() }
         }

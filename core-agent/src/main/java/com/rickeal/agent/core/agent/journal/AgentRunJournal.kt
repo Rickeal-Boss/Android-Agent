@@ -121,22 +121,58 @@ class AgentRunJournal private constructor(
         }.getOrDefault(emptyList())
     }
 
-    /** 尾读窗口结果（W84-17）：[fullCoverage]=true 可直接用 [lines] 判定；否则回退 [readLines]；[truncated] 仅诊断。 */
+    /** 尾读窗口结果（W84-17）：[fullCoverage]=true 可直接用 [lines] 判定；否则回退 [readLines]；[truncated] 仅诊断。
+     * ⚠️ 「读取失败」也返回 `fullCoverage = true` + 空 [lines]（fail-open，见 [readTailWindow]）——
+     * 调用方无法从这两个字段区分「空文件」与「读不到」，区分信息只在 WARN 日志里。 */
     private data class TailWindow(val lines: List<JournalLine>, val fullCoverage: Boolean, val truncated: Boolean)
 
-    /** 尾读优化（W84-17）：从文件尾部读 ≤[maxBytes] 字节 / ≤[maxLines] 行窗口解析 JSONL，替代
-     * [readLines] 全文读；半行丢弃不抛异常，读取失败回退空窗口（视作空文件跳过）。 */
+    /**
+     * 尾读优化（W84-17）：从文件尾部读 ≤[maxBytes] 字节 / ≤[maxLines] 行窗口解析 JSONL，替代
+     * [readLines] 全文读；半行丢弃不抛异常。
+     *
+     * ## 读失败 ⇒ 空窗口 fail-open，但**必须留 WARN**（W87-03）
+     *
+     * 历史上这条分支是**全静默**的：`runCatching{…}.getOrNull()` 拿不到字节就直接返回
+     * `TailWindow(emptyList(), fullCoverage = true)`，于是 [findUnsettled] 把该文件当成
+     * **空文件** ⇒ `lines.isEmpty()` ⇒ `continue`，**静默跳过这个未决 run**（用户看不到
+     * 「继续上次」的恢复卡，且没有任何日志可回溯）。对比另一条回退（超窗口 ⇒ 回退全文读）
+     * 是打 WARN 的 —— 同一个函数里两条回退，一条留痕一条不留，是取证面的缺口。
+     *
+     * ## 为什么这里**只加 WARN、不改成 `fullCoverage = false`**（收尾期取低风险）
+     *
+     * `fullCoverage = false` 会让 [findUnsettled] 走 `readLines()` 回退，但
+     * [readLines] 与 [readTailWindow] 读的是**同一个文件、同一套 `runCatching`**：能让
+     * `RandomAccessFile.readFully` 失败的原因（文件被删 / 权限 / 目录被替换）同样会让
+     * `file.readLines()` 失败并返回 `emptyList()`，最终仍是 `lines.isEmpty() ⇒ continue`。
+     * 也就是说这条回退**拿不到任何额外信息**，只会多打一条「尾读超窗口」的**误导性** WARN
+     * （把「读不到」说成「文件太大」），并让控制流多绕一圈。因此保留 fail-open 语义，
+     * 只把「读失败」这件事如实记进日志（文案与超窗口回退**刻意不同**，便于区分两者）。
+     *
+     * ⚠️ 已知残留：读失败时该未决 run 仍会被跳过（fail-open 的固有代价）。若将来要改成
+     * fail-closed（读不到就保守报成「可能未决」），必须同时处理「真的空文件」误报，不能
+     * 只翻一个布尔值。
+     */
     private fun readTailWindow(maxBytes: Long = 64 * 1024, maxLines: Int = 200): TailWindow {
         val size = file.length()
         val start = (size - maxBytes).coerceAtLeast(0L)
-        val bytes = runCatching {
+        val read = runCatching {
             RandomAccessFile(file, "r").use { raf ->
                 raf.seek(start)
                 val buf = ByteArray((raf.length() - start).toInt())
                 raf.readFully(buf)
                 buf
             }
-        }.getOrNull() ?: return TailWindow(emptyList(), true, false)
+        }
+        val bytes = read.getOrNull()
+        if (bytes == null) {
+            // W87-03：读失败不再静默 —— 与下面「超窗口回退」的 WARN 文案必须可区分。
+            // 日志口径同 W87-04：只记异常类名（消息可能带绝对路径）。
+            com.rickeal.agent.core.model.AgentLogStore.warn(
+                "journal 尾读**读取失败**，回退空窗口（按空文件跳过，不判定未决 run）：" +
+                    "${file.name}（${read.exceptionOrNull()?.javaClass?.simpleName}）"
+            )
+            return TailWindow(emptyList(), true, false)
+        }
         // 窗口起点不在行首 ⇒ 首行是被切断的半行（尾读只可能切在窗口开端），丢弃
         val truncated = start > 0L && bytes.firstOrNull() != '\n'.toByte()
         val rawLines = String(bytes, Charsets.UTF_8).split('\n')

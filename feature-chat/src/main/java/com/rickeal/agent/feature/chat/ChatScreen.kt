@@ -735,7 +735,10 @@ fun ChatScreen(
  */
 private fun terminationHintOf(reason: TerminationReason?): String? = when (reason) {
     TerminationReason.BreakerTripped -> "（已被安全熔断，详见任务诊断）"
-    TerminationReason.GateRejected -> "（上一轮仍在生成，请等当前回复结束后再试）"
+    // ⚠️ 本句**刻意**与 `EngineContract.CONCURRENT_GENERATION_BUSY_MESSAGE` 措辞不同（W87-10 订正）：
+    // 两者会**同时**出现在屏幕上（`AgentEvent.Failed.message` 走 error 横幅，本行是终止提示小字），
+    // 字面相同 = 用户把同一句读两遍。同源指「同一原因、同一处改」，不是「同一串字符」。
+    TerminationReason.GateRejected -> "（请等当前回复结束后再发送）"
     TerminationReason.MaxRounds -> "（达到轮次上限）"
     else -> null
 }

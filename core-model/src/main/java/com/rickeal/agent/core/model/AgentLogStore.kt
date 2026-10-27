@@ -24,8 +24,17 @@ object AgentLogStore {
     /** 环形缓冲容量上限。超出后丢弃最旧的一条。 */
     const val DEFAULT_CAPACITY: Int = 200
 
-    /** 单条消息的保留上限：防止把整段模型输出/工具输出塞进日志导致内存膨胀。 */
-    private const val MAX_MESSAGE_CHARS: Int = 400
+    /**
+     * 单条消息的保留上限：防止把整段模型输出/工具输出塞进日志导致内存膨胀。
+     *
+     * ⚠️ **public 而非 internal（W87-05）**：`app` 模块的 `CrashSceneLogger` 要按它反推
+     * 「崩溃现场单行预算」（`LOG_LINE_BUDGET = MAX_MESSAGE_CHARS - 4`），而 Kotlin 的
+     * `internal` 按**模块**隔离 —— `core-model` 的 internal 对 `app` 不可见。此前该预算在
+     * 崩溃留痕侧是**手抄的第二份数字**（396），两侧各自维护、改一处必漂移。
+     * 放宽可见性只为消除这个跨模块魔数复写，**语义未变**：它仍是出口截断的唯一口径
+     * （见 [sanitize]），改它等于改所有日志的落盘长度。
+     */
+    const val MAX_MESSAGE_CHARS: Int = 400
 
     private val lock = Any()
 

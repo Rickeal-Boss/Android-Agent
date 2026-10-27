@@ -12,6 +12,14 @@ import java.io.File
 /**
  * ⚠️ **未接线（Wave 30 判死）**：本类当前**零调用点**——唯一的写入入口
  * `ChatViewModel.archiveTurnNow` 已摘除（恢复权威仍是 journal，行为不变）。
+ *
+ * ⚠️ **W87 更新：全仓零生产引用**。`AppContainer` 里最后一处引用（`historyStores` 池 +
+ * `historyStore()` 访问器，W87-09 判定死代码后删除）已移除 ⇒ [open] 现在**无任何调用方**。
+ * 文件本体**刻意保留**：删文件让「零引用类」变成「零引用文件」，收益为零，却可能触碰
+ * 守卫的「文件存在性」fail-closed 断言。**删除前必须先核** arch-guard 与 line-table
+ * 登记面（`scripts/arch-guard.sh` 的 KNOWN_GUARDS / `affected_guards_for_file` /
+ * `scripts/line-table.sh` 的行数台账），确认没有针对本文件的断言再动手。
+ * （W87 实测：`grep -rn "SegmentedHistoryStore" scripts/ .github/` 当前**零命中**。）
  * 保留实现是因为它质量过硬（损坏行可见化、`associateBy` 去重、原子写），
  * 将来有消费者时值得复用。**重新启用前必须同时满足：**
  * ① 出现明确的读取消费者（长会话分页 / 按回合 revert / 历史剪枝）；
