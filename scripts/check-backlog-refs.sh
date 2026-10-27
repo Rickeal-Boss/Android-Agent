@@ -38,6 +38,12 @@
 #   ⚠️ 该警告打 **stderr**：arch-guard #52 包装在脚本成功时吞掉全部输出（check() 把
 #      任何非空输出当违反）⇒ CI 里看不到，**本机制面向本地/开发者**，这是刻意取舍。
 #
+# 附加（本脚本共四条 advisory，全部 stderr + 不阻断 + 措辞带「仅提示，不阻断」）：
+#   ① 候选排序 ↔ 台账状态位冲突（N-1）
+#   ② 反向状态一致性：交接说「已实施」但台账仍 active（W86-06）
+#   ③ 申报计数骤降（低于 MIN_CLAIMS ⇒ 复核扫描面/正则是否失效，W86-06）
+#   ④ 承接行销账一致性：承接行已终态、源行仍 active/parked（W87-17，外审 N-B）
+#
 # 为何进 CI：
 #   **已由 arch-guard #52 接线**（W83-05 闸门批落地，与 arch-guard.sh 同批进 CI）——
 #   手工聚合面必腐（G1 同型第七次：W82 evidence 申报 W82-15/16/17 四条挂账、
@@ -91,6 +97,13 @@ ID_RE='W[0-9]{2,}-[0-9]+'
 #   变异** —— 计数骤降既可能是「真的变少了」，也可能是「扫描面/正则失效」（静默缩水）。
 #   故设一个冻结下限：低于它就在 stderr 提示复核（不判红，同「扫描面失效必须判红」契约的
 #   软前置）。**下调该值必须写明理由**（与 line-table.sh 的 MIN_ROWS 同款纪律）。
+#
+# 📌 **申报数字纪律（W87-17 成文，勿凭外审报告的转述数改动本行）**：
+#   任何「N 处申报」的数字**一律取 commit 后干净树的实测输出**（`bash scripts/check-backlog-refs.sh`
+#   的 OK 汇总行），**不采信任何报告/交接里的转述数字**。实证：W86 收尾时两份外审报告分别称
+#   此处为「16 处」与「32 处」，干净树实测 = **34 处**（两者皆不成立，若按报告数改 MIN_CLAIMS
+#   会把阈值定成永远报警或永远静默）。原因：本脚本的计数是**扫描面 × 正则 × 文档当前措辞**的
+#   函数，三者任一变动都会改数，而报告里的数字是**某一时点某个人手跑的一次快照**。
 MIN_CLAIMS=24
 
 fail=0
@@ -163,6 +176,103 @@ if [[ -n "${LATEST_HANDOFF}" ]]; then
   done < <(grep -E "(已实施|已落地|已销账)" "${LATEST_HANDOFF}" 2>/dev/null \
              | grep -E "${ID_RE}")
 fi
+
+# ---- 附加④：**承接行销账一致性**警告（W87-17，外审 N-B，只警告不判红）----
+# 病灶（实测）：`W84-15 → closed-done`（W86-02 通电 13/14 锚点销账），但其**源行 W83-12
+#   仍 active** —— 台账里出现「承接行已收口、源行没跟着收」的幽灵行对。
+#   为什么附加②查不到：附加②只查「交接说已实施 ↔ 台账仍 active」（**交接 → 台账**），
+#   本判据查的是「**台账行 → 台账行**」的指针一致性，两者扫描面不同。
+#   同型行对 W83-13/W84-16 目前双 active 尚一致，但 W84-16 一旦 closed 就会复现同病 ⇒
+#   这条判据是**下一次**同型事故的唯一机械拦截面。
+# 判据（**钉行首**，本仓铁律：判据必须锚定行首代码形态，否则自家注释/说明文字会被判成违规）：
+#   ① 扫描面 = 主台账数据行，锚 `^\|[[:space:]]*\*{0,2}Wxx-yy\*{0,2}[[:space:]]*\|`（行首）；
+#      ⇒ 正文、图例、续更段、本脚本自己的注释文字一律不进判据视野。
+#   ② 取该行**自身**状态；仅 active / parked 才有「该不该收口」的问题（终态行直接跳过）。
+#   ③ 行内提取三类**指针形态**（= 「本行指向另一行的销账关系」）：
+#        a) `由 **Wxx-yy** 收口`（显式销账指针）
+#        b) `承接 … Wxx-yy`（承接行 ↔ 源行，允许中间夹 14 字符：`承接 delta 行 = **W84-15**`）
+#        c) `转 **Wxx-yy**`（遗留面转移指针）
+#   ④ 指针目标行状态 ∈ {closed-done, closed-dead} ⇒ 源行该跟着收口，打 stderr 提示。
+# 为什么只警告不判红：源行可能**部分完成** —— 承接行收口的是 delta 面，源行还有独立剩余面
+#   （实证：W83-12 收口 sha256 锚点后，Qwen2.5 锚点与摘要落库仍作为 W86-09 独立挂账）。
+#   机械判红会误伤这类合法形态 ⇒ 沿附加①/② 同一条演进路径（先咨询级，机制稳定后再议升级）。
+# ⚠️ 与附加①②一样打 **stderr**（#52 包装在成功时吞 stdout，见文件头）。
+# 本地处置：提示出现时二选一 —— ① 源行也改终态并加「由 Wxx-yy 收口」指针；② 源行保留
+#   active/parked 但在行内写明剩余面（说明它为什么还没到终态）。
+# ⚠️ 已知边界（如实申报，与附加①②同一边界）：状态列**写成散文**的行取不到「四态之一」
+#   （实测 4 行：W68-06 `active（blocker 维持…）`、W77-04 / W78-10 / W78-11 的状态列是
+#   整句说明）⇒ 本判据对它们**静默跳过**（self_st 为空 = 不判）。这不是漏报的借口：
+#   要让本判据覆盖某行，先把它的状态列收敛成纯四态词。
+#
+# 【为什么用**单进程 awk** 而不是 bash 逐行 + grep】—— 实测性能判据，不是风格偏好：
+#   首版实现（bash while + 每行 3 次 grep + 每目标 1 次状态查询）在本机 Git-Bash 上把
+#   整个脚本从「几秒」拖到 **4 分 52 秒**（sys 4m33s = 全在 fork）。本仓波末清单要求
+#   每波本地跑本脚本 ⇒ 5 分钟的工具**没人会跑**，守卫等于自动作废（「永远报警/永远不跑
+#   = 同一个病」的同型）。改成一趟 awk 后回到秒级。⚠️ 别改回逐行 grep。
+#   awk 侧依赖：区间表达式 `{0,14}`（gawk ≥3 / mawk ≥1.3.4 均支持；CI = Ubuntu 24.04
+#   mawk 1.3.4、本地 = gawk 5.4，两处都实测过）。awk 的 stderr **不重定向**到 /dev/null：
+#   万一 awk 方言不支持而报错，错误必须看得见（否则 advisory 静默消失 = 假绿）。
+awk -v idre='W[0-9][0-9]*-[0-9]+' '
+  BEGIN { FS = "|" }
+  {
+    # 行首钉形态（本仓铁律）：只认主台账数据行 `| **Wxx-yy** | …`
+    if (match($0, /^\|[[:space:]]*\*{0,2}W[0-9][0-9]*-[0-9]+/)) {
+      head = substr($0, RSTART, RLENGTH)
+      if (!match(head, idre)) next
+      id = substr(head, RSTART, RLENGTH)
+      n++; rid[n] = id; rtext[n] = $0
+      # 状态字段：取**恰好等于四态之一**的单元格（不按列号硬编码，同附加①②）
+      st = ""
+      m = split($0, cells, "|")
+      for (i = 1; i <= m; i++) {
+        c = cells[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", c)
+        if (c == "active" || c == "parked" || c == "closed-done" || c == "closed-dead") { st = c; break }
+      }
+      rst[n] = st
+    }
+  }
+  END {
+    for (i = 1; i <= n; i++) smap[rid[i]] = rst[i]
+    for (i = 1; i <= n; i++) {
+      # ② 只有 active / parked 才有「该不该收口」的问题（终态行直接跳过）
+      if (rst[i] != "active" && rst[i] != "parked") continue
+      t = rtext[i]; cands = ""
+      # a) `由 **Wxx-yy** 收口`
+      rest = t
+      while (match(rest, /由[[:space:]]*\*{0,2}W[0-9][0-9]*-[0-9]+\*{0,2}[[:space:]]*收口/)) {
+        seg = substr(rest, RSTART, RLENGTH)
+        if (match(seg, idre)) cands = cands " " substr(seg, RSTART, RLENGTH)
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      # b) `承接 … Wxx-yy`（中间夹 ≤14 字符：`承接 delta 行 = **W84-15**`）
+      rest = t
+      while (match(rest, /承接[^|]{0,14}W[0-9][0-9]*-[0-9]+/)) {
+        seg = substr(rest, RSTART, RLENGTH)
+        if (match(seg, idre)) cands = cands " " substr(seg, RSTART, RLENGTH)
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      # c) `转 **Wxx-yy**`（遗留面转移指针）
+      rest = t
+      while (match(rest, /转[[:space:]]*\*{0,2}W[0-9][0-9]*-[0-9]+/)) {
+        seg = substr(rest, RSTART, RLENGTH)
+        if (match(seg, idre)) cands = cands " " substr(seg, RSTART, RLENGTH)
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      split(cands, arr, " ")
+      delete seen
+      for (k = 1; k <= length(arr); k++) {
+        tgt = arr[k]
+        if (tgt == "" || tgt == rid[i] || (tgt in seen)) continue
+        seen[tgt] = 1
+        ts = (tgt in smap) ? smap[tgt] : ""
+        # ④ 指针目标已终态 ⇒ 源行该跟着收口
+        if (ts == "closed-done" || ts == "closed-dead")
+          printf("⚠️ 承接行销账：台账 %s（状态=%s）指向的 %s 已是 %s，但源行未跟着收口 —— 若剩余面已独立挂账，请在 %s 行内写明剩余面；否则改终态并加「由 %s 收口」指针（仅提示，不阻断）\n",
+                 rid[i], rst[i], tgt, ts, rid[i], tgt)
+      }
+    }
+  }
+' "${LEDGER}" >&2
 
 # ---- 附加③：申报计数骤降提示（低于冻结下限 ⇒ 复核扫描面/正则是否失效）----
 if [[ ${checked} -lt ${MIN_CLAIMS} ]]; then

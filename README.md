@@ -10,7 +10,8 @@
 **端侧优先的 Android 原生 Agent。** 把 4B 级别的多模态模型装进手机，在本地完成理解、思考、工具调用与任务执行——不依赖云端，数据不出设备。
 
 > 项目代号 **LiquidAgent**，包名前缀 `com.rickeal.agent`。
-> 当前处于开荒阶段，API 与目录结构可能变动。
+> 当前处于**收尾阶段（首个 tag 前）**：功能面已冻结，只清正确性债与文档面；API 与目录结构仍可能变动。
+> 已知限制（**有意不做**的部分，不是「未来会做」的承诺）见 [`docs/17-known-limitations.md`](docs/17-known-limitations.md)。
 
 ---
 
@@ -267,14 +268,29 @@ Android-Agent/
 | [`build.yml`](.github/workflows/build.yml) | push `main` / `UI` / `harness` / `harness-improve` / `improve` / `UI-change-1019` / `core-fix` / PR → `main`·`UI`·`harness` / 手动 | debug APK（artifact，保留 30 天）；失败时上传 `**/build/reports` |
 | [`release.yml`](.github/workflows/release.yml) | push `UI` / `harness` / `harness-improve` / `improve` / tag `v*` / 手动 | debug APK（保底）+ 可选签名 release APK / AAB + GitHub Release |
 
-> **分支口径**：`improve` / `harness-improve` 与 `harness` 同规格 —— `release.yml` 在三条分支上都出
-> 「仓库密钥签名正式包 + debug 包」双产物（`push.branches` 同时列了三者）。PR 不触发
-> `release.yml`（PR 门禁走 `build.yml` 的零密钥快速轨）。
-> `improve` 是自 W48 起的主开发分支（云端自 `harness-improve` 的同一提交 `1a0b45a` 新建，W48 接入 CI 触发）。
+> **分支口径**：**`core-fix` 是 canonical 分支**（`docs/14-user-actions.md` §E5，W86 2026-10-26 裁决：
+> 三支演进线已实质合流于此）。来历 = W79（2026-10-23）自 `UI-change-1019` 分出；W79–W87 九波全部落在该支。
+> ⚠️ **`core-fix` 目前不在 `release.yml` 的 `push.branches` 白名单内**（白名单 = `UI` / `harness` /
+> `harness-improve` / `improve`）。沿革取舍：签名双轨按需手动 `workflow_dispatch`，不占常规 CI 配额 ⇒
+> **该分支的 R8 / 签名路径只能靠手动 dispatch 执行**。结合 `app/build.gradle.kts` 的
+> `debug { isMinifyEnabled = false }`，「debug 全绿」对 R8 **零证明力**。
+> ✅ **已实测验证一次**：run **`40498254820`**（`Release` / `workflow_dispatch` / ref `core-fix` / head `ce976ef`）
+> 结论 **success** —— `Assemble release APK` / `Assemble release AAB` / `Verify release APK signature` /
+> `Verify release AAB signature` / `Upload R8 mapping` 逐条 ✅（`Decode keystore` ✅ ⇒ 签名密钥在位）；
+> `Gate tag release on signing secrets` 与 `Publish GitHub Release` 均 skipped，属预期（dispatch 的 ref 是 branch，不是 tag）。
+> 🔁 **每次 RC 前重跑一次 dispatch** —— 代码在动，R8 结论有时效性；上一次全绿只证明 `ce976ef` 那一刻成立。
+> （`tags: - 'v*'` 独立于 `branches` 过滤，打 tag 本身会触发 release ⇒ 不能等打 tag 那天才第一次跑。）
+>
+> **历史分支（保留沿革，不再是开发线）**：
+> `improve` / `harness-improve` 与 `harness` 同规格 —— `release.yml` 在三条分支上都出「仓库密钥签名正式包 +
+> debug 包」双产物（`push.branches` 同时列了三者）。PR 不触发 `release.yml`（PR 门禁走 `build.yml` 的零密钥快速轨）。
+> `improve` 曾是自 W48 起的主开发分支（云端自 `harness-improve` 的同一提交 `1a0b45a` 新建，W48 接入 CI 触发），
+> **W79 起已被 `core-fix` 取代**（`docs/14` §C2 沿革注记：原「`improve` canonical」推荐作废）。
 > `1011` 是 **2026-10-11 快照锚点分支**（W63 裁决，自 `improve` @ `3ea8ad0` 复制）：**非开发分支、
-> 有意不进 `build.yml` / `release.yml` 触发列表（其上 0 run 属预期）**，开发继续在 `improve`；
-> `1011` 顺带充当「回滚锚点」（了结 W51「内部锚点分支」挂账）。首个 tag 的落点分支
-> 与分支拓扑（canonical / 冻结面）随法务 `termsVersion` 裁决一并在产品治理裁决中定案。
+> 有意不进 `build.yml` / `release.yml` 触发列表（其上 0 run 属预期）**，顺带充当「回滚锚点」
+> （了结 W51「内部锚点分支」挂账）。
+> 首个 tag 的**落点**（`core-fix` 还是 `main` 快照）与 `v0.1.0` 时点仍随法务 `termsVersion` 裁决定案 ——
+> **canonical 归属本身已定，不再待定**。
 > ⚠️ 审查基线口径：**W62 代码 diff 基线 = `1da011d`**（W61 tip）；`06505b7` 为 W60 CI 回填
 > 提交，勿作 W62 审查/对账基线（B2 补审 P3-1 勘误）。
 >
@@ -549,6 +565,33 @@ Android-Agent/
 
 > - 📌 **W69–W72 设备侧记录已并入 §11.0.1 逐条台账（W72 A2 补登完成，防聚合面漂移）**：**W69** = C3 会话删除真机 E2E（台账 **#47**）+ 激活态重校验回归（**#48**）；**W70** = 阈值校准 8 容器探针批（**#51**）+ D7 R1 verdict（**#49**）+ Y3 双闸（**#50**）+ 2047 臂（Arm B 完整行使、N-2 未命中 ⇒ 残留 W70-01，未单列）+ 人格档位冒烟（datastore 逐字一致）；**W71** = T-2 诊断页 PASS × knownBroken 并列（**#52**）+ W69-02 内存批（**#53**）+ P-2 budget=96 臂（**#54**，⚠️ 未命中）；**W72** = 0.18.0 条件真机臂（**#55**，`_research/w72-0180-device-arm.md`）。逐条证据以各波 closeout §三 为据。
 > - 📌 **W71 叙事订正（历史挂账行 ≠ 现役状态）**：以上各波历史挂账行按当时时点记录，**现役状态一律以 [`docs/15-backlog.md`](docs/15-backlog.md) 为准**。关键已销项：W68 B2 knownBroken 激活态重校验（W68 已交付）/ D7 + 2047 臂 + Y3（W70 已销账，N-2 真机命中残留 W70-01）/ 会话删除 UI（W69 已交付）/ E4B 单文件预设化（W67 已交付）/ r_max 口径（W62 的 8.4 系 chunk 口径伪影，W67 B1 离线重测 **5.06**，C=16→9、窗口 →(5.06,10.11)）/ 模型直答腿（W68-10 closed-dead）/ 定时任务与插件化（W69 判死留痕）。
+
+---
+
+### 📸 现状快照（2026-10-27，收尾时点）
+
+> **活数字（每波收官重测，勿誊抄）**：`@Test` **874**（= `build.yml` 用例基线，严格口径）｜
+> arch-guard **59 条**机械守卫｜selftest 全量由 CI 兜（本地只跑 `--only` / `--affected` 子集）｜
+> fulltest **874 / 0 / 0**（9 模块）｜lint **0 新增**（baseline 门禁，冻结值只许缩不许涨）｜
+> `docs/15` **active 19** 条｜**0 tag**｜`main` 落后 `core-fix` **727 commits**。
+
+> **W84 / W85 / W86 三波结论（每波一行）** —— 收尾期不逐波补沿革（会稀释主线），逐波细节读对应交接：
+> - **W84 = P1 正确性 + 治理**：审批闸门与参数校验换序（四种补位点 + 逐路径表）／引擎 CAS 单飞门／台账九行销账。
+> - **W85 = 技术债收口**：journal 尾读优化／崩溃现场帧预算／守卫 **#58**。
+> - **W86 = 保护面覆盖度（从 0 到 1）**：落盘异常单点收口（92 处 `Scope.launch` 的覆盖面）／
+>   sha256 锚点 **13 / 14** 通电 + 三态分流（`MATCH` / `MISMATCH` / `UNREADABLE`）／
+>   拆分脱闸入闸（**#59 / #60**）／软守卫接 CI advisory。
+
+> **接手指针**：最新交接 = [`docs/handoff-20261026-wave86-coverage.md`](docs/handoff-20261026-wave86-coverage.md)；
+> 挂账权威 = [`docs/15-backlog.md`](docs/15-backlog.md)（四态 active / parked / closed-done / closed-dead）；
+> 已知限制（有意不做） = [`docs/17-known-limitations.md`](docs/17-known-limitations.md)；
+> agent 作业契约 = [`AGENTS.md`](AGENTS.md)。
+
+> ⚠️ **沿革完整性申报（诚实优先）**：上方波次段逐波记录到 **W74（2026-10-18）**为止，**W75–W83 未逐波补沿革**
+> —— 有意取舍（收尾期逐波补沿革稀释主线，且逐波细节已在 `docs/handoff-*.md`），**不是「那些波不存在」**。
+> 需要 W75–W83 的结论请直接读对应交接文档；需要现役状态请读 `docs/15`。
+> **别因为文件存在就以为文档完整。**
+
 
 
 ---

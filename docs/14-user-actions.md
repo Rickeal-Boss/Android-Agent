@@ -127,16 +127,37 @@
 
 ### C2. 首个 tag + 分支拓扑 canonical 化
 
-- **状态**：⬜ 待办
-- **推荐选项（W68 C3 附，第十三审 §5 同款）**：`improve` 为 canonical 分支、`1011` 定格只读快照锚点、tag `v0.1.0` 于法务（C1）落地后落；依赖 C1。
-- **① 做什么**：裁定首个 release tag 的落点分支（`improve` 还是 `main` 快照？）与
+- **状态**：🟡 **部分裁决** —— canonical 分支**已定 = `core-fix`**（§E5，W86 2026-10-26）；剩 tag 落点与 `v0.1.0` 时点（依赖 §C1 法务文本）
+- **推荐选项（W87-12 订正）**：**`core-fix` 为 canonical 分支**、`1011` 定格只读快照锚点、tag `v0.1.0` 于法务（C1）落地后落；依赖 C1。
+- **⚠️ 沿革注记（不静默改写历史）**：本节**原推荐**为「`improve` 为 canonical 分支」（W68 C3 附，第十三审 §5 同款），该推荐**已作废**。
+  作废依据 = **§E5（W86，2026-10-26）裁决「`core-fix` 为 canonical（三支演进线已实质合流于此）」** —— 这是**既成事实**而非新提案：
+  W79（2026-10-23）自 `UI-change-1019` 分出 `core-fix` 后，W79–W87 九波全部落在该支，`improve` / `harness-improve` / `harness`
+  三支已无前进提交。⇒ **原推荐作废的原因是「三支已合流、原落点已无对应现实」，不是「原推荐当时判错」**。W87-12 只做口径合一，不重写 W68 的判断。
+- **① 做什么**：裁定首个 release tag 的落点分支（`core-fix` 还是 `main` 快照？）与
   「canonical 分支」是谁；`1011`（2026-10-11 快照锚点）是否冻结为只读锚点。
+  > ⚠️ **canonical 部分已无需再裁**（§E5 已定）；本项剩余待裁面收窄为「tag 打在哪、何时打」。
 - **② 预期看到什么**：`git tag` 非空；`1011` 定位成文（W63 已把它定为「快照锚点 + 回滚锚点」）。
 - **③ 销账判据**：给出 tag 名 + 落点分支 + canonical 裁决 ⇒ 项目补 tag 与 README 口径。
-- **完成后销账于**：`docs/14-user-actions.md` §C2「状态」行（⬜→✅ + tag 名/落点/canonical）+
-  `README.md:274` 分支口径段「首个 tag 的落点分支…」句按裁决结论落定 + `README.md:450`
-  W63 波次段 B1 落档条补 tag 名 + `docs/handoff-20261011-wave64-closeout.md:67` §五沿袭行
-  更新「0 tags」状态。
+- **完成后销账于**：`docs/14-user-actions.md` §C2「状态」行（🟡→✅ + tag 名/落点）+
+  `README.md` 分支口径段「canonical 分支」条与「首个 tag 落点」句按裁决结论落定（**按条名锚定，不按行号** ——
+  本节原写 `README.md:274`，W87-12 改 README 后该行号已漂移）+ `README.md` W63 波次段 B1 落档条补 tag 名 +
+  `docs/handoff-20261011-wave64-closeout.md:67` §五沿袭行更新「0 tags」状态。
+- **⚠️ 首个 tag 的机械前置（W87-12 新增，非用户动作，属工程侧）**：`core-fix` **不在** `release.yml` 的
+  `push.branches` 白名单内（白名单 = `UI` / `harness` / `harness-improve` / `improve`），
+  而 `app/build.gradle.kts` 的 `debug { isMinifyEnabled = false }` 意味着「debug 全绿」对 R8 **零证明力**
+  ⇒ 必须靠手动 `workflow_dispatch` 才能让该分支的 R8 / 签名路径被真实执行一次
+  （tag `v*` 独立于 `branches` 过滤，打 tag 本身会触发 release —— 所以这个前置**不能**等到打 tag 那天才第一次跑）。
+  **以上是「为什么这条前置存在」的依据，不要因为已满足就删掉它。**
+- **✅ 该前置已于 2026-10-27 完成（实测，非推定）**：run **`40498254820`**（`Release` / `workflow_dispatch` /
+  ref `core-fix` / head `ce976ef`）结论 **success**，关键步骤逐条 success ——
+  `Architecture guard` ✅ / `Architecture guard self-test` ✅ / `Decode keystore` ✅（**签名密钥在位**）/
+  `Assemble release APK` ✅ / `Assemble release AAB` ✅ / `Verify release APK signature` ✅ /
+  `Verify release AAB signature` ✅ / `Upload R8 mapping` ✅。
+  两个 skipped 均属预期：`Gate tag release on signing secrets`（ref 是 branch，`startsWith(refs/tags/v)` 不成立）+
+  `Publish GitHub Release`（dispatch 不建 Release）。
+  ⇒ **该前置已满足**；§C2 剩余待裁面只剩 **tag 落点 + 法务文本（C1）**。
+- **🔁 维护纪律：每次 RC 前重跑一次 dispatch** —— 代码在动，R8 结论有**时效性**；
+  上一次全绿只证明「`ce976ef` 那一刻的缩减规则 + 签名配置成立」，不证明 RC 那一刻成立。
 - **前置**：C1（`termsVersion`）必须先落地（法务文本未定稿前不打 release tag）。
 
 ### C3. 会话删除 UI 立项
@@ -233,7 +254,7 @@
 | 2 | B1 上游 #3576 评论 | 做（文案已入仓） | 跳过 | 3 分钟 | **做** |
 | 3 | B2 gemma GPU 新 issue | 做（附 E4B 对照） | 跳过 | 4 分钟 | **做** |
 | 4 | C1 termsVersion | 老用户视为已同意 v1 + 首启补征 v2 | 全部重新同意 | 法务工作量 | **A**（硬时序：先于 tag） |
-| 5 | C2 tag + 拓扑 | improve canonical + 1011 定格 + v0.1.0（法务后） | main 快照 canonical | 2 分钟 | **A**（依赖 #4） |
+| 5 | C2 tag + 拓扑 | **`core-fix` canonical** + 1011 定格 + v0.1.0（法务后）<br>⚠️ **沿革**：本行原选项 A 写「`improve` canonical」（W68 C3），**§E5（W86）裁决覆盖为 `core-fix`**（三支演进线已实质合流于此）⇒ 原推荐作废，见 §C2 沿革注记 | main 快照 canonical | 2 分钟 | **A**（canonical 已由 §E5 定；剩 tag 落点依赖 #4） |
 | 6 | C3 会话删除 UI | 立项（激活 W58 钩子） | 不立项 | 一波次 | **立项** |
 | 7 | C4 定时任务 | 判死 | 保留重定范围 | — | **判死** |
 | 8 | C4 人格系统 | 保留（人格档位） | 判死 | — | **保留** |

@@ -32,7 +32,13 @@
 #
 # 行为契约（关键）：
 #   · 本脚本是【软守卫 / 咨询级】，只打印警告，永远 exit 0 —— 不阻断正常新增文件。
-#     等机制稳定（接入 CI、误报率归零）后再考虑升级为硬门禁（exit 1 / arch-guard 新守卫）。
+#     ⚠️ **advisory 是终态，不翻硬门禁**（W87-19 方案 B，登记于 `docs/15-backlog.md`
+#     「治理注记 1」）—— 此前的措辞是「等机制稳定（接入 CI、误报率归零）后再考虑升级为
+#     硬门禁」，那是一句**永远不会被执行**的毕业判据（没人定义什么叫「稳定」），与
+#     「永远 exit 1 的检查」是同一个病：没人再读它。结论与理由：本仓受闸门文件只有 **19**
+#     个，其余 **123** 个（≥100 行未登记）是「从未打算加闸门」的常规件 ⇒ 判红会制造
+#     100+ 条假红（红灯含义变成「你没给这个文件加闸门」，没人会照做）。翻案判据 = **闸门
+#     覆盖率**变化（如受闸门文件扩到覆盖全部 ≥300 行文件），**不是波数**。
 #     当前 CI 接的是 advisory 步骤（W86-05，`.github/workflows/build.yml`）：报告先行、
 #     门禁后置 —— 新机制早期误报会阻断正常开发，故先只出报告（沿 W84-14 的取舍）。
 #   · 只读 git diff / find 与 arch-guard 静态解析，不触碰任何 src/ 业务文件、不跑 gradle、
@@ -45,7 +51,8 @@
 #   scripts/check-new-file-guard.sh --warn-margin N # 余量告警阈值（默认 100 行）
 #   scripts/check-new-file-guard.sh --help
 #
-# 退出码：恒 0（咨询级；即使有警告也不 exit 1）。
+# 退出码：恒 0（咨询级；即使有警告也不 exit 1。**这是终态**，见文件头「advisory 是终态」与
+#         `docs/15-backlog.md` 治理注记 1 —— 翻硬门禁的判据是闸门覆盖率，不是波数）。
 # =============================================================================
 set -uo pipefail
 
@@ -66,7 +73,7 @@ while [[ $# -gt 0 ]]; do
     --warn-margin)   WARN_MARGIN="${2:-100}"; shift 2 ;;
     --all-min-lines) ALL_MIN_LINES="${2:-100}"; shift 2 ;;
     --all)           ALL=1; shift ;;
-    -h|--help)       sed -n '2,49p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '2,56p' "$0"; exit 0 ;;
     *)               echo "::warning::未知参数：$1（忽略；可用 --base / --all / --all-min-lines / --warn-margin / --help）" >&2; shift ;;
   esac
 done

@@ -4,12 +4,25 @@ name: Release
 # LiquidAgent 发布流水线（完全可选 / 可降级）
 #
 # 核心约定：仓库默认没有任何 signing secrets。
-#   1. debug 产物无条件产出 —— 即使一个密钥都没有，这条流水线也必须跑绿。
-#   2. release 签名只在四个 SIGNING_* secrets 全部就位时才启用；
-#      缺失时打印 notice 并跳过，绝不失败。
-#   3. GitHub Release 仅在「push tag v*」且签名可用时创建。
+#   1. debug 产物无条件产出 —— 分支 / workflow_dispatch 上一个密钥都没有时，这条流水线
+#      也必须跑绿（「按需产物」场景）。
+#   2. release 签名只在四个 SIGNING_* secrets 全部就位时才启用。
+#      ⚠️ 缺失时的行为**按 ref 类型分叉**（W87 口径订正 —— 旧文写「绝不失败」，
+#      与 `Gate tag release on signing secrets` 步骤**直接冲突**，下一个读注释的人
+#      会以为那一步是 bug 又改回去，故在此写死）：
+#        · 分支 / workflow_dispatch ⇒ 打 notice 并降级为 debug 签名包，**不失败**
+#          （这是「我自己要个能装的包」的合理形态）。
+#        · **tag 推送 ⇒ 硬失败**（`::error::` + `exit 1`），判据在
+#          **`Gate tag release on signing secrets`** 步骤（`if: startsWith(github.ref,
+#          'refs/tags/v')`），这是**唯一门禁点**。
+#          理由：debug 签名的 APK **无法上架、也无法与将来的正式包无缝升级** —— 用户
+#          必须卸载重装，历史会话一起丢。分支上是「临时自用包」，tag 上是「对外发布」，
+#          同一个降级在两个场景里的后果完全不同；把「绿 + debug 包」当发布成功是最坏的
+#          一种静默事故（流水线绿、Release 页挂着不可升级的包，且没人会去看签名）。
+#   3. GitHub Release 仅在「push tag v*」且签名可用时创建（签名不可用时 tag 已在第 2 条
+#      硬失败，本条件根本走不到 —— 保留它是为了「分支上永不建 Release」这条独立语义）。
 #
-# 需要的 secrets（全部可选，缺任何一个都走降级路径）：
+# 需要的 secrets（分支上全部可选；**tag 上缺任何一个都会硬失败**，见第 2 条）：
 #   SIGNING_KEYSTORE_BASE64   keystore 文件的 base64（openssl base64 -A -in xxx.p12）
 #   SIGNING_KEYSTORE_PASSWORD
 #   SIGNING_KEY_ALIAS         （本项目为 liquidagent）
@@ -163,6 +176,9 @@ jobs:
       # -------------------------------------------------------------------
       # 密钥探测：secrets 上下文在步骤 if 表达式里并不可靠，
       # 因此这里用 shell 把探测结果写进 step outputs，后续步骤用 outputs 做门禁。
+      # ⚠️ 本步骤**只探测、不判定**：tag 上缺密钥的硬失败在后面的
+      #   `Gate tag release on signing secrets` 步骤（唯一门禁点，勿在本步骤复制一份
+      #   —— 两处判据 = 两处会漂移）。见文件头「核心约定」第 2 条。
       # -------------------------------------------------------------------
       - name: Detect signing secrets
         id: signing
@@ -177,7 +193,7 @@ jobs:
             echo "::notice::Signing secrets detected, release APK will be signed."
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Signing secrets NOT configured (SIGNING_KEYSTORE_BASE64 / SIGNING_KEYSTORE_PASSWORD / SIGNING_KEY_ALIAS / SIGNING_KEY_PASSWORD). Skipping signed release build; shipping debug APK instead."
+            echo "::notice::Signing secrets NOT configured (SIGNING_KEYSTORE_BASE64 / SIGNING_KEYSTORE_PASSWORD / SIGNING_KEY_ALIAS / SIGNING_KEY_PASSWORD). Skipping signed release build; shipping debug APK instead. (Tag push with the same gap fails hard later — see 'Gate tag release on signing secrets'.)"
           fi
 
       # -------------------------------------------------------------------
@@ -212,6 +228,13 @@ jobs:
       # Wave4 审查（D-P0-1）：tag 推送 + 密钥缺失时，后续签名/发布步骤全部 skip
       # 而 skipped step 不影响 job 结论 → 「流水线全绿但 Release 页是空的」的静默事故。
       # tag 上硬失败；分支推送保持现有降级语义（debug 保底包）。
+      #
+      # ⚠️ 本步骤是「tag 缺失密钥」的**唯一门禁点**（W87 回源核实）：外审第四/五轮
+      #    两份报告都**没查到它**，据此判「tag 无密钥会静默退 debug」= 处方已被现役树
+      #    证伪（登记见 `docs/15-backlog.md` 治理注记 2）。**别再在别处复制一份判据**
+      #    —— 两处判据 = 两处会漂移。文件头「核心约定」第 2 条与这里同源，改一处必改两处。
+      #    行为核实：`workflow_dispatch` 的 ref 是分支 ⇒ `startsWith(refs/tags/v)` 不成立
+      #    ⇒ 本步骤 skipped（冒烟 run 40498254820 实测），这正是期望行为。
       # -------------------------------------------------------------------
       - name: Gate tag release on signing secrets
         if: startsWith(github.ref, 'refs/tags/v')
@@ -222,7 +245,10 @@ jobs:
           fi
 
       # -------------------------------------------------------------------
-      # 保底产物：无论有没有密钥都要有一个能装的 APK
+      # 保底产物：**分支 / dispatch** 上无论有没有密钥都要有一个能装的 APK。
+      # ⚠️ tag 上缺密钥走不到这里 —— 前面的 `Gate tag release on signing secrets` 已
+      #   硬失败（见文件头核心约定第 2 条）。旧文写「无论有没有密钥都要有」在 tag 语境
+      #   下是错的（W87 口径订正）。
       # -------------------------------------------------------------------
       - name: Assemble debug APK (fallback artifact)
         id: assemble_debug
@@ -632,7 +658,13 @@ jobs:
             echo "R8 还原栈所需：artifact \`liquidagent-release-${GITHUB_REF_NAME}\` 内含 \`mapping.txt\` / \`configuration.txt\`。"
             echo ""
             if [ "${{ steps.signing.outputs.available }}" != "true" ]; then
-              echo "> Signing secrets not configured — only the debug APK was produced. "
-              echo "Add \`SIGNING_KEYSTORE_BASE64\`, \`SIGNING_KEYSTORE_PASSWORD\`, \`SIGNING_KEY_ALIAS\`, \`SIGNING_KEY_PASSWORD\` to enable signed releases."
+              if [ "${{ github.ref_type }}" = "tag" ]; then
+                # W87 口径订正：旧文无条件写「only the debug APK was produced」——
+                #   在 tag 语境下这句是错的（Gate 步先硬失败，debug APK 根本没装配）。
+                echo "> ⚠️ **Tag push without SIGNING_\* secrets** — \`Gate tag release on signing secrets\` fails **by design** (file header convention #2): a debug-signed artifact is not a release (cannot be uploaded to a store, cannot upgrade in place). Expect this job to be RED; no debug APK is assembled on this path because the gate runs *before* \`Assemble debug APK\`."
+              else
+                echo "> Signing secrets not configured — only the debug APK was produced. "
+                echo "Add \`SIGNING_KEYSTORE_BASE64\`, \`SIGNING_KEYSTORE_PASSWORD\`, \`SIGNING_KEY_ALIAS\`, \`SIGNING_KEY_PASSWORD\` to enable signed releases."
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
