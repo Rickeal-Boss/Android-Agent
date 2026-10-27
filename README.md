@@ -574,7 +574,8 @@ Android-Agent/
 > arch-guard **59 条**机械守卫｜selftest 全量由 CI 兜（本地只跑 `--only` / `--affected` 子集）｜
 > fulltest **881 / 0 / 0**（9 模块）｜lint **0 新增**（baseline 门禁，冻结值只许缩不许涨）｜
 > `docs/15` **active 19** 条｜**0 tag**｜`main` 落后 `core-fix` 见 `git rev-list`。
-> **CI 实证**：`build.yml` run **`40506931622`**（head `b9716d7`）三 job 全 success；
+> **CI 实证**：`build.yml` run **`40521616097`**（head `c12ee48`，W88）三 job 全 success；
+> 上一波 `40506931622`（head `b9716d7`，W87）同样三 job 全 success；
 > `release.yml` dispatch run **`40498254820`** 全 success（R8 + 签名轨首次见光）。
 
 > **W84 / W85 / W86 三波结论（每波一行）** —— 收尾期不逐波补沿革（会稀释主线），逐波细节读对应交接：

@@ -83,6 +83,24 @@ W87 之后代码级 P0/P1 已清空，本波不开新功能面，只修**用户�
 `@Test` 基线 **874 → 881**（+7：`WindowSizeClassTest` 3 + `SheetDismissPredicateTest` 4），
 `build.yml` 沿革注释与 baseline 同 commit 同步（守卫 #26 会机械核对，首次跑就是被它拦下的）。
 
+⚠️ **两次假失败（如实记录）**：`fulltest.sh` 首轮报「6 个 test-results 目录未能清除」
+（W74-05 的 Windows 句柄锁形态）—— **脚本拒绝判绿是正确行为**，不是脚本 bug。
+处置 = `python shutil.rmtree` 清目录 + 等 10s 让句柄释放 + 重跑；第二轮得 881/0/0 干净汇总。
+CI（Ubuntu）无此问题。
+
+## 四·1、CI 实跑
+
+- push：`93d7f53..c12ee48 core-fix -> core-fix`（1 commit / 30 files）。
+- run **`40521616097`**（push，head `c12ee48`）**三 job 全 success**：
+
+| job | 结论 | 内含 |
+|---|---|---|
+| **Unit tests** | **success** | `arch-guard.sh` 真仓 **59/59** + 全量 selftest + `fulltest.sh` **881/0** |
+| **Lint (baseline gate)** | **success** | 0 新增 |
+| **Assemble Debug (JDK 21)** | **success** | — |
+
+- **本地 vs CI 一致性**：本地 fulltest **881/0/0**、arch-guard **59/59**、对账 **34 处**、lint 0 新增 —— 与 CI 全量口径一致。
+
 ## 五、真机验收（OPPO PDRM00 `13309cc8` / Android 13 / SDK 33）
 
 | 项 | 判据 | 结果 |
