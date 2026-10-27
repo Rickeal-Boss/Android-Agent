@@ -131,6 +131,20 @@ W88 把「看得见的交互」收了一轮，本波是**同一批交互的残�
   `W68-04` → `closed`（改道 `docs/14 §E`）；`W74-05` 保持 `active` 并注明**余判据③**
   （变异自证未实跑）。
 
+## 四·1、CI 实跑
+
+- push：`dc930ca..fab9bf6 core-fix -> core-fix`（1 commit / 19 files）。
+- run **`40543600848`**（push，head `fab9bf6`）**三 job 全 success**：
+
+| job | 结论 | 内含 |
+|---|---|---|
+| **Unit tests** | **success** | arch-guard **61/61** + **全量 selftest** + `fulltest.sh` **890/0** + **新增 `Docs/guard parity`（docs/16 ↔ arch-guard，硬门禁）** + 两条 advisory（new-file guard / release dispatch reminder） |
+| **Lint (baseline gate)** | **success** | 0 新增 |
+| **Assemble Debug (JDK 21)** | **success** | 含 Architecture guard + self-test 两步 |
+
+⇒ 本波新增的**三条机械件全部在 CI 上真跑过一次**：`check-doc16-parity.sh`（硬门禁）、
+行数守卫 #61/#62（含 selftest case）、release dispatch advisory。
+
 ## 五、闸门结果（本地）
 
 | 闸门 | 结果 |

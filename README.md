@@ -576,7 +576,8 @@ Android-Agent/
 > fulltest **890 / 0 / 0**（9 模块）｜lint **0 新增**（baseline 门禁，冻结值只许缩不许涨）｜
 > `docs/16` 双向一致性已机械化（`scripts/check-doc16-parity.sh`，白名单只许缩）｜
 > `docs/15` **active 18** 条｜**0 tag**｜`main` 落后 `core-fix` 见 `git rev-list`。
-> **CI 实证**：`build.yml` run **`40521616097`**（head `c12ee48`，W88）三 job 全 success；
+> **CI 实证**：`build.yml` run **`40543600848`**（head `fab9bf6`，W89）三 job 全 success（含新增的 docs/16 parity 硬门禁与两条 advisory）；
+> 上一波 `40521616097`（head `c12ee48`，W88）同样三 job 全 success；
 > 上一波 `40506931622`（head `b9716d7`，W87）同样三 job 全 success；
 > `release.yml` dispatch run **`40498254820`** 全 success（R8 + 签名轨首次见光）。
 
