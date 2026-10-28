@@ -213,24 +213,81 @@ fi
 #   mawk 1.3.4 的 man 页写明 `-W traditional` 才会"省略传统 awk 不支持的区间表达式"，
 #   即**默认支持**；但 BusyBox awk / 某些嵌入式 awk 仍不支持 brace，且 mawk 对 brace
 #   **不匹配时不报错**（静默），这正是本仓最忌的"永远绿的守卫 = 假绿"。
-#   故本波**不再依赖任何 brace 量词**：`\*{0,2}` → `\*?\*?`、`[^|]{0,14}` → `[^|]*` + 行内限长。
+#   故本波**不再依赖任何 brace 量词**：`\*{0,2}` → `\*?\*?`。
+#   `[^|]{0,14}` 的方言无关等价写法 = **14 个 `[^|]?` 展开**（见下方 CJ_AWK_LIB 的 cjInitRe）。
+#   ⚠️【W90 复审订正】**不得**改回 `[^|]*` + 事后 `length(mid) > 14` 判定：`match()` 是
+#   leftmost-**longest**，`[^|]*` 会吞到该单元格内**最远**的 `Wxx-yy`；一旦最远项超 14 字符
+#   就整段跳过，**近处的合法项一起丢**。实测：真实台账 4 处 `承接` 全部归零
+#   （`W83-12→W84-15`、`W83-13→W84-16`、`W84-15→W83-13`、`W87-17→W83-12` 全部 new=[]），
+#   构造串 `承接 delta 行 = **W84-15** 与 W99-99 并存` 也是 0 候选（正确写法应为 1 候选）。
+#   这不是等价改写，是**静默失效**。
 #   并在脚本启动处加**行为自检**（对真实夹具跑本脚本的核心判据，不匹配即 exit 1），
 #   任何 awk 方言下都不会静默失效。CI 的 awk 实现由 `build.yml` 的 `awk -W version` 回显可见。
 #
 # 【W90 E-1 · 方言行为自检】：核心判据必须在当前 awk 下**真的能匹配**（不是报错、更不是静默不匹配）。
 # 任一夹具不匹配 ⇒ 判红 + exit 1。这比"依赖作者记得 CI 上是哪种 awk"零歧义——即便将来 CI 换成
 # 不支持 brace 的 awk，本自检也会第一时间把守卫失效暴露出来，而不是继续报 OK。
-awk -v idre='W[0-9][0-9]*-[0-9]+' '
+#
+# 【W90 复审 · 自检必须断言**候选集**，不是「正则可匹配」】：
+#   只断言 `"...承接 delta 行 = **W84-15**" ~ /承接[^|]*W[0-9].../` 能匹配，**恰恰放过了**上面
+#   那个 bug —— 同一条串在真实单元格里产出 0 候选。语义改写的正确性只能靠**产出**验证：
+#   故自检改为喂三条夹具并断言 `cjCands()` 的**候选集**（条数 + 具体号）：
+#     ① `承接 delta 行 = **W84-15**` ⇒ 1 个且 = W84-15；
+#     ② `承接 delta 行 = **W84-15** 与 W99-99 并存` ⇒ 1 个且 = W84-15（**关键回归夹具**：
+#        旧 `[^|]*` + length 写法在此产出 0 —— 贪婪吞到 W99-99、mid 超 14 后整段跳过）；
+#     ③ `承接 abc` ⇒ 0 个。
+#   自检与生产**共用同一段 awk 源码**（CJ_AWK_LIB），自检验的就是生产跑的那段代码，不存在
+#   「自检一份、生产另一份」的漂移面。
+# ---- 承接判据（自检与生产共用同一段 awk 源码，防「自检一份、生产另一份」的漂移）----
+CJ_AWK_LIB='
+  # 【W90 订正】`[^|]{0,14}` 的方言无关等价写法：展开成 14 个 `[^|]?`
+  # （不依赖 brace 量词，也不靠事后 length 判定 —— 后者在 `[^|]*` 贪婪匹配下会丢近处候选）
+  function cjInitRe(   k) {
+    if (cjre != "") return
+    q = ""
+    for (k = 0; k < 14; k++) q = q "[^|]?"
+    cjre = "承接" q "W[0-9][0-9]*-[0-9]+"
+  }
+  # 取一段文本里 `承接 …` 判据的全部候选号（返回空格分隔串，可能为空串）
+  function cjCands(t,   rest, rs, rl, seg, out) {
+    cjInitRe()
+    out = ""
+    rest = t
+    while (match(rest, cjre)) {
+      rs = RSTART; rl = RLENGTH
+      seg = substr(rest, rs, rl)
+      if (match(seg, idre)) out = out " " substr(seg, RSTART, RLENGTH)
+      rest = substr(rest, rs + rl)
+    }
+    return out
+  }
+  # 候选条数（空格分隔串里非空段的数量）
+  function cjCount(list,   arr, m, i, c) {
+    if (list == "") return 0
+    m = split(list, arr, " ")
+    c = 0
+    for (i = 1; i <= m; i++) if (arr[i] != "") c++
+    return c
+  }
+'
+
+awk -v idre='W[0-9][0-9]*-[0-9]+' "${CJ_AWK_LIB}"'
   BEGIN {
     if ("| **W89-01** | desc | active | x | W89 |" !~ /^\|[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+/) { print "FAIL: head-row pattern (bold)"; ec=1 }
     if ("| W89-01 | desc | active | x | W89 |"      !~ /^\|[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+/) { print "FAIL: head-row pattern (no star)"; ec=1 }
-    if ("承接 delta 行 = **W84-15**"               !~ /承接[^|]*W[0-9][0-9]*-[0-9]+/)             { print "FAIL: chengjie pattern"; ec=1 }
     if ("由 **W84-16** 收口"                        !~ /由[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+\*?\*?[[:space:]]*收口/) { print "FAIL: shoukou pattern"; ec=1 }
     if ("转 **W84-16**"                             !~ /转[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+/)   { print "FAIL: zhuan pattern"; ec=1 }
+    # 承接判据：断言**候选集**（条数 + 具体号），不是「正则可匹配」—— 后者对语义改写无效
+    c = cjCands("承接 delta 行 = **W84-15**"); sub(/^[ ]+/, "", c)
+    if (c != "W84-15" || cjCount(cjCands("承接 delta 行 = **W84-15**")) != 1) { print "FAIL: chengjie cand set (plain) got [" c "]"; ec=1 }
+    # 关键回归夹具：旧 `[^|]*` + 事后 length 写法在此产出 0 候选（贪婪吞到 W99-99）
+    c = cjCands("承接 delta 行 = **W84-15** 与 W99-99 并存"); sub(/^[ ]+/, "", c)
+    if (c != "W84-15" || cjCount(cjCands("承接 delta 行 = **W84-15** 与 W99-99 并存")) != 1) { print "FAIL: chengjie cand set (near+far) got [" c "]"; ec=1 }
+    if (cjCount(cjCands("承接 abc")) != 0) { print "FAIL: chengjie cand set (none) got " cjCount(cjCands("承接 abc")); ec=1 }
     if (ec) exit 1
   }
-' || { echo "::error::[check-backlog-refs] awk 方言行为自检失败：核心判据在当前 awk 下不匹配（守卫已失效，禁止假绿）"; exit 1; }
-awk -v idre='W[0-9][0-9]*-[0-9]+' '
+' || { echo "::error::[check-backlog-refs] awk 方言行为自检失败：核心判据在当前 awk 下不匹配或候选集不符（守卫已失效，禁止假绿）"; exit 1; }
+awk -v idre='W[0-9][0-9]*-[0-9]+' "${CJ_AWK_LIB}"'
   BEGIN { FS = "|" }
   {
     # 行首钉形态（本仓铁律）：只认主台账数据行 `| **Wxx-yy** | …`
@@ -258,27 +315,27 @@ awk -v idre='W[0-9][0-9]*-[0-9]+' '
       # a) `由 **Wxx-yy** 收口`
       rest = t
       while (match(rest, /由[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+\*?\*?[[:space:]]*收口/)) {
-        seg = substr(rest, RSTART, RLENGTH)
+        # ⚠️ 必须先存 rs/rl：内层 `match(seg, idre)` 会覆盖全局 RSTART/RLENGTH（既有 P3 缺陷）
+        rs = RSTART; rl = RLENGTH
+        seg = substr(rest, rs, rl)
         if (match(seg, idre)) cands = cands " " substr(seg, RSTART, RLENGTH)
-        rest = substr(rest, RSTART + RLENGTH)
+        rest = substr(rest, rs + rl)
       }
       # b) `承接 … Wxx-yy`（中间夹 ≤14 字符：`承接 delta 行 = **W84-15**`）
-      #    ⚠️ 【W90 E-1】原 `[^|]{0,14}` 依赖 brace 量词（方言风险）→ 改为 `[^|]*` + 行内限长，
-      #    等价且方言无关（承接 与 W 之间的非 | 字符数必须 ≤14）。
-      rest = t
-      while (match(rest, /承接[^|]*W[0-9][0-9]*-[0-9]+/)) {
-        seg = substr(rest, RSTART, RLENGTH)
-        mid = seg; sub(/承接/, "", mid); sub(/W[0-9][0-9]*-[0-9]+$/, "", mid)
-        if (length(mid) > 14) { rest = substr(rest, RSTART + RLENGTH); continue }
-        if (match(seg, idre)) cands = cands " " substr(seg, RSTART, RLENGTH)
-        rest = substr(rest, RSTART + RLENGTH)
-      }
+      #    判据**直接调 CJ_AWK_LIB 的 cjCands**（与启动自检跑的是同一段代码）：
+      #    `[^|]{0,14}` 的等价物 = 14 个 `[^|]?` 展开。
+      #    ⚠️【W90 复审订正】原实现 `[^|]*` + 事后 `length(mid) > 14` 判定**已静默失效**：
+      #    `match()` 取 leftmost-longest ⇒ `[^|]*` 吞到单元格内最远的 Wxx-yy，最远项一超 14
+      #    就整段跳过、近处合法项一起丢（真实台账 4 处 `承接` 全部归零）。**不得改回去。**
+      cands = cands cjCands(t)
       # c) `转 **Wxx-yy**`（遗留面转移指针）
       rest = t
       while (match(rest, /转[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+/)) {
-        seg = substr(rest, RSTART, RLENGTH)
+        # 同 a)：先存 rs/rl，否则内层 match 覆盖后 substr 取错位置
+        rs = RSTART; rl = RLENGTH
+        seg = substr(rest, rs, rl)
         if (match(seg, idre)) cands = cands " " substr(seg, RSTART, RLENGTH)
-        rest = substr(rest, RSTART + RLENGTH)
+        rest = substr(rest, rs + rl)
       }
       split(cands, arr, " ")
       delete seen

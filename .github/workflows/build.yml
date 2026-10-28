@@ -684,7 +684,10 @@ jobs:
             #   ⇒ 由 881 上调 890（代码冻结后实测 890，无 @Ignore/参数化）。
             # W90 termsVersion 版本化落地 +5 例（SettingsRepositoryTosVersionTest：迁移口径纯函数单测
             #   5 条，钉住 C1 裁决 A 的迁移语义 + bump 后老用户重新征求）⇒ 由 890 上调 895。
-            baseline=895
+            # W90 审查修复 +6 例（FirstRunGateDecisionTest：firstRunStepFor 3 + shouldEnterMainShell 3，
+            #   钉住版本 bump 后老用户重新征求 —— 原实现早退只看 hasSeenOnboarding，
+            #   老用户在该位恒 true ⇒ bump 后仍被直接放进主界面，版本化机制形同虚设）⇒ 由 895 上调 901。
+            baseline=901
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

@@ -16,7 +16,28 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 
 /** 首启流程的三个步骤。顺序固定：引导 → 应用条款 → Gemma 授权。 */
-private enum class FirstRunStep { ONBOARDING, TOS, GEMMA }
+internal enum class FirstRunStep { ONBOARDING, TOS, GEMMA }
+
+/**
+ * 首启流程的续跑点（纯函数，便于 JVM 单测）。
+ * 判定顺序即流程顺序：GEMMA 是最后一步，所以它最先判。
+ */
+internal fun firstRunStepFor(tosAccepted: Boolean, hasSeenIntro: Boolean): FirstRunStep = when {
+    tosAccepted -> FirstRunStep.GEMMA
+    hasSeenIntro -> FirstRunStep.TOS
+    else -> FirstRunStep.ONBOARDING
+}
+
+/**
+ * 是否可以直接进主界面（纯函数，便于 JVM 单测）。
+ *
+ * ⚠️ **必须同时要求 [tosAccepted]**：`hasSeenOnboarding` 只是「首启流程走完了」，
+ * 不是「条款仍有效」。W90 起 TOS 判据升级为「已同意版本 ≥ 当前版本」，bump
+ * `LegalDocuments.CURRENT_TERMS_VERSION` 后老用户会变回未接受 —— 若这里只看
+ * `hasSeenOnboarding`，这些人将永远绕过 TOS 硬闸门（版本化机制形同虚设）。
+ */
+internal fun shouldEnterMainShell(hasSeenOnboarding: Boolean, tosAccepted: Boolean): Boolean =
+    hasSeenOnboarding && tosAccepted
 
 /**
  * 首启闸门：引导 + 两份**互相独立**的条款接受。
@@ -80,7 +101,11 @@ fun FirstRunGate(
         return
     }
 
-    if (hasSeenOnboarding == true) {
+    // ⚠️ 判据必须**同时**要求 tosAccepted，不能只看 hasSeenOnboarding：
+    // W90 起 TOS 判据是「已同意版本 ≥ 当前版本」，bump `CURRENT_TERMS_VERSION` 后老用户
+    // 会变回未接受 —— 只看 hasSeenOnboarding 的话这些人会永远绕过 TOS 硬闸门（版本 bump
+    // 后老用户落回 TOS 步，正是版本化机制唯一的作用面）。
+    if (shouldEnterMainShell(hasSeenOnboarding == true, tosAccepted == true)) {
         content()
         return
     }
@@ -96,13 +121,7 @@ fun FirstRunGate(
     // 必须是 rememberSaveable：旋转 / 折叠展开会重建 Activity，用 remember 的话 step
     // 会被重置回流程起点 —— 用户刚点完「同意并继续」，转个屏幕又被要求再同意一遍。
     var step by rememberSaveable {
-        mutableStateOf(
-            when {
-                tosAccepted == true -> FirstRunStep.GEMMA
-                hasSeenIntro == true -> FirstRunStep.TOS
-                else -> FirstRunStep.ONBOARDING
-            },
-        )
+        mutableStateOf(firstRunStepFor(tosAccepted == true, hasSeenIntro == true))
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -129,7 +148,10 @@ fun FirstRunGate(
                     // NonCancellable 同上：这是**硬闸门**的唯一落盘点，写丢了用户就要
                     // 重新同意一遍服务条款（甚至可能因为旋转卡在写入前而反复被拦）。
                     scope.launch(NonCancellable) { settings.setTosAccepted(true) }
-                    step = FirstRunStep.GEMMA
+                    // 只在**首次走首启**时推进：重新征求场景（hasSeenOnboarding == true）下
+                    // 接受后 DataStore 回真 ⇒ 上面的早退直接进主界面，推进到 GEMMA 只会闪一帧；
+                    // 保持停在 TOS 直到 Flow 回真（写失败则 fail-closed 留在 TOS，行为正确）。
+                    if (hasSeenOnboarding != true) step = FirstRunStep.GEMMA
                 },
                 onDecline = onExitApp,
             )
