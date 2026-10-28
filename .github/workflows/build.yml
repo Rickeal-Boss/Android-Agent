@@ -48,7 +48,7 @@ on:
     # **新建/切换分支第一件事 = 核对触发面**：不补进来本波全部推送 0 run（同
     # UI-change-1019 的 W76/W77 教训）。同沿革：release.yml 白名单**不**同步加本分支
     # （签名双轨按需手动 dispatch），不占常规 CI 配额；PR 门禁口径亦不变。
-    branches: [main, UI, harness, harness-improve, improve, UI-change-1019, core-fix]
+    branches: [main, UI, harness, harness-improve, improve, UI-change-1019, core-fix, final-cut]
     # paths-ignore：纯文档改动（docs/、任意 *.md、issue 模板）跳过本流水线 ——
     # 省掉「docs-only 要攒着一起推」的人工 workaround。
     # ⚠️ 若本流水线将来被设为分支保护的 required check，纯文档 PR 会因「无
