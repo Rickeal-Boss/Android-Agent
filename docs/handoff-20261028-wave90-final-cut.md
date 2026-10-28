@@ -83,7 +83,14 @@
 - `core-fix` / `ea19062`：Build `40683192741` success；Release `40683960004` success
   （**签名链路已真跑**：keystore 解码 / release APK+AAB / 签名校验 / R8 mapping 全 success）。
 - `final-cut` / `6468fd5`：Build `40689879262` success（三 job 全绿，`tests=895`）。
-- `final-cut` / `446cc2a`：**待回填**（本波推送后补 run id）。
+- `final-cut` / `70dd34e`：Build `40700028025` **failure** —— 唯一红点是 `Architecture guard`
+  的「ledger-era 交接 delta ID」项：本交接首版把判据夹具串原样抄进来，串里的假波次号
+  被判「交接有、台账无」。**守卫是对的，改文档不改守卫**（见 §六.4）。
+- `final-cut` / `0909f36`：Build `40701736966` success（`workflow_dispatch`；三 job 全绿，
+  `[fulltest] tests=901 failures=0 errors=0 skipped=0`、`awk: GNU Awk 5.2.1 / /usr/bin/gawk`、
+  `[docs16-parity] OK 条目 9 / 守卫 14 / check 61 / 待迁移 47`）。
+  ⚠️ 该 run 是 dispatch 而非 push：修守卫判红的那次提交是 docs-only，`paths-ignore` 不触发
+  build.yml（这是既定口径，不是绕过门禁）。
 
 ---
 
