@@ -175,6 +175,46 @@
 
 ---
 
+## L10. 7 个 ≥700 行的 Kotlin 文件没有行数守卫（advisory 只防恶化，不推动收敛）
+
+- **现象**：`scripts/arch-guard.sh` 末尾有一条 **advisory**（不是守卫：不占守卫号、不进 `KNOWN_GUARDS` /
+  selftest、不改退出码），聚合统计「≥700 行且无行数守卫的 `.kt`」的数量与最大值。
+  `ADV_BASELINE=7`，**超过基线**才打 `::warning::`，持平 / 低于基线只打一行普通输出。
+  扫描面 = **main 源集**，`src/test` / `src/androidTest` 显式排除（测试源集从无闸门，计入只会把聚合数
+  钉死成噪声）。2026-10-28 实测：计数 **7 = 基线**，输出
+  `[advisory] 行数守卫覆盖：≥700 行且无行数守卫的 .kt = 7 个（基线 7），最大 1050（…/SettingsScreen.kt）—— 不判红`。
+  7 个文件（按行数降序）：
+
+  | 行数 | 文件 |
+  |---|---|
+  | 1050 | `feature-settings/src/main/java/com/rickeal/agent/feature/settings/SettingsScreen.kt` |
+  | 939 | `feature-models/src/main/java/com/rickeal/agent/feature/models/ModelsScreen.kt` |
+  | 861 | `core-data/src/main/java/com/rickeal/agent/core/data/AppContainer.kt` |
+  | 817 | `feature-chat/src/main/java/com/rickeal/agent/feature/chat/ChatScreen.kt` |
+  | 756 | `core-model/src/main/java/com/rickeal/agent/core/model/ModelPresets.kt` |
+  | 745 | `core-design/src/main/java/com/rickeal/agent/core/design/liquid/interactive/DampedDragAnimation.kt` |
+  | 736 | `core-model/src/main/java/com/rickeal/agent/core/model/StreamRepetitionDetector.kt` |
+
+- **影响**：advisory 只能**防恶化**（涨到 8 才响），不能**推动收敛**（这 7 个一直在，它永远不响）。
+  比「没覆盖」更麻烦的是它的**沉默会被后来人读成「已覆盖」** —— 一条常年 `不判红` 的输出，
+  既不能当闸门用，也不能当覆盖证明用。这正是本条要显式登记的理由。
+- **为什么不做**：收尾期一次性补 7 个闸门 = 一次制造 7 条**立刻要还的债**（每个闸门都意味着
+  「触顶即启动拆分」，而 7 个里有 3 个是整屏 Composable —— `SettingsScreen` / `ModelsScreen` /
+  `ChatScreen` —— 拆分是独立工程，不是补一行上限）；且**行数上限不是质量判据**：本仓既有处置是
+  「触顶 ⇒ 启动拆分评审，**不是**改阈值」（`docs/16` `ARCH.004`）。正确做法是**新增/拆分时同批登记**：
+  `scripts/check-new-file-guard.sh`（`--all` 存量模式抓未登记文件，diff 模式抓当波新文件 / 增长 >50 行）
+  + `scripts/line-table.sh`（登记表从 arch-guard 的「总行数 ≤」守卫族派生，单源、不手抄）。
+  ⇒ 本条定性是**决定不补**（把预算留给拆分本身），不是「欠着没补」。
+- **判据**：`bash scripts/arch-guard.sh` 的 advisory 输出里「≥700 行且无行数守卫」计数 = **7**。
+  **涨到 8 即说明有文件脱闸**（新增 / 拆分产物未登记），应回 `scripts/line-table.sh` 补登记，
+  而不是上调 `ADV_BASELINE`；计数**低于** 7 时人眼下调基线（advisory 注释的既有约定）。
+- **台账 id**：**无独立台账 id** —— 该 advisory 由 `W89-05`（D-1）建立，基线 7 即建立时的实测值。
+  本条登记「决定不逐个补闸门」，不新增挂账。
+- **重启前提**：下一次拆分波 / 触碰这 7 个文件时顺带补闸门；
+  或产品侧要求把行数上限作为**硬门禁**（届时这 7 条要么补闸门、要么显式豁免）。
+
+---
+
 ## 附：不在本页的东西
 
 - **「已实现未接线」的条目**（代码在、生产路径没消费方）不属「已知限制」——它们在

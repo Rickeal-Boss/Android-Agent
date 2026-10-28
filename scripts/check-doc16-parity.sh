@@ -17,7 +17,9 @@
 #   ③ fail-closed：任一侧文件缺失 / 解析出 0 条 ⇒ 判红，绝不静默放行。
 #
 # ⚠️ 判据钉**行首形态**，不裸子串匹配（docs/16 §三 硬要求 1）：
-#   条目行 `^#{3,4} [A-Z]+\.[0-9]{3} - `；守卫号只从 `^>` 开头的 NOTE 行里取 ——
+#   条目行 `^(###|####) [A-Z]+\.[0-9][0-9][0-9] - `（**W90 E-1 订正**：原 `#{3,4}` / `[0-9]{3}`
+#   用区间量词，在 BusyBox / 某些嵌入式 awk 下静默不匹配 ⇒ 本脚本会 fail-closed 误红的
+#   同时 guard 的 false-green 风险被放大；改为方言无关的等价写法，并加启动自检）；
 #   正文里提到 `ARCH.001` 不会被算成「有这条规则」，注释里提到 `#25` 也不会被算成
 #   「有这条守卫」（本仓已有同类事故：line-table.sh 曾把注释里的连写当成守卫）。
 # ⚠️ 成本纪律：全程 2 次 awk + 1 次 grep -c（单进程、无逐行 fork），实测 < 0.2s。
@@ -37,6 +39,17 @@ for f in "$DOC" "$GUARD"; do
   [ -f "$f" ] || { echo "::error::[docs16-parity] 缺少 $f（判据面缺失 ⇒ 禁 fail-open）"; exit 1; }
 done
 
+# 【W90 E-1 · 方言行为自检】：条目行判据必须在当前 awk 下**真的能匹配**（不是报错、更不是
+# 静默不匹配——否则本脚本会 fail-closed 误红，且 CI 的 R1 门禁臂永远拿不到绿）。不匹配即 exit 1。
+if ! awk 'BEGIN {
+  if ("### ARCH.001 - 标题"      !~ /^(###|####) [A-Z]+\.[0-9][0-9][0-9] - /) { print "FAIL: entry h3"; exit 1 }
+  if ("#### DL.001 - 标题"       !~ /^(###|####) [A-Z]+\.[0-9][0-9][0-9] - /) { print "FAIL: entry h4"; exit 1 }
+  if ("## ARCH.001 - 非条目"     ~  /^(###|####) [A-Z]+\.[0-9][0-9][0-9] - /) { print "FAIL: h2 must NOT match"; exit 1 }
+  if ("# 52)"                    !~ /^# [0-9]+\)/)                                  { print "FAIL: guard-id"; exit 1 }
+}'; then
+  echo "::error::[docs16-parity] awk 方言行为自检失败：条目行/守卫号判据在当前 awk 下不匹配（守卫已失效，禁止假绿）"; exit 1
+fi
+
 # ① 定义面：每个 `# N)` 块内**是否真的有 check 行**（只有注释 = 装饰性规则）
 defined="$(awk '
   /^# [0-9]+\)/ { if (id != "" && has) print id; id = $2; sub(/\)$/, "", id); has = 0; next }
@@ -53,7 +66,7 @@ defined="$(awk '
 entries="$(awk '
   /^```/ { fence = !fence; next }
   fence { next }
-  /^#{3,4} [A-Z]+\.[0-9]{3} - / { if (id != "") print id "\t" g; id = $2; g = ""; cap = 0; next }
+  /^(###|####) [A-Z]+\.[0-9][0-9][0-9] - / { if (id != "") print id "\t" g; id = $2; g = ""; cap = 0; next }
   /^>/ {
     s = $0
     if (!cap) { if (!match(s, /`\[guard\]`/)) next; s = substr(s, RSTART + RLENGTH); cap = 1 }

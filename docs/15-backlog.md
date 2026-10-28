@@ -18,6 +18,17 @@
   （非独立波次；交付 `ee0df65` / `12bef26`，记录见 `docs/handoff-20261022-wave78-bg-run.md` §七）；
   `W79`（大写）= 2026-10-23 起的 **core-fix 波**（P1 冻结时钟修复 + UI 圆角/间距收敛 + #1326 诊断）。
 
+### 收尾冻结（W90 · 2026-10-28）
+
+- **事实**：项目已进入**首个 Release tag 前的最后一波**。tag 之后，本台账 `active` 段**不再按「每波必清」推进**，
+  转为**维护态**：只处理「用户可感知的 P0/P1 + 安全/合规」两类，其余按各自状态位自然休眠。
+- **不动状态位**：本次冻结**只改口径，不改任何一行的四态** —— `active` 仍是 `active`，`parked` 仍是 `parked`。
+  理由：状态位是**事实描述**，冻结是**节奏**约定，两者不能混。要销账必须回源改判据，
+  **不许用「冻结」当销账理由**（本仓铁律：不自行销账）。
+- **唤醒条件**：`parked` 行按其「重启前提」列自然唤醒；`active` 行中属于「等设备窗口 / 等用户裁决 /
+  等方案设计」的，在对应输入到位时唤醒。
+- **登记纪律**：tag 后新增挂账仍按四态 + 四要素登记；**本冻结不降低登记要求，只降低清账节奏**。
+
 ## 主台账
 
 | ID | 条目 | 状态 | 重启前提 | 最后触碰波次 |
@@ -29,7 +40,7 @@
 | W68-05 | 会话删除 UI（C3）+ `onConversationDeleted` 钩子激活 | closed-done | **W89 考古销账**（判据 = 代码锚三证）：① `ConversationDrawer.kt` 的删除确认对话框（:120 `pendingDeleteId`、:283 对话框、:329 行尾删除入口，注释均标 W69 C3）；② `ConversationRepository.onConversationDeleted` 级联清理（KDoc「W69 C3 激活并扩为级联清理」）；③ `core-data/src/test/.../ConversationDeletionCleanupTest.kt` 在档。⇒ 事实完成，此前挂 active 19 波属状态陈旧。 | W68 |
 | W68-06 | bump 首跑判据（docs/12 锚 #5 未验 + fold 收敛点前置）+ **knownBroken/GPU 白名单过期复审条目**（随功能刀 B3 入 bump 锚清单，预裁量④） | active（blocker 维持；**W71 起单维持**） | **锚 #5 已验**（W71 离线锚批：0.18.0 AAR 双 ABI `.so` 均含 `ThinkingBudgetConstraint` ⇒ 「锚 #5 未验」半边消除）；剩余维持 = **锚 #1 收敛缺失**（v0.18.0 实证删除单元素收敛，W56 复核一致）；bump 决策树 (a)/(b)/(c) 已预登记 docs/12（W71 C1） | W71 |
 | W68-07 | gemma-4 GPU 用户故事（E4B 单文件 GPU 在 A13 OOM；需高显存设备复测；上游 `-gpu` NOT_FOUND issue 仍应提交） | active | 高显存设备 | W68 |
-| W68-08 | main fast-forward / 首个 tag / 法务 `termsVersion`（C1/C2） | active | **C1 迁徙语义已裁 A（2026-10-15：老用户 `is_tos_accepted=true` 视为「已同意第 1 版」+ 首启补征 v2）；剩余阻塞 = 正式法务文本 + 托管地址（待用户提供）**；C2 tag 拓扑依赖 C1 文本（预裁量⑤：tag 未立前 FF 无收益） | W68 |
+| W68-08 | main fast-forward / 首个 tag / 法务 `termsVersion`（C1/C2） | active | **C1 迁徙语义已裁 A（2026-10-15：老用户 `is_tos_accepted=true` 视为「已同意第 1 版」+ 首启补征 v2）；剩余阻塞 = 正式法务文本 + 托管地址（待用户提供）**；C2 tag 拓扑依赖 C1 文本（预裁量⑤：tag 未立前 FF 无收益）；**W90 已落地 termsVersion 版本化机制**（`LegalDocuments.CURRENT_TERMS_VERSION=1` + `SettingsRepository.acceptedTermsVersionFrom` 迁移口径，严守「bump 版本必须先于换文本」硬时序），剩余阻塞收窄为「正式法务文本 + 托管地址」两项用户侧输入 | W68 |
 | W68-09 | docs/15 轻量核对守卫（交接 delta ID ∈ 台账，沿 #27 范式） | closed-done | 销账判据：#42 落地（W70 `ee3ca12`，arch-guard 42 项）——ledger-era 交接 delta ID ⊆ 台账机械核对 + fail-closed；运维提醒见 W70 交接 §六.2 | W70 |
 | W68-10 | **模型直答腿**（W65 §五.4：gemma-2B 6 触发 0 合规，端侧 2B 「提醒后直答」不合规） | closed-dead | 判死留痕：端侧 2B 现实；若需考察换更强模型（重启 = 新模型入册时重开） | W68 |
 | W69-01 | ToolExecutionGuard.kt 拆分实施（= G4 具体化落地；含深审 🟡-5 墙钟口径） | closed-done | 已实施（拆分 + 🟡-5）；**🟡-1/🟡-4 设计草案转 W69-12/W69-13** | W69 |

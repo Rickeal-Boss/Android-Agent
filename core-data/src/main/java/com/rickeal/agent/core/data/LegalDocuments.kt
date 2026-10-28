@@ -30,6 +30,21 @@ package com.rickeal.agent.core.data
  */
 object LegalDocuments {
 
+    /**
+     * 应用服务条款（TOS）的**当前版本号**。
+     *
+     * 与 [SettingsRepository.acceptedTermsVersion] / `isTosAccepted` 配合，实现「已同意的版本号」口径
+     * （W90 · termsVersion 落地，C1 裁决 A）。含义：
+     *  - 当前为 `1`，即本应用自首个版本起一直随附的（草稿形态）条款；
+     *  - 老用户的无版本 boolean 在首次读取时由 [SettingsRepository.acceptedTermsVersionFrom] 迁移为 `1`，
+     *    与 v1 下旧 boolean 行为一致（不回退）。
+     *
+     * ⚠️ **硬时序约束**：本常量从 `1` bump 到 `2`（或更高）**必须先于**任何法务文本替换落地。
+     * 反序则老用户会在文本已变的情况下仍命中 `version >= CURRENT` 而被视作已同意新文本 ——
+     * 合规事故且事后不可反推。正式法务文本就绪时只改这里 + `APP_TERMS_*` 正文，机制侧无需再动。
+     */
+    const val CURRENT_TERMS_VERSION = 1
+
     /* ------------------------------------------------------------ 应用服务条款 */
 
     // TODO(legal): 本文为项目自拟草稿，正式发布前须经法务复核并补托管地址。

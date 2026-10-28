@@ -127,7 +127,7 @@ while IFS= read -r hit; do
   [[ -z "${id}" ]] && continue
   checked=$((checked + 1))
   # 断言主台账行：行首 `| Wxx-yy |`（容忍 ** 加粗与空格）
-  if grep -qE "^\|[[:space:]]*\*{0,2}${id}\*{0,2}[[:space:]]*\|" "${LEDGER}"; then
+  if grep -qE "^\|[[:space:]]*\*?\*?${id}\*?\*?[[:space:]]*\|" "${LEDGER}"; then
     continue
   fi
   rel="${file#${REPO_ROOT}/}"
@@ -147,7 +147,7 @@ if [[ -n "${LATEST_HANDOFF}" ]]; then
     [[ -z "${wid}" ]] && continue
     # 状态字段提取：取台账该行里**恰好等于四态之一**的单元格（不按列号硬编码 ——
     # 台账描述列含 `|` 或列数变动时按列号会取错，取状态词集合最稳）。
-    status="$(grep -E "^\|[[:space:]]*\*{0,2}${wid}\*{0,2}[[:space:]]*\|" "${LEDGER}" \
+    status="$(grep -E "^\|[[:space:]]*\*?\*?${wid}\*?\*?[[:space:]]*\|" "${LEDGER}" \
               | head -1 \
               | awk -F'|' '{for(i=1;i<=NF;i++){c=$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",c);
                                if(c=="active"||c=="parked"||c=="closed-done"||c=="closed-dead"){print c; exit}}}')"
@@ -165,7 +165,7 @@ if [[ -n "${LATEST_HANDOFF}" ]]; then
     # 行内带「部分完成」标注 ⇒ 允许仍 active（W84-06 就是半项完成的合法形态）
     if printf '%s' "${line}" | grep -q "部分完成"; then continue; fi
     for wid in $(printf '%s' "${line}" | grep -oE "${ID_RE}" | sort -u); do
-      st="$(grep -E "^\|[[:space:]]*\*{0,2}${wid}\*{0,2}[[:space:]]*\|" "${LEDGER}" \
+      st="$(grep -E "^\|[[:space:]]*\*?\*?${wid}\*?\*?[[:space:]]*\|" "${LEDGER}" \
             | head -1 \
             | awk -F'|' '{for(i=1;i<=NF;i++){c=$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",c);
                              if(c=="active"||c=="parked"||c=="closed-done"||c=="closed-dead"){print c; exit}}}')"
@@ -209,14 +209,32 @@ fi
 #   整个脚本从「几秒」拖到 **4 分 52 秒**（sys 4m33s = 全在 fork）。本仓波末清单要求
 #   每波本地跑本脚本 ⇒ 5 分钟的工具**没人会跑**，守卫等于自动作废（「永远报警/永远不跑
 #   = 同一个病」的同型）。改成一趟 awk 后回到秒级。⚠️ 别改回逐行 grep。
-#   awk 侧依赖：区间表达式 `{0,14}`（gawk ≥3 / mawk ≥1.3.4 均支持；CI = Ubuntu 24.04
-#   mawk 1.3.4、本地 = gawk 5.4，两处都实测过）。awk 的 stderr **不重定向**到 /dev/null：
-#   万一 awk 方言不支持而报错，错误必须看得见（否则 advisory 静默消失 = 假绿）。
+#   ⚠️ 【W90 E-1 订正】原注释称"mawk ≥1.3.4 均支持区间表达式 {0,14}"——**不实**。
+#   mawk 1.3.4 的 man 页写明 `-W traditional` 才会"省略传统 awk 不支持的区间表达式"，
+#   即**默认支持**；但 BusyBox awk / 某些嵌入式 awk 仍不支持 brace，且 mawk 对 brace
+#   **不匹配时不报错**（静默），这正是本仓最忌的"永远绿的守卫 = 假绿"。
+#   故本波**不再依赖任何 brace 量词**：`\*{0,2}` → `\*?\*?`、`[^|]{0,14}` → `[^|]*` + 行内限长。
+#   并在脚本启动处加**行为自检**（对真实夹具跑本脚本的核心判据，不匹配即 exit 1），
+#   任何 awk 方言下都不会静默失效。CI 的 awk 实现由 `build.yml` 的 `awk -W version` 回显可见。
+#
+# 【W90 E-1 · 方言行为自检】：核心判据必须在当前 awk 下**真的能匹配**（不是报错、更不是静默不匹配）。
+# 任一夹具不匹配 ⇒ 判红 + exit 1。这比"依赖作者记得 CI 上是哪种 awk"零歧义——即便将来 CI 换成
+# 不支持 brace 的 awk，本自检也会第一时间把守卫失效暴露出来，而不是继续报 OK。
+awk -v idre='W[0-9][0-9]*-[0-9]+' '
+  BEGIN {
+    if ("| **W89-01** | desc | active | x | W89 |" !~ /^\|[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+/) { print "FAIL: head-row pattern (bold)"; ec=1 }
+    if ("| W89-01 | desc | active | x | W89 |"      !~ /^\|[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+/) { print "FAIL: head-row pattern (no star)"; ec=1 }
+    if ("承接 delta 行 = **W84-15**"               !~ /承接[^|]*W[0-9][0-9]*-[0-9]+/)             { print "FAIL: chengjie pattern"; ec=1 }
+    if ("由 **W84-16** 收口"                        !~ /由[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+\*?\*?[[:space:]]*收口/) { print "FAIL: shoukou pattern"; ec=1 }
+    if ("转 **W84-16**"                             !~ /转[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+/)   { print "FAIL: zhuan pattern"; ec=1 }
+    if (ec) exit 1
+  }
+' || { echo "::error::[check-backlog-refs] awk 方言行为自检失败：核心判据在当前 awk 下不匹配（守卫已失效，禁止假绿）"; exit 1; }
 awk -v idre='W[0-9][0-9]*-[0-9]+' '
   BEGIN { FS = "|" }
   {
     # 行首钉形态（本仓铁律）：只认主台账数据行 `| **Wxx-yy** | …`
-    if (match($0, /^\|[[:space:]]*\*{0,2}W[0-9][0-9]*-[0-9]+/)) {
+    if (match($0, /^\|[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+/)) {
       head = substr($0, RSTART, RLENGTH)
       if (!match(head, idre)) next
       id = substr(head, RSTART, RLENGTH)
@@ -239,21 +257,25 @@ awk -v idre='W[0-9][0-9]*-[0-9]+' '
       t = rtext[i]; cands = ""
       # a) `由 **Wxx-yy** 收口`
       rest = t
-      while (match(rest, /由[[:space:]]*\*{0,2}W[0-9][0-9]*-[0-9]+\*{0,2}[[:space:]]*收口/)) {
+      while (match(rest, /由[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+\*?\*?[[:space:]]*收口/)) {
         seg = substr(rest, RSTART, RLENGTH)
         if (match(seg, idre)) cands = cands " " substr(seg, RSTART, RLENGTH)
         rest = substr(rest, RSTART + RLENGTH)
       }
       # b) `承接 … Wxx-yy`（中间夹 ≤14 字符：`承接 delta 行 = **W84-15**`）
+      #    ⚠️ 【W90 E-1】原 `[^|]{0,14}` 依赖 brace 量词（方言风险）→ 改为 `[^|]*` + 行内限长，
+      #    等价且方言无关（承接 与 W 之间的非 | 字符数必须 ≤14）。
       rest = t
-      while (match(rest, /承接[^|]{0,14}W[0-9][0-9]*-[0-9]+/)) {
+      while (match(rest, /承接[^|]*W[0-9][0-9]*-[0-9]+/)) {
         seg = substr(rest, RSTART, RLENGTH)
+        mid = seg; sub(/承接/, "", mid); sub(/W[0-9][0-9]*-[0-9]+$/, "", mid)
+        if (length(mid) > 14) { rest = substr(rest, RSTART + RLENGTH); continue }
         if (match(seg, idre)) cands = cands " " substr(seg, RSTART, RLENGTH)
         rest = substr(rest, RSTART + RLENGTH)
       }
       # c) `转 **Wxx-yy**`（遗留面转移指针）
       rest = t
-      while (match(rest, /转[[:space:]]*\*{0,2}W[0-9][0-9]*-[0-9]+/)) {
+      while (match(rest, /转[[:space:]]*\*?\*?W[0-9][0-9]*-[0-9]+/)) {
         seg = substr(rest, RSTART, RLENGTH)
         if (match(seg, idre)) cands = cands " " substr(seg, RSTART, RLENGTH)
         rest = substr(rest, RSTART + RLENGTH)

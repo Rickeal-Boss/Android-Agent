@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.rickeal.agent.core.model.AiCapabilityMode
@@ -22,6 +23,23 @@ import java.io.IOException
 private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "liquid_agent_settings",
 )
+
+/**
+ * 【W90 · termsVersion 迁移口径】从 DataStore 原始值推导「已同意版本号」。
+ * - `storedVersion` 非空 ⇒ 直接用（已版本化的用户）；
+ * - 否则 legacy 无版本 boolean `legacyTosBoolean == true` ⇒ 视为已同意第 1 版（C1 裁决 A：
+ *   老用户 `IS_TOS_ACCEPTED=true` 视为已同意第 1 版，首启补征第 2 版）；
+ * - 其余 ⇒ 0（未同意任何版本）。
+ * 纯函数（不依赖 Android Context / DataStore），便于 JVM 单测。
+ */
+internal fun acceptedTermsVersionFrom(storedVersion: Int?, legacyTosBoolean: Boolean): Int =
+    storedVersion ?: if (legacyTosBoolean) 1 else 0
+
+/**
+ * 版本号口径下「是否接受 TOS」= 已同意版本 ≥ 当前版本。纯函数，便于单测。
+ * 当前 [LegalDocuments.CURRENT_TERMS_VERSION] 为 1，与旧 boolean 在 v1 下行为一致。
+ */
+internal fun isTosAcceptedFromVersion(version: Int, currentVersion: Int): Boolean = version >= currentVersion
 
 class SettingsRepository(private val context: Context) {
 
@@ -81,18 +99,21 @@ class SettingsRepository(private val context: Context) {
         // 存「已同意的版本号」，版本不匹配即重新征求同意）**必须先于任何法务文本替换
         // 落地**，不能反序。反序则老用户的同意状态不可区分、不可补征。
         //
-        // ⛔ 为什么本波只加注释不改行为：实现涉及一个产品/法务决策 —— 老用户的
-        // `boolean = true` 到底算「已同意第 1 版」（据此仅对第 2 版重新征求）还是算
-        // 「未同意任何版本」（据此全量重新征求）。这不是工程侧能自行裁定的。
-        // 且**法务文本替换尚未发生**，时序风险**未到期**，现在改行为属于给一个还不存在
-        // 的场景做产品决策。故本波只把这笔债务固化成可见注释；等真的要换法务文本时，
-        // 先做 `termsVersion`，再换文本。
+        // ⛔ 为什么本波（W90）落地：C1 的**迁徙语义已于 2026-10-15 由用户裁决**（docs/15 W68-08
+        // 「C1 迁徙语义已裁 A」）—— 老用户 `IS_TOS_ACCEPTED == true` 视为「已同意第 1 版」、
+        // 首启补征第 2 版。法务文本替换**尚未发生**，故落地的只是「版本化机制」这一侧，
+        // 严守「**先做 termsVersion，再换文本**」的硬时序（见下方 [CURRENT_TERMS_VERSION] 注释）。
+        // 机制落地后，未来换正式法务文本时只需 bump [LegalDocuments.CURRENT_TERMS_VERSION]，
+        // 老用户即被正确地重新征求同意，不再有「无版本 boolean 不可区分」的合规事故面。
         //
         // 消费点（改本字段或新增版本字段时必须同步）：
         //  - `app/.../onboarding/FirstRunGate.kt`（首启门禁，`tosAccepted`）
         //  - `feature-settings/.../LegalScreen.kt`（法律页开关，`settings.isTosAccepted`）
-        //  - 本文件 `isTosAccepted` / `setTosAccepted`（读写两侧都要带上版本号口径）
+        //  - 本文件 `isTosAccepted` / `acceptedTermsVersion` / `setTosAccepted`（读写两侧带上版本号口径）
         val IS_TOS_ACCEPTED = booleanPreferencesKey("is_tos_accepted")
+        // 【W90 · termsVersion 版本化（C1 落地）】已同意的条款**版本号**（替代无版本 boolean）。
+        // 缺省值由 [acceptedTermsVersionFrom] 的迁移口径推导（老用户 legacy boolean=true → 1）。
+        val ACCEPTED_TERMS_VERSION = intPreferencesKey("accepted_terms_version")
         val IS_GEMMA_TERMS_ACCEPTED = booleanPreferencesKey("is_gemma_terms_accepted")
 
         // 引导页**单独**一个标记，与 HAS_SEEN_ONBOARDING（整段首启流程走完）不是一回事。
@@ -213,14 +234,26 @@ class SettingsRepository(private val context: Context) {
         .map { it[Keys.HAS_SEEN_INTRO] ?: false }
 
     /**
+     * 已同意的条款**版本号**（W90 · termsVersion 落地，替代无版本 boolean）。
+     *
+     * 缺省值走迁移口径 [acceptedTermsVersionFrom]：键缺失且 legacy `IS_TOS_ACCEPTED==true`
+     * 的老用户 ⇒ 视为已同意第 1 版；其余 ⇒ 0（未同意任何版本）。
+     */
+    val acceptedTermsVersion: Flow<Int> = context.settingsDataStore.data
+        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
+        .map { acceptedTermsVersionFrom(it[Keys.ACCEPTED_TERMS_VERSION], it[Keys.IS_TOS_ACCEPTED] == true) }
+
+    /**
      * 应用服务条款（TOS）是否已被接受。默认 false。
      *
      * 这一项是**进入主界面的硬闸门**：上架合规要求用户能访问条款并作出接受的意思表示，
      * 所以「未接受」时不能放行到主界面。
+     *
+     * 【W90 · termsVersion】语义从「无版本 boolean」升级为「版本号 ≥ 当前版本」——
+     * 当前 [LegalDocuments.CURRENT_TERMS_VERSION] 为 1，与旧 boolean 在 v1 下**行为一致**
+     * （老用户 boolean=true ⇒ 迁移版本 1 ⇒ 通过）；未来 bump 版本号即可让老用户重新征求同意。
      */
-    val isTosAccepted: Flow<Boolean> = context.settingsDataStore.data
-        .catch { if (it is IOException) emit(emptyPreferences()) else throw it }
-        .map { it[Keys.IS_TOS_ACCEPTED] ?: false }
+    val isTosAccepted: Flow<Boolean> = acceptedTermsVersion.map { isTosAcceptedFromVersion(it, LegalDocuments.CURRENT_TERMS_VERSION) }
 
     /**
      * Gemma 授权条款（Gemma Terms of Use）是否已被接受。默认 false。
@@ -324,7 +357,13 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setTosAccepted(accepted: Boolean) {
         persistOrWarn("SettingsRepository.setTosAccepted") {
-            context.settingsDataStore.edit { it[Keys.IS_TOS_ACCEPTED] = accepted }
+            context.settingsDataStore.edit {
+                // 版本化落地：接受 ⇒ 写入当前版本号；拒绝 ⇒ 清为 0。
+                // legacy `IS_TOS_ACCEPTED` 一并保留写入，作为「无版本 → 版本化」过渡期
+                // 的向后兼容位（未来 bump 版本号时以此为准重新征求）。
+                it[Keys.ACCEPTED_TERMS_VERSION] = if (accepted) LegalDocuments.CURRENT_TERMS_VERSION else 0
+                it[Keys.IS_TOS_ACCEPTED] = accepted
+            }
         }
     }
 

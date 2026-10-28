@@ -492,6 +492,9 @@ jobs:
       # -------------------------------------------------------------------
       - name: Docs/guard parity (docs/16 ↔ arch-guard)
         run: |
+          # 【W90 E-1 · B2】回显 CI 的实际 awk 实现 —— 守卫脚本已加方言行为自检（任何
+          # awk 下都禁止假绿），此处仅做可观测性记录，便于日后核对"CI 用的是哪种 awk"。
+          echo "awk: $(awk -W version 2>&1 | head -1) / $(readlink -f "$(command -v awk)" 2>/dev/null || echo unknown)"
           chmod +x scripts/check-doc16-parity.sh
           bash scripts/check-doc16-parity.sh
 
@@ -679,7 +682,9 @@ jobs:
             #   WindowSizeClassTest 3→6（竖屏手机页签在底部 / 横屏手机页签在顶部 /
             #   平板保持左侧竖栏 —— 钉住页签拓扑三分支）。
             #   ⇒ 由 881 上调 890（代码冻结后实测 890，无 @Ignore/参数化）。
-            baseline=890
+            # W90 termsVersion 版本化落地 +5 例（SettingsRepositoryTosVersionTest：迁移口径纯函数单测
+            #   5 条，钉住 C1 裁决 A 的迁移语义 + bump 后老用户重新征求）⇒ 由 890 上调 895。
+            baseline=895
             total="$(printf '%s\n' "$out" | sed -n 's/.*tests=\([0-9][0-9]*\) .*/\1/p' | head -n 1)"
             total="${total:-0}"
             if [ "$total" -lt "$baseline" ]; then

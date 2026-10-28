@@ -723,3 +723,18 @@ limitations under the License.
 ```
 
 模型权重遵循各自发布方的许可条款，与本仓库的许可证相互独立。
+
+### 许可证聚合表
+
+| 组件 | 许可 | 约束力来源 | 本仓处置 |
+|---|---|---|---|
+| 本应用代码（LiquidAgent） | Apache-2.0 | [Apache License 2.0 官方原文](https://www.apache.org/licenses/LICENSE-2.0) | 仓根 [`LICENSE`](LICENSE) 为许可证全文（版权行 `Copyright 2026 Rickeal-Boss`）；`core-design/.../liquid/` 的 AndroidLiquidGlass 移植部分另见 [`NOTICE`](NOTICE) |
+| 端侧推理引擎 `litertlm-android` 0.17.1（Google） | Apache-2.0（上游） | [LiteRT-LM 官方仓库](https://github.com/google-ai-edge/LiteRT-LM)（官方仓库内 LICENSE 文件，见上游仓库） | 仅由 `:core-engine` 经 Gradle 依赖引入（`com.google.ai.edge.litertlm:litertlm-android:0.17.1`，pin 于 `gradle/libs.versions.toml`），未修改源码 |
+| 模型权重 · Gemma 4 系列（E2B / E4B） | Google Gemma Terms of Use | [Gemma Terms of Use](https://ai.google.dev/gemma/terms) | 下载/加载前由 `ModelLicenses` 判据触发授权闸门；`LegalDocuments.GEMMA_TERMS_URL` **外链官方原文，未内嵌全文**；权重不随应用分发 |
+| 模型权重 · Qwen 系列（Qwen2.5 1.5B / Qwen2-VL 2B） | 阿里 Qwen 模型许可（以模型卡为准） | （官方仓库内 LICENSE 文件，见上游仓库） | 仅提供下载直链（Hugging Face `litert-community`），应用不内置权重；不受 Gemma 闸门约束 |
+| 模型权重 · MiniCPM 系列（MiniCPM5 2B / MiniCPM-V 4 8B） | 面壁智能 MiniCPM 模型许可 | （官方仓库内 LICENSE 文件，见上游仓库） | 同上：仅下载直链，不内置、不再分发 |
+| 模型权重 · 其他内置家族（DeepSeek-R1 蒸馏 Qwen 1.5B / Phi-4-mini / LFM2.5-VL / SmolVLM2） | 各自上游模型许可 | （官方仓库内 LICENSE 文件，见上游仓库） | 同上：仅下载直链，不内置、不再分发 |
+
+本表是聚合索引，不构成法律意见；各组件以官方原文为准。新增模型家族或引擎版本时**必须同步本表**
+（`ModelPresets` 增删与引擎版本变更同批更新）。
+
