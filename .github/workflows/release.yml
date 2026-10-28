@@ -53,6 +53,7 @@ on:
       # 产出「签名正式包 + debug 包」双产物。注意本流水线带 paths 过滤：scripts/**、
       # .github/workflows/** 等在内 ⇒ 脚本 / 工作流类改动会触发（纯文档改动不触发）。
       - improve
+      - final-cut
     tags:
       - 'v*'
     # Wave4 审查（D-P1-5）：文档/杂项推送不触发完整 release 双轨（R8+AAB 代价高）。
