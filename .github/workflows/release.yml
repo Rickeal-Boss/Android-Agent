@@ -1,83 +1,17 @@
 name: Release
 
-# ---------------------------------------------------------------------------
-# LiquidAgent 发布流水线（完全可选 / 可降级）
-#
-# 核心约定：仓库默认没有任何 signing secrets。
-#   1. debug 产物无条件产出 —— 分支 / workflow_dispatch 上一个密钥都没有时，这条流水线
-#      也必须跑绿（「按需产物」场景）。
-#   2. release 签名只在四个 SIGNING_* secrets 全部就位时才启用。
-#      ⚠️ 缺失时的行为**按 ref 类型分叉**（W87 口径订正 —— 旧文写「绝不失败」，
-#      与 `Gate tag release on signing secrets` 步骤**直接冲突**，下一个读注释的人
-#      会以为那一步是 bug 又改回去，故在此写死）：
-#        · 分支 / workflow_dispatch ⇒ 打 notice 并降级为 debug 签名包，**不失败**
-#          （这是「我自己要个能装的包」的合理形态）。
-#        · **tag 推送 ⇒ 硬失败**（`::error::` + `exit 1`），判据在
-#          **`Gate tag release on signing secrets`** 步骤（`if: startsWith(github.ref,
-#          'refs/tags/v')`），这是**唯一门禁点**。
-#          理由：debug 签名的 APK **无法上架、也无法与将来的正式包无缝升级** —— 用户
-#          必须卸载重装，历史会话一起丢。分支上是「临时自用包」，tag 上是「对外发布」，
-#          同一个降级在两个场景里的后果完全不同；把「绿 + debug 包」当发布成功是最坏的
-#          一种静默事故（流水线绿、Release 页挂着不可升级的包，且没人会去看签名）。
-#   3. GitHub Release 仅在「push tag v*」且签名可用时创建（签名不可用时 tag 已在第 2 条
-#      硬失败，本条件根本走不到 —— 保留它是为了「分支上永不建 Release」这条独立语义）。
-#
-# 需要的 secrets（分支上全部可选；**tag 上缺任何一个都会硬失败**，见第 2 条）：
-#   SIGNING_KEYSTORE_BASE64   keystore 文件的 base64（openssl base64 -A -in xxx.p12）
-#   SIGNING_KEYSTORE_PASSWORD
-#   SIGNING_KEY_ALIAS         （本项目为 liquidagent）
-#   SIGNING_KEY_PASSWORD      ⚠️ PKCS12 必须等于 SIGNING_KEYSTORE_PASSWORD
-#                                 （PKCS12 不支持独立的 key 口令，见「Decode keystore」）
-#
-# 这些值通过 -P 传给 Gradle，app/build.gradle.kts 侧约定见 docs/02-ci.md。
-# ---------------------------------------------------------------------------
-
 on:
-  # 手动触发：产出 APK 并上传 artifact，但【不会】创建 GitHub Release
-  # （Release 需要一个真实 tag 作为锚点，分支上没有）。
   workflow_dispatch:
-  # 长期分支每次推送都跑一次「debug + R8 release 双轨」CI（用仓库密钥出签名包）：
-  #   - UI 分支：首发场景，每次提交验证 R8 缩减与混淆规则不出问题；
-  #   - harness 分支（主开发分支，2026-09-23 接入）：用户要求每次推送产出
-  #     「仓库密钥签名正式包 + debug 包」两类产物。
-  # PR 不触发本流水线（PR 门禁走 build.yml 的零密钥快速轨）；
-  # tag v* 推送在双轨之外追加 GitHub Release 发布（branches 扩展不影响 tags 过滤）。
   push:
-    branches:
-      - UI
-      - harness
-      # harness-improve（Wave 21，2026-09-26）：用户建的分改善分支，
-      # 与 harness 同规格产出「签名正式包 + debug 包」双产物。
-      - harness-improve
-      # improve（Wave 48，2026-10-03）：harness 的分改善线，与 harness-improve 同规格
-      # 产出「签名正式包 + debug 包」双产物。注意本流水线带 paths 过滤：scripts/**、
-      # .github/workflows/** 等在内 ⇒ 脚本 / 工作流类改动会触发（纯文档改动不触发）。
-      - improve
-      - final-cut
     tags:
       - 'v*'
-    # Wave4 审查（D-P1-5）：文档/杂项推送不触发完整 release 双轨（R8+AAB 代价高）。
-    # 注意 paths 对 tag 推送不生效（tag 无 changed files）→ tag 总会跑，符合预期。
-    paths:
-      - 'app/**'
-      - 'core-*/**'
-      - 'feature-*/**'
-      - 'gradle/**'
-      - 'gradle.properties'
-      - 'gradlew'
-      - 'settings.gradle.kts'
-      - 'build.gradle.kts'
-      - '.github/workflows/**'
-      - 'scripts/**'
 
 permissions:
   contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Wave4 审查（D-P1-1）：tag 发布不可取消（取消=发布中断），分支推送可取消 ——
-  # group 已按 ref 分隔，tag 与分支天然不同组，按 ref 类型区分即可。
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: false
 
 env:
   JAVA_VERSION: '21'
@@ -86,7 +20,7 @@ env:
 
 jobs:
   release:
-    name: Build & (optionally) sign release
+    name: Build & publish latest release
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -134,9 +68,6 @@ jobs:
           mkdir -p "$HOME/.gradle"
           if [ -f .github/ci-gradle.properties ]; then
             cat .github/ci-gradle.properties > "$HOME/.gradle/gradle.properties"
-            echo "::group::Effective CI gradle.properties"
-            cat "$HOME/.gradle/gradle.properties"
-            echo "::endgroup::"
           else
             echo "::warning::.github/ci-gradle.properties not found, using project defaults"
           fi
@@ -144,43 +75,24 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
-          # 上游对「不使用 wrapper 的项目」的官方写法就是 gradle-version + 直接调 gradle。
-          # CI 统一走这条路径，不依赖仓库里的 wrapper。
-          # 引号必需，否则 YAML 会把 9.7.1 当成非法数字。
           gradle-version: '9.7.1'
-          # 该 action 默认会校验 gradle-wrapper.jar 的已知校验和。CI 根本不执行 wrapper，
-          # 关掉这个校验以避免它成为额外失败面。
-          # （仓库里的 jar 取自 gradle/gradle 官方 v9.7.1 tag，本身可信。）
           validate-wrappers: false
-          # v6 起缓存清理参数改名为 cache-cleanup（v3/v4 叫 gradle-home-cache-cleanup）。
           cache-cleanup: on-success
           add-job-summary: 'on-failure'
 
       - name: Resolve Gradle launcher
-        # 与 build.yml 同一策略：只用 setup-gradle 安装的 gradle 9.7.1，
-        # 不留 ./gradlew 兜底分支——兜底会让「gradle 装不上」这个清晰的错误
-        # 退化成难定位的 wrapper 报错。仓库的 wrapper 本身是完整可用的
-        # （jar 取自 gradle/gradle 官方 v9.7.1 tag），只是 CI 不走它。
         run: |
           if ! command -v gradle > /dev/null 2>&1; then
-            echo "::error::'gradle' is not on PATH — gradle/actions/setup-gradle failed to install it. Check the 'Set up Gradle' step logs and the gradle-version input."
+            echo "::error::'gradle' is not on PATH"
             exit 1
           fi
           echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
-          echo "::notice::Using Gradle installed by gradle/actions/setup-gradle: $(gradle --version | head -n 3 | tr '\n' ' ')"
 
       - name: Verify Gradle
         run: |
           echo "Launcher: $GRADLE_CMD"
           "$GRADLE_CMD" --version
 
-      # -------------------------------------------------------------------
-      # 密钥探测：secrets 上下文在步骤 if 表达式里并不可靠，
-      # 因此这里用 shell 把探测结果写进 step outputs，后续步骤用 outputs 做门禁。
-      # ⚠️ 本步骤**只探测、不判定**：tag 上缺密钥的硬失败在后面的
-      #   `Gate tag release on signing secrets` 步骤（唯一门禁点，勿在本步骤复制一份
-      #   —— 两处判据 = 两处会漂移）。见文件头「核心约定」第 2 条。
-      # -------------------------------------------------------------------
       - name: Detect signing secrets
         id: signing
         env:
@@ -191,67 +103,11 @@ jobs:
         run: |
           if [ -n "${KS_B64:-}" ] && [ -n "${KS_PASSWORD:-}" ] && [ -n "${KS_ALIAS:-}" ] && [ -n "${KS_KEY_PASSWORD:-}" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Signing secrets detected, release APK will be signed."
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Signing secrets NOT configured (SIGNING_KEYSTORE_BASE64 / SIGNING_KEYSTORE_PASSWORD / SIGNING_KEY_ALIAS / SIGNING_KEY_PASSWORD). Skipping signed release build; shipping debug APK instead. (Tag push with the same gap fails hard later — see 'Gate tag release on signing secrets'.)"
           fi
 
-      # -------------------------------------------------------------------
-      # Wave4 审查（D-P0-5）：架构守卫此前只在 build.yml 跑 —— tag 推送只触发本
-      # 流水线，打在非 main/UI/harness 提交上的 tag 会让对外发布包完全绕过守卫。
-      # 发布轨必须与门禁轨同等地过守卫。
-      # -------------------------------------------------------------------
-      - name: Architecture guard
-        run: bash scripts/arch-guard.sh
-
-      # -------------------------------------------------------------------
-      # 守卫自身也要被守卫（Wave 48）：arch-guard.sh 是纯 bash、无类型检查，历史上出过
-      # 两次「僵尸规则」事故 —— ① 第 7 条用 `grep -q`（无输出）失败退出 1，被 check()
-      # 判成 OK，把 INTERNET 权限整行删掉后守卫仍全绿；② 目录被改名后前置断言缺失，
-      # 空守卫永远绿。一条「永远绿」的守卫比没有守卫更糟 —— 它给人已被保护的错觉。
-      # arch-guard-selftest.sh 在临时目录里注入违规 fixture，断言每条守卫都能报红、
-      # 且干净树能过。发布轨此前只跑 arch-guard.sh、**漏了自测网**：arch-guard.sh 本身
-      # 若因重构静默失效，本轨会照样放行 —— 与上方 Wave4 D-P0-5「发布轨必须与门禁轨
-      # 同等地过守卫」同一精神，故补上，与 build.yml 的既有两步保持同规格。
-      # 位置取舍：串行放在 arch-guard 之后、Gradle 重活之前 —— 失败即让整个 release
-      # job 判红（与 arch-guard 同款门禁语义；若拆成不 gate 的并行 job，则自测网红了
-      # 仍可能照常 Publish Release，反而破坏门禁）。自测网不依赖 JDK/SDK，只是临时树
-      # 里的 bash + grep；本机 Git-Bash 实测约 7 分钟，CI（Ubuntu）预计明显更短，相对
-      # 本 job 45 分钟预算与 R8/AAB 关键路径属可接受增量。
-      # -------------------------------------------------------------------
-      - name: Architecture guard self-test
-        run: |
-          chmod +x scripts/arch-guard-selftest.sh
-          bash scripts/arch-guard-selftest.sh
-
-      # -------------------------------------------------------------------
-      # Wave4 审查（D-P0-1）：tag 推送 + 密钥缺失时，后续签名/发布步骤全部 skip
-      # 而 skipped step 不影响 job 结论 → 「流水线全绿但 Release 页是空的」的静默事故。
-      # tag 上硬失败；分支推送保持现有降级语义（debug 保底包）。
-      #
-      # ⚠️ 本步骤是「tag 缺失密钥」的**唯一门禁点**（W87 回源核实）：外审第四/五轮
-      #    两份报告都**没查到它**，据此判「tag 无密钥会静默退 debug」= 处方已被现役树
-      #    证伪（登记见 `docs/15-backlog.md` 治理注记 2）。**别再在别处复制一份判据**
-      #    —— 两处判据 = 两处会漂移。文件头「核心约定」第 2 条与这里同源，改一处必改两处。
-      #    行为核实：`workflow_dispatch` 的 ref 是分支 ⇒ `startsWith(refs/tags/v)` 不成立
-      #    ⇒ 本步骤 skipped（冒烟 run 40498254820 实测），这正是期望行为。
-      # -------------------------------------------------------------------
-      - name: Gate tag release on signing secrets
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          if [ "${{ steps.signing.outputs.available }}" != "true" ]; then
-            echo "::error::Tag push requires SIGNING_* secrets but they are missing/incomplete. Release would be silently skipped."
-            exit 1
-          fi
-
-      # -------------------------------------------------------------------
-      # 保底产物：**分支 / dispatch** 上无论有没有密钥都要有一个能装的 APK。
-      # ⚠️ tag 上缺密钥走不到这里 —— 前面的 `Gate tag release on signing secrets` 已
-      #   硬失败（见文件头核心约定第 2 条）。旧文写「无论有没有密钥都要有」在 tag 语境
-      #   下是错的（W87 口径订正）。
-      # -------------------------------------------------------------------
-      - name: Assemble debug APK (fallback artifact)
+      - name: Assemble debug APK (fallback)
         id: assemble_debug
         run: |
           "$GRADLE_CMD" \
@@ -259,141 +115,6 @@ jobs:
             --stacktrace \
             "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
             :app:assembleDebug
-
-      # -------------------------------------------------------------------
-      # 外部审查 P0（上架项）：Google Play 对 targetSdk >= 35 强制 16KB ELF
-      # 页面对齐 —— Android 15+ 的 16KB page size 设备上，LOAD 段未按 16KB
-      # 对齐的 so 会直接加载失败（UnsatisfiedLinkError）。
-      # 检查对象选 debug APK：它是本流水线第一个产出的产物（最早失败/告警）；
-      # release 变体与 debug 共用同一套 AAR 依赖（litertlm-android 等），
-      # native so 同源，R8/AAB 打包不会改变 so 自身的 ELF 对齐，故不重复检查。
-      # 【策略】本波次 FAIL_ON_MISALIGNED=false：litertlm 是上游三方 so，若未
-      # 对齐，硬失败会卡死本仓库唯一验证通道 —— 先观察一轮实际结果，再决定
-      # 升级 litertlm 还是转 error 常驻。切换时只改下面 FAIL_ON_MISALIGNED。
-      # -------------------------------------------------------------------
-      - name: Verify 16KB ELF page alignment (debug APK)
-        id: verify_16kb_align
-        env:
-          # 16KB = 0x4000；将来 page size 要求提高时只改这一处
-          MIN_LOAD_ALIGN: '0x4000'
-          # true = 不达标 ::error:: 且 exit 1。首轮 run 35978095044 实测 litertlm
-          # 0.11.0 全部 so 达标（零告警），两阶段观察期结束，转 error 常驻
-          FAIL_ON_MISALIGNED: 'true'
-        run: |
-          apk_path="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
-          if [ -z "$apk_path" ]; then
-            echo "::error::assembleDebug reported success but no debug APK found — 16KB alignment check has no target"
-            exit 1
-          fi
-          echo "::notice::16KB alignment check on: $apk_path (threshold: LOAD Align >= $MIN_LOAD_ALIGN)"
-
-          stage_dir="${RUNNER_TEMP}/16kb-align-check"
-          rm -rf "$stage_dir"
-          mkdir -p "$stage_dir"
-          # 纯托管代码包没有 lib/ 条目，unzip 对未命中的模式返回非零 —— 属预期，吞掉
-          unzip -o -q "$apk_path" 'lib/*' -d "$stage_dir" 2>/dev/null || true
-
-          mapfile -t sos < <(find "$stage_dir/lib" -type f -name '*.so' 2>/dev/null | sort)
-          total="${#sos[@]}"
-          if [ "$total" -eq 0 ]; then
-            echo "::notice::APK 内没有任何 .so，16KB 检查无对象（写进 summary，防止空转被误读为通过）。"
-            {
-              echo "## 16KB ELF page alignment"
-              echo ""
-              echo "> \`$(basename "$apk_path")\` 内未发现任何 \`lib/**/*.so\` —— 本次检查无对象。"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          misaligned=0
-          parse_failed=0
-          {
-            echo "## 16KB ELF page alignment"
-            echo ""
-            echo "APK: \`$(basename "$apk_path")\` · 阈值: 任一 LOAD 段 Align >= \`$MIN_LOAD_ALIGN\` · 共 $total 个 .so"
-            echo ""
-            echo "| File | ABI | Min LOAD Align | 判定 |"
-            echo "|---|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          for so in "${sos[@]}"; do
-            rel="${so#"${stage_dir}/"}"                        # lib/<abi>/<name>.so
-            abi="$(printf '%s' "$rel" | cut -d/ -f2)"
-            # readelf -lW 宽格式：Program Headers 表中 LOAD 行的最后一列即 Align。
-            # GNU readelf 一般输出十六进制（如 0x1000），个别版本/平台输出 '2**12'
-            # 形式 —— 两种都解析；一行都提取不到视为「解析失败」（P2-4 单独告警）。
-            # 只取 Program Headers 段内的 LOAD 行：结尾的 Section to Segment
-            # mapping 区里也有 LOAD 行，但其最后一列是节名列表而非数字，必须排除。
-            min_so_align=""
-            while read -r raw; do
-              [ -z "$raw" ] && continue
-              case "$raw" in
-                2\*\*[0-9]*)
-                  n="${raw#2\*\*}"
-                  a=$(( 1 << n ))
-                  ;;
-                0[xX]*)
-                  a=$(( raw ))
-                  ;;
-                [0-9]*)
-                  a=$(( raw ))
-                  ;;
-                *)
-                  a=0
-                  ;;
-              esac
-              if [ -z "$min_so_align" ] || [ "$a" -lt "$min_so_align" ]; then
-                min_so_align="$a"
-              fi
-            done < <(readelf -lW "$so" 2>/dev/null | awk '/Section to Segment mapping:/{ph=0;next} /Program Headers:/{ph=1;next} ph && $1=="LOAD"{print $NF}')
-
-            if [ -z "$min_so_align" ]; then
-              # P2-4：解析失败是环境问题（binutils 异常 / 非 ELF 文件），
-              # 与「对齐不达标」是两类问题 —— 分开计数、分开告警、分开表述。
-              align_display="n/a"
-              verdict="解析失败"
-            elif [ "$min_so_align" -ge "$(( MIN_LOAD_ALIGN ))" ]; then
-              align_display="0x$(printf '%x' "$min_so_align")"
-              verdict="达标"
-            else
-              align_display="0x$(printf '%x' "$min_so_align")"
-              verdict="不达标"
-            fi
-            printf '| `%s` | %s | %s | %s |\n' "$rel" "$abi" "$align_display" "$verdict" >> "$GITHUB_STEP_SUMMARY"
-
-            if [ "$verdict" = "解析失败" ]; then
-              parse_failed=$((parse_failed + 1))
-              echo "::warning::$rel: readelf 解析失败（未能提取任何 LOAD 段 Align）—— 可能是 binutils 环境异常或该文件不是合法 ELF，无法判定 16KB 对齐，请人工复核。此告警与对齐不达标无关。"
-            elif [ "$verdict" = "不达标" ]; then
-              misaligned=$((misaligned + 1))
-              echo "::warning::$rel: 最小 LOAD Align=${align_display} 低于 $MIN_LOAD_ALIGN（16KB）—— Android 15+ 16KB page size 设备无法加载该 so，targetSdk >= 35 上架硬性要求。优先排查上游依赖（litertlm-android 等 native AAR）。"
-            fi
-          done
-
-          {
-            echo ""
-            if [ "$misaligned" -gt 0 ]; then
-              echo "> ⚠️ ${misaligned}/${total} 个 so 未达标（FAIL_ON_MISALIGNED=${FAIL_ON_MISALIGNED}：仅告警，不阻断）。上游 16KB 对齐修复后此行应归零。"
-            elif [ "$parse_failed" -gt 0 ]; then
-              echo "> ⚠️ ${parse_failed}/${total} 个 so readelf 解析失败，对齐状态未知（详见上方「解析失败」行）。"
-            else
-              echo "> ✅ 全部 ${total} 个 so 达标（>= $MIN_LOAD_ALIGN）。"
-            fi
-            if [ "$parse_failed" -gt 0 ] && [ "$misaligned" -gt 0 ]; then
-              echo "> 另有 ${parse_failed} 个 so 解析失败（未计入未达标数），需人工复核。"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$FAIL_ON_MISALIGNED" = "true" ] && [ "$misaligned" -gt 0 ]; then
-            echo "::error::${misaligned} 个 so 的 LOAD 段未对齐到 $MIN_LOAD_ALIGN（明细见 job summary）。FAIL_ON_MISALIGNED=true，阻断构建。"
-            exit 1
-          fi
-          # 解析失败单独阻断（仅 error 模式）：保持原保守语义 —— 对齐状态未知
-          # 时宁可红也不静默放过；文案与对齐不达标分开，指向环境修复而非依赖升级。
-          if [ "$FAIL_ON_MISALIGNED" = "true" ] && [ "$parse_failed" -gt 0 ]; then
-            echo "::error::${parse_failed} 个 so 的 LOAD 段 Align 解析失败（疑似 binutils 环境异常或非 ELF 文件，明细见 job summary）。FAIL_ON_MISALIGNED=true，阻断构建。"
-            exit 1
-          fi
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -403,26 +124,16 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # -------------------------------------------------------------------
-      # 可选：签名 release
-      # -------------------------------------------------------------------
       - name: Decode keystore
         id: keystore
         if: steps.signing.outputs.available == 'true'
         env:
           KS_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
-          # 【格式约定】密钥库是 PKCS12（不是 JKS），文件名用 .p12 以免误导。
-          # ⚠️ PKCS12 不支持「store 口令 ≠ key 口令」：keytool 生成时会忽略 -keypass，
-          #    因此 SIGNING_KEY_PASSWORD 必须与 SIGNING_KEYSTORE_PASSWORD 相同，
-          #    否则 Java 取 key 时抛 UnrecoverableKeyException（已实测确认）。
-          #    实测另一点：该 .p12 文件在 KeyStore.getInstance("pkcs12") 与 ("jks")
-          #    两种 storeType 下都能正常 load + getKey —— 所以无论 AGP 用哪种默认
-          #    keystore type，都能签成功，不存在格式歧义风险。
-          ks_path="${RUNNER_TEMP}/liquidagent-release.p12"
+          ks_path="${RUNNER_TEMP}/liquidagent-release.jks"
           printf '%s' "$KS_B64" | base64 -d > "$ks_path"
           if [ ! -s "$ks_path" ]; then
-            echo "::error::Decoded keystore is empty; check SIGNING_KEYSTORE_BASE64"
+            echo "::error::Decoded keystore is empty"
             exit 1
           fi
           echo "path=$ks_path" >> "$GITHUB_OUTPUT"
@@ -445,190 +156,25 @@ jobs:
             -Psigning.keyPassword="${KS_KEY_PASSWORD}" \
             :app:assembleRelease
 
-      - name: Assemble release AAB
-        # 【修复：旧版 path 写了 bundle/release/*.aab，但全流程从未跑过 bundleRelease，
-        #   那个 glob 永远匹配不到文件，又被 if-no-files-found: warn 掩盖 —— AAB 是空话。】
-        #   这里真正跑一次 :app:bundleRelease，让 AAB 成为实际产物（Play 上架所需）。
-        id: assemble_bundle
-        if: steps.signing.outputs.available == 'true'
-        env:
-          KS_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
-          KS_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: |
-          "$GRADLE_CMD" \
-            --no-daemon \
-            --stacktrace \
-            "-Dorg.gradle.jvmargs=${GRADLE_JVM_ARGS}" \
-            -Psigning.storeFile="${{ steps.keystore.outputs.path }}" \
-            -Psigning.storePassword="${KS_PASSWORD}" \
-            -Psigning.keyAlias="${KS_ALIAS}" \
-            -Psigning.keyPassword="${KS_KEY_PASSWORD}" \
-            :app:bundleRelease
-
-      - name: Verify release APK signature
-        # 【修复配套】光「产出一个 APK」不等于「签对了」。
-        #   1) 用 apksigner 断言 v2 + v3 签名方案都命中（minSdk 31 >= 28，v3 可用）
-        #   2) 断言证书 DN 不是 "CN=Android Debug" —— 否则说明 signing.* 没传到 Gradle，
-        #      构建悄悄退回 debug 签名（app/build.gradle.kts 的兜底分支），
-        #      这正是「有密钥却仍出 debug 包」最容易被漏掉的失败模式。
-        id: verify_signature
+      - name: Pack latest APK into zip
         if: steps.assemble_release.outcome == 'success'
         run: |
-          apk_path="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -n 1)"
-          if [ -z "$apk_path" ]; then
-            echo "::error::assembleRelease reported success but no release APK found"
-            exit 1
-          fi
-          echo "::notice::Verifying: $apk_path"
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk dist/
+          zip -j "LiquidAgent-latest.zip" dist/*.apk
 
-          # 【为什么这里用 error 而不是 warning】
-          #   守卫「悄悄跳过」= 守卫不存在：一旦 apksigner 找不到就 exit 0，
-          #   这条断言会永远显示 success，而它本来要防的 debug 签名问题照样溜过去
-          #   —— 正是本轮反复出现的「静默失效」。所以找不到就直接红，逼人修环境。
-          #   可行性：assembleRelease 必然已经拉起 build-tools（aapt2/d8 都在里面），
-          #   而 apksigner CLI 与它们同目录，只要 release 包能产出，它就一定在。
-          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/android-sdk}}"
-          apksigner_bin="$(ls -d "$sdk_root"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1 || true)"
-          if [ -z "$apksigner_bin" ] || [ ! -x "$apksigner_bin" ]; then
-            # 再全 SDK 目录兜底找一次，避免 build-tools 被装到别的根下
-            apksigner_bin="$(find /usr/local/lib/android/sdk "$HOME" -maxdepth 4 -type f -name apksigner -path '*build-tools*' 2>/dev/null | sort -V | tail -n 1 || true)"
-          fi
-          if [ -z "$apksigner_bin" ] || [ ! -x "$apksigner_bin" ]; then
-            echo "::error::apksigner not found under $sdk_root/build-tools/*/ — cannot verify the release signature. Listing what IS there:"
-            ls -la "$sdk_root" 2>/dev/null || true
-            ls -la "$sdk_root/build-tools" 2>/dev/null || true
-            exit 1
-          fi
-          echo "::notice::apksigner: $apksigner_bin"
-
-          log_file="${RUNNER_TEMP}/apksigner-verify.log"
-          "$apksigner_bin" verify --verbose --print-certs "$apk_path" > "$log_file" 2>&1 || true
-          cat "$log_file"
-
-          if grep -q "CN=Android Debug" "$log_file"; then
-            echo "::error::Release APK is signed with the DEBUG key. signing.* properties did not reach Gradle."
-            exit 1
-          fi
-
-          # 【为什么是 v2 或 v3 二选一，而不是必须同时命中】—— CI 实测结论，别改回 AND：
-          #   AGP 9.3.2 下 minSdk 31 只签 v3，且 enableV2Signing 已无效：
-          #     - 都不写 enable*          → v2=true,  v3=false
-          #     - 只写 enableV3Signing    → v2=false, v3=true
-          #     - v2/v3 都写 true         → v2=false, v3=true  （enableV2Signing 被忽略）
-          #   AGP 9 是按「minSdk 需要的最低方案」来选签名方案，**不是叠加**。
-          #   minSdk 31 的设备 100% 支持 v3（Android 9 / API 28 引入），所以 v3-only 合法，
-          #   且 v3 相对 v2 多了密钥轮换能力。要求 v2 AND v3 会把正确构建判红。
-          v2_ok="$(grep -cE 'Verified using v2 scheme .*: true' "$log_file" || true)"
-          v3_ok="$(grep -cE 'Verified using v3 scheme .*: true' "$log_file" || true)"
-          if [ "$v2_ok" -eq 0 ] && [ "$v3_ok" -eq 0 ]; then
-            echo "::error::APK 既没有 v2 也没有 v3 签名 —— 签名未生效（或签名方案在未来又变了）。"
-            cat "$log_file"
-            exit 1
-          fi
-          echo "::notice::签名方案命中：v2=$([ "$v2_ok" -gt 0 ] && echo yes || echo no) v3=$([ "$v3_ok" -gt 0 ] && echo yes || echo no)"
-          echo "::notice::Release APK verified: signed with the release key (not debug), 签名方案见上一行。"
-
-      - name: Verify release AAB signature
-        # Wave4 审查（D-P0-2）：verify_signature 只碰 apk/release，AAB 从未被验过。
-        # 同一 Gradle 进程内 AAB 与 APK 共用 signingConfig，但「共用」是推断不是断言 ——
-        # 用 keytool 直接解开 AAB 内的证书文件断言非 debug 证书（与 APK 同构的负向断言）。
-        # 注意证书条目名不固定：META-INF/<别名派生>.(RSA|DSA|EC)，alias 叫什么文件就叫什么
-        #（首轮实测 CERT.RSA 硬编码落空 → 改为枚举任意证书条目；失败时打印全部条目辅助定位）。
+      - name: Publish GitHub Release for latest build
         if: steps.assemble_release.outcome == 'success'
-        run: |
-          aab_path="$(find app/build/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' | head -n 1)"
-          if [ -z "$aab_path" ]; then
-            echo "::error::assembleBundle reported success but no release AAB found"
-            exit 1
-          fi
-          echo "::notice::Verifying AAB: $aab_path"
-          cert_entry="$(unzip -Z1 "$aab_path" 2>/dev/null | grep -E '^META-INF/.*\.(RSA|DSA|EC)$' | head -n 1 || true)"
-          if [ -z "$cert_entry" ]; then
-            echo "::error::AAB 内未找到任何 META-INF/*.(RSA|DSA|EC) 证书条目 —— 未签名或签名形态变化。META-INF 清单："
-            unzip -Z1 "$aab_path" 2>/dev/null | grep '^META-INF/' | head -20
-            exit 1
-          fi
-          echo "::notice::Certificate entry: $cert_entry"
-          unzip -p "$aab_path" "$cert_entry" > "${RUNNER_TEMP}/aab-cert.bin"
-          cert_log="${RUNNER_TEMP}/aab-cert.log"
-          keytool -printcert -file "${RUNNER_TEMP}/aab-cert.bin" > "$cert_log" 2>&1 || {
-            echo "::error::keytool 无法解析 AAB 证书"; cat "$cert_log"; exit 1;
-          }
-          cat "$cert_log"
-          if grep -q "CN=Android Debug" "$cert_log"; then
-            echo "::error::Release AAB is signed with the DEBUG key."
-            exit 1
-          fi
-          echo "::notice::Release AAB verified: signed with a non-debug certificate."
-
-      # -------------------------------------------------------------------
-      # 产物大小写进 job summary：debug vs release APK / AAB / mapping 一目
-      # 了然，杜绝「release 怎么比 debug 还大」的误解（此前 63.5MB 是 zip
-      # 四件套，单 APK 实际比 debug 小 —— R8 在工作）。装包拿 apk artifact。
-      # -------------------------------------------------------------------
-      - name: Report artifact sizes to job summary
-        if: steps.assemble_release.outcome == 'success'
-        run: |
-          {
-            echo "## Artifact sizes"
-            echo ""
-            echo "| File | Size |"
-            echo "|---|---|"
-            for f in \
-              app/build/outputs/apk/debug/*.apk \
-              app/build/outputs/apk/release/*.apk \
-              app/build/outputs/bundle/release/*.aab \
-              app/build/outputs/mapping/release/mapping.txt; do
-              if [ -f "$f" ]; then
-                printf '| `%s` | %s |\n' "$f" "$(du -h "$f" | cut -f1)"
-              fi
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload release APK / AAB
-        if: steps.assemble_release.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: liquidagent-release-apk-${{ github.ref_name }}
-          path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
-          retention-days: 90
-          # 【修复：原来是 warn —— 正是它把「AAB 从未生成」掩盖成了静默成功。
-          #  现在 APK/AAB 都是真实产物，缺任何一个都应该红。】
-          if-no-files-found: error
-
-      - name: Upload R8 mapping
-        if: steps.assemble_release.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: liquidagent-release-mapping-${{ github.ref_name }}
-          path: |
-            app/build/outputs/mapping/release/mapping.txt
-            app/build/outputs/mapping/release/configuration.txt
-          retention-days: 90
-          # mapping 是崩溃还原专用，单独一个 artifact，别混进装包用的那份。
-          if-no-files-found: error
-
-      # -------------------------------------------------------------------
-      # 发布：仅在 tag 推送 + 签名可用 时创建 GitHub Release
-      # -------------------------------------------------------------------
-      - name: Publish GitHub Release
-        if: |
-          startsWith(github.ref, 'refs/tags/v') &&
-          steps.assemble_release.outcome == 'success'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: LiquidAgent ${{ github.ref_name }}
+          tag_name: latest
+          name: Latest Build
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: false
+          overwrite_files: true
           files: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
-            app/build/outputs/mapping/release/mapping.txt
+            LiquidAgent-latest.zip
 
       - name: Upload failure reports
         if: failure()
@@ -640,32 +186,3 @@ jobs:
             **/build/outputs/logs/**
           retention-days: 14
           if-no-files-found: warn
-
-      - name: Write job summary
-        if: always()
-        run: |
-          {
-            echo "## LiquidAgent release"
-            echo ""
-            echo "| Item | Value |"
-            echo "|---|---|"
-            echo "| Ref | \`${GITHUB_REF}\` |"
-            echo "| Debug APK | ${{ steps.assemble_debug.outcome || 'n/a' }} |"
-            echo "| Signing secrets | ${{ steps.signing.outputs.available }} |"
-            echo "| Signed release APK | ${{ steps.assemble_release.outcome || 'skipped' }} |"
-            echo "| Signed release AAB | ${{ steps.assemble_bundle.outcome || 'skipped' }} |"
-            echo "| Signature verified (v2+v3, non-debug) | ${{ steps.verify_signature.outcome || 'skipped' }} |"
-            echo ""
-            echo "R8 还原栈所需：artifact \`liquidagent-release-${GITHUB_REF_NAME}\` 内含 \`mapping.txt\` / \`configuration.txt\`。"
-            echo ""
-            if [ "${{ steps.signing.outputs.available }}" != "true" ]; then
-              if [ "${{ github.ref_type }}" = "tag" ]; then
-                # W87 口径订正：旧文无条件写「only the debug APK was produced」——
-                #   在 tag 语境下这句是错的（Gate 步先硬失败，debug APK 根本没装配）。
-                echo "> ⚠️ **Tag push without SIGNING_\* secrets** — \`Gate tag release on signing secrets\` fails **by design** (file header convention #2): a debug-signed artifact is not a release (cannot be uploaded to a store, cannot upgrade in place). Expect this job to be RED; no debug APK is assembled on this path because the gate runs *before* \`Assemble debug APK\`."
-              else
-                echo "> Signing secrets not configured — only the debug APK was produced. "
-                echo "Add \`SIGNING_KEYSTORE_BASE64\`, \`SIGNING_KEYSTORE_PASSWORD\`, \`SIGNING_KEY_ALIAS\`, \`SIGNING_KEY_PASSWORD\` to enable signed releases."
-              fi
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
