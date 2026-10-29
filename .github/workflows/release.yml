@@ -76,24 +76,24 @@ jobs:
       - name: Detect signing secrets
         id: signing
         env:
-          KS_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
-          KS_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
-          KS_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KS_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           if [ -n "${KS_B64:-}" ] && [ -n "${KS_PASSWORD:-}" ] && [ -n "${KS_ALIAS:-}" ] && [ -n "${KS_KEY_PASSWORD:-}" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Signing secrets found, creating signed release APK"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::error::Missing signing secrets. Need SIGNING_KEYSTORE_BASE64, SIGNING_KEYSTORE_PASSWORD, SIGNING_KEY_ALIAS, SIGNING_KEY_PASSWORD"
+            echo "::error::Missing signing secrets. Need KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD"
             exit 1
           fi
 
       - name: Decode keystore
         id: keystore
         env:
-          KS_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
           ks_path="${RUNNER_TEMP}/liquidagent-release.jks"
           printf '%s' "$KS_B64" | base64 -d > "$ks_path"
@@ -105,9 +105,9 @@ jobs:
 
       - name: Assemble signed release APK
         env:
-          KS_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
-          KS_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          KS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KS_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           ./gradlew \
             --no-daemon \
